@@ -1,0 +1,19 @@
+{
+  "project_info": {
+    "project_number": "<PROJECT_NUMBER>",
+    "project_id": "<PROJECT_ID>",
+    "storage_bucket": "<PROJECT_ID>.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "<MOBILESDK_APP_ID>",
+        "android_client_info": { "package_name": "dev.catenary.pushprove" }
+      },
+      "oauth_client": [],
+      "api_key": [ { "current_key": "<ANDROID_API_KEY>" } ],
+      "services": { "appinvite_service": { "other_platform_oauth_client": [] } }
+    }
+  ],
+  "configuration_version": "1"
+}

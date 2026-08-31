@@ -1,0 +1,29 @@
+{
+  "name": "catenary-web",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Catenary web client \u2014 first-pass implementation of the design canvas (IDEA-23).",
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run gen:check && vue-tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "smoke": "npm run gen:check && vite build --ssr smoke.ts --outDir dist-smoke --logLevel warn && node dist-smoke/smoke.js && npm run conformance",
+    "gen": "node ../schema/codegen/generate.mjs",
+    "gen:check": "node ../schema/codegen/generate.mjs --check",
+    "conformance": "vite build --ssr conformance.ts --outDir dist-conformance --logLevel warn && node dist-conformance/conformance.js",
+    "validate": "vite build --ssr validate.ts --outDir dist-validate --logLevel warn && node dist-validate/validate.js"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "@vue/server-renderer": "^3.5.41",
+    "typescript": "~5.7.2",
+    "vite": "^6.0.7",
+    "vue-tsc": "^2.2.0"
+  }
+}

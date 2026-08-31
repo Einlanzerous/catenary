@@ -1,0 +1,5 @@
+model,backend,decode_ms,infer_ms,total_ms,realtime_x
+base.en,hip,153,4338,4491,13.4
+small.en,hip,153,4611,4764,12.6
+medium.en,hip,153,5814,5967,10.1
+large-v3,hip,153,8298,8451,7.1

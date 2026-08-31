@@ -1,0 +1,3 @@
+model,backend,decode_ms,infer_ms,total_ms,realtime_x
+medium.en,cpu,152,42030,42182,1.4
+large-v3,cpu,152,101124,101276,0.6

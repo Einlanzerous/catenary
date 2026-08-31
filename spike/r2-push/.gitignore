@@ -1,0 +1,3 @@
+# Firebase credentials. The service-account key can send push to anything in the
+# project; the google-services.json identifies the app. Neither is ever committed.
+secrets/

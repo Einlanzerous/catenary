@@ -1,0 +1,714 @@
+{
+  "note": "Golden conformance vectors for the Catenary wire protocol (IDEA-27 / R4).\n\nThese are the actual anti-drift mechanism. Generating types from one schema makes the two clients agree about SHAPE; it does not make them agree about BEHAVIOUR — whether an absent optional is omitted or emitted as null, whether an unknown attachment kind drops the attachment or the whole message, whether a timestamp survives a decode/encode round trip unchanged. Every one of those is a place two hand-written implementations diverge, and none of them is a type error.\n\nSo: every runner (TypeScript, Dart, Go) reads THIS file, and each case must produce the same answer in every language.\n\nExpectations:\n  roundtrip — decode succeeds, and re-encoding yields `encoded` if present, otherwise `json` itself, compared as canonical JSON (keys sorted recursively, so key order is not asserted and everything else is).\n  ignore    — decode returns the language's null/nil. Only meaningful for the union types, where an unrecognised tag must be skipped rather than raised.\n  reject    — decode fails. The schema's constraints are only real if violating them is an error.\n\nThe Go runner skips `reject` cases; see the DOCUMENTED GAP note in generated.go.",
+  "cases": [
+    {
+      "name": "client_hello_full",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "Every optional present. Resuming from a cursor is the normal case for a client that has been running.",
+      "json": {
+        "type": "hello",
+        "wire_version": 1,
+        "device_id": "6f1a2c3d-4e5b-4a7c-9d8e-0f1a2b3c4d5e",
+        "resume_from_log_seq": 41207,
+        "client_info": "catenary-web/0.3.1"
+      }
+    },
+    {
+      "name": "client_hello_fresh_device",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "No optionals at all. A brand-new install has no cursor, and the absent field must be OMITTED on re-encode rather than emitted as null — the property that keeps `absent` and `null` from becoming two different states.",
+      "json": {
+        "type": "hello",
+        "wire_version": 1,
+        "device_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"
+      }
+    },
+    {
+      "name": "ping_from_client",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "R1's application-level heartbeat.",
+      "json": {
+        "type": "ping",
+        "id": "hb-8814",
+        "at": "2026-08-17T04:22:01.193Z"
+      }
+    },
+    {
+      "name": "ping_from_server",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "The SAME frame decoded as a server frame. Ping and Pong belong to both unions, which in Dart means one class implementing two sealed types — the one structural thing a naive generator gets wrong by picking a single parent. If this case passes in Dart, the dual membership is real.",
+      "json": {
+        "type": "ping",
+        "id": "hb-8815",
+        "at": "2026-08-17T04:22:31.400Z"
+      }
+    },
+    {
+      "name": "pong_from_client",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "Echoes the ping id verbatim; matching by id is what makes a missed pong countable.",
+      "json": {
+        "type": "pong",
+        "id": "hb-8815"
+      }
+    },
+    {
+      "name": "client_send_text",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "The ordinary case. `client_id` is the idempotency key and is reused verbatim on every retry.",
+      "json": {
+        "type": "send",
+        "client_id": "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "text": "the wire is up"
+      }
+    },
+    {
+      "name": "client_send_voice_reply",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "A voice note answering an earlier message. The client sends only an upload handle and a message id — never dimensions, peaks or a reply preview, all of which the server computes so the two clients cannot compute them differently.",
+      "json": {
+        "type": "send",
+        "client_id": "2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f60",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "attachments": [
+          {
+            "kind": "voice",
+            "upload_id": "3e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6b"
+          }
+        ],
+        "reply_to_message_id": "4f5a6b7c-8d9e-4f0a-9b1c-2d3e4f5a6b7c"
+      }
+    },
+    {
+      "name": "client_read",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "Read receipts are a high-water mark, never per-message.",
+      "json": {
+        "type": "read",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "up_to_seq": 1904
+      }
+    },
+    {
+      "name": "client_typing_start",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "json": {
+        "type": "typing",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "state": "start"
+      }
+    },
+    {
+      "name": "server_ready_resumed",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "The heartbeat interval is SERVER-DRIVEN. If this number lived in two clients it would be two numbers, and the Flutter one would be discovered wrong in the field rather than in CI.",
+      "json": {
+        "type": "ready",
+        "session_id": "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d",
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 35,
+        "missed_pong_limit": 2,
+        "log_seq": 41250,
+        "resumed": true
+      }
+    },
+    {
+      "name": "server_ready_cold",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "resumed:false means the client must catch up over /sync before trusting anything it renders. A boolean false must survive the round trip and not be dropped as falsy — the classic omitempty bug.",
+      "json": {
+        "type": "ready",
+        "session_id": "6b7c8d9e-0f1a-4b2c-9d3e-4f5a6b7c8d9e",
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 35,
+        "missed_pong_limit": 2,
+        "log_seq": 0,
+        "resumed": false
+      }
+    },
+    {
+      "name": "server_ack",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "The other half of the send/ack pair, carrying both ordinals.",
+      "json": {
+        "type": "ack",
+        "client_id": "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f",
+        "message_id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "seq": 1905,
+        "log_seq": 41251,
+        "at": "2026-08-17T04:22:03.117Z"
+      }
+    },
+    {
+      "name": "server_ack_duplicate",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "A retry of an already-accepted send replays the original ack. R1's zero-duplication criterion is only checkable because this is observable rather than invisibly correct.",
+      "json": {
+        "type": "ack",
+        "client_id": "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f",
+        "message_id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "seq": 1905,
+        "log_seq": 41251,
+        "at": "2026-08-17T04:22:03.117Z",
+        "duplicate": true
+      }
+    },
+    {
+      "name": "server_message_text",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "Steady state: the frame carries the WHOLE message, never a pointer the client must go and fetch.",
+      "json": {
+        "type": "message",
+        "message": {
+          "id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+          "seq": 1905,
+          "log_seq": 41251,
+          "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+          "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+          "at": "2026-08-17T04:22:03.117Z",
+          "text": "the wire is up",
+          "state": "sent",
+          "client_id": "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f"
+        }
+      }
+    },
+    {
+      "name": "server_message_voice_transcript_ready",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "The feature the whole project is worth building for. Peaks are a stored array and segments carry word offsets for search's JUMP TO.",
+      "json": {
+        "type": "message",
+        "message": {
+          "id": "9e0f1a2b-3c4d-4e5f-8a6b-7c8d9e0f1a2b",
+          "seq": 1906,
+          "log_seq": 41252,
+          "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+          "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+          "at": "2026-08-17T04:24:10.900Z",
+          "state": "delivered",
+          "read_by": 5,
+          "attachments": [
+            {
+              "kind": "voice",
+              "url": "https://media.catenary.invalid/v/9e0f1a2b.opus",
+              "duration_ms": 62500,
+              "peaks": [
+                3,
+                18,
+                44,
+                71,
+                88,
+                64,
+                30,
+                12,
+                5
+              ],
+              "transcript": {
+                "state": "ready",
+                "text": "picking up the trailer at eight, should be back before the rain",
+                "word_count": 12,
+                "segments": [
+                  {
+                    "at_ms": 0,
+                    "text": "picking up the trailer at eight,"
+                  },
+                  {
+                    "at_ms": 2800,
+                    "text": "should be back before the rain"
+                  }
+                ],
+                "engine": "whisper.cpp/small.en",
+                "language": "en"
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "server_message_voice_transcript_pending",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "The async Whisper job has not landed. eta_sec is the SERVER's estimate; a client must not invent one, which is why it is on the wire at all.",
+      "json": {
+        "type": "message",
+        "message": {
+          "id": "0f1a2b3c-4d5e-4f6a-9b7c-8d9e0f1a2b3c",
+          "seq": 1907,
+          "log_seq": 41253,
+          "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+          "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+          "at": "2026-08-17T04:25:00.000Z",
+          "state": "sent",
+          "attachments": [
+            {
+              "kind": "voice",
+              "url": "https://media.catenary.invalid/v/0f1a2b3c.opus",
+              "duration_ms": 9250,
+              "peaks": [
+                10,
+                40,
+                62,
+                22
+              ],
+              "transcript": {
+                "state": "pending",
+                "eta_sec": 4
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "server_message_image_with_reply",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "Stored dimensions fix the row height before a byte of image arrives — the property the blurhash placeholder protects. The reply stub is rendered server-side from the live source.",
+      "json": {
+        "type": "message",
+        "message": {
+          "id": "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d",
+          "seq": 1908,
+          "log_seq": 41254,
+          "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+          "author_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+          "at": "2026-08-17T04:31:44.250Z",
+          "state": "read",
+          "read_by": 7,
+          "attachments": [
+            {
+              "kind": "image",
+              "url": "https://media.catenary.invalid/i/1a2b3c4d.jpg",
+              "filename": "trailer.jpg",
+              "width": 3024,
+              "height": 2016,
+              "bytes": 2874113,
+              "placeholder": "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+            }
+          ],
+          "reply_to": {
+            "message_id": "9e0f1a2b-3c4d-4e5f-8a6b-7c8d9e0f1a2b",
+            "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+            "kind": "voice",
+            "preview": "picking up the trailer at eight, should be back…",
+            "duration_ms": 62500
+          }
+        }
+      }
+    },
+    {
+      "name": "server_receipt",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "json": {
+        "type": "receipt",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "user_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+        "up_to_seq": 1908
+      }
+    },
+    {
+      "name": "server_typing_three",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "ORDER IS NORMATIVE. Spec card F names people in the order they started typing, so a client that sorted this list would render a different string from the same frame — divergence with no type error anywhere.",
+      "json": {
+        "type": "typing",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "user_ids": [
+          "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+          "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+          "3c4d5e6f-7a8b-4c9d-8e0f-2a3b4c5d6e7f"
+        ]
+      }
+    },
+    {
+      "name": "server_typing_empty",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "Nobody is typing. An empty array must survive as an empty array and not be dropped as falsy — otherwise the indicator never clears.",
+      "json": {
+        "type": "typing",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "user_ids": []
+      }
+    },
+    {
+      "name": "server_error_rate_limited",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "`retryable` is the server's judgement, not the client's guess, and client_id attributes it to one outbox entry rather than failing them all.",
+      "json": {
+        "type": "error",
+        "code": "rate_limited",
+        "message": "too many sends; slow down",
+        "retryable": true,
+        "client_id": "2d3e4f5a-6b7c-4d8e-9f0a-1b2c3d4e5f60",
+        "retry_after_sec": 8
+      }
+    },
+    {
+      "name": "server_error_not_a_member",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "retryable:false. A client that retried this forever would look exactly like a client with no error handling.",
+      "json": {
+        "type": "error",
+        "code": "not_a_member",
+        "message": "you are not a member of that conversation",
+        "retryable": false
+      }
+    },
+    {
+      "name": "server_resync_required",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "Named explicitly rather than inferred from a short stream: silent partial resume is how a client ends up confidently missing messages.",
+      "json": {
+        "type": "resync_required",
+        "reason": "cursor_too_old",
+        "log_seq": 41254
+      }
+    },
+    {
+      "name": "sync_response",
+      "kind": "SyncResponse",
+      "expect": "roundtrip",
+      "why": "The reconnect path. `log_seq` is the caller's new high-water mark, not the server's head — deriving it client-side by maxing over `messages` is wrong the moment a page contains no visible messages. `users` is what makes author_id resolvable to a name at all.",
+      "json": {
+        "log_seq": 41254,
+        "has_more": true,
+        "server_time": "2026-08-17T04:32:00.000Z",
+        "messages": [
+          {
+            "id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+            "seq": 1905,
+            "log_seq": 41251,
+            "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+            "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+            "at": "2026-08-17T04:22:03.117Z",
+            "text": "the wire is up",
+            "state": "read"
+          }
+        ],
+        "conversations": [
+          {
+            "id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+            "kind": "group",
+            "name": "Sunday Dinner",
+            "member_count": 7,
+            "head_seq": 1908,
+            "first_unread_seq": 1906
+          }
+        ],
+        "users": [
+          {
+            "id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+            "name": "Nadia Ruiz",
+            "initials": "NR"
+          },
+          {
+            "id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+            "name": "Theo",
+            "initials": "TH"
+          }
+        ]
+      }
+    },
+    {
+      "name": "sync_response_empty_page",
+      "kind": "SyncResponse",
+      "expect": "roundtrip",
+      "why": "Fully caught up. Empty arrays and has_more:false must all survive.",
+      "json": {
+        "log_seq": 41254,
+        "has_more": false,
+        "server_time": "2026-08-17T04:33:00.000Z",
+        "messages": [],
+        "conversations": [],
+        "users": []
+      }
+    },
+    {
+      "name": "conversation_fully_read_with_retention",
+      "kind": "Conversation",
+      "expect": "roundtrip",
+      "why": "ABSENT first_unread_seq means fully read. There is deliberately no stored unread count anywhere on the wire.",
+      "json": {
+        "id": "bb22cc33-dd44-4e55-9f66-aa77bb88cc99",
+        "kind": "direct",
+        "name": "Nadia",
+        "member_count": 2,
+        "head_seq": 88,
+        "muted": false,
+        "retention_days": 30
+      }
+    },
+    {
+      "name": "message_at_max_safe_seq",
+      "kind": "Message",
+      "expect": "roundtrip",
+      "why": "Exactly 2^53-1, the largest integer JavaScript represents exactly. The boundary must be accepted so the bound is a real limit rather than an off-by-one.",
+      "json": {
+        "id": "4d5e6f7a-8b9c-4d0e-8f1a-3b4c5d6e7f8a",
+        "seq": 9007199254740991,
+        "log_seq": 9007199254740991,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:22:03.117Z",
+        "state": "sent"
+      }
+    },
+    {
+      "name": "message_tombstone",
+      "kind": "Message",
+      "expect": "roundtrip",
+      "why": "A deleted message keeps its seq. Renumbering a conversation would break every other client's unread arithmetic.",
+      "json": {
+        "id": "5e6f7a8b-9c0d-4e1f-9a2b-4c5d6e7f8a9b",
+        "seq": 1899,
+        "log_seq": 41200,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-16T22:10:00.000Z",
+        "state": "read",
+        "deleted": true
+      }
+    },
+    {
+      "name": "unknown_server_frame_type",
+      "kind": "ServerFrame",
+      "expect": "ignore",
+      "why": "A frame type this client was not generated with. Ignoring it is what lets the server ship a new frame before every client understands it; raising would make every protocol addition a flag-day.",
+      "json": {
+        "type": "reaction",
+        "message_id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "emoji": "🚉"
+      }
+    },
+    {
+      "name": "unknown_attachment_kind_is_dropped",
+      "kind": "Message",
+      "expect": "roundtrip",
+      "why": "An unrecognised attachment drops the ATTACHMENT, not the message. A client that hard-errored here could never be shipped ahead of a server that adds a type — and losing the whole message over an unknown thumbnail is the worse of the two failures. `encoded` states the expected result explicitly.",
+      "json": {
+        "id": "6f7a8b9c-0d1e-4f2a-8b3c-5d6e7f8a9b0c",
+        "seq": 1910,
+        "log_seq": 41260,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:40:00.000Z",
+        "state": "sent",
+        "text": "look at this",
+        "attachments": [
+          {
+            "kind": "video",
+            "url": "https://media.catenary.invalid/x/1.mp4",
+            "duration_ms": 4000
+          },
+          {
+            "kind": "image",
+            "url": "https://media.catenary.invalid/i/6f7a8b9c.jpg",
+            "filename": "b.jpg",
+            "width": 100,
+            "height": 200,
+            "bytes": 1234
+          }
+        ]
+      },
+      "encoded": {
+        "id": "6f7a8b9c-0d1e-4f2a-8b3c-5d6e7f8a9b0c",
+        "seq": 1910,
+        "log_seq": 41260,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:40:00.000Z",
+        "state": "sent",
+        "text": "look at this",
+        "attachments": [
+          {
+            "kind": "image",
+            "url": "https://media.catenary.invalid/i/6f7a8b9c.jpg",
+            "filename": "b.jpg",
+            "width": 100,
+            "height": 200,
+            "bytes": 1234
+          }
+        ]
+      }
+    },
+    {
+      "name": "unknown_field_is_ignored",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "Forward compatibility in the other direction: a field this client does not know is dropped, not raised. `encoded` shows it does not survive — which is correct and worth stating, because a client that echoed unknown fields back would look like it supported them.",
+      "json": {
+        "type": "read",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "up_to_seq": 1904,
+        "reaction_ack": true
+      },
+      "encoded": {
+        "type": "read",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "up_to_seq": 1904
+      }
+    },
+    {
+      "name": "reject_missing_required_seq",
+      "kind": "Message",
+      "expect": "reject",
+      "why": "A message without a seq cannot be ordered, and silently defaulting it to 0 would place it before every real message.",
+      "json": {
+        "id": "7a8b9c0d-1e2f-4a3b-8c4d-6e7f8a9b0c1d",
+        "log_seq": 41261,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:41:00.000Z",
+        "state": "sent"
+      }
+    },
+    {
+      "name": "reject_seq_beyond_safe_integer",
+      "kind": "Message",
+      "expect": "reject",
+      "why": "2^53. Dart and Go would carry it exactly and JavaScript would not, so the two clients would disagree about ordering with no error anywhere. Rejecting is the only way the bound means something.",
+      "json": {
+        "id": "8b9c0d1e-2f3a-4b4c-9d5e-7f8a9b0c1d2e",
+        "seq": 9007199254740992,
+        "log_seq": 41262,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:42:00.000Z",
+        "state": "sent"
+      }
+    },
+    {
+      "name": "reject_seq_zero",
+      "kind": "Message",
+      "expect": "reject",
+      "why": "seq starts at 1. Zero is what an uninitialised field looks like.",
+      "json": {
+        "id": "9c0d1e2f-3a4b-4c5d-8e6f-8a9b0c1d2e3f",
+        "seq": 0,
+        "log_seq": 41263,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:43:00.000Z",
+        "state": "sent"
+      }
+    },
+    {
+      "name": "reject_timestamp_without_millis",
+      "kind": "ServerFrame",
+      "expect": "reject",
+      "why": "Valid RFC 3339, and rejected anyway. Both forms parse everywhere and then sort differently as strings, which is exactly the kind of near-miss that survives review.",
+      "json": {
+        "type": "ready",
+        "session_id": "0d1e2f3a-4b5c-4d6e-9f7a-9b0c1d2e3f4a",
+        "server_time": "2026-08-17T04:22:02Z",
+        "heartbeat_interval_sec": 35,
+        "missed_pong_limit": 2,
+        "log_seq": 10,
+        "resumed": true
+      }
+    },
+    {
+      "name": "reject_timestamp_with_offset",
+      "kind": "ServerFrame",
+      "expect": "reject",
+      "why": "A non-UTC offset. Also valid RFC 3339, also breaks string ordering.",
+      "json": {
+        "type": "ready",
+        "session_id": "1e2f3a4b-5c6d-4e7f-8a8b-0c1d2e3f4a5b",
+        "server_time": "2026-08-17T04:22:02.001+01:00",
+        "heartbeat_interval_sec": 35,
+        "missed_pong_limit": 2,
+        "log_seq": 10,
+        "resumed": true
+      }
+    },
+    {
+      "name": "reject_uppercase_uuid",
+      "kind": "ClientFrame",
+      "expect": "reject",
+      "why": "Idempotency keys are compared as strings. An uppercase key would defeat deduplication and send the message twice — the exact failure the key exists to prevent.",
+      "json": {
+        "type": "send",
+        "client_id": "2D3E4F5A-6B7C-4D8E-9F0A-1B2C3D4E5F60",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "text": "hello"
+      }
+    },
+    {
+      "name": "reject_unknown_delivery_state",
+      "kind": "Message",
+      "expect": "reject",
+      "why": "`sending` is a CLIENT-LOCAL state describing a message's relationship to its own outbox. The server has no opinion on it, so it must not be expressible on the wire.",
+      "json": {
+        "id": "2f3a4b5c-6d7e-4f8a-9b9c-1d2e3f4a5b6c",
+        "seq": 1911,
+        "log_seq": 41264,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:44:00.000Z",
+        "state": "sending"
+      }
+    },
+    {
+      "name": "reject_ping_without_id",
+      "kind": "ClientFrame",
+      "expect": "reject",
+      "why": "An unmatched ping cannot be counted as missed, which is the whole basis of R1's sever-and-reconnect rule.",
+      "json": {
+        "type": "ping",
+        "at": "2026-08-17T04:45:00.000Z"
+      }
+    },
+    {
+      "name": "reject_typing_user_ids_not_array",
+      "kind": "ServerFrame",
+      "expect": "reject",
+      "why": "A single id where a list belongs. JavaScript would happily iterate the string's characters.",
+      "json": {
+        "type": "typing",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "user_ids": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"
+      }
+    },
+    {
+      "name": "reject_seq_as_string",
+      "kind": "Message",
+      "expect": "reject",
+      "why": "A numeric string. Go would refuse it, and a hand-written JavaScript client would very likely coerce it and carry on.",
+      "json": {
+        "id": "3a4b5c6d-7e8f-4a9b-8c0d-2e3f4a5b6c7d",
+        "seq": "1912",
+        "log_seq": 41265,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-08-17T04:46:00.000Z",
+        "state": "sent"
+      }
+    }
+  ]
+}

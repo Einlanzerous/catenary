@@ -1,0 +1,28 @@
+# Build output
+node_modules/
+dist/
+dist-smoke/
+dist-conformance/
+dist-validate/
+server/bin/
+dart/.dart_tool/
+
+# R1 rig state. The tokens are ephemeral shared secrets for a rig that gets a
+# public hostname, and the URLs are the quick tunnels it was reached through —
+# neither should ever be committed, and both are dead the moment the rig stops.
+spike/r1-websocket/.token*
+spike/r1-websocket/.url*
+spike/r1-websocket/*.journal
+spike/r1-websocket/*.cursor
+spike/r1-websocket/killtest/
+
+# Large media fixtures. voice60.opus / jfk60.opus are regenerable from
+# spike/r3-whisper/FINDINGS.md; source.ogg is a public-domain download.
+spike/r3-whisper/audio/
+
+# Firebase config for the R2 push probe. Not a secret in the strict sense —
+# Google ships this inside every APK — but it is a live key against a real
+# Firebase project, and this repository is public. It is regenerable from the
+# Firebase console in a minute, and per the house rule the copy of record
+# lives in Signet. E7 (CANT-51) needs the production one, not this probe's.
+spike/r2-push/app/android/app/google-services.json

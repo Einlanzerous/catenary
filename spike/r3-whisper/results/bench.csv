@@ -1,0 +1,10 @@
+model,backend,decode_ms,infer_ms,total_ms,realtime_x
+base.en,vulkan,152,625,777,77.2
+base.en,hip,152,3892,4044,14.8
+base.en,cpu,152,2531,2683,22.4
+small.en,vulkan,152,855,1007,59.6
+small.en,hip,152,4026,4178,14.4
+small.en,cpu,152,7146,7298,8.2
+medium.en,vulkan,152,1893,2045,29.3
+medium.en,hip,152,5129,5281,11.4
+medium.en,cpu,152,25443,25595,2.3

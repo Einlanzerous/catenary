@@ -1,0 +1,139 @@
+/* Catenary design tokens.
+ *
+ * From the design canvas: "shared with the Flutter client — names are the
+ * contract, values are per-theme". Dark is primary; light is derived and
+ * changes nothing but the values — no token exists in one theme only.
+ *
+ * The canvas ships ten named tokens in its table. The rest below are the
+ * values the canvas actually uses in its markup, given names here because
+ * the Flutter-parity note requires it: "every value in this file exists as a
+ * named token". A raw hex in a component is a bug.
+ */
+
+:root,
+:root[data-theme='dark'] {
+  /* ── surfaces ─────────────────────────────────────────────── */
+  --surface-base: #0b0d0e; /* app canvas */
+  --surface-rail: #0e1112; /* sidebar, headers */
+  --surface-lift: #0f1213; /* one-step lift: own message, attachment body */
+  --surface-raised: #171b1c; /* hover, active row, skeleton fill */
+  --surface-avatar: #2c3335; /* avatar tile for other people */
+
+  /* ── hairlines ────────────────────────────────────────────── */
+  --line-hair: #1e2325; /* 1px structural separators */
+  --line-edge: #23292b; /* input and attachment borders */
+  --line-inner: #1a1f21; /* separators inside an attachment block */
+  --line-faint: #14181a; /* list-row separators */
+  --line-accent-dim: #3a3227; /* border on an accented chip */
+
+  /* ── text ─────────────────────────────────────────────────── */
+  --text-primary: #e8ecea; /* message body, names */
+  --text-bright: #c3c9c7; /* avatar glyph, unread preview */
+  --text-secondary: #98a2a0; /* previews, transcript */
+  --text-meta: #626d6c; /* timestamps, status labels */
+  --text-dim: #47504f; /* gutter time, keycaps */
+  --text-faint: #2f3739; /* continuation-row time */
+  --text-disabled: #3c4544; /* action unavailable */
+  --text-placeholder: #4d5654; /* placeholder captions */
+  --text-quote: #7e8785; /* reply-stub sender */
+
+  /* ── the one live conductor ───────────────────────────────── */
+  --accent-wire: #e0913f; /* unread, active, playing, read */
+  --accent-wash: rgba(224, 145, 63, 0.14); /* banners, highlight */
+  --accent-wash-soft: rgba(224, 145, 63, 0.1); /* arrival wash */
+  --accent-rule: rgba(224, 145, 63, 0.55); /* the "N NEW" divider */
+  --accent-underline: rgba(224, 145, 63, 0.55);
+  --accent-dim: #c99458; /* transcribing, pending, retry countdown */
+  --accent-queue: #8c6533; /* offline QUEUE button */
+  --on-accent: #0b0d0e; /* text on an accent fill */
+
+  /* ── the only other color in the system ───────────────────── */
+  --signal-fault: #d1594a; /* failed send only — never decorative */
+
+  /* ── waveform ─────────────────────────────────────────────── */
+  --wave-rest: #39413f; /* unplayed bars */
+  --wave-rest-dim: #2f3739; /* unplayed bars, subordinate contexts */
+
+  color-scheme: dark;
+}
+
+:root[data-theme='light'] {
+  --surface-base: #f7f6f3;
+  --surface-rail: #efede8;
+  --surface-lift: #edeae4;
+  --surface-raised: #e4e1da;
+  --surface-avatar: #d2cec4;
+
+  --line-hair: #d9d5cc;
+  --line-edge: #cfcabf;
+  --line-inner: #e0dcd3;
+  --line-faint: #e8e5dd;
+  --line-accent-dim: #dcc49e;
+
+  --text-primary: #16191a;
+  --text-bright: #2c302f;
+  --text-secondary: #5c6360;
+  --text-meta: #8a908c;
+  --text-dim: #a2a7a2;
+  --text-faint: #c2c5be;
+  --text-disabled: #b5b9b2;
+  --text-placeholder: #a9ada6;
+  --text-quote: #767b76;
+
+  /* Accent darkens to A8611A so it clears 4.5:1 on paper white.
+   * Nothing else changes. */
+  --accent-wire: #a8611a;
+  --accent-wash: rgba(168, 97, 26, 0.14);
+  --accent-wash-soft: rgba(168, 97, 26, 0.1);
+  --accent-rule: rgba(168, 97, 26, 0.55);
+  --accent-underline: rgba(168, 97, 26, 0.55);
+  --accent-dim: #8a5518;
+  --accent-queue: #c08a4e;
+  --on-accent: #f7f6f3;
+
+  --signal-fault: #a63a2c;
+
+  --wave-rest: #bfc3bc;
+  --wave-rest-dim: #cbcec7;
+
+  color-scheme: light;
+}
+
+:root {
+  /* ── type ─────────────────────────────────────────────────── */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', monospace;
+
+  --type-display: 500 28px/34px var(--font-sans);
+  --type-title: 500 18px/24px var(--font-sans);
+  --type-body: 400 15px/25px var(--font-sans); /* the app is a reading surface */
+  --type-sender: 600 13.5px/18px var(--font-sans);
+  --type-secondary: 400 13px/20px var(--font-sans);
+  --type-meta: 400 11px/14px var(--font-mono);
+  --type-label: 400 10px/12px var(--font-mono);
+
+  --track-label: 0.14em;
+  --track-tight: -0.02em;
+
+  /* ── space — 4pt base ─────────────────────────────────────── */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s6: 24px;
+  --s8: 32px;
+  --s12: 48px;
+
+  /* ── layout ───────────────────────────────────────────────── */
+  --rail-w: 304px; /* conversation list */
+  --gutter-w: 72px; /* timestamp column */
+  --status-w: 96px; /* status column — fixed, so state never reflows */
+  --measure: 74ch; /* message text cap, even at 1440 */
+  --row-y: 3px; /* message row vertical padding */
+  --group-gap: 16px; /* gap between author groups */
+
+  /* radius is 0 everywhere except inputs */
+  --radius-input: 2px;
+
+  --narrow: 900px; /* below this the rail becomes its own pane */
+}
