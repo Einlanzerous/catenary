@@ -81,7 +81,7 @@ Three tickets look like they belong on it and deliberately do not. `CANT-13`'s i
 
 ### Mechanics
 
-- One worktree per epic. Branch `cant-NN-description` per ticket, so per-ticket spend attributes correctly. Release-please reads the commit message, so the `feat:` / `fix:` prefix belongs there and not in the branch name.
+- One worktree per epic. Branch `CANT-NN-description` per ticket. **The ticket key comes first**; its case is not load-bearing, so `cant-67-...` is equally fine. What matters is that the key leads, so per-ticket spend attributes correctly and a branch says what it is at a glance. Release-please reads the commit message, so the `feat:` / `fix:` prefix belongs there and not in the branch name.
 - `./verify.sh` green before anything is handed over: every check that does not need hardware, in one command.
 - Every ticket closes with a Switchyard transition **and** a comment carrying its evidence. **The board is the status surface** — nobody should have to scroll a session transcript to learn where things stand. That is also why this file has no status section: it is the shared prefix every agent inherits, and it stays byte-identical so caching hits.
 - Fan-out is only affordable while that prefix stays identical. Never interpolate anything per-agent above it.

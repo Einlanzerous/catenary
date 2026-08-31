@@ -2,7 +2,7 @@
 // device, sends high-priority data messages through FCM HTTP v1, and records
 // how long each one took to come back.
 //
-// THE MEASUREMENT
+// # THE MEASUREMENT
 //
 // T0 is stamped immediately before the FCM HTTP call returns; T1 is stamped
 // when the device's callback arrives. `T1 - T0` is the headline number. It is
