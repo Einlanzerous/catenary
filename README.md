@@ -4,7 +4,7 @@ A self-hosted chat service for a small trusted group. Text, images, voice notes 
 
 > *Catenary:* the overhead wire that delivers continuous power to electric rail. Sits alongside Switchyard.
 
-**The core idea: this is an append-only log with a sync protocol, not a chat app.** Every message gets a server-assigned monotonic `seq`, scoped per conversation, plus an account-global `log_seq`; clients send with an idempotency key and resync with "everything after N". Offline queueing, strict ordering, multi-device convergence and crash recovery all fall out of that one decision, and everything else is features on top of it.
+**The core idea: this is an append-only log with a sync protocol, not a chat app.** Every message gets a server-assigned monotonic `seq`, scoped per conversation, plus a server-global `log_seq`; clients send with an idempotency key and resync with "everything after N". Offline queueing, strict ordering, multi-device convergence and crash recovery all fall out of that one decision, and everything else is features on top of it.
 
 Graduated from **IDEA-23** with all six P0 gates cleared on measured evidence, on real hardware and through the real edge. Tracked in Switchyard under **CANT** — 10 epics, 60 tickets. Start with `CLAUDE.md` for the invariants and the working agreement.
 

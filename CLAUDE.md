@@ -31,7 +31,9 @@ Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-
 
 ### 1 · Both ordinals are assigned inside the insert's own transaction.
 
-Every message carries two ordinals. `seq` is per conversation and orders a thread — it drives `first_unread_seq` and the "N NEW" rule. `log_seq` is account-global and sparse, and is the only thing `/sync?after=` takes. Two rather than one, because a scalar cursor over per-conversation sequences is not well-defined, and a per-conversation cursor map cannot bootstrap a client that has never heard of a conversation.
+Every message carries two ordinals. `seq` is per conversation and orders a thread — it drives `first_unread_seq` and the "N NEW" rule, and it is **dense**: if a client can see seq 4 and seq 6 it may assume seq 5 exists and it is missing it. `log_seq` is **server-global** and **sparse**, and is the only thing `/sync?after=` takes.
+
+**One counter for the whole deployment, not one per account.** Each account reads it as a cursor into the subset it is allowed to see, so its observed values have gaps and the gaps carry no information. `"account-global"` is a known-wrong phrasing that the wire schema records as corrected — it reads as a per-account counter, which would be dense, and that collapses the entire division of labour between the two ordinals. Two rather than one, because a scalar cursor over per-conversation sequences is not well-defined, and a per-conversation cursor map cannot bootstrap a client that has never heard of a conversation.
 
 **A `bigserial` here loses acked messages permanently and never fails a single-threaded test.** A sequence hands out its number outside the transaction, so two inserters can commit out of order: a client that has seen `log_seq` 100 will never ask for 99, and the message holding 99 is gone from every sync that follows. It stays invisible until it is somebody's message that never arrived.
 

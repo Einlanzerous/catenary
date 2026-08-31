@@ -44,7 +44,7 @@ type logStore struct {
 	mu       sync.RWMutex
 	msgs     []wire.Message // ordered by LogSeq, which is also the index+1
 	seq      int64          // per-conversation ordinal (one conversation in the rig)
-	logSeq   int64          // account-global cursor
+	logSeq   int64          // server-global cursor
 	byClient map[string]wire.ServerAck
 	subs     map[chan wire.Message]struct{}
 }
