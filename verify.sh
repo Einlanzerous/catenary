@@ -2,9 +2,12 @@
 # Run everything that can be checked without hardware or a network peer.
 #
 # One command, because a spike's evidence is worthless if reproducing it needs
-# a tour. What this does NOT cover is the two things that need the world: R1's
-# tunnel run (spike/r1-websocket) and R2/R5, which need an Android device and a
-# willing friend.
+# a tour. What this does NOT cover is the things that need the world: R1's
+# tunnel run (spike/r1-websocket), R2/R5, which need an Android device and a
+# willing friend, and R6, which needs a checkout of the Purser repository next
+# door. Those three steps skip with a note rather than failing when what they
+# need is absent — CI runs this file whole, and a step that can never pass
+# there is a red light everyone learns to ignore.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -161,8 +164,25 @@ rm -f "$ROOT/.guardprobe.md"
 [ -n "$probe" ]; result $? "a planted line makes it fail"
 
 step "R6 · Purser connector stub"
-(cd "$ROOT/spike/r6-purser" && go test ./...) >/tmp/v-r6.log 2>&1
-result $? "go test (7 tests against the real connector.Connector)"
+# R6 needs a PEER REPOSITORY, which the header's "needs the world" list did not
+# name. Purser's connector contract lives in its `internal/connector`, so Go
+# only lets a package whose import path is inside `github.com/Einlanzerous/purser/...`
+# implement it — which is why the spike's go.mod takes that module path and
+# `replace`s it at a local checkout. That replace is an absolute path to this
+# machine, so the step is machine-local by construction and cannot run anywhere
+# the Purser source is absent.
+#
+# Skipped rather than failed in that case. The alternative is a CI lane that can
+# never go green, and a red step everyone learns to ignore is worse than an
+# honest skip. R6 is cleared evidence in `spike/`, not a gate on Catenary's own
+# code; nothing in this repository can break it.
+r6_replace=$(sed -n 's/^replace .* => \(.*\)$/\1/p' "$ROOT/spike/r6-purser/go.mod" | tr -d ' ')
+if [ -n "$r6_replace" ] && [ ! -d "$r6_replace" ]; then
+  printf '   \033[33mSKIP\033[0m Purser checkout not at %s — R6 needs the peer repo to compile.\n' "$r6_replace"
+else
+  (cd "$ROOT/spike/r6-purser" && go test ./...) >/tmp/v-r6.log 2>&1
+  result $? "go test (7 tests against the real connector.Connector)"
+fi
 
 step "R3 · whisper.cpp results are on record"
 [ -s "$ROOT/spike/r3-whisper/results/bench.csv" ]
