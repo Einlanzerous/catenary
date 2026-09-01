@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
 
@@ -31,13 +32,13 @@ func TestBuildVersionFallsBackToDev(t *testing.T) {
 
 // The composition root builds a usable router from nothing but a Config.
 func TestSetup(t *testing.T) {
-	d := setup(config.Config{
-		DatabaseURL: "postgres://x/y",
-		Addr:        ":4012",
-		LogFormat:   "json",
-	})
+	cfg := config.Config{DatabaseURL: "postgres://x/y", Addr: ":4012", LogFormat: "json"}
+	d := setup(cfg, cfg.Logger(os.Stdout), nil)
 	if d.logger == nil || d.router == nil {
 		t.Fatal("setup returned an incomplete deps")
+	}
+	if d.store != nil {
+		t.Error("setup invented a store it was not given")
 	}
 }
 

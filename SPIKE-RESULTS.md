@@ -17,6 +17,8 @@ Nothing measurable and nothing undecided is left. **D1 is signed off** (no E2EE)
 
 All six subtasks are transitioned to Closed/done, each with its evidence on the ticket. IDEA-23 itself is In Progress rather than closed, because closing the spike means deciding whether to graduate — and that is a decision, not a measurement.
 
+> **One superseded phrasing, left in place deliberately.** `spike/p0-report.html` describes `log_seq` as "account-global". That reading — one counter per account — is wrong and would be *dense*, which collapses the whole division of labour between the two ordinals; the wire schema records it as a corrected earlier draft and `CLAUDE.md` names it as known-wrong. The report is not amended, because `spike/` is dated evidence and rewriting a finding to say something it did not say at the time is its own kind of dishonesty. `verify.sh` greps the rest of the tree for it and exempts `spike/` for this reason.
+
 ```bash
 ./verify.sh     # every offline check, one command
 ```

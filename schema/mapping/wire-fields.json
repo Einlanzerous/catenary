@@ -1,0 +1,570 @@
+{
+  "$comment": "CANT-13, criterion 12. Every field of the wire schema, mapped to what backs it.\n\nThis file exists because the wire schema and the DDL have no mechanical relation, so \"the generated schema and the migrations disagree\" was undefined and a guard written against it could not fail — it could only be reinterpreted at verification time.\n\nThree kinds:\n  column       - read from or written to a database column. Names the table and column, and a json_path when the value lives inside a JSONB document.\n  derived      - computed by the server at request time from other columns, from configuration, or from connection state. Never stored, so it cannot drift from what it summarises.\n  client-local - the server has no opinion. Invariant 3: sending, queued and failed describe a message's relationship to its own outbox and are not expressible on the wire.\n\nA required wire field backed by a nullable column must say why, in one of two ways.\n  required_via     - names the CHECK constraint that makes it present anyway. This is how one\n                     attachments table carries two kinds.\n  nullable_because - states why the wire's requirement and the column's nullability are both correct.\n                     Used where the wire field is required within an OPTIONAL parent, where the frame\n                     is inbound and storage has other sources, or where the served value is derived\n                     for some rows and stored for others.\nNeither is a licence: the guard fails when a required field has a nullable column and says nothing.\n\nThe guard is internal/store/wiremap_test.go. Adding a field to the wire schema and not to this file fails the build.",
+  "fields": {
+    "User.id": {
+      "kind": "column",
+      "table": "users",
+      "column": "id",
+      "note": ""
+    },
+    "User.name": {
+      "kind": "column",
+      "table": "users",
+      "column": "display_name",
+      "note": "Served live so a rename propagates; never frozen into a message row."
+    },
+    "User.initials": {
+      "kind": "derived",
+      "note": "Computed from display_name at serve time. Storing it would be a second source of truth that goes stale on a rename."
+    },
+    "TranscriptSegment.at_ms": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "segments[].at_ms",
+      "note": ""
+    },
+    "TranscriptSegment.text": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "segments[].text",
+      "note": ""
+    },
+    "Transcript.state": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_state",
+      "note": "Required on VoiceAttachment: without it the server cannot serve a voice note at all, not even a pending one.",
+      "required_via": "attachments_voice_fields"
+    },
+    "Transcript.text": {
+      "kind": "column",
+      "table": "messages",
+      "column": "transcript_text",
+      "note": "Denormalised onto messages for CANT-59's single to_tsvector index over text and transcripts."
+    },
+    "Transcript.word_count": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "word_count",
+      "note": ""
+    },
+    "Transcript.segments": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "segments",
+      "note": ""
+    },
+    "Transcript.engine": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "engine",
+      "note": ""
+    },
+    "Transcript.language": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "language",
+      "note": ""
+    },
+    "Transcript.eta_sec": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "eta_sec",
+      "note": "The schema forbids the client to invent this, so it is the ASR job's value or absent."
+    },
+    "VoiceAttachment.kind": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "kind",
+      "note": ""
+    },
+    "VoiceAttachment.url": {
+      "kind": "derived",
+      "note": "Derived at serve time from attachments.storage_key. NOT stored: the wire says it may be presigned and time-limited, so whether it is an R2 GET or a Traefik route is CANT-47's decision and a stored URL is wrong the moment that lands."
+    },
+    "VoiceAttachment.duration_ms": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "duration_ms",
+      "note": "",
+      "required_via": "attachments_voice_fields"
+    },
+    "VoiceAttachment.peaks": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "peaks",
+      "note": "Computed server-side: the seeded generator overflows 2^53 and produces different bars in JavaScript than in Dart.",
+      "required_via": "attachments_voice_fields"
+    },
+    "VoiceAttachment.transcript": {
+      "kind": "derived",
+      "note": "Composed from Transcript's own mappings."
+    },
+    "ImageAttachment.kind": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "kind",
+      "note": ""
+    },
+    "ImageAttachment.url": {
+      "kind": "derived",
+      "note": "Derived at serve time from attachments.storage_key, as VoiceAttachment.url."
+    },
+    "ImageAttachment.filename": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "filename",
+      "note": "",
+      "required_via": "attachments_image_fields"
+    },
+    "ImageAttachment.width": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "width",
+      "note": "",
+      "required_via": "attachments_image_fields"
+    },
+    "ImageAttachment.height": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "height",
+      "note": "",
+      "required_via": "attachments_image_fields"
+    },
+    "ImageAttachment.bytes": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "bytes",
+      "note": "",
+      "required_via": "attachments_image_fields"
+    },
+    "ImageAttachment.placeholder": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "placeholder",
+      "note": "The blurhash, computed server-side on ingest."
+    },
+    "ReplyRef.message_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "reply_to",
+      "note": "The ref itself is the stored half; every other ReplyRef field is read off the source message at serve time.",
+      "nullable_because": "Required WITHIN a ReplyRef, and Message.reply_to is itself optional — so the column is null exactly when there is no ref to serve. Also null after CANT-67 sweeps the source, which is why the FK is ON DELETE SET NULL."
+    },
+    "ReplyRef.author_id": {
+      "kind": "derived",
+      "note": "Read from the source message's author_id. Not copied, so an edit or a rename is reflected."
+    },
+    "ReplyRef.kind": {
+      "kind": "derived",
+      "note": "Read from the source message's text and attachments."
+    },
+    "ReplyRef.preview": {
+      "kind": "derived",
+      "note": "Read from the source message's text or transcript at serve time."
+    },
+    "ReplyRef.duration_ms": {
+      "kind": "derived",
+      "note": "Read from the source message's voice attachment."
+    },
+    "ReplyRef.url": {
+      "kind": "derived",
+      "note": "Derived from the source attachment's storage_key."
+    },
+    "Message.id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "id",
+      "note": ""
+    },
+    "Message.seq": {
+      "kind": "column",
+      "table": "messages",
+      "column": "seq",
+      "note": "Dense per conversation; drawn from conversations.last_seq in the inserting transaction."
+    },
+    "Message.log_seq": {
+      "kind": "column",
+      "table": "messages",
+      "column": "log_seq",
+      "note": "Server-global and sparse; drawn from log_counter's single row in the same transaction."
+    },
+    "Message.conversation_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "conversation_id",
+      "note": ""
+    },
+    "Message.author_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "author_id",
+      "note": ""
+    },
+    "Message.at": {
+      "kind": "column",
+      "table": "messages",
+      "column": "at",
+      "note": "Server-assigned via clock_timestamp()."
+    },
+    "Message.text": {
+      "kind": "column",
+      "table": "messages",
+      "column": "text",
+      "note": ""
+    },
+    "Message.attachments": {
+      "kind": "derived",
+      "note": "Composed from the attachments rows for this message, ordered by position."
+    },
+    "Message.reply_to": {
+      "kind": "derived",
+      "note": "Composed from ReplyRef's own mappings; NULL after CANT-67 sweeps the source."
+    },
+    "Message.state": {
+      "kind": "derived",
+      "note": "Per-reader delivery state. Not stored: it is a function of the reader, so a column would have to be per reader per message."
+    },
+    "Message.read_by": {
+      "kind": "derived",
+      "note": "Count over conversation_members.read_seq. Not stored, so it cannot drift from the read receipts it summarises."
+    },
+    "Message.client_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "client_id",
+      "note": "Idempotency key, unique per (author_id, client_id)."
+    },
+    "Message.edited_at": {
+      "kind": "column",
+      "table": "messages",
+      "column": "edited_at",
+      "note": "Column present; what an edit MEANS is CANT-63's."
+    },
+    "Message.deleted": {
+      "kind": "column",
+      "table": "messages",
+      "column": "deleted",
+      "note": "Column present; what a delete MEANS is CANT-63's."
+    },
+    "Conversation.id": {
+      "kind": "column",
+      "table": "conversations",
+      "column": "id",
+      "note": ""
+    },
+    "Conversation.kind": {
+      "kind": "column",
+      "table": "conversations",
+      "column": "kind",
+      "note": "Mutable: a third member promotes a direct to a group."
+    },
+    "Conversation.name": {
+      "kind": "column",
+      "table": "conversations",
+      "column": "name",
+      "note": "NULL for a direct — the rail shows the other member, which is per reader.",
+      "nullable_because": "The wire makes name REQUIRED and the column is nullable, and both are right: a group's name is this column, and a direct has none, because the rail shows the OTHER member and that is per reader. The server derives the served name for a direct rather than storing one — storing it would freeze a display name that SyncResponse.users exists to serve live."
+    },
+    "Conversation.member_count": {
+      "kind": "derived",
+      "note": "Count over conversation_members. Not stored: that table already answers it."
+    },
+    "Conversation.muted": {
+      "kind": "column",
+      "table": "conversation_members",
+      "column": "muted",
+      "note": "Per reader, so it lives on the membership rather than the conversation."
+    },
+    "Conversation.first_unread_seq": {
+      "kind": "derived",
+      "note": "conversation_members.read_seq + 1, absent when read_seq = last_seq. Arithmetic rather than a scan because an author's own send advances their own read_seq."
+    },
+    "Conversation.head_seq": {
+      "kind": "derived",
+      "note": "Served from conversations.last_seq. NOT a column: with the row lock the bump and the insert commit together, so the two would be one number stored twice."
+    },
+    "Conversation.retention_days": {
+      "kind": "column",
+      "table": "conversations",
+      "column": "retention_days",
+      "note": "NULL means inherit the global infinite default, not zero days."
+    },
+    "SyncResponse.log_seq": {
+      "kind": "derived",
+      "note": "The server's current log_counter value at the moment the page was read."
+    },
+    "SyncResponse.messages": {
+      "kind": "derived",
+      "note": "The page of messages after the client's cursor."
+    },
+    "SyncResponse.conversations": {
+      "kind": "derived",
+      "note": "The conversations referenced by this page, so a client can render one it has never seen."
+    },
+    "SyncResponse.users": {
+      "kind": "derived",
+      "note": "The users referenced by this page. Served live rather than frozen into messages, which is why a rename propagates."
+    },
+    "SyncResponse.has_more": {
+      "kind": "derived",
+      "note": "Whether the page hit its limit."
+    },
+    "SyncResponse.server_time": {
+      "kind": "derived",
+      "note": "Read at serve time."
+    },
+    "ClientHello.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerReady.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "Ping.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "Pong.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ClientSend.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerAck.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerMessageFrame.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerReceipt.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ClientRead.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ClientTyping.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerTyping.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerError.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerResyncRequired.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ClientHello.wire_version": {
+      "kind": "derived",
+      "note": "Compared against the server's wire_version at handshake; CANT-74 owns the policy. Not stored."
+    },
+    "ClientHello.device_id": {
+      "kind": "derived",
+      "note": "Resolved against devices.id at handshake and checked for devices.revoked_at. Not stored by the handshake itself; the device row already exists."
+    },
+    "ClientHello.resume_from_log_seq": {
+      "kind": "derived",
+      "note": "The client's cursor, held for the life of the connection. CANT-24."
+    },
+    "ClientHello.client_info": {
+      "kind": "derived",
+      "note": "Diagnostic only; logged, not stored."
+    },
+    "ServerReady.session_id": {
+      "kind": "derived",
+      "note": "Per-connection identity, generated at accept."
+    },
+    "ServerReady.server_time": {
+      "kind": "derived",
+      "note": "Read at accept."
+    },
+    "ServerReady.heartbeat_interval_sec": {
+      "kind": "derived",
+      "note": "Server-driven dial from config. R1 measured the cost of the value: at 35 s a client can believe it is connected for 70-105 s after it is not."
+    },
+    "ServerReady.missed_pong_limit": {
+      "kind": "derived",
+      "note": "Server-driven dial from config. CANT-23."
+    },
+    "ServerReady.log_seq": {
+      "kind": "derived",
+      "note": "The server's current log_counter value at accept."
+    },
+    "ServerReady.resumed": {
+      "kind": "derived",
+      "note": "Whether the cursor was honoured or the client must /sync. CANT-24."
+    },
+    "Ping.id": {
+      "kind": "derived",
+      "note": "Correlation id for one heartbeat exchange. Never stored."
+    },
+    "Ping.at": {
+      "kind": "derived",
+      "note": "Read at send."
+    },
+    "Pong.id": {
+      "kind": "derived",
+      "note": "Echoed from the Ping."
+    },
+    "Pong.at": {
+      "kind": "derived",
+      "note": "Read at send."
+    },
+    "OutboundAttachment.kind": {
+      "kind": "derived",
+      "note": "Names which upload is being attached; the stored kind is attachments.kind, written by ingest."
+    },
+    "OutboundAttachment.upload_id": {
+      "kind": "derived",
+      "note": "Resolved against the pending upload at send time. CANT-48 owns the upload record."
+    },
+    "ClientSend.client_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "client_id",
+      "note": "Inbound: the idempotency key, checked BEFORE either ordinal is drawn and then stored.",
+      "nullable_because": "Required on the inbound frame — a client that omits it forfeits deduplication — but nullable in storage, because not every row arrives over a socket. A bot posting through CANT-75's REST send and anything the server originates have no client_id, and Postgres treating those NULLs as distinct is correct: they were never deduplicated in the first place."
+    },
+    "ClientSend.conversation_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "conversation_id",
+      "note": "Inbound."
+    },
+    "ClientSend.text": {
+      "kind": "column",
+      "table": "messages",
+      "column": "text",
+      "note": "Inbound."
+    },
+    "ClientSend.attachments": {
+      "kind": "derived",
+      "note": "Resolved to attachments rows by ingest; see OutboundAttachment."
+    },
+    "ClientSend.reply_to_message_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "reply_to",
+      "note": "Inbound."
+    },
+    "ServerAck.client_id": {
+      "kind": "derived",
+      "note": "Echoed from the send it acknowledges."
+    },
+    "ServerAck.message_id": {
+      "kind": "derived",
+      "note": "The id of the row that was inserted, or of the original on a duplicate."
+    },
+    "ServerAck.conversation_id": {
+      "kind": "derived",
+      "note": "Echoed."
+    },
+    "ServerAck.seq": {
+      "kind": "derived",
+      "note": "The seq that was drawn, read back from the inserted row."
+    },
+    "ServerAck.log_seq": {
+      "kind": "derived",
+      "note": "The log_seq that was drawn."
+    },
+    "ServerAck.at": {
+      "kind": "derived",
+      "note": "The server-assigned messages.at, read back."
+    },
+    "ServerAck.duplicate": {
+      "kind": "derived",
+      "note": "True when the idempotency check hit. Not a column: it describes this request, not the message."
+    },
+    "ServerMessageFrame.message": {
+      "kind": "derived",
+      "note": "Composed from Message's own mappings."
+    },
+    "ServerReceipt.conversation_id": {
+      "kind": "derived",
+      "note": "Echoed from the read that caused it."
+    },
+    "ServerReceipt.user_id": {
+      "kind": "derived",
+      "note": "The reader."
+    },
+    "ServerReceipt.up_to_seq": {
+      "kind": "column",
+      "table": "conversation_members",
+      "column": "read_seq",
+      "note": "The receipt is the fanout of this write."
+    },
+    "ClientRead.conversation_id": {
+      "kind": "derived",
+      "note": "Names the membership row to advance."
+    },
+    "ClientRead.up_to_seq": {
+      "kind": "column",
+      "table": "conversation_members",
+      "column": "read_seq",
+      "note": "Inbound: CANT-26's write path."
+    },
+    "ClientTyping.conversation_id": {
+      "kind": "derived",
+      "note": "Typing is connection state, never stored. CANT-64."
+    },
+    "ClientTyping.state": {
+      "kind": "client-local",
+      "note": "Typing is ephemeral per connection. The server fans it out and keeps nothing; a restart forgets every typing indicator, which is correct."
+    },
+    "ServerTyping.conversation_id": {
+      "kind": "derived",
+      "note": "Fanout target."
+    },
+    "ServerTyping.user_ids": {
+      "kind": "derived",
+      "note": "Held in connection state for the debounce window. CANT-64."
+    },
+    "ServerError.code": {
+      "kind": "derived",
+      "note": "Classifies the failure. Not stored."
+    },
+    "ServerError.message": {
+      "kind": "derived",
+      "note": "Human-readable detail. Not stored."
+    },
+    "ServerError.retryable": {
+      "kind": "derived",
+      "note": "Whether the client should try again."
+    },
+    "ServerError.client_id": {
+      "kind": "derived",
+      "note": "Echoed when the error is about a specific send, so an outbox entry can be resolved."
+    },
+    "ServerError.retry_after_sec": {
+      "kind": "derived",
+      "note": "Backoff hint."
+    },
+    "ServerResyncRequired.reason": {
+      "kind": "derived",
+      "note": "Why the cursor could not be honoured. CANT-24."
+    },
+    "ServerResyncRequired.log_seq": {
+      "kind": "derived",
+      "note": "The cursor the client should sync from instead."
+    }
+  }
+}
