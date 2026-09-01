@@ -35,9 +35,13 @@ already checks:
 
 Where it does not reach, and where you therefore should:
 
-- **Three steps skip rather than fail** when what they need is absent — R1's
-  tunnel, R2/R5's Android device, and R6, which needs the Purser checkout next
-  door. A skip is not a pass. If a diff changes something those cover, say so.
+- **Three steps skip rather than fail** when what they need is absent, and a
+  skip is not a pass: the **Dart** lane when `dart` is off `PATH`, the
+  **database** lane when `CATENARY_TEST_DATABASE_URL` is unset, and **R6** when
+  the Purser checkout is absent. CI forces the first two present, so only R6
+  skips there — but a local `all green` may have proved less than it looks. If
+  a diff changes something those cover, say so. (R1's tunnel and R2/R5's device
+  are not steps at all; `verify.sh` has never covered them.)
 - **The wire-field mapping guard checks types, not truth.** It fails on an
   unmapped field or a column whose type contradicts the wire. Nothing checks
   whether a `derived` entry's stated derivation is *correct*.

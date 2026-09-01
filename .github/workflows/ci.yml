@@ -20,9 +20,15 @@
 
 name: CI
 
+# `push` is main-only. A push to a branch with an open PR fires BOTH triggers,
+# and the concurrency group keys on `github.ref` — `refs/heads/<branch>` for one
+# and `refs/pull/N/merge` for the other — so neither cancels the other and every
+# push ran the whole matrix twice. On a stack five PRs deep that was the
+# dominant CI cost. Branch pushes are covered by `pull_request`; `main` needs
+# its own trigger because merges arrive there without one.
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 
@@ -72,7 +78,8 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          # Both modules pin the same toolchain. Nothing here reads a range.
+          # Both modules declare go 1.26, so one toolchain covers them and
+          # nothing here reads a range.
           go-version: "1.26"
           cache-dependency-path: |
             go.sum
