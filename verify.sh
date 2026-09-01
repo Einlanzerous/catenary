@@ -52,6 +52,13 @@ step "R4 · Go"
 [ ! -s /tmp/v-fmt-server.log ]; result $? "gofmt -l server/ is empty$( [ -s /tmp/v-fmt-server.log ] && printf ' (%s)' "$(tr '\n' ' ' </tmp/v-fmt-server.log)" )"
 (cd "$ROOT/server" && go vet ./...) >/tmp/v.log 2>&1
 result $? "go vet"
+# CANT-11: verify.sh used to run `go test ./...` for spike/r6-purser only, while
+# CLAUDE.md's Testing section names it for the whole tree. If CI ran it and this
+# did not, the two would diverge on the first Go test anyone wrote here — and
+# "./verify.sh green before anything is handed over" would stop being the same
+# claim as green CI.
+(cd "$ROOT/server" && go test ./...) >/tmp/v-go-test.log 2>&1
+result $? "go test ./... ($(grep -c 'no test files\|^ok' /tmp/v-go-test.log) packages)"
 (cd "$ROOT/server" && go run ./cmd/conformance) >/tmp/v-go.log 2>&1
 result $? "$(grep -oE 'all green — .*vectors|[0-9]+ of [0-9]+ FAILED' /tmp/v-go.log | tail -1)"
 
