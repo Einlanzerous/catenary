@@ -30,8 +30,8 @@ already checks:
   the staleness guard is proved to fail **once per file**;
 - all three conformance runners pass the same 41 vectors;
 - `gofmt`, `go vet`, `go test ./...` for both modules, with a real Postgres 16;
-- no document describes `log_seq` as "account-global", proved against a planted
-  line every run.
+- no document repeats the known-wrong "account-global" phrasing for `log_seq`,
+  proved against a planted line every run.
 
 Where it does not reach, and where you therefore should:
 
@@ -109,8 +109,10 @@ Flag as Important:
   either draw.
 - a second `log_counter` row, or anything making the counter per-account. That
   would be dense, and it inverts the whole division of labour, silently.
-- prose calling `log_seq` "account-global". `verify.sh` greps for it; `spike/`
-  is exempt because it is dated evidence.
+- prose repeating the known-wrong "account-global" phrasing for `log_seq`. It is
+  corrected in the wire schema and reached seven documents before it was caught.
+  `verify.sh` greps for it; `spike/` is exempt because it is dated evidence, and
+  the correction lives in `SPIKE-RESULTS.md` instead.
 
 ### 2. One schema, three generated languages
 
