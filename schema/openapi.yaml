@@ -1,0 +1,745 @@
+openapi: "3.0.3"
+info:
+  title: "Catenary wire protocol"
+  version: "1.0.0"
+  description: |2-
+    GENERATED from schema/catenary.wire.v1.schema.json. DO NOT EDIT.
+
+    Regenerate with `npm run gen` from web/; `npm run gen:check` fails in CI on a hand edit.
+
+    This document is the wire schema expressed as OpenAPI 3.0.3, so the house pipeline
+    (oapi-codegen, openapi-typescript, openapi-generator) can consume the same single source
+    of truth the bespoke generator does. It is not a second schema and nothing here is
+    authored: `const` is emitted as a single-value `enum`, every discriminator carries an
+    explicit mapping, and `#/$defs/` is rewritten to `#/components/schemas/`.
+
+    CANT-12. `paths` is empty on purpose — the REST surface arrives with E2 (CANT-20 /sync,
+    CANT-28 auth, CANT-48 media). The schemas are the contract that exists now.
+
+    The single definition of everything that crosses the wire between a Catenary client and the Catenary server. Vue/TypeScript, Flutter/Dart and the Go server all generate their types from this file; none of them hand-writes them. See IDEA-27 (R4).
+
+    CONVENTIONS, pinned here so no client has to guess:
+      * Field names on the wire are snake_case. Generated field names are idiomatic per language (camelCase in TS and Dart, PascalCase exported in Go); the generator owns the mapping so it cannot be applied twice or inconsistently.
+      * Timestamps are RFC 3339 in UTC with exactly milliseconds precision and a literal Z: 2026-08-17T04:22:01.193Z. Not local time, not a bare offset, not variable precision. String compare therefore sorts chronologically.
+      * Absent and null mean the same thing: not present. Encoders omit rather than emit null, decoders accept either.
+      * Unknown fields are ignored by decoders, never rejected. Unknown envelope `type` values are ignored with a log line. This is what lets the server ship a new frame before every client understands it.
+paths: {}
+components:
+  schemas:
+    Seq:
+      type: "integer"
+      minimum: 1
+      maximum: 9007199254740991
+      description: |2-
+        A per-conversation, server-assigned, strictly monotonic message ordinal, starting at 1. Dense within a conversation for every member: if you can see seq 4 and seq 6 you may assume seq 5 exists and you are missing it. This is the number the UI reasons about — ordering, `first_unread_seq`, the "N NEW" rule.
+
+        UPPER BOUND IS DELIBERATE. The natural type is int64 and Postgres will hand out int64, but JSON numbers land in a JavaScript double, which stops being an exact integer past 2^53-1 (9007199254740991). A seq above that silently rounds in the web client and does not in Dart or Go — the same class of bug as the non-portable waveform seed already recorded on IDEA-23, and far more dangerous because it corrupts ordering rather than pixels. 2^53 messages in one conversation is not reachable, so the bound costs nothing and removes the failure mode. Anything that could genuinely exceed it must be a string, not a number.
+    LogSeq:
+      type: "integer"
+      minimum: 0
+      maximum: 9007199254740991
+      description: |2-
+        A SERVER-GLOBAL, server-assigned, strictly monotonic cursor over the whole message log. Each account reads it as a cursor into the subset it is allowed to see. This is the ONLY thing `GET /sync?after=N` takes.
+
+        WHY THIS EXISTS, since IDEA-23 named only one sequence: `seq` is scoped per conversation, so a single scalar `after=N` is not well-defined across conversations, and a client returning from six hours offline needs to catch up on all of them — including conversations it has never seen, which by definition are absent from any per-conversation cursor map it holds. A cursor vector solves the first problem and not the second, and it grows without bound. One global ordinal solves both and stays a single integer per device.
+
+        ONE COUNTER, NOT ONE PER ACCOUNT. An earlier draft of this text said “account-global”, which reads as a per-account counter and contradicts the sparsity rule below — a per-account counter would be dense. Ratified as path A on IDEA-27, 2026-08-17.
+
+        Gaps are normal and carry no information: an account observes only the rows of conversations it belongs to, so its observed log_seq values are sparse. Never treat a gap as a missing message. `seq` is dense, `log_seq` is not; that is the whole division of labour between them.
+
+        NORMATIVE — WITHIN ONE CONVERSATION, ASCENDING `log_seq` IMPLIES ASCENDING `seq`. A client discovers messages by `log_seq` and orders them by `seq`; if the two ever disagree it applies a conversation out of order. This forbids the obvious implementation. A `bigserial` assigns at INSERT, not at COMMIT, so a transaction holding 100 can commit after one holding 101, and a reader whose cursor has already passed 101 never sees 100 again — silent, permanent loss of a delivered message. Assign both ordinals from a single-row counter with `UPDATE … RETURNING` inside the inserting transaction, so the row lock makes assignment order and commit order the same order.
+
+        0 means “I have nothing”, so a fresh device syncs with `after=0`.
+    Uuid:
+      type: "string"
+      format: "uuid"
+      pattern: "^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+      description: "Lowercase hyphenated UUID. Lowercase is normative: these are compared as strings in caches and idempotency keys, and a client that sends uppercase would defeat deduplication."
+    Timestamp:
+      type: "string"
+      format: "date-time"
+      pattern: "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+      description: "RFC 3339, UTC, exactly three fractional digits, literal Z. The pattern is enforced rather than advisory because `2026-08-17T04:22:01Z` and `2026-08-17T04:22:01.193000Z` both parse fine in all three languages and then sort differently as strings."
+    ConversationKind:
+      type: "string"
+      enum:
+        - "direct"
+        - "group"
+      description: "D4: everything is a conversation. `direct` is two members, `group` is any number; neither is a distinct entity. Adding a third member to a direct conversation promotes it to `group` and is a row insert plus this field changing, never a migration."
+    DeliveryState:
+      type: "string"
+      enum:
+        - "sent"
+        - "delivered"
+        - "read"
+      description: |2-
+        The server-authoritative half of the message lifecycle from IDEA-23, and the ONLY states that ever cross the wire.
+
+        The full ladder the UI renders is `sending → sent → delivered → read`, plus `queued` and `failed`. `sending`, `queued` and `failed` are client-local: they describe a message's relationship to its own outbox, the server has no opinion on them, and a client that put them in a frame would be reporting its own state as fact. Keeping them out of this enum is what stops that being expressible.
+
+        Generated clients therefore get this enum for decoding and are expected to widen it locally — see the `ClientDeliveryState` note in the generated output.
+    TranscriptState:
+      type: "string"
+      enum:
+        - "pending"
+        - "ready"
+        - "failed"
+      description: "Lifecycle of the async Whisper job (R3/IDEA-26) that writes `transcript_text` back onto the message row."
+    User:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "id"
+        - "name"
+      properties:
+        id:
+          "$ref": "#/components/schemas/Uuid"
+        name:
+          type: "string"
+          minLength: 1
+          description: "Display name. The typing-indicator naming rule uses the first whitespace-separated token of this as the first name."
+        initials:
+          type: "string"
+          minLength: 1
+          maxLength: 2
+          description: "Two letters for the avatar tile. Server-derived so web and Flutter cannot disagree about how to abbreviate a name — deriving this client-side is a two-implementation problem for zero benefit."
+    DurationMs:
+      type: "integer"
+      minimum: 0
+      maximum: 9007199254740991
+      description: |2-
+        A duration or offset in whole milliseconds.
+
+        NO FLOATING-POINT NUMBER APPEARS ANYWHERE IN THIS PROTOCOL, and this type is why. JSON has a single number type; Dart has two. A `number`-typed field holding `0` decodes to Dart `double 0.0` and re-encodes as `0.0`, which is not what TypeScript or Go emit for the same field — so a value that survived a round trip in two languages would not survive it in the third, and the conformance vectors would fail on a difference with no bug behind it. Worse, the workaround (compare numbers loosely) would have hidden real precision differences too.
+
+        Milliseconds as integers are exact everywhere, sort correctly, and are what a media pipeline already works in. The cost is that clients format for display, which they were doing anyway — nothing renders a raw duration.
+    TranscriptSegment:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "at_ms"
+        - "text"
+      properties:
+        at_ms:
+          "$ref": "#/components/schemas/DurationMs"
+          description: "Offset from the start of the clip."
+        text:
+          type: "string"
+      description: "One timed span of transcript, used by search's JUMP TO and by playback highlighting."
+    Transcript:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "state"
+      properties:
+        state:
+          "$ref": "#/components/schemas/TranscriptState"
+        text:
+          type: "string"
+          description: "Present when state is `ready`."
+        word_count:
+          type: "integer"
+          minimum: 0
+          description: "Server-computed. The web client currently derives this from the text on screen so the count cannot lie; that stays true — a client SHOULD prefer its own count of the text it is actually rendering and treat this as a hint for collapsed state."
+        segments:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/TranscriptSegment"
+        engine:
+          type: "string"
+          description: "e.g. `whisper.cpp/small.en`. Recorded because a transcript's quality is not interpretable without knowing what produced it, and R3 expects the model to be a tunable knob."
+        language:
+          type: "string"
+          description: "BCP 47."
+        eta_sec:
+          type: "integer"
+          minimum: 0
+          description: "Server's own estimate of remaining work, shown while `pending`. A client must not invent one."
+    VoiceAttachment:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "kind"
+        - "url"
+        - "duration_ms"
+        - "peaks"
+        - "transcript"
+      properties:
+        kind:
+          enum:
+            - "voice"
+          type: "string"
+        url:
+          type: "string"
+          description: "Media URL. Opaque to the client; may be presigned and time-limited."
+        duration_ms:
+          "$ref": "#/components/schemas/DurationMs"
+        peaks:
+          type: "array"
+          items:
+            type: "integer"
+            minimum: 0
+            maximum: 100
+          maxItems: 512
+          description: |2-
+            Amplitude peaks 0–100, computed server-side ONCE and stored with the message. Deliberate call 13 of the design canvas: the bar pattern must be identical in web and Flutter, which is only true if both render the same stored array.
+
+            This is not a style preference. The canvas's own seeded generator multiplies by 1103515245, which for seeds near 2^31 exceeds 2^53 — so JavaScript rounds where Dart's 64-bit int does not, and the identical seed yields different bars. Any client-side generation reintroduces that. Clients render this array and never synthesise one.
+        transcript:
+          "$ref": "#/components/schemas/Transcript"
+    ImageAttachment:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "kind"
+        - "url"
+        - "filename"
+        - "width"
+        - "height"
+        - "bytes"
+      properties:
+        kind:
+          enum:
+            - "image"
+          type: "string"
+        url:
+          type: "string"
+        filename:
+          type: "string"
+        width:
+          type: "integer"
+          minimum: 1
+          description: "Stored intrinsic width. The client caps the rendered box at 340x400 from this ratio, so the row height is final before a byte of image data arrives — which is the property the blurhash placeholder exists to protect."
+        height:
+          type: "integer"
+          minimum: 1
+        bytes:
+          type: "integer"
+          minimum: 0
+        placeholder:
+          type: "string"
+          description: "Blurhash. Absent means render the plane flat; never means block on the image."
+    Attachment:
+      oneOf:
+        - "$ref": "#/components/schemas/VoiceAttachment"
+        - "$ref": "#/components/schemas/ImageAttachment"
+      discriminator:
+        propertyName: "kind"
+        mapping:
+          voice: "#/components/schemas/VoiceAttachment"
+          image: "#/components/schemas/ImageAttachment"
+      description: "Tagged union on `kind`. Decoders MUST ignore an attachment whose `kind` they do not know rather than failing the whole message — a client that hard-errors on an unknown attachment type cannot be shipped ahead of a server that adds one."
+    ReplyRefKind:
+      type: "string"
+      enum:
+        - "text"
+        - "voice"
+        - "image"
+        - "link"
+      description: "The four source types the canvas's replies section renders."
+    ReplyRef:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "message_id"
+        - "author_id"
+        - "kind"
+        - "preview"
+      properties:
+        message_id:
+          "$ref": "#/components/schemas/Uuid"
+        author_id:
+          "$ref": "#/components/schemas/Uuid"
+        kind:
+          "$ref": "#/components/schemas/ReplyRefKind"
+        preview:
+          type: "string"
+          description: "One line, rendered from the LIVE source message server-side, not frozen at send time. That is what lets a reply to a voice note back-fill its preview when the transcript lands."
+        duration_ms:
+          "$ref": "#/components/schemas/DurationMs"
+        url:
+          type: "string"
+    Message:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "id"
+        - "seq"
+        - "log_seq"
+        - "conversation_id"
+        - "author_id"
+        - "at"
+        - "state"
+      properties:
+        id:
+          "$ref": "#/components/schemas/Uuid"
+        seq:
+          "$ref": "#/components/schemas/Seq"
+        log_seq:
+          "$ref": "#/components/schemas/LogSeq"
+        conversation_id:
+          "$ref": "#/components/schemas/Uuid"
+        author_id:
+          "$ref": "#/components/schemas/Uuid"
+        at:
+          "$ref": "#/components/schemas/Timestamp"
+        text:
+          type: "string"
+        attachments:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/Attachment"
+        reply_to:
+          "$ref": "#/components/schemas/ReplyRef"
+        state:
+          "$ref": "#/components/schemas/DeliveryState"
+        read_by:
+          type: "integer"
+          minimum: 0
+          description: "How many members other than the author have read it. Rooms render the fraction against `Conversation.member_count`: READ 5/7."
+        client_id:
+          "$ref": "#/components/schemas/Uuid"
+          description: "Echoed back to the sender only, so a client can match a broadcast message against its own outbox entry when the `ack` and the `message` frame race. Other members never receive it."
+        edited_at:
+          "$ref": "#/components/schemas/Timestamp"
+        deleted:
+          type: "boolean"
+          description: "A tombstone. The row keeps its seq — deleting a message must not renumber the conversation, or every other client's unread arithmetic breaks."
+    Conversation:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "id"
+        - "kind"
+        - "name"
+        - "member_count"
+        - "head_seq"
+      properties:
+        id:
+          "$ref": "#/components/schemas/Uuid"
+        kind:
+          "$ref": "#/components/schemas/ConversationKind"
+        name:
+          type: "string"
+        member_count:
+          type: "integer"
+          minimum: 1
+        muted:
+          type: "boolean"
+        first_unread_seq:
+          "$ref": "#/components/schemas/Seq"
+          description: "The first seq the reader has not seen; absent means fully read. Both the rail's badge and the thread's \"N NEW\" rule derive from this. There is deliberately NO stored unread count on the wire, because a count and a marker can disagree and this one does: your own messages are never unread, so a count computed anywhere but from this marker gets it wrong. Absent-means-read also keeps a resync that delivers out of order from producing a wrong badge."
+        head_seq:
+          "$ref": "#/components/schemas/Seq"
+          description: "Newest seq the server holds for this conversation. What a resync counts towards, and what the numeric resync progress is a fraction of."
+        retention_days:
+          type: "integer"
+          minimum: 1
+          description: "Per-conversation override of the global infinite retention. Absent means keep forever."
+    ClientHello:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "wire_version"
+        - "device_id"
+      properties:
+        type:
+          enum:
+            - "hello"
+          type: "string"
+        wire_version:
+          type: "integer"
+          minimum: 1
+          description: "The version of THIS schema the client was generated from. The server refuses a version it cannot speak with an `error` frame rather than failing halfway through a session."
+        device_id:
+          "$ref": "#/components/schemas/Uuid"
+          description: "Stable per install. D2 makes the device the unit of credential and of revocation, so it is the unit here too."
+        resume_from_log_seq:
+          "$ref": "#/components/schemas/LogSeq"
+          description: "The client's cursor. Absent means \"do not stream backlog, I will call /sync myself\" — which is the correct choice for a client with a large gap, since a backlog burst over the socket has no progress indication."
+        client_info:
+          type: "string"
+          description: "Free-form build identifier for logs, e.g. `catenary-web/0.3.1`. Never parsed."
+      description: "First frame the client sends after the socket opens. The server answers with `ready` or `error`."
+    ServerReady:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "session_id"
+        - "server_time"
+        - "heartbeat_interval_sec"
+        - "missed_pong_limit"
+        - "log_seq"
+        - "resumed"
+      properties:
+        type:
+          enum:
+            - "ready"
+          type: "string"
+        session_id:
+          "$ref": "#/components/schemas/Uuid"
+        server_time:
+          "$ref": "#/components/schemas/Timestamp"
+          description: "Lets a client with a skewed clock render correct relative timestamps by offset rather than trusting its own clock."
+        heartbeat_interval_sec:
+          type: "integer"
+          minimum: 5
+          maximum: 90
+          description: "How often the client must send `ping`. SERVER-DRIVEN ON PURPOSE (R1/IDEA-24): the 30–45 s window sits under Cloudflare's ~100 s idle timeout, and if that constant lived in two clients it would be two constants that drift, with the Flutter one discovered wrong only in the field. Here the number is deployed, not shipped."
+        missed_pong_limit:
+          type: "integer"
+          minimum: 1
+          description: "How many unanswered pings before the client severs deliberately and reconnects. R1 sets this at 2. Waiting for the OS to notice a half-open socket is the failure this exists to prevent."
+        log_seq:
+          "$ref": "#/components/schemas/LogSeq"
+          description: "The server's current head. A client that asked to resume can compare this against its own cursor to decide between streaming and a `/sync` call."
+        resumed:
+          type: "boolean"
+          description: "True when the server accepted `resume_from_log_seq` and will stream the gap. False means the client must catch up over `/sync` before trusting anything it renders."
+    Ping:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "id"
+      properties:
+        type:
+          enum:
+            - "ping"
+          type: "string"
+        id:
+          type: "string"
+          minLength: 1
+          description: "Echoed verbatim in the matching `pong`. Matching by id rather than by arrival order is what makes a missed pong countable — with unmatched pings you cannot tell a lost pong from a slow one."
+        at:
+          "$ref": "#/components/schemas/Timestamp"
+      description: "APPLICATION-level heartbeat, sent in both directions. Deliberately not the WebSocket protocol's own ping/pong control frames: those are handled inside the transport stack, are not observable from application code in a browser at all, and can be answered by an intermediary. R1 requires a heartbeat observable from both ends, which means it has to be a data frame."
+    Pong:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "id"
+      properties:
+        type:
+          enum:
+            - "pong"
+          type: "string"
+        id:
+          type: "string"
+          minLength: 1
+          description: "The id of the ping being answered, verbatim."
+        at:
+          "$ref": "#/components/schemas/Timestamp"
+    OutboundAttachment:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "kind"
+        - "upload_id"
+      properties:
+        kind:
+          type: "string"
+          enum:
+            - "voice"
+            - "image"
+        upload_id:
+          "$ref": "#/components/schemas/Uuid"
+          description: "Handle returned by the presigned-upload flow. The client sends this, never the media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed server-side on ingest, so the client cannot report them and cannot get them wrong."
+    ClientSend:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "client_id"
+        - "conversation_id"
+      properties:
+        type:
+          enum:
+            - "send"
+          type: "string"
+        client_id:
+          "$ref": "#/components/schemas/Uuid"
+          description: |2-
+            The idempotency key, generated by the client once per logical message and REUSED verbatim on every retry. Same pattern as Switchyard. The server deduplicates on (account, client_id) and answers a duplicate with the original `ack`, so a retry after an ambiguous failure is free and safe — which is what makes an offline outbox correct rather than hopeful.
+
+            A client that mints a fresh key on retry has re-implemented double-sending.
+        conversation_id:
+          "$ref": "#/components/schemas/Uuid"
+        text:
+          type: "string"
+        attachments:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/OutboundAttachment"
+        reply_to_message_id:
+          "$ref": "#/components/schemas/Uuid"
+          description: "Just the id — the server builds the whole ReplyRef from the live source message, so the preview is never a stale copy taken at send time."
+    ServerAck:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "client_id"
+        - "message_id"
+        - "conversation_id"
+        - "seq"
+        - "log_seq"
+        - "at"
+      properties:
+        type:
+          enum:
+            - "ack"
+          type: "string"
+        client_id:
+          "$ref": "#/components/schemas/Uuid"
+          description: "The key from the `send` this answers."
+        message_id:
+          "$ref": "#/components/schemas/Uuid"
+        conversation_id:
+          "$ref": "#/components/schemas/Uuid"
+        seq:
+          "$ref": "#/components/schemas/Seq"
+        log_seq:
+          "$ref": "#/components/schemas/LogSeq"
+        at:
+          "$ref": "#/components/schemas/Timestamp"
+          description: "The server's timestamp for the message. Authoritative — the client's own send time is never persisted, so two devices with different clocks cannot order a conversation differently."
+        duplicate:
+          type: "boolean"
+          description: "True when this ack replays an earlier send with the same `client_id`. The client treats it identically; it exists so the deduplication path is observable in logs and in R1's zero-duplication test rather than being invisibly correct."
+      description: "The other half of the send/ack pair. Receiving this moves the outbox entry from `sending` to `sent` and fixes its seq."
+    ServerMessageFrame:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "message"
+      properties:
+        type:
+          enum:
+            - "message"
+          type: "string"
+        message:
+          "$ref": "#/components/schemas/Message"
+      description: "Carries the WHOLE message, deliberately. IDEA-23 is explicit that this must not degrade into a ping that makes the client go and fetch: that doubles latency on every message in the steady state. The internal Postgres NOTIFY payload between server instances is the thing that carries only (conversation_id, seq) under its 8000-byte cap — that is a different layer and never appears on this wire."
+    ServerReceipt:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "conversation_id"
+        - "user_id"
+        - "up_to_seq"
+      properties:
+        type:
+          enum:
+            - "receipt"
+          type: "string"
+        conversation_id:
+          "$ref": "#/components/schemas/Uuid"
+        user_id:
+          "$ref": "#/components/schemas/Uuid"
+        up_to_seq:
+          "$ref": "#/components/schemas/Seq"
+          description: "Read receipts are a high-water mark, never per-message. One frame settles an arbitrary backlog and they cannot arrive out of order in a way that matters, since a lower mark than one already held is simply discarded."
+    ClientRead:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "conversation_id"
+        - "up_to_seq"
+      properties:
+        type:
+          enum:
+            - "read"
+          type: "string"
+        conversation_id:
+          "$ref": "#/components/schemas/Uuid"
+        up_to_seq:
+          "$ref": "#/components/schemas/Seq"
+    TypingState:
+      type: "string"
+      enum:
+        - "start"
+        - "stop"
+    ClientTyping:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "conversation_id"
+        - "state"
+      properties:
+        type:
+          enum:
+            - "typing"
+          type: "string"
+        conversation_id:
+          "$ref": "#/components/schemas/Uuid"
+        state:
+          "$ref": "#/components/schemas/TypingState"
+    ServerTyping:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "conversation_id"
+        - "user_ids"
+      properties:
+        type:
+          enum:
+            - "typing"
+          type: "string"
+        conversation_id:
+          "$ref": "#/components/schemas/Uuid"
+        user_ids:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/Uuid"
+          description: "Who is currently typing, IN THE ORDER THEY STARTED. The order is normative because spec card F's naming rule depends on it: one person is a first name, two or three are comma-separated in start order, four or more collapse to \"Several people\" because past three the list churns faster than it can be read. Sorting this list in a client silently changes the rendered string, which is exactly the kind of divergence R4 exists to prevent — the rule is shared, so its input has to be too."
+    ErrorCode:
+      type: "string"
+      enum:
+        - "unauthorized"
+        - "wire_version_unsupported"
+        - "rate_limited"
+        - "not_a_member"
+        - "conversation_not_found"
+        - "message_too_large"
+        - "upload_not_found"
+        - "internal"
+    ServerError:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "code"
+        - "message"
+        - "retryable"
+      properties:
+        type:
+          enum:
+            - "error"
+          type: "string"
+        code:
+          "$ref": "#/components/schemas/ErrorCode"
+        message:
+          type: "string"
+          description: "Human-readable, for logs and for the inline error on a failed send. The canvas shows send failures inline on the message, never as a toast."
+        retryable:
+          type: "boolean"
+          description: "Whether re-sending the identical frame could succeed. This is the server's judgement, not the client's guess: `rate_limited` is retryable, `not_a_member` is not, and a client that retried the latter forever would look exactly like a client with no error handling."
+        client_id:
+          "$ref": "#/components/schemas/Uuid"
+          description: "Present when the error is attributable to a specific `send`, so the right outbox entry goes to `failed` instead of all of them."
+        retry_after_sec:
+          type: "integer"
+          minimum: 0
+    ServerResyncRequired:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "reason"
+        - "log_seq"
+      properties:
+        type:
+          enum:
+            - "resync_required"
+          type: "string"
+        reason:
+          type: "string"
+          enum:
+            - "cursor_too_old"
+            - "membership_changed"
+            - "retention_purge"
+        log_seq:
+          "$ref": "#/components/schemas/LogSeq"
+          description: "The server's current head, so the client knows what it is syncing towards."
+      description: "The server cannot stream the requested gap and the client must catch up over `/sync` instead. Naming this as its own frame rather than letting the client infer it from a short stream is deliberate: silent partial resume is how a client ends up confidently missing messages."
+    ClientFrame:
+      oneOf:
+        - "$ref": "#/components/schemas/ClientHello"
+        - "$ref": "#/components/schemas/Ping"
+        - "$ref": "#/components/schemas/Pong"
+        - "$ref": "#/components/schemas/ClientSend"
+        - "$ref": "#/components/schemas/ClientRead"
+        - "$ref": "#/components/schemas/ClientTyping"
+      discriminator:
+        propertyName: "type"
+        mapping:
+          hello: "#/components/schemas/ClientHello"
+          ping: "#/components/schemas/Ping"
+          pong: "#/components/schemas/Pong"
+          send: "#/components/schemas/ClientSend"
+          read: "#/components/schemas/ClientRead"
+          typing: "#/components/schemas/ClientTyping"
+      description: "Anything a client may send over the socket. One JSON object per WebSocket text frame; never batched, never binary."
+    ServerFrame:
+      oneOf:
+        - "$ref": "#/components/schemas/ServerReady"
+        - "$ref": "#/components/schemas/Ping"
+        - "$ref": "#/components/schemas/Pong"
+        - "$ref": "#/components/schemas/ServerAck"
+        - "$ref": "#/components/schemas/ServerMessageFrame"
+        - "$ref": "#/components/schemas/ServerReceipt"
+        - "$ref": "#/components/schemas/ServerTyping"
+        - "$ref": "#/components/schemas/ServerError"
+        - "$ref": "#/components/schemas/ServerResyncRequired"
+      discriminator:
+        propertyName: "type"
+        mapping:
+          ready: "#/components/schemas/ServerReady"
+          ping: "#/components/schemas/Ping"
+          pong: "#/components/schemas/Pong"
+          ack: "#/components/schemas/ServerAck"
+          message: "#/components/schemas/ServerMessageFrame"
+          receipt: "#/components/schemas/ServerReceipt"
+          typing: "#/components/schemas/ServerTyping"
+          error: "#/components/schemas/ServerError"
+          resync_required: "#/components/schemas/ServerResyncRequired"
+      description: "Anything the server may send over the socket."
+    SyncResponse:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "log_seq"
+        - "messages"
+        - "conversations"
+        - "users"
+        - "has_more"
+        - "server_time"
+      properties:
+        log_seq:
+          "$ref": "#/components/schemas/LogSeq"
+          description: "The cursor to send on the NEXT call. Always the caller's new high-water mark — not the server's head, which may be further along when `has_more` is true. Deriving this client-side by maxing over `messages` is wrong the moment a page contains no messages the client can see."
+        messages:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/Message"
+          description: "Ascending by log_seq. The ordering is normative so a client can apply the page as a stream and stop anywhere without leaving a hole behind its cursor."
+        conversations:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/Conversation"
+          description: "Every conversation touched by this page, plus any whose metadata changed — head_seq, first_unread_seq, membership. A client learns about a brand-new conversation here, which is why the sync cursor cannot be a per-conversation map."
+        users:
+          type: "array"
+          items:
+            "$ref": "#/components/schemas/User"
+          description: |2-
+            Every user referenced by this page — as a message author, a reply's author, or a member of a returned conversation.
+
+            Without this there is NO path from `author_id` to a display name, and both clients would have to invent one. Messages carry ids rather than embedded authors so a rename lands everywhere at once instead of being frozen into every message ever sent; this array is the other half of that decision, and omitting it would have made the id-only design unusable rather than normalised.
+
+            Send the full record whenever a user first appears on a page or their name or initials changed. Clients cache by id and treat a later record as authoritative.
+        has_more:
+          type: "boolean"
+          description: "Call again with the returned `log_seq`. The resync UI renders numeric progress rather than a spinner, which is only possible because `Conversation.head_seq` says what it is counting towards."
+        server_time:
+          "$ref": "#/components/schemas/Timestamp"
+      description: "Response to `GET /sync?after=<log_seq>&limit=<n>`. The RECONNECT AND CATCH-UP path, not the steady state — steady state is a `message` frame over the socket. Applying a page is idempotent: every message carries its own seq and id, so replaying an overlapping page cannot duplicate anything, which is what makes reconnection a query rather than a guess."

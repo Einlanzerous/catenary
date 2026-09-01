@@ -884,12 +884,197 @@ function emitGo() {
   return L.join('\n') + '\n'
 }
 
+
+/* ------------------------------------------------------------------ *
+ * OpenAPI 3.0.3
+ *
+ * CANT-12 Ruling 0 came back the wrong way for the arrangement rev 2 wanted:
+ * the house pipeline pins OpenAPI 3.0.3 and 3.1 is not reachable, because
+ * oapi-codegen parses through kin-openapi and kin-openapi does not do 3.1.
+ * Under 3.0 the frame schema cannot `$ref` the spec and the spec cannot `$ref`
+ * the frame schema, so NEITHER ownership direction is expressible — and "both
+ * define it, a script keeps them in step" is the drift R4 exists to prevent
+ * wearing a different hat.
+ *
+ * So the wire schema emits the spec. `openapi.yaml` becomes a generated
+ * artefact like `generated.ts`, under the same regenerate-and-diff guard, and
+ * the question of which pipeline OWNS a shared type dissolves: neither does,
+ * the schema owns all of them and both pipelines are downstream.
+ *
+ * Three transforms, all mechanical, and a census over the whole schema found
+ * nothing else that needs one:
+ *
+ *   1. `const: "message"` -> `enum: ["message"]`. Semantically identical in
+ *      3.0, which has no `const`.
+ *   2. Explicit `discriminator.mapping` on all three unions. REQUIRED, not
+ *      optional: 3.0's implicit mapping keys on the SCHEMA NAME, and our names
+ *      do not match our values -- ServerMessageFrame carries "message",
+ *      ClientHello carries "hello". Left implicit, the discriminator resolves
+ *      nothing, silently.
+ *   3. `#/$defs/X` -> `#/components/schemas/X`.
+ *
+ * The YAML is emitted by hand for the same reason the rest of this file is:
+ * the generator supports exactly the subset the protocol uses and takes no
+ * dependency it does not need.
+ * ------------------------------------------------------------------ */
+
+/** True when a string can be a literal block scalar without a round-trip
+ *  surprise. Trailing whitespace does not survive one, a trailing newline
+ *  changes what the chomping indicator has to be, and a CR is not ours to
+ *  guess at. Anything rejected here falls back to a double-quoted scalar,
+ *  which is JSON — and YAML 1.2 is a superset of JSON, so that path is always
+ *  correct even when it is ugly.
+ *
+ *  Leading spaces are NOT a reason to reject: the emitter writes an explicit
+ *  indentation indicator, which is exactly what it is for. Most of the wire
+ *  schema's long descriptions have an indented bullet list in them, and
+ *  without the indicator every one of them came out as a single JSON line. */
+function yamlBlockSafe(s) {
+  if (!s.includes('\n')) return false
+  if (s.endsWith('\n')) return false
+  return s.split('\n').every((line) => !/[ \t]$/.test(line) && !line.includes('\r'))
+}
+
+/* The block scalar's content is written two columns in from its own key, so
+ * the explicit indentation indicator is always 2. Stated once, because getting
+ * it wrong is a parse error at the far end rather than here. */
+const YAML_BLOCK_INDENT = 2
+
+function yamlScalar(v, indent) {
+  if (v === null) return 'null'
+  if (typeof v === 'boolean' || typeof v === 'number') return String(v)
+  if (typeof v !== 'string') fail(`openapi: cannot emit ${typeof v} as a scalar`)
+  if (yamlBlockSafe(v)) {
+    const pad = ' '.repeat(indent + YAML_BLOCK_INDENT)
+    return `|${YAML_BLOCK_INDENT}-\n` + v.split('\n').map((l) => (l === '' ? '' : pad + l)).join('\n')
+  }
+  return JSON.stringify(v)
+}
+
+function yamlEmit(node, indent = 0) {
+  const pad = ' '.repeat(indent)
+  if (Array.isArray(node)) {
+    if (node.length === 0) return '[]'
+    return '\n' + node.map((item) => {
+      if (item !== null && typeof item === 'object') {
+        const inner = yamlEmit(item, indent + 2)
+        return pad + '- ' + inner.replace(/^\n/, '').replace(new RegExp('^' + ' '.repeat(indent + 2)), '')
+      }
+      return pad + '- ' + yamlScalar(item, indent)
+    }).join('\n')
+  }
+  if (node !== null && typeof node === 'object') {
+    const keys = Object.keys(node)
+    if (keys.length === 0) return '{}'
+    return '\n' + keys.map((k) => {
+      const v = node[k]
+      const key = /^[A-Za-z_][A-Za-z0-9_.-]*$/.test(k) ? k : JSON.stringify(k)
+      if (v !== null && typeof v === 'object') {
+        const inner = yamlEmit(v, indent + 2)
+        return pad + key + ':' + (inner.startsWith('\n') ? inner : ' ' + inner)
+      }
+      return pad + key + ': ' + yamlScalar(v, indent)
+    }).join('\n')
+  }
+  return yamlScalar(node, indent)
+}
+
+/** One JSON Schema node, rewritten as an OpenAPI 3.0 Schema Object. */
+function toOpenAPISchema(node, ctx) {
+  const out = {}
+  for (const [k, v] of Object.entries(node)) {
+    switch (k) {
+      case '$ref':
+        out.$ref = '#/components/schemas/' + refName(v)
+        break
+      case 'const':
+        // Transform 1. 3.0 has no `const`; a single-value enum is the same
+        // statement and every 3.0 generator understands it.
+        out.enum = [v]
+        // `type` is not implied by an enum in 3.0, so state it.
+        if (out.type === undefined && node.type === undefined) out.type = typeof v
+        break
+      case 'oneOf':
+        out.oneOf = v.map((m) => toOpenAPISchema(m, ctx))
+        break
+      case 'discriminator': {
+        // Transform 2. The mapping is built from each member's own const, so
+        // it cannot drift from the values the codecs actually emit.
+        const mapping = {}
+        for (const member of node.oneOf || []) {
+          const name = refName(member.$ref)
+          const def = byName.get(name)
+          if (!def) fail(`openapi: ${ctx} discriminator member ${name} is not a $def`)
+          const disc = discriminantOf(def)
+          if (!disc) fail(`openapi: ${ctx} union member ${name} has no const-valued discriminant`)
+          if (disc.wire !== v.propertyName) {
+            fail(`openapi: ${ctx} discriminates on ${v.propertyName} but ${name} tags itself with ${disc.wire}`)
+          }
+          mapping[disc.value] = '#/components/schemas/' + name
+        }
+        out.discriminator = { propertyName: v.propertyName, mapping }
+        break
+      }
+      case 'properties': {
+        const props = {}
+        for (const [pn, pv] of Object.entries(v)) props[pn] = toOpenAPISchema(pv, `${ctx}.${pn}`)
+        out.properties = props
+        break
+      }
+      case 'items':
+        out.items = toOpenAPISchema(v, `${ctx}[]`)
+        break
+      case '$schema': case '$id': case '$defs':
+        break
+      default:
+        out[k] = v
+    }
+  }
+  return out
+}
+
+function emitOpenAPI() {
+  const schemas = {}
+  for (const [name, node] of Object.entries(defs)) {
+    schemas[name] = toOpenAPISchema(node, name)
+  }
+
+  const doc = {
+    openapi: '3.0.3',
+    info: {
+      title: schema.title,
+      version: `${WIRE_VERSION}.0.0`,
+      description: [
+        'GENERATED from schema/catenary.wire.v1.schema.json. DO NOT EDIT.',
+        '',
+        'Regenerate with `npm run gen` from web/; `npm run gen:check` fails in CI on a hand edit.',
+        '',
+        'This document is the wire schema expressed as OpenAPI 3.0.3, so the house pipeline',
+        '(oapi-codegen, openapi-typescript, openapi-generator) can consume the same single source',
+        'of truth the bespoke generator does. It is not a second schema and nothing here is',
+        'authored: `const` is emitted as a single-value `enum`, every discriminator carries an',
+        'explicit mapping, and `#/$defs/` is rewritten to `#/components/schemas/`.',
+        '',
+        'CANT-12. `paths` is empty on purpose — the REST surface arrives with E2 (CANT-20 /sync,',
+        'CANT-28 auth, CANT-48 media). The schemas are the contract that exists now.',
+        '',
+        schema.description || '',
+      ].join('\n').trimEnd(),
+    },
+    paths: {},
+    components: { schemas },
+  }
+
+  return yamlEmit(doc).replace(/^\n/, '') + '\n'
+}
+
 /* ------------------------------------------------------------------ */
 
 const targets = [
   [join(ROOT, 'web', 'src', 'wire', 'generated.ts'), emitTS()],
   [join(ROOT, 'dart', 'lib', 'src', 'generated.dart'), emitDart()],
   [join(ROOT, 'server', 'internal', 'wire', 'generated.go'), emitGo()],
+  [join(ROOT, 'schema', 'openapi.yaml'), emitOpenAPI()],
 ]
 
 const check = process.argv.includes('--check')
