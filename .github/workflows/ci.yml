@@ -86,9 +86,14 @@ jobs:
 
       # verify.sh finds dart on PATH or at $DART; setup-dart puts it on PATH,
       # so the local ~/tools/dart-sdk fallback is not needed here.
+      # `sdk: stable`, not a version wildcard: setup-dart takes a CHANNEL or an
+      # exact version, and `3.x` makes it fail with a JSNull type error that
+      # says nothing about the cause. The real constraint is dart/pubspec.yaml's
+      # `sdk: ^3.6.0`; pinning an exact version here would only mean CI tests a
+      # Dart nobody is developing against.
       - uses: dart-lang/setup-dart@v1
         with:
-          sdk: "3.x"
+          sdk: stable
 
       - name: Install web dependencies
         working-directory: web
