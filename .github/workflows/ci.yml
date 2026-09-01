@@ -43,10 +43,19 @@ jobs:
       # The store's schema tests need a real Postgres, and 16 specifically:
       # the shared instance is 16, and CANT-13 leans on partial unique indexes
       # and array element CHECKs that a version drift would quietly change.
+      #
+      # `POSTGRES_HOST_AUTH_METHOD: trust` rather than a password, and the
+      # reason is not convenience. A service container lives and dies inside
+      # this job's own network namespace and is reachable from nothing else, so
+      # any password here is theatre — but it is password-SHAPED theatre, which
+      # means a secret scanner reports it on every pull request forever and
+      # somebody has to dismiss it every time. A check that is routinely
+      # dismissed is a check nobody reads. Removing the literal removes the
+      # finding at its source instead of teaching people to wave it through.
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_PASSWORD: catenary
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: catenary_test
         ports: ["5432:5432"]
         options: >-
@@ -56,7 +65,7 @@ jobs:
           --health-retries 10
 
     env:
-      CATENARY_TEST_DATABASE_URL: postgres://postgres:catenary@127.0.0.1:5432/catenary_test?sslmode=disable
+      CATENARY_TEST_DATABASE_URL: postgres://postgres@127.0.0.1:5432/catenary_test?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4

@@ -103,8 +103,8 @@ else
   (cd "$ROOT" && go test ./...) >/tmp/v-go-svc.log 2>&1
   result $? "go test ./... ($(grep -c 'no test files\|^ok' /tmp/v-go-svc.log) packages)"
   printf '   \033[33mNOTE\033[0m CATENARY_TEST_DATABASE_URL unset — the schema tests skipped.\n'
-  printf '        docker run -d --name cant-pg -e POSTGRES_PASSWORD=cant -e POSTGRES_DB=catenary_test -p 55440:5432 postgres:16-alpine\n'
-  printf '        export CATENARY_TEST_DATABASE_URL=postgres://postgres:cant@127.0.0.1:55440/catenary_test?sslmode=disable\n'
+  printf '        docker run -d --name cant-pg -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=catenary_test -p 55440:5432 postgres:16-alpine\n'
+  printf '        export CATENARY_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55440/catenary_test?sslmode=disable\n'
 fi
 
 step "CANT-13 · log_seq is never described as per-account"
