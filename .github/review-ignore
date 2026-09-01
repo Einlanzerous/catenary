@@ -1,0 +1,69 @@
+# Paths the PR reviewer does not read (SERV-87).
+#
+# One extended regex per line, matched against the repository-relative path of
+# every changed file. `#` comments and blank lines are ignored.
+#
+# Per-repo on purpose even though the workflow is shared (SERV-92): which
+# artifacts are generated is a fact about this repository. The shared workflow
+# reads this from the BASE ref of the PR under review, so widening it in a PR
+# does not exempt that PR — and this file is itself in `sensitive_paths`, so a
+# PR that widens it escalates.
+#
+# What belongs here is regenerated artifacts, not merely large files. The test
+# is: if this file is wrong, is the fix to edit it? For a generated file the
+# answer is no — you re-run the generator — so a review comment on its diff has
+# nowhere to land.
+
+# The four generated wire artefacts. One schema walked by one generator emits
+# all of them, and `npm run gen:check` byte-compares each against a fresh run —
+# `verify.sh` proves the guard bites once PER FILE, so none can drift from the
+# schema without CI going red.
+#
+# This is the clearest case the test above admits: a review comment on
+# `generated.go` has nowhere to land, because the fix for anything wrong in it
+# is a change to `schema/codegen/generate.mjs` or to the schema. Both are in
+# `sensitive_paths`, so excluding the rendered copies moves the budget ONTO the
+# hand-written cause rather than away from the subject.
+#
+# Together they are ~4,500 lines that would otherwise be re-read on every PR
+# that so much as adds a field.
+^web/src/wire/generated\.ts$
+^dart/lib/src/generated\.dart$
+^server/internal/wire/generated\.go$
+^schema/openapi\.yaml$
+
+# release-please owns this and rewrites it wholesale. Added prospectively:
+# CLAUDE.md names release-please, and nothing wires it yet (CANT-11 deliberately
+# left it to the deploy path). It is also `.md`, so the docs-only rule already
+# covers a release PR; this covers the case where it rides along with code.
+^CHANGELOG\.md$
+
+# NOT excluded, deliberately, and each for a reason:
+#
+#   schema/catenary.wire.v1.schema.json
+#                   — the SOURCE, hand-written, and the thing three languages
+#                     generate from. Named here so nobody excluding "the schema
+#                     stuff" takes the contract out with the artefacts.
+#   schema/codegen/generate.mjs
+#                   — the generator. Not generated.
+#   schema/vectors/vectors.json
+#                   — the 41 golden vectors. Hand-written, and they ARE the
+#                     oracle: a weakened vector is how a conformance suite goes
+#                     quietly green. Exactly what the reviewer should read.
+#   schema/mapping/wire-fields.json
+#                   — hand-written decisions about what backs each wire field.
+#                     `internal/store/wiremap_test.go` checks the types against
+#                     the database; nothing checks whether a `derived` note is
+#                     TRUE, and that is a reading job.
+#   migrations/     — hand-written SQL applied at boot, fatal on failure. In
+#                     `sensitive_paths`.
+#   go.sum          — a dependency tree, but also the checksum database. A line
+#                     changing without a matching go.mod change is the shape of
+#                     a supply-chain problem, and worth a read.
+#   spike/          — read-only evidence, not generated. It should almost never
+#                     appear in a diff, and a PR that edits it is a PR rewriting
+#                     the record — which is precisely what wants a human's
+#                     attention, not an exemption.
+#   verify.sh, deploy/
+#                   — hand-written verification and deployment definitions.
+#                     Both in `sensitive_paths`.
