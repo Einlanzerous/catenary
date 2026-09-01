@@ -2,12 +2,24 @@
 # Run everything that can be checked without hardware or a network peer.
 #
 # One command, because a spike's evidence is worthless if reproducing it needs
-# a tour. What this does NOT cover is the things that need the world: R1's
-# tunnel run (spike/r1-websocket), R2/R5, which need an Android device and a
-# willing friend, and R6, which needs a checkout of the Purser repository next
-# door. Those three steps skip with a note rather than failing when what they
-# need is absent — CI runs this file whole, and a step that can never pass
-# there is a red light everyone learns to ignore.
+# a tour. What this does NOT cover at all is the things that need the world:
+# R1's tunnel run (spike/r1-websocket), and R2/R5, which need an Android device
+# and a willing friend. There are no steps for those.
+#
+# THREE STEPS HERE SKIP rather than fail when what they need is absent, and a
+# skip is not a pass:
+#
+#   Dart          both the analyze and the conformance runner, when `dart` is
+#                 not on PATH or at $DART.
+#   the database  the store's schema tests, when CATENARY_TEST_DATABASE_URL is
+#                 unset. `go test` still runs; those tests call t.Skip.
+#   R6            when the Purser checkout the spike's `replace` points at is
+#                 absent, which is every machine but one.
+#
+# They skip rather than fail because CI runs this file whole, and a step that
+# can never pass there is a red light everyone learns to ignore. CI forces the
+# first two present — `setup-dart` and the Postgres service — so only R6
+# actually skips there.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
