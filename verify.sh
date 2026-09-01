@@ -45,6 +45,11 @@ else
 fi
 
 step "R4 · Go"
+# CANT-15: gofmt-clean AND byte-identical to a fresh generator run AND green,
+# all three at once. Any two of them were always easy; the third is why the
+# formatting had to move into the generator rather than onto the file.
+(cd "$ROOT/server" && gofmt -l .) >/tmp/v-fmt-server.log 2>&1
+[ ! -s /tmp/v-fmt-server.log ]; result $? "gofmt -l server/ is empty$( [ -s /tmp/v-fmt-server.log ] && printf ' (%s)' "$(tr '\n' ' ' </tmp/v-fmt-server.log)" )"
 (cd "$ROOT/server" && go vet ./...) >/tmp/v.log 2>&1
 result $? "go vet"
 (cd "$ROOT/server" && go run ./cmd/conformance) >/tmp/v-go.log 2>&1

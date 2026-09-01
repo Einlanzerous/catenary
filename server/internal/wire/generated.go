@@ -84,7 +84,7 @@ type ConversationKind string
 
 const (
 	ConversationKindDirect ConversationKind = "direct"
-	ConversationKindGroup ConversationKind = "group"
+	ConversationKindGroup  ConversationKind = "group"
 )
 
 // Valid reports whether v is a value this schema version defines.
@@ -110,9 +110,9 @@ func (v ConversationKind) Valid() bool {
 type DeliveryState string
 
 const (
-	DeliveryStateSent DeliveryState = "sent"
+	DeliveryStateSent      DeliveryState = "sent"
 	DeliveryStateDelivered DeliveryState = "delivered"
-	DeliveryStateRead DeliveryState = "read"
+	DeliveryStateRead      DeliveryState = "read"
 )
 
 // Valid reports whether v is a value this schema version defines.
@@ -130,8 +130,8 @@ type TranscriptState string
 
 const (
 	TranscriptStatePending TranscriptState = "pending"
-	TranscriptStateReady TranscriptState = "ready"
-	TranscriptStateFailed TranscriptState = "failed"
+	TranscriptStateReady   TranscriptState = "ready"
+	TranscriptStateFailed  TranscriptState = "failed"
 )
 
 // Valid reports whether v is a value this schema version defines.
@@ -162,10 +162,10 @@ type DurationMs = int64
 type ReplyRefKind string
 
 const (
-	ReplyRefKindText ReplyRefKind = "text"
+	ReplyRefKindText  ReplyRefKind = "text"
 	ReplyRefKindVoice ReplyRefKind = "voice"
 	ReplyRefKindImage ReplyRefKind = "image"
-	ReplyRefKindLink ReplyRefKind = "link"
+	ReplyRefKindLink  ReplyRefKind = "link"
 )
 
 // Valid reports whether v is a value this schema version defines.
@@ -181,7 +181,7 @@ type TypingState string
 
 const (
 	TypingStateStart TypingState = "start"
-	TypingStateStop TypingState = "stop"
+	TypingStateStop  TypingState = "stop"
 )
 
 // Valid reports whether v is a value this schema version defines.
@@ -196,14 +196,14 @@ func (v TypingState) Valid() bool {
 type ErrorCode string
 
 const (
-	ErrorCodeUnauthorized ErrorCode = "unauthorized"
+	ErrorCodeUnauthorized           ErrorCode = "unauthorized"
 	ErrorCodeWireVersionUnsupported ErrorCode = "wire_version_unsupported"
-	ErrorCodeRateLimited ErrorCode = "rate_limited"
-	ErrorCodeNotAMember ErrorCode = "not_a_member"
-	ErrorCodeConversationNotFound ErrorCode = "conversation_not_found"
-	ErrorCodeMessageTooLarge ErrorCode = "message_too_large"
-	ErrorCodeUploadNotFound ErrorCode = "upload_not_found"
-	ErrorCodeInternal ErrorCode = "internal"
+	ErrorCodeRateLimited            ErrorCode = "rate_limited"
+	ErrorCodeNotAMember             ErrorCode = "not_a_member"
+	ErrorCodeConversationNotFound   ErrorCode = "conversation_not_found"
+	ErrorCodeMessageTooLarge        ErrorCode = "message_too_large"
+	ErrorCodeUploadNotFound         ErrorCode = "upload_not_found"
+	ErrorCodeInternal               ErrorCode = "internal"
 )
 
 // Valid reports whether v is a value this schema version defines.
@@ -335,7 +335,7 @@ type User struct {
 type TranscriptSegment struct {
 	// Offset from the start of the clip.
 	AtMs DurationMs `json:"at_ms"`
-	Text string `json:"text"`
+	Text string     `json:"text"`
 }
 
 type Transcript struct {
@@ -345,8 +345,8 @@ type Transcript struct {
 	// Server-computed. The web client currently derives this from the text on screen so
 	// the count cannot lie; that stays true — a client SHOULD prefer its own count of the
 	// text it is actually rendering and treat this as a hint for collapsed state.
-	WordCount *int64 `json:"word_count,omitempty"`
-	Segments []TranscriptSegment `json:"segments,omitempty"`
+	WordCount *int64              `json:"word_count,omitempty"`
+	Segments  []TranscriptSegment `json:"segments,omitempty"`
 	// e.g. `whisper.cpp/small.en`. Recorded because a transcript's quality is not
 	// interpretable without knowing what produced it, and R3 expects the model to be a
 	// tunable knob.
@@ -360,7 +360,7 @@ type Transcript struct {
 
 type VoiceAttachment struct {
 	// Media URL. Opaque to the client; may be presigned and time-limited.
-	URL string `json:"url"`
+	URL        string     `json:"url"`
 	DurationMs DurationMs `json:"duration_ms"`
 	// Amplitude peaks 0–100, computed server-side ONCE and stored with the message.
 	// Deliberate call 13 of the design canvas: the bar pattern must be identical in web
@@ -371,7 +371,7 @@ type VoiceAttachment struct {
 	// Dart's 64-bit int does not, and the identical seed yields different bars. Any
 	// client-side generation reintroduces that. Clients render this array and never
 	// synthesise one.
-	Peaks []int64 `json:"peaks"`
+	Peaks      []int64    `json:"peaks"`
 	Transcript Transcript `json:"transcript"`
 }
 
@@ -391,14 +391,14 @@ func (v VoiceAttachment) MarshalJSON() ([]byte, error) {
 func (VoiceAttachment) isAttachment() {}
 
 type ImageAttachment struct {
-	URL string `json:"url"`
+	URL      string `json:"url"`
 	Filename string `json:"filename"`
 	// Stored intrinsic width. The client caps the rendered box at 340x400 from this ratio,
 	// so the row height is final before a byte of image data arrives — which is the
 	// property the blurhash placeholder exists to protect.
-	Width int64 `json:"width"`
+	Width  int64 `json:"width"`
 	Height int64 `json:"height"`
-	Bytes int64 `json:"bytes"`
+	Bytes  int64 `json:"bytes"`
 	// Blurhash. Absent means render the plane flat; never means block on the image.
 	Placeholder *string `json:"placeholder,omitempty"`
 }
@@ -419,35 +419,35 @@ func (v ImageAttachment) MarshalJSON() ([]byte, error) {
 func (ImageAttachment) isAttachment() {}
 
 type ReplyRef struct {
-	MessageID Uuid `json:"message_id"`
-	AuthorID Uuid `json:"author_id"`
-	Kind ReplyRefKind `json:"kind"`
+	MessageID Uuid         `json:"message_id"`
+	AuthorID  Uuid         `json:"author_id"`
+	Kind      ReplyRefKind `json:"kind"`
 	// One line, rendered from the LIVE source message server-side, not frozen at send
 	// time. That is what lets a reply to a voice note back-fill its preview when the
 	// transcript lands.
-	Preview string `json:"preview"`
+	Preview    string      `json:"preview"`
 	DurationMs *DurationMs `json:"duration_ms,omitempty"`
-	URL *string `json:"url,omitempty"`
+	URL        *string     `json:"url,omitempty"`
 }
 
 type Message struct {
-	ID Uuid `json:"id"`
-	Seq Seq `json:"seq"`
-	LogSeq LogSeq `json:"log_seq"`
-	ConversationID Uuid `json:"conversation_id"`
-	AuthorID Uuid `json:"author_id"`
-	At Timestamp `json:"at"`
-	Text *string `json:"text,omitempty"`
-	Attachments AttachmentList `json:"attachments,omitempty"`
-	ReplyTo *ReplyRef `json:"reply_to,omitempty"`
-	State DeliveryState `json:"state"`
+	ID             Uuid           `json:"id"`
+	Seq            Seq            `json:"seq"`
+	LogSeq         LogSeq         `json:"log_seq"`
+	ConversationID Uuid           `json:"conversation_id"`
+	AuthorID       Uuid           `json:"author_id"`
+	At             Timestamp      `json:"at"`
+	Text           *string        `json:"text,omitempty"`
+	Attachments    AttachmentList `json:"attachments,omitempty"`
+	ReplyTo        *ReplyRef      `json:"reply_to,omitempty"`
+	State          DeliveryState  `json:"state"`
 	// How many members other than the author have read it. Rooms render the fraction
 	// against `Conversation.member_count`: READ 5/7.
 	ReadBy *int64 `json:"read_by,omitempty"`
 	// Echoed back to the sender only, so a client can match a broadcast message against
 	// its own outbox entry when the `ack` and the `message` frame race. Other members
 	// never receive it.
-	ClientID *Uuid `json:"client_id,omitempty"`
+	ClientID *Uuid      `json:"client_id,omitempty"`
 	EditedAt *Timestamp `json:"edited_at,omitempty"`
 	// A tombstone. The row keeps its seq — deleting a message must not renumber the
 	// conversation, or every other client's unread arithmetic breaks.
@@ -455,11 +455,11 @@ type Message struct {
 }
 
 type Conversation struct {
-	ID Uuid `json:"id"`
-	Kind ConversationKind `json:"kind"`
-	Name string `json:"name"`
-	MemberCount int64 `json:"member_count"`
-	Muted *bool `json:"muted,omitempty"`
+	ID          Uuid             `json:"id"`
+	Kind        ConversationKind `json:"kind"`
+	Name        string           `json:"name"`
+	MemberCount int64            `json:"member_count"`
+	Muted       *bool            `json:"muted,omitempty"`
 	// The first seq the reader has not seen; absent means fully read. Both the rail's
 	// badge and the thread's "N NEW" rule derive from this. There is deliberately NO
 	// stored unread count on the wire, because a count and a marker can disagree and this
@@ -554,7 +554,7 @@ type Ping struct {
 	// Echoed verbatim in the matching `pong`. Matching by id rather than by arrival order
 	// is what makes a missed pong countable — with unmatched pings you cannot tell a lost
 	// pong from a slow one.
-	ID string `json:"id"`
+	ID string     `json:"id"`
 	At *Timestamp `json:"at,omitempty"`
 }
 
@@ -577,7 +577,7 @@ func (Ping) isServerFrame() {}
 
 type Pong struct {
 	// The id of the ping being answered, verbatim.
-	ID string `json:"id"`
+	ID string     `json:"id"`
 	At *Timestamp `json:"at,omitempty"`
 }
 
@@ -614,10 +614,10 @@ type ClientSend struct {
 	// correct rather than hopeful.
 	//
 	// A client that mints a fresh key on retry has re-implemented double-sending.
-	ClientID Uuid `json:"client_id"`
-	ConversationID Uuid `json:"conversation_id"`
-	Text *string `json:"text,omitempty"`
-	Attachments []OutboundAttachment `json:"attachments,omitempty"`
+	ClientID       Uuid                 `json:"client_id"`
+	ConversationID Uuid                 `json:"conversation_id"`
+	Text           *string              `json:"text,omitempty"`
+	Attachments    []OutboundAttachment `json:"attachments,omitempty"`
 	// Just the id — the server builds the whole ReplyRef from the live source message, so
 	// the preview is never a stale copy taken at send time.
 	ReplyToMessageID *Uuid `json:"reply_to_message_id,omitempty"`
@@ -642,11 +642,11 @@ func (ClientSend) isClientFrame() {}
 // `sending` to `sent` and fixes its seq.
 type ServerAck struct {
 	// The key from the `send` this answers.
-	ClientID Uuid `json:"client_id"`
-	MessageID Uuid `json:"message_id"`
-	ConversationID Uuid `json:"conversation_id"`
-	Seq Seq `json:"seq"`
-	LogSeq LogSeq `json:"log_seq"`
+	ClientID       Uuid   `json:"client_id"`
+	MessageID      Uuid   `json:"message_id"`
+	ConversationID Uuid   `json:"conversation_id"`
+	Seq            Seq    `json:"seq"`
+	LogSeq         LogSeq `json:"log_seq"`
 	// The server's timestamp for the message. Authoritative — the client's own send time
 	// is never persisted, so two devices with different clocks cannot order a conversation
 	// differently.
@@ -698,7 +698,7 @@ func (ServerMessageFrame) isServerFrame() {}
 
 type ServerReceipt struct {
 	ConversationID Uuid `json:"conversation_id"`
-	UserID Uuid `json:"user_id"`
+	UserID         Uuid `json:"user_id"`
 	// Read receipts are a high-water mark, never per-message. One frame settles an
 	// arbitrary backlog and they cannot arrive out of order in a way that matters, since a
 	// lower mark than one already held is simply discarded.
@@ -722,7 +722,7 @@ func (ServerReceipt) isServerFrame() {}
 
 type ClientRead struct {
 	ConversationID Uuid `json:"conversation_id"`
-	UpToSeq Seq `json:"up_to_seq"`
+	UpToSeq        Seq  `json:"up_to_seq"`
 }
 
 // WireTag returns the discriminator value "read".
@@ -741,8 +741,8 @@ func (v ClientRead) MarshalJSON() ([]byte, error) {
 func (ClientRead) isClientFrame() {}
 
 type ClientTyping struct {
-	ConversationID Uuid `json:"conversation_id"`
-	State TypingState `json:"state"`
+	ConversationID Uuid        `json:"conversation_id"`
+	State          TypingState `json:"state"`
 }
 
 // WireTag returns the discriminator value "typing".
@@ -798,7 +798,7 @@ type ServerError struct {
 	Retryable bool `json:"retryable"`
 	// Present when the error is attributable to a specific `send`, so the right outbox
 	// entry goes to `failed` instead of all of them.
-	ClientID *Uuid `json:"client_id,omitempty"`
+	ClientID      *Uuid  `json:"client_id,omitempty"`
 	RetryAfterSec *int64 `json:"retry_after_sec,omitempty"`
 }
 
@@ -875,7 +875,7 @@ type SyncResponse struct {
 	// Call again with the returned `log_seq`. The resync UI renders numeric progress
 	// rather than a spinner, which is only possible because `Conversation.head_seq` says
 	// what it is counting towards.
-	HasMore bool `json:"has_more"`
+	HasMore    bool      `json:"has_more"`
 	ServerTime Timestamp `json:"server_time"`
 }
 
@@ -1195,4 +1195,3 @@ func DecodeNamed(name string, b []byte) (any, error) {
 	}
 	return nil, fmt.Errorf("wire: unknown type %q", name)
 }
-

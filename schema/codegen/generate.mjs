@@ -27,6 +27,7 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, resolve, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -701,6 +702,32 @@ function goType(ref, optional, ctx = '') {
   }
 }
 
+
+/* Run the emitted Go through `gofmt`.
+ *
+ * CANT-15. The emitter does not column-align const blocks and struct fields,
+ * which gofmt does, so the committed file needed 307 lines of gofmt diff. That
+ * put two checks in DIRECT CONFLICT and only one of them was satisfiable by
+ * hand: `gen:check` byte-compares the committed file against a fresh generator
+ * run, so `gofmt -w` on the file makes the staleness guard fail, and leaving it
+ * makes a `gofmt -l` lane fail. No arrangement of the committed file satisfies
+ * both — which is why the fix belongs in the generator and not in the file.
+ *
+ * Formatting the bytes on the way out keeps the byte-comparison honest, because
+ * the guard then compares gofmt'd output against gofmt'd output.
+ *
+ * A missing gofmt is a hard failure rather than a warning. Emitting
+ * unformatted Go "just this once" is how the 307 lines happened, and it would
+ * come back as a red CI lane on somebody else's branch. */
+function gofmt(src) {
+  try {
+    return execFileSync('gofmt', [], { input: src, encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+  } catch (err) {
+    if (err.code === 'ENOENT') fail('gofmt is not on PATH — it is needed to emit gofmt-clean Go (CANT-15)')
+    fail(`gofmt rejected the generated Go, which means the emitter produced something that does not parse:\n${err.stderr || err.message}`)
+  }
+}
+
 function emitGo() {
   const L = []
   L.push(BANNER, '')
@@ -1073,7 +1100,7 @@ function emitOpenAPI() {
 const targets = [
   [join(ROOT, 'web', 'src', 'wire', 'generated.ts'), emitTS()],
   [join(ROOT, 'dart', 'lib', 'src', 'generated.dart'), emitDart()],
-  [join(ROOT, 'server', 'internal', 'wire', 'generated.go'), emitGo()],
+  [join(ROOT, 'server', 'internal', 'wire', 'generated.go'), gofmt(emitGo())],
   [join(ROOT, 'schema', 'openapi.yaml'), emitOpenAPI()],
 ]
 
