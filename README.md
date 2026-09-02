@@ -76,9 +76,7 @@ Credentials never live in a compose file — they come from Signet.
 
 ### The two probes answer different questions
 
-`GET /healthz` is dependency-free: if it answers, the process is alive. `GET /readyz` reports whether this instance can serve traffic. They are two routes because collapsing them would make a Postgres restart restart every Catenary instance, turning a recoverable dependency outage into a reconnect storm across every open socket.
-
-**`/readyz` does not yet check anything.** The pool is not opened until CANT-13, so today it answers 200 unconditionally and no state of the database produces a 503. **Do not point a load balancer's readiness check at it yet** — an instance whose Postgres is down would stay in rotation and fail every request it took, which is the outcome splitting the probes exists to prevent.
+`GET /healthz` is dependency-free: if it answers, the process is alive. `GET /readyz` pings the database and answers 503 naming the failing check when it cannot be reached. They are two routes because collapsing them would make a Postgres restart restart every Catenary instance, turning a recoverable dependency outage into a reconnect storm across every open socket.
 
 Successful probe requests log at `debug` — they are polled forever and would otherwise be the log by volume. A probe answering 4xx or 5xx keeps its level, because a `/readyz` 503 is the most important line this service emits.
 
