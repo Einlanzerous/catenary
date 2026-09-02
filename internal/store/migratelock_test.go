@@ -22,6 +22,14 @@ func TestConcurrentMigrateIsSafe(t *testing.T) {
 	if err := MigrateDown(ctx, pool, 0); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
+	// A COLD start, which is the scenario this test is named for. MigrateDown
+	// leaves schema_migrations behind — no .down.sql drops it — so without this
+	// every migrator finds the table present, CREATE TABLE IF NOT EXISTS is a
+	// no-op, and the race in ensureTable is never reached. The first version of
+	// this test proved the lock in applyOne and nothing else.
+	if _, err := pool.Exec(ctx, `DROP TABLE IF EXISTS schema_migrations`); err != nil {
+		t.Fatalf("drop bookkeeping table: %v", err)
+	}
 
 	const n = 6
 	pools := make([]*pgxpool.Pool, n)

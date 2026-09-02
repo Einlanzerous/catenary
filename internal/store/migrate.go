@@ -105,15 +105,35 @@ func AppliedVersions(ctx context.Context, pool *pgxpool.Pool) ([]string, error) 
 	return out, nil
 }
 
+// ensureTable creates the bookkeeping table, under the same advisory lock the
+// migrations themselves take.
+//
+// CREATE TABLE IF NOT EXISTS is NOT atomic under concurrency: two sessions can
+// both find the table absent and both proceed, and the loser fails with 23505
+// on pg_type_typname_nsp_index. That is the same boot failure the lock in
+// applyOne exists to prevent, through a narrower window — the cold start, which
+// is the one time this whole path is on the critical path.
+//
+// Its own transaction rather than the migrations', so the table is committed and
+// visible before any of them read it.
 func ensureTable(ctx context.Context, pool *pgxpool.Pool) error {
-	if _, err := pool.Exec(ctx, `
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
+		return fmt.Errorf("store: take migration lock: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
 			version    TEXT PRIMARY KEY,
 			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`); err != nil {
 		return fmt.Errorf("store: ensure schema_migrations: %w", err)
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 // migrateLockKey is an arbitrary constant, shared by every process running this

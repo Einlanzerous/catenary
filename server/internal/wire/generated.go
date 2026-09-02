@@ -124,8 +124,19 @@ func (v DeliveryState) Valid() bool {
 	return false
 }
 
-// Lifecycle of the async Whisper job (R3/IDEA-26) that writes `transcript_text` back
-// onto the message row.
+// Lifecycle of the async Whisper job (R3/IDEA-26) that writes the finished transcript
+// back onto the ATTACHMENT it belongs to.
+//
+// AN EARLIER DRAFT OF THIS TEXT SAID the job writes `transcript_text` back onto the
+// MESSAGE row. That was wrong and it named the wrong write target. `Transcript` hangs
+// off `VoiceAttachment`, and a message may carry more than one voice note —
+// `Message.attachments` has no `maxItems` — so a per-message column cannot hold two
+// transcripts, and the second job to finish would silently replace the first while
+// `word_count` and `segments`, which are per attachment, went on describing different
+// audio. Corrected on CANT-13, 2026-09-02, when the initial schema settled where each
+// field lives: the authoritative copy is per attachment, and the server keeps a
+// denormalised copy of the text on the message row for CANT-59's single full-text
+// index, which nothing reads to serve a message.
 type TranscriptState string
 
 const (
