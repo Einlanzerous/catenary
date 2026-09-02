@@ -60,6 +60,28 @@ Recorded here so they are not re-litigated when the work gets hard. The reasonin
 | **R5** Android distribution | **cleared** — Play internal testing, on Argosy and Lyceum's precedent |
 | **R6** Purser connector fit | **cleared** — `connector.Connector` accepts Catenary unmodified |
 
+## Configuration
+
+Env-only, `CATENARY_`-prefixed, no config files. `catenary --help` is the copy of record; a test asserts it names every variable `config.Load` reads, so the two cannot drift.
+
+| variable | default | |
+|---|---|---|
+| `CATENARY_DATABASE_URL` | — | pgx DSN. Falls back to `DATABASE_URL`. **Required.** |
+| `CATENARY_PORT` | `4012` | Next free in the estate's 40xx block, read off `construct-server`'s compose: 4000-4009 are allocated, 4010 the Signet host daemon, 4011 the shared ASR service. Catenary will most likely publish no port at all — like Chronicle and ASR it sits behind Traefik on `construct_net` — so the number only has to be unique to be legible. |
+| `CATENARY_LOG_LEVEL` | `info` | `debug` \| `info` \| `warn` \| `error` |
+| `CATENARY_LOG_FORMAT` | `json` | `json` \| `text`. JSON by default because Datadog parses it into attributes with no pipeline config and Dozzle renders it fine. |
+| `CATENARY_SHUTDOWN_GRACE` | `20s` | In-flight grace on SIGTERM. |
+
+Credentials never live in a compose file — they come from Signet.
+
+### The two probes answer different questions
+
+`GET /healthz` is dependency-free: if it answers, the process is alive. `GET /readyz` reports whether this instance can serve traffic. They are two routes because collapsing them would make a Postgres restart restart every Catenary instance, turning a recoverable dependency outage into a reconnect storm across every open socket.
+
+**`/readyz` does not yet check anything.** The pool is not opened until CANT-13, so today it answers 200 unconditionally and no state of the database produces a 503. **Do not point a load balancer's readiness check at it yet** — an instance whose Postgres is down would stay in rotation and fail every request it took, which is the outcome splitting the probes exists to prevent.
+
+Successful probe requests log at `debug` — they are polled forever and would otherwise be the log by volume. A probe answering 4xx or 5xx keeps its level, because a `/readyz` 503 is the most important line this service emits.
+
 ## Toolchain notes
 
 The Dart SDK is not on `PATH` by default. `verify.sh` looks in `~/tools/dart-sdk/bin`; override with `DART=/path/to/dart-sdk/bin`.
