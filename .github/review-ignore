@@ -14,16 +14,10 @@
 # answer is no — you re-run the generator — so a review comment on its diff has
 # nowhere to land.
 
-# The generated wire artefacts. One schema walked by one generator emits all of
-# them, and `npm run gen:check` byte-compares each against a fresh run —
+# The four generated wire artefacts. One schema walked by one generator emits
+# all of them, and `npm run gen:check` byte-compares each against a fresh run —
 # `verify.sh` proves the guard bites once PER FILE, so none can drift from the
 # schema without CI going red.
-#
-# THREE OF THE FOUR TODAY. `schema/openapi.yaml` is prospective and arrives with
-# CANT-12, which is also what extends the generator to four targets and the
-# staleness proof from one file to each — the justification above is written for
-# the end state, like the `CHANGELOG.md` entry below. Excluding a path that does
-# not exist yet costs nothing; it matches nothing until it does.
 #
 # This is the clearest case the test above admits: a review comment on
 # `generated.go` has nowhere to land, because the fix for anything wrong in it
