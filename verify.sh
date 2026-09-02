@@ -50,13 +50,36 @@ result $? "go vet"
 (cd "$ROOT/server" && go run ./cmd/conformance) >/tmp/v-go.log 2>&1
 result $? "$(grep -oE 'all green — .*vectors|[0-9]+ of [0-9]+ FAILED' /tmp/v-go.log | tail -1)"
 
-step "R4 · the staleness guard actually fails the build"
-cp "$ROOT/web/src/wire/generated.ts" /tmp/generated.ts.bak
-printf '\n// hand edit\n' >> "$ROOT/web/src/wire/generated.ts"
-(cd "$ROOT/web" && npm run --silent gen:check) >/dev/null 2>&1
-rc=$?
-cp /tmp/generated.ts.bak "$ROOT/web/src/wire/generated.ts"
-[ $rc -ne 0 ]; result $? "a hand edit makes gen:check exit non-zero"
+step "R4 · the staleness guard actually fails the build — once per generated file"
+# CANT-12 criterion 3: proved PER PIPELINE, not once overall. The check has
+# always walked every target; the PROOF used to touch one file, so three of the
+# four were covered by assumption. openapi.yaml joining the set is exactly the
+# case that would have gone unnoticed.
+# ONE BACKUP PER FILE, and a trap. The single-file version this replaces used
+# /tmp/generated.ts.bak, so two concurrent runs collided on a name and restored
+# IDENTICAL bytes — harmless. Widening the proof to four files while keeping one
+# name would make the collision cross-file: run A backs up generated.go, run B
+# overwrites the backup with generated.ts, run A restores TypeScript into
+# generated.go. The loop cannot notice, because gen:check walks every target and
+# the corruption it just caused keeps the assertion passing. A check that goes
+# green BECAUSE of the damage it did is worse than no check, and CLAUDE.md
+# prescribes one worktree per epic, so concurrent runs are the normal case here.
+#
+# The trap covers the other half: this file runs without `set -e`, so a ^C or a
+# failing cp between the append and the restore leaves a hand-edited generated
+# file behind — now four times per run rather than once.
+_gen_restore() { [ -n "${_gen_bak:-}" ] && [ -f "$_gen_bak" ] && cp "$_gen_bak" "$ROOT/$_gen_cur" && rm -f "$_gen_bak"; }
+trap _gen_restore EXIT INT TERM
+for gen in web/src/wire/generated.ts dart/lib/src/generated.dart server/internal/wire/generated.go schema/openapi.yaml; do
+  _gen_cur="$gen"; _gen_bak="$(mktemp "${TMPDIR:-/tmp}/$(basename "$gen").XXXXXX.bak")"
+  cp "$ROOT/$gen" "$_gen_bak"
+  printf '\n# hand edit\n' >> "$ROOT/$gen"
+  (cd "$ROOT/web" && npm run --silent gen:check) >/dev/null 2>&1
+  rc=$?
+  cp "$_gen_bak" "$ROOT/$gen"; rm -f "$_gen_bak"; _gen_bak=""
+  [ $rc -ne 0 ]; result $? "a hand edit to $(basename "$gen") makes gen:check exit non-zero"
+done
+trap - EXIT INT TERM
 
 step "R4 · web smoke test (render assertions + conformance)"
 (cd "$ROOT/web" && npm run --silent smoke) >/tmp/v-smoke.log 2>&1
