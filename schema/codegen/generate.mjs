@@ -985,8 +985,21 @@ function toOpenAPISchema(node, ctx) {
   for (const [k, v] of Object.entries(node)) {
     switch (k) {
       case '$ref':
-        out.$ref = '#/components/schemas/' + refName(v)
-        break
+        // A Reference Object in 3.0 is `$ref` AND NOTHING ELSE. Sibling keys —
+        // 17 properties here carry a `description` next to their `$ref` — are
+        // ignored by the spec and discarded by kin-openapi on unmarshal, so
+        // emitting them would put text in the artefact that no consumer reads
+        // and that a reader would reasonably believe was live.
+        //
+        // Dropping them is the honest emission, not the fix. Those field docs
+        // still reach TypeScript, Dart and Go through the bespoke generator, so
+        // once both pipelines are live this is doc parity failing quietly along
+        // the seam the split creates. The 3.0 idiom that preserves them is
+        // `allOf: [{$ref: …}]` plus `description` — which changes the node
+        // shape, and what the four generators do with THAT is exactly what
+        // Rulings 2 and 4 are measuring. Deliberately deferred to that ruling
+        // rather than fixed by reflex here.
+        return { $ref: '#/components/schemas/' + refName(v) }
       case 'const':
         // Transform 1. 3.0 has no `const`; a single-value enum is the same
         // statement and every 3.0 generator understands it.
