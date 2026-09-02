@@ -8,6 +8,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"strconv"
@@ -109,7 +110,12 @@ func Load() (Config, error) {
 
 // Logger builds the process logger. Structured to w, always — there is no
 // unstructured mode, because the shape is what Dozzle and Datadog read.
-func (c Config) Logger(w *os.File) *slog.Logger {
+//
+// io.Writer rather than *os.File: the only caller passes os.Stdout, but the
+// narrower type meant the text branch could not be asserted against a buffer
+// and so went untested, while api's tests built their own slog.Logger rather
+// than going through here.
+func (c Config) Logger(w io.Writer) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: c.LogLevel}
 	if c.LogFormat == "text" {
 		return slog.New(slog.NewTextHandler(w, opts))

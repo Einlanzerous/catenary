@@ -1,6 +1,9 @@
 package main
 
 import (
+	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -41,17 +44,45 @@ func TestSetup(t *testing.T) {
 	}
 }
 
-// Every CATENARY_ variable the loader reads is named in the usage text. A
-// config surface that is env-only is only documented if `catenary --help` is
-// the documentation, and the two drift the moment a variable is added.
+// Every variable the loader reads is named in the usage text. A config surface
+// that is env-only is only documented if `catenary --help` IS the
+// documentation, and the two drift the moment a variable is added.
+//
+// The list is DERIVED from config.go rather than written here. A hand-kept
+// slice cannot catch the drift this test is named for: adding an
+// os.Getenv("CATENARY_MAX_UPLOAD_MB") to Load and stopping there leaves the
+// slice unchanged, the test green, and --help silently short one variable —
+// which is exactly the scenario, and it was the shape of the first version of
+// this test.
 func TestUsageNamesEveryEnvVar(t *testing.T) {
 	got := usageText()
-	for _, v := range []string{
-		"CATENARY_DATABASE_URL", "DATABASE_URL", "CATENARY_PORT",
-		"CATENARY_LOG_LEVEL", "CATENARY_LOG_FORMAT", "CATENARY_SHUTDOWN_GRACE",
-	} {
+	read := envVarsReadBy(t, "../../internal/config/config.go")
+	if len(read) < 5 {
+		t.Fatalf("found only %d os.Getenv calls in config.go — the scan is broken, not the config", len(read))
+	}
+	for _, v := range read {
 		if !strings.Contains(got, v) {
-			t.Errorf("usage does not name %s", v)
+			t.Errorf("config.Load reads %s and `catenary --help` does not name it", v)
 		}
 	}
+}
+
+// envVarsReadBy returns every environment variable named in an os.Getenv call
+// in the given Go source file, sorted and deduplicated.
+func envVarsReadBy(t *testing.T, path string) []string {
+	t.Helper()
+	src, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	seen := map[string]bool{}
+	for _, m := range regexp.MustCompile(`os\.Getenv\("([A-Z_]+)"\)`).FindAllStringSubmatch(string(src), -1) {
+		seen[m[1]] = true
+	}
+	out := make([]string, 0, len(seen))
+	for v := range seen {
+		out = append(out, v)
+	}
+	sort.Strings(out)
+	return out
 }

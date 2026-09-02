@@ -3,9 +3,12 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 )
@@ -32,6 +35,13 @@ type Deps struct {
 	// DB is pinged by /readyz. Nil reports ready — a build with no database
 	// wired is a build that has nothing to be unready about, and CANT-13 is
 	// what fills this in.
+	//
+	// SO WHILE THIS IS NIL, /readyz IS A SECOND ALWAYS-200 ROUTE. No state of
+	// any database produces a 503 from it, because it never looks at one. The
+	// 503 path below is real and tested, but until CANT-13 passes a store it is
+	// reachable only from a test — which is worth saying out loud, because
+	// "/readyz reports database health" is exactly the sort of claim that gets
+	// made about a release where it is not yet true.
 	DB Pinger
 
 	// Version and Commit are stamped at build time and reported by /healthz,
@@ -100,6 +110,25 @@ type statusRecorder struct {
 func (s *statusRecorder) WriteHeader(code int) {
 	s.status = code
 	s.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap and Hijack exist for E2's WebSocket upgrade, which does not exist yet.
+//
+// Embedding http.ResponseWriter satisfies exactly that interface and nothing
+// else, and EVERY request passes through this wrapper. Both websocket libraries
+// begin with `w.(http.Hijacker)`, and http.NewResponseController needs Unwrap to
+// follow — so without these, the first upgrade handler added under this router
+// fails at runtime with "does not implement http.Hijacker", two files away from
+// the middleware that caused it. CANT-22 is Mode C; that hour should not be
+// spent on this.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := s.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("api: %T does not implement http.Hijacker", s.ResponseWriter)
+	}
+	return h.Hijack()
 }
 
 // requestLogger emits one structured line per request.

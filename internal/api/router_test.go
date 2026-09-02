@@ -164,3 +164,37 @@ func TestProbesAreGetOnly(t *testing.T) {
 		}
 	}
 }
+
+// E2's WebSocket upgrade goes through this middleware, and both websocket
+// libraries begin with `w.(http.Hijacker)`. A wrapper that embeds only
+// http.ResponseWriter fails that assertion at runtime, in the upgrade handler,
+// two files from the cause. CANT-22 is Mode C and should not spend its review
+// on this.
+func TestRequestLoggerPreservesHijacker(t *testing.T) {
+	var (
+		sawHijacker bool
+		sawUnwrap   bool
+	)
+	h := requestLogger(discardLogger(), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawHijacker = w.(http.Hijacker)
+		// http.NewResponseController follows Unwrap; without it the controller
+		// cannot reach the real writer either.
+		_, sawUnwrap = w.(interface{ Unwrap() http.ResponseWriter })
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	srv := httptest.NewServer(h)
+	defer srv.Close()
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if !sawHijacker {
+		t.Error("the handler cannot type-assert http.Hijacker through the request logger; the WebSocket upgrade will fail at runtime")
+	}
+	if !sawUnwrap {
+		t.Error("the wrapper has no Unwrap, so http.NewResponseController cannot reach the real writer")
+	}
+}

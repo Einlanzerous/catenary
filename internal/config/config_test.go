@@ -1,26 +1,52 @@
 package config
 
 import (
+	"bytes"
+	"encoding/json"
 	"log/slog"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 )
 
-// setEnv clears every CATENARY_ variable the loader reads plus DATABASE_URL,
-// then applies want. Tests that only set what they care about would otherwise
-// inherit the developer's shell, and a config test that passes because of an
-// exported variable is a config test that passes on one machine.
+// setEnv clears every variable Load reads, then applies want. Tests that only
+// set what they care about would otherwise inherit the developer's shell, and a
+// config test that passes because of an exported variable is a config test that
+// passes on one machine.
+//
+// The list is DERIVED from this package's own source rather than written out.
+// A hand-kept copy silently stops clearing the next variable somebody adds,
+// which is the same failure the usage-text guard in cmd/catenary had.
 func setEnv(t *testing.T, want map[string]string) {
 	t.Helper()
-	for _, k := range []string{
-		"CATENARY_DATABASE_URL", "DATABASE_URL", "CATENARY_PORT",
-		"CATENARY_LOG_LEVEL", "CATENARY_LOG_FORMAT", "CATENARY_SHUTDOWN_GRACE",
-	} {
+	for _, k := range envVarsReadByLoad(t) {
 		t.Setenv(k, "")
 	}
 	for k, v := range want {
 		t.Setenv(k, v)
 	}
+}
+
+func envVarsReadByLoad(t *testing.T) []string {
+	t.Helper()
+	src, err := os.ReadFile("config.go")
+	if err != nil {
+		t.Fatalf("read config.go: %v", err)
+	}
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range regexp.MustCompile(`os\.Getenv\("([A-Z_]+)"\)`).FindAllStringSubmatch(string(src), -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	if len(out) < 5 {
+		t.Fatalf("found only %d os.Getenv calls in config.go — the scan is broken, not the config", len(out))
+	}
+	return out
 }
 
 func TestLoadDefaults(t *testing.T) {
@@ -111,5 +137,37 @@ func TestLogLevels(t *testing.T) {
 		if c.LogLevel != want {
 			t.Errorf("LogLevel(%q) = %v, want %v", in, c.LogLevel, want)
 		}
+	}
+}
+
+// CATENARY_LOG_FORMAT is a documented, validated, user-reachable setting, and
+// until Logger took an io.Writer there was no way to assert either branch
+// without writing a real file — so the text branch had no test at all.
+func TestLoggerHonoursTheFormat(t *testing.T) {
+	for _, tc := range []struct {
+		format string
+		json   bool
+	}{{"json", true}, {"text", false}} {
+		t.Run(tc.format, func(t *testing.T) {
+			setEnv(t, map[string]string{"CATENARY_DATABASE_URL": "x", "CATENARY_LOG_FORMAT": tc.format})
+			c, err := Load()
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			var buf bytes.Buffer
+			c.Logger(&buf).Info("hello", "k", "v")
+
+			line := strings.TrimSpace(buf.String())
+			if line == "" {
+				t.Fatal("logger wrote nothing")
+			}
+			isJSON := json.Unmarshal([]byte(line), &map[string]any{}) == nil
+			if isJSON != tc.json {
+				t.Errorf("format %q produced JSON=%v, want %v: %q", tc.format, isJSON, tc.json, line)
+			}
+			if !strings.Contains(line, "hello") || !strings.Contains(line, "k") {
+				t.Errorf("log line lost its content: %q", line)
+			}
+		})
 	}
 }
