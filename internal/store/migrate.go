@@ -116,15 +116,43 @@ func ensureTable(ctx context.Context, pool *pgxpool.Pool) error {
 	return nil
 }
 
+// migrateLockKey is an arbitrary constant, shared by every process running this
+// migrator against one database. Any value works; it only has to be the same.
+const migrateLockKey int64 = 0x43414e54 // "CANT"
+
 // applyOne runs one migration body and records or removes its version in a
 // single transaction, so a failed rollback leaves the version recorded as
 // still applied rather than leaving the two halves disagreeing.
+//
+// It takes a transaction-scoped advisory lock first. Without one, two processes
+// starting together against a fresh database both read an empty
+// schema_migrations and both run 0001; the loser's CREATE TABLE raises 42P07,
+// Migrate returns it and runServe exits 1. Single-instance today, so it would
+// recover on the restart — but `catenary migrate up` typed by hand while the
+// container is booting is the same race, and it is the moment somebody is
+// already worried about the database. The lock is released at commit or
+// rollback either way.
 func applyOne(ctx context.Context, pool *pgxpool.Pool, body, version string, up bool) error {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1)`, migrateLockKey); err != nil {
+		return fmt.Errorf("store: take migration lock: %w", err)
+	}
+
+	// Re-read under the lock: the process that waited here may be about to
+	// re-run a migration the winner has already applied and committed.
+	var already bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE version = $1)`, version).Scan(&already); err != nil {
+		return err
+	}
+	if already == up {
+		return nil // already applied, or already rolled back
+	}
 
 	if _, err := tx.Exec(ctx, body); err != nil {
 		return err

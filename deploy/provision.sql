@@ -46,5 +46,18 @@ GRANT ALL ON SCHEMA public TO catenary;
 --   * no CREATEDB, so the service cannot make itself a second database;
 --   * no CREATEROLE, so a compromised credential cannot mint another;
 --   * no SUPERUSER and no BYPASSRLS;
---   * no access to any other estate database — CONNECT is granted on this one
---     only, and PUBLIC's implicit CONNECT was revoked above.
+--   * CONNECT on THIS database only, granted explicitly, with PUBLIC's revoked.
+--
+-- What that does NOT buy, stated because the obvious reading is wrong: it does
+-- not isolate this role from the other estate databases. Postgres grants
+-- CONNECT and TEMP to PUBLIC on every new database, `catenary` is an ordinary
+-- LOGIN role and inherits PUBLIC, and the REVOKE above applies to this database
+-- alone — so `psql -U catenary -d <other>` succeeds anywhere the other database
+-- has not revoked PUBLIC itself, and can enumerate schemas and relation names
+-- there. Closing that means a REVOKE CONNECT ON DATABASE <other> FROM PUBLIC on
+-- each of them, which is an estate-wide change and not this file's to make.
+--
+-- Recorded rather than glossed because it is the CHRN-78 shape this file cites
+-- three lines above its own REVOKE: a grant justified by a claim the grant does
+-- not support. Criterion 15 compares the grants to the comments, and the
+-- sentence that used to be here is the one it would have failed.

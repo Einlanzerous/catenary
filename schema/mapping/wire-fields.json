@@ -40,9 +40,10 @@
     },
     "Transcript.text": {
       "kind": "column",
-      "table": "messages",
-      "column": "transcript_text",
-      "note": "Denormalised onto messages for CANT-59's single to_tsvector index over text and transcripts."
+      "table": "attachments",
+      "column": "transcript_json",
+      "json_path": "text",
+      "note": "Authoritative per ATTACHMENT, because Transcript hangs off VoiceAttachment and a message may carry more than one voice note. messages.transcript_text is a denormalised copy of this for CANT-59's single to_tsvector index and is never read to serve a message — a per-message column cannot hold two transcripts, and the second job to write it would silently replace the first."
     },
     "Transcript.word_count": {
       "kind": "column",

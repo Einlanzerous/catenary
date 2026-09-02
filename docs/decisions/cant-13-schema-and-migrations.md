@@ -1,6 +1,6 @@
 # CANT-13 — the initial schema and the migration harness
 
-> **The Switchyard plan is the decision of record.** It is versioned, its criteria carry verdicts, and it gates the ticket: [CANT-13, plan rev 3](http://localhost:4002/tickets/CANT-13). This file is a derived stub. It carries **outcomes and no reasoning**, because reasoning is what drifts — two documents making the same argument is the CHRN-79 shape, and the second copy is the one that goes stale.
+> **The Switchyard plan is the decision of record.** It is versioned, its criteria carry verdicts, and it gates the ticket: **Switchyard `CANT-13`, plan rev 3** (Switchyard is estate-internal, so there is no link that resolves from a clone of this public repository). This file is a derived stub. It carries **outcomes and no reasoning**, because reasoning is what drifts — two documents making the same argument is the CHRN-79 shape, and the second copy is the one that goes stale.
 
 Three migrations, applied in-process on boot, against an empty database. Six tables plus `log_counter`. No backfill and no cutover, and that will never be true again in this project.
 

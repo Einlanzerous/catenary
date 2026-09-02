@@ -22,7 +22,15 @@ CREATE TABLE conversations (
     -- The two user ids sorted and joined. Makes a DM a lookup rather than a
     -- search over members, so find-or-create (CANT-75) cannot race two
     -- conversations into existence for one pair.
-    direct_key     TEXT,
+    --
+    -- REQUIRED on a direct, and that CHECK is what makes the partial unique
+    -- index below mean anything: a unique index does not constrain NULLs, so
+    -- without it two directs with no key are both accepted and the pair has two
+    -- threads, each with its own dense seq. This is the same NULL-distinctness
+    -- hole Ruling 2 rejected for (sender_device_id, client_id), reached from the
+    -- other side of the schema. Evaluated per statement, so the promotion below
+    -- — which sets kind and nulls direct_key together — still passes.
+    direct_key     TEXT        CHECK (kind <> 'direct' OR direct_key IS NOT NULL),
 
     -- The per-conversation ordinal source. Bumped by UPDATE ... RETURNING
     -- inside the inserting transaction, which is what makes assignment order

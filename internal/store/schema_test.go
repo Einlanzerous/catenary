@@ -584,6 +584,16 @@ func TestConcurrentFindOrCreateDirectMakesOneConversation(t *testing.T) {
 	if count != 1 {
 		t.Errorf("%d concurrent find-or-create calls made %d direct conversations for one pair, want 1", n, count)
 	}
+	// The other half of the property, which was being collected and dropped:
+	// exactly one caller should report having inserted. If ON CONFLICT silently
+	// matched nothing, count would still be 1 and this would be 0.
+	inserted := 0
+	for _, c := range created {
+		inserted += c
+	}
+	if inserted != 1 {
+		t.Errorf("%d of %d callers reported an insert, want exactly 1", inserted, n)
+	}
 
 	// Promotion to a group nulls direct_key and supplies a name, which frees
 	// the pair to have a direct again.
@@ -615,9 +625,41 @@ func TestConversationNameRules(t *testing.T) {
 		t.Error("a group with no name was accepted")
 	}
 	// A DM has no name: the rail shows the OTHER member, which is per reader.
+	a, b := mkUser(ctx, t, pool, "a"), mkUser(ctx, t, pool, "b")
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO conversations (id, kind) VALUES ($1, 'direct')`, uuid.New()); err != nil {
+		`INSERT INTO conversations (id, kind, direct_key) VALUES ($1, 'direct', $2)`,
+		uuid.New(), directKey(a, b)); err != nil {
 		t.Errorf("a direct with no name was refused: %v", err)
+	}
+}
+
+// A direct with no direct_key would defeat the partial unique index, because a
+// unique index does not constrain NULLs — two of them would both be accepted
+// and the pair would have two threads, each with its own dense seq. Same
+// NULL-distinctness hole Ruling 2 rejected for (sender_device_id, client_id).
+func TestDirectMustCarryItsKey(t *testing.T) {
+	ctx, pool := freshDB(t)
+
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO conversations (id, kind) VALUES ($1, 'direct')`, uuid.New()); err == nil {
+		t.Error("a direct with no direct_key was accepted; the partial unique index cannot see it")
+	}
+	// A group has no pair, so it must still be allowed to have none.
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO conversations (id, kind, name) VALUES ($1, 'group', 'g')`, uuid.New()); err != nil {
+		t.Errorf("a group with no direct_key was refused: %v", err)
+	}
+	// And promotion still works: kind and direct_key change in one statement.
+	x, y := mkUser(ctx, t, pool, "x"), mkUser(ctx, t, pool, "y")
+	id := uuid.New()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO conversations (id, kind, direct_key) VALUES ($1, 'direct', $2)`, id, directKey(x, y)); err != nil {
+		t.Fatalf("direct with a key: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`UPDATE conversations SET kind = 'group', name = 'the three of us', direct_key = NULL WHERE id = $1`,
+		id); err != nil {
+		t.Errorf("promotion to group was refused by the direct_key check: %v", err)
 	}
 }
 

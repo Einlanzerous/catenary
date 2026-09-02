@@ -1,0 +1,63 @@
+package store
+
+import (
+	"context"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"sync"
+	"testing"
+)
+
+// Two processes starting together against a fresh database both read an empty
+// schema_migrations. Without the advisory lock the loser re-runs 0001 and its
+// CREATE TABLE raises 42P07, which surfaces as a boot failure.
+func TestConcurrentMigrateIsSafe(t *testing.T) {
+	dsn := testDSN(t)
+	ctx := context.Background()
+
+	pool, err := Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer pool.Close()
+	if err := MigrateDown(ctx, pool, 0); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+
+	const n = 6
+	pools := make([]*pgxpool.Pool, n)
+	for i := range n {
+		p, err := Connect(ctx, dsn)
+		if err != nil {
+			t.Fatalf("connect %d: %v", i, err)
+		}
+		defer p.Close()
+		pools[i] = p
+	}
+
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	start := make(chan struct{})
+	for i := range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = Migrate(ctx, pools[i])
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("migrator %d failed under concurrency: %v", i, err)
+		}
+	}
+	if n := publicTableCount(ctx, t, pool); n != 7 {
+		t.Errorf("%d tables after %d concurrent migrators, want 7", n, 6)
+	}
+	applied, _ := AppliedVersions(ctx, pool)
+	if len(applied) != 3 {
+		t.Errorf("applied = %v, want 3 with no duplicates", applied)
+	}
+}

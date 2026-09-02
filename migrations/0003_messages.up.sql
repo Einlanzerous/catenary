@@ -64,9 +64,16 @@ CREATE TABLE messages (
     edited_at       TIMESTAMPTZ,
     deleted         BOOLEAN     NOT NULL DEFAULT FALSE,
 
-    -- Search denormalisation. The single to_tsvector index over text and
-    -- transcripts is CANT-59's; the column lands here so that ticket is an
-    -- index and not a backfill against this table.
+    -- Search denormalisation ONLY, and not the authoritative copy. The single
+    -- to_tsvector index over text and transcripts is CANT-59's; the column
+    -- lands here so that ticket is an index and not a backfill.
+    --
+    -- The transcript text a client is SERVED comes from
+    -- attachments.transcript_json, because Transcript hangs off
+    -- VoiceAttachment and a message may carry more than one voice note —
+    -- attachments is keyed UNIQUE (message_id, position), so two are legal. A
+    -- per-message column cannot hold two transcripts, and the second job to
+    -- write here would silently replace the first.
     transcript_text TEXT,
 
     UNIQUE (conversation_id, seq),
@@ -123,8 +130,10 @@ CREATE TABLE attachments (
     -- Transcript.state is REQUIRED on VoiceAttachment, so without it the
     -- server cannot serve a voice note at all — not even a pending one.
     transcript_state TEXT   CHECK (transcript_state IN ('pending', 'ready', 'failed')),
-    -- word_count, segments[], engine, language, eta_sec. Authoritative here;
-    -- messages.transcript_text is the search denormalisation of `text`.
+    -- The AUTHORITATIVE Transcript object: text, word_count, segments[],
+    -- engine, language, eta_sec. Per attachment, which is where the wire puts
+    -- it. messages.transcript_text is a denormalised copy of `text` for
+    -- CANT-59's index and nothing reads it to serve a message.
     transcript_json JSONB,
 
     filename        TEXT,
