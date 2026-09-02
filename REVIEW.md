@@ -23,40 +23,17 @@ good code" but "**is this the approved decision**". See ticket fidelity.
 
 ## What CI already proves — and where it does not
 
-> ### ⚠ TEMPORARY — read this first, and check the date
->
-> **This section describes `verify.sh` as of the CANT-11 stack, and `main` does
-> not have it yet.** This file landed on `main` ahead of `ci.yml`, deliberately,
-> so that the stack's own pull requests could be reviewed at all — but that
-> means the paragraph below is a description of the future for as long as
-> CANT-17, CANT-13, CANT-12 and CANT-15 are open.
->
-> On `main` today `verify.sh` is the 83-line pre-stack version: **no `gofmt`
-> anywhere**, `go vet` and the conformance runner in `server/` only, `go test`
-> in `spike/r6-purser` only, **no database lane and no Postgres**, **no
-> `account-global` grep**, and the staleness guard proved on
-> `web/src/wire/generated.ts` alone. There is **no `ci.yml` on `main`**, so
-> `verify.sh` does not run in CI either.
->
-> **So on any pull request in that stack, none of the list below has run.**
-> Check those things yourself rather than crediting them — the reviewer of
-> CANT-13, which adds `migrations/` and the initial schema, is the one this
-> would mislead most.
->
-> Bringing `verify.sh` along instead of writing this caveat was tried and
-> rejected on evidence: run against `main`'s tree it fails 10 steps, because its
-> service lane reads `./cmd`, `./internal` and `./migrations` and none of them
-> exists there yet. It is coupled to the stack, exactly as `ci.yml` is.
->
-> **Delete this box when CANT-15 merges.** At that point the paragraph below is
-> simply true.
-
 `./verify.sh` runs in CI, whole. Do not spend findings re-deriving what it
 already checks:
 
 - the generated TypeScript, Dart, Go and `openapi.yaml` match the schema, and
   the staleness guard is proved to fail **once per file**;
-- all three conformance runners pass the same 41 vectors;
+- all three conformance runners pass the same 41 vectors — **except that the Go
+  runner skips the 10 `reject` cases**, which it counts and prints (`31 run, 10
+  skipped, 41 vectors`). TypeScript and Dart execute all 41. Constraint
+  enforcement in the generated Go decoders is a documented P1 gap owned by
+  `CANT-25`, and **Go is the trust boundary** — so a new `reject` vector is
+  exactly the thing a green suite does not prove about the server;
 - `gofmt`, `go vet`, `go test ./...` for both modules, with a real Postgres 16;
 - no document repeats the known-wrong "account-global" phrasing for `log_seq`,
   proved against a planted line every run.

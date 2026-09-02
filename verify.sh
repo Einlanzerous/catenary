@@ -2,9 +2,24 @@
 # Run everything that can be checked without hardware or a network peer.
 #
 # One command, because a spike's evidence is worthless if reproducing it needs
-# a tour. What this does NOT cover is the two things that need the world: R1's
-# tunnel run (spike/r1-websocket) and R2/R5, which need an Android device and a
-# willing friend.
+# a tour. What this does NOT cover at all is the things that need the world:
+# R1's tunnel run (spike/r1-websocket), and R2/R5, which need an Android device
+# and a willing friend. There are no steps for those.
+#
+# THREE STEPS HERE SKIP rather than fail when what they need is absent, and a
+# skip is not a pass:
+#
+#   Dart          both the analyze and the conformance runner, when `dart` is
+#                 not on PATH or at $DART.
+#   the database  the store's schema tests, when CATENARY_TEST_DATABASE_URL is
+#                 unset. `go test` still runs; those tests call t.Skip.
+#   R6            when the Purser checkout the spike's `replace` points at is
+#                 absent, which is every machine but one.
+#
+# They skip rather than fail because CI runs this file whole, and a step that
+# can never pass there is a red light everyone learns to ignore. CI forces the
+# first two present — `setup-dart` and the Postgres service — so only R6
+# actually skips there.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -45,8 +60,20 @@ else
 fi
 
 step "R4 · Go"
+# CANT-15: gofmt-clean AND byte-identical to a fresh generator run AND green,
+# all three at once. Any two of them were always easy; the third is why the
+# formatting had to move into the generator rather than onto the file.
+(cd "$ROOT/server" && gofmt -l .) >/tmp/v-fmt-server.log 2>&1
+[ ! -s /tmp/v-fmt-server.log ]; result $? "gofmt -l server/ is empty$( [ -s /tmp/v-fmt-server.log ] && printf ' (%s)' "$(tr '\n' ' ' </tmp/v-fmt-server.log)" )"
 (cd "$ROOT/server" && go vet ./...) >/tmp/v.log 2>&1
 result $? "go vet"
+# CANT-11: verify.sh used to run `go test ./...` for spike/r6-purser only, while
+# CLAUDE.md's Testing section names it for the whole tree. If CI ran it and this
+# did not, the two would diverge on the first Go test anyone wrote here — and
+# "./verify.sh green before anything is handed over" would stop being the same
+# claim as green CI.
+(cd "$ROOT/server" && go test ./...) >/tmp/v-go-test.log 2>&1
+result $? "go test ./... ($(grep -c 'no test files\|^ok' /tmp/v-go-test.log) packages)"
 (cd "$ROOT/server" && go run ./cmd/conformance) >/tmp/v-go.log 2>&1
 result $? "$(grep -oE 'all green — .*vectors|[0-9]+ of [0-9]+ FAILED' /tmp/v-go.log | tail -1)"
 
@@ -105,8 +132,8 @@ else
   (cd "$ROOT" && go test ./...) >/tmp/v-go-svc.log 2>&1
   result $? "go test ./... ($(grep -c 'no test files\|^ok' /tmp/v-go-svc.log) packages)"
   printf '   \033[33mNOTE\033[0m CATENARY_TEST_DATABASE_URL unset — the schema tests skipped.\n'
-  printf '        docker run -d --name cant-pg -e POSTGRES_PASSWORD=cant -e POSTGRES_DB=catenary_test -p 55440:5432 postgres:16-alpine\n'
-  printf '        export CATENARY_TEST_DATABASE_URL=postgres://postgres:cant@127.0.0.1:55440/catenary_test?sslmode=disable\n'
+  printf '        docker run -d --name cant-pg -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=catenary_test -p 55440:5432 postgres:16-alpine\n'
+  printf '        export CATENARY_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55440/catenary_test?sslmode=disable\n'
 fi
 
 step "CANT-13 · log_seq is never described as per-account"
@@ -149,8 +176,25 @@ rm -f "$ROOT/.guardprobe.md"
 [ -n "$probe" ]; result $? "a planted line makes it fail"
 
 step "R6 · Purser connector stub"
-(cd "$ROOT/spike/r6-purser" && go test ./...) >/tmp/v-r6.log 2>&1
-result $? "go test (7 tests against the real connector.Connector)"
+# R6 needs a PEER REPOSITORY, which the header's "needs the world" list did not
+# name. Purser's connector contract lives in its `internal/connector`, so Go
+# only lets a package whose import path is inside `github.com/Einlanzerous/purser/...`
+# implement it — which is why the spike's go.mod takes that module path and
+# `replace`s it at a local checkout. That replace is an absolute path to this
+# machine, so the step is machine-local by construction and cannot run anywhere
+# the Purser source is absent.
+#
+# Skipped rather than failed in that case. The alternative is a CI lane that can
+# never go green, and a red step everyone learns to ignore is worse than an
+# honest skip. R6 is cleared evidence in `spike/`, not a gate on Catenary's own
+# code; nothing in this repository can break it.
+r6_replace=$(sed -n 's/^replace .* => \(.*\)$/\1/p' "$ROOT/spike/r6-purser/go.mod" | tr -d ' ')
+if [ -n "$r6_replace" ] && [ ! -d "$r6_replace" ]; then
+  printf '   \033[33mSKIP\033[0m Purser checkout not at %s — R6 needs the peer repo to compile.\n' "$r6_replace"
+else
+  (cd "$ROOT/spike/r6-purser" && go test ./...) >/tmp/v-r6.log 2>&1
+  result $? "go test (7 tests against the real connector.Connector)"
+fi
 
 step "R3 · whisper.cpp results are on record"
 [ -s "$ROOT/spike/r3-whisper/results/bench.csv" ]
