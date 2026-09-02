@@ -1,0 +1,89 @@
+name: PR Review
+
+# Fresh-context review of every pull request (SERV-59), via the shared
+# definition in construct-server (SERV-92). It runs in CI so it structurally
+# cannot share context with whatever wrote the code, and so it fires whether or
+# not anyone remembers to ask.
+#
+# That matters more here than in most repos. Catenary's working agreement puts
+# 40 of its 60 tickets in Mode A, where the human reads the `Done when` claim
+# and green CI and NOT the diff. On those tickets this review is the only thing
+# that reads the code.
+#
+# Judgement lives in `REVIEW.md`; generated artifacts in `.github/review-ignore`.
+# The procedure itself is fetched from construct-server — do not copy
+# `review-prompt.md` here, and do not add a `concurrency:` key, which the shared
+# workflow owns. See construct-server's `docs/pr-reviewer.md`.
+#
+# THIS LANDS ON `main` AHEAD OF THE REST OF CANT-11, DELIBERATELY, and it is
+# split from `ci.yml` for two reasons that both only bite here.
+#
+# `issue_comment` workflows run ONLY from the default branch's copy of the
+# workflow file. While this file lives on a topic branch, `@claude review` is
+# inert repo-wide — there is no way to ask for a review, or to re-review a PR
+# whose first review has already run.
+#
+# And `pull_request` reads the workflow from the PR's merge ref, so a base that
+# carries this file covers a head that does not. That is what gets the rest of
+# the CANT-11 stack reviewed: none of those branches has a workflow of its own,
+# and cherry-picking one onto each is four copies to keep in step.
+#
+# `ci.yml` is NOT here, and must not be: its build job compiles `./cmd/catenary`
+# and caches on a root `go.sum`, neither of which exists on `main` until CANT-17
+# lands. It arrives with the stack. This file has no such coupling — it only
+# calls the shared workflow.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+# A called workflow cannot be granted more than its caller holds, so the ceiling
+# is set here even though the shared workflow declares the same three.
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  pr-review:
+    uses: Einlanzerous/construct-server/.github/workflows/pr-review-reusable.yml@main
+    with:
+      # Where a mistake widens access, loses data, leaks a secret, or
+      # compromises the runner. Enumerated rather than taken by directory, so
+      # the tier keeps carrying information as the tree grows — SGNT-36 is
+      # signet listing its whole source tree, after which every PR got the
+      # expensive tier and the escalation stopped meaning anything.
+      #
+      #   migrations/            the append-only log's shape. A bad migration
+      #                          destroys authored messages, and CANT-67 reads
+      #                          `retention_days` to delete on a timer.
+      #   internal/store/        both ordinals, the idempotency check, and every
+      #                          query over `messages`. CANT-14's counter draw
+      #                          lives here and is Mode C for a reason.
+      #   internal/api/          the WebSocket upgrade, the auth handshake and
+      #                          refresh rotation (CANT-22, CANT-29).
+      #   internal/config/       the DSN and anything credential-shaped.
+      #   cmd/catenary/          the composition root and `migrate down`.
+      #   schema/…               the wire contract and the generator over it.
+      #                          Everything in three languages is downstream of
+      #                          these four paths; `openapi.yaml` is NOT here
+      #                          because it is generated (see review-ignore).
+      #   deploy/                grants, compose, Traefik labels.
+      #   verify.sh              the verification definition itself.
+      #
+      # Deliberately absent: `web/`, `dart/`, `server/` and `spike/`. A client
+      # bug is a bug, but it cannot widen access or lose server-side data;
+      # `server/` today is the generated wire package and the conformance
+      # runners; `spike/` is read-only evidence. Naming the internal packages
+      # individually means a later `internal/ui/` does not silently escalate.
+      sensitive_paths: '^(migrations/|internal/(store|api|config)/|cmd/catenary/|schema/(catenary\.wire\.v1\.schema\.json|codegen/|vectors/|mapping/)|deploy/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+
+      # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
+      # the generated wire files are handled by `.github/review-ignore` — which
+      # is the right mechanism, because they are excluded from every review
+      # rather than only from ones that touch nothing else.
+    secrets:
+      claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      switchyard_token: ${{ secrets.SWITCHYARD_REVIEWER_TOKEN }}
