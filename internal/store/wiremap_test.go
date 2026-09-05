@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -301,13 +302,13 @@ func loadColumns(ctx context.Context, t *testing.T, pool *pgxpool.Pool) map[stri
 	defer rows.Close()
 
 	out := map[string]dbColumn{}
-	for rows.Next() {
-		var table, column string
-		var c dbColumn
-		if err := rows.Scan(&table, &column, &c.dataType, &c.nullable); err != nil {
-			t.Fatal(err)
-		}
+	var table, column string
+	var c dbColumn
+	if _, err := pgx.ForEachRow(rows, []any{&table, &column, &c.dataType, &c.nullable}, func() error {
 		out[fmt.Sprintf("%s.%s", table, column)] = c
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	return out
 }
@@ -325,12 +326,12 @@ func loadCheckConstraints(ctx context.Context, t *testing.T, pool *pgxpool.Pool)
 	defer rows.Close()
 
 	out := map[string][]string{}
-	for rows.Next() {
-		var table, name string
-		if err := rows.Scan(&table, &name); err != nil {
-			t.Fatal(err)
-		}
+	var table, name string
+	if _, err := pgx.ForEachRow(rows, []any{&table, &name}, func() error {
 		out[table] = append(out[table], name)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	return out
 }

@@ -73,22 +73,15 @@ func seqs(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv uuid.UUID)
 	if err != nil {
 		t.Fatalf("seqs: %v", err)
 	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var s int64
-		if err := rows.Scan(&s); err != nil {
-			t.Fatalf("scan seq: %v", err)
-		}
-		out = append(out, s)
-	}
-	// CANT-79, same defect one shape over: rows.Next() returns false on error
-	// as well as on exhaustion, so an iteration cut short mid-way returns a
-	// PREFIX. Any prefix of a dense sequence is dense, so assertDense would go
-	// green on it — the density claim passing without having been checked, in
-	// the test whose comment says a bigserial would have left n-1 holes here.
-	if err := rows.Err(); err != nil {
-		t.Fatalf("seqs: iteration ended early, so this slice is a prefix and any assertion over it is vacuous: %v", err)
+	// CANT-79: pgx.CollectRows checks rows.Err() and closes, so a truncated
+	// iteration is an ERROR here rather than a short slice. Hand-rolling the
+	// loop is what let that slip — rows.Next() returns false on failure as well
+	// as on exhaustion, and any prefix of a dense sequence is dense, so
+	// assertDense would have gone green on one. In the test whose own comment
+	// says a bigserial would have left n-1 holes here.
+	out, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		t.Fatalf("seqs: iteration ended early, so any assertion over it would be vacuous: %v", err)
 	}
 	return out
 }
@@ -333,17 +326,18 @@ func TestConcurrentDistinctSendsStayDenseAndOrdered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	defer rows.Close()
-	var prev int64
-	for rows.Next() {
-		var s, l int64
-		if err := rows.Scan(&s, &l); err != nil {
-			t.Fatal(err)
+	// ForEachRow returns rows.Err(), so a truncated read cannot pass as a short
+	// agreement: "ascending log_seq implies ascending seq" over a prefix is
+	// vacuously true after one row.
+	var seq, logSeq, prev int64
+	if _, err := pgx.ForEachRow(rows, []any{&seq, &logSeq}, func() error {
+		if seq <= prev {
+			return fmt.Errorf("ascending log_seq did not imply ascending seq: saw seq %d after %d", seq, prev)
 		}
-		if s <= prev {
-			t.Fatalf("ascending log_seq did not imply ascending seq: saw seq %d after %d", s, prev)
-		}
-		prev = s
+		prev = seq
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -893,15 +887,16 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			t.Fatal(err)
-		}
+	// ForEachRow returns rows.Err(): a prefix cannot see the eighth table, so a
+	// truncated read must not pass as "nothing outside the plan".
+	var n string
+	if _, err := pgx.ForEachRow(rows, []any{&n}, func() error {
 		if _, ok := want[n]; !ok {
 			t.Errorf("table %q exists and is not in the plan", n)
 		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -918,12 +913,12 @@ func describeTable(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table 
 	defer rows.Close()
 
 	var out []col
-	for rows.Next() {
-		var c col
-		if err := rows.Scan(&c.name, &c.dataType, &c.nullable); err != nil {
-			t.Fatal(err)
-		}
+	var c col
+	if _, err := pgx.ForEachRow(rows, []any{&c.name, &c.dataType, &c.nullable}, func() error {
 		out = append(out, c)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if len(out) == 0 {
 		t.Fatalf("table %s does not exist", table)
@@ -973,12 +968,12 @@ func TestEveryForeignKeyNamesItsOnDelete(t *testing.T) {
 	defer rows.Close()
 
 	got := map[string]string{}
-	for rows.Next() {
-		var srcTable, srcCol, tgtTable, action string
-		if err := rows.Scan(&srcTable, &srcCol, &tgtTable, &action); err != nil {
-			t.Fatal(err)
-		}
+	var srcTable, srcCol, tgtTable, action string
+	if _, err := pgx.ForEachRow(rows, []any{&srcTable, &srcCol, &tgtTable, &action}, func() error {
 		got[fmt.Sprintf("%s.%s -> %s", srcTable, srcCol, tgtTable)] = action
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	for fk, wantAction := range want {
