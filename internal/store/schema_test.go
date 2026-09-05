@@ -980,8 +980,9 @@ func TestDedupConstraintIsOnAuthorAndClientID(t *testing.T) {
 	ctx, pool := freshDB(t)
 
 	var cols []string
+	var name string
 	err := pool.QueryRow(ctx, `
-		SELECT array_agg(a.attname ORDER BY k.ord)
+		SELECT c.conname, array_agg(a.attname ORDER BY k.ord)
 		FROM pg_constraint c
 		CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
 		JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
@@ -989,11 +990,21 @@ func TestDedupConstraintIsOnAuthorAndClientID(t *testing.T) {
 		  AND EXISTS (
 		      SELECT 1 FROM pg_attribute x
 		      WHERE x.attrelid = c.conrelid AND x.attnum = ANY (c.conkey) AND x.attname = 'client_id')
-		GROUP BY c.oid`).Scan(&cols)
+		GROUP BY c.oid, c.conname`).Scan(&name, &cols)
 	if err != nil {
 		t.Fatalf("no unique constraint covers client_id: %v", err)
 	}
 	if len(cols) != 2 || cols[0] != "author_id" || cols[1] != "client_id" {
 		t.Errorf("dedup constraint is on %v, want (author_id, client_id) per ClientSend.client_id", cols)
+	}
+
+	// The NAME is load-bearing, not cosmetic: SendMessage's residual-race
+	// retry matches on it (store.dedupConstraint), so a later migration that
+	// names the constraint explicitly would leave the column assertion above
+	// green while the retry silently stopped matching — and a racing send
+	// would surface a raw 23505 to the caller instead of the winner's
+	// ordinals.
+	if name != dedupConstraint {
+		t.Errorf("dedup constraint is named %q, but SendMessage retries on %q", name, dedupConstraint)
 	}
 }

@@ -3,10 +3,11 @@ package store
 // CANT-14 — both ordinals, assigned inside the insert's own transaction.
 //
 // This is the single easiest place in this project to lose data silently, and
-// the shape of this file is the defence. There is no function here that hands
-// back an ordinal without also writing the row: the draw is reachable only
-// through SendMessage, so Invariant 1 is enforced by the operation's shape
-// rather than by a comment asking callers to be careful.
+// the shape of this file is the defence. There is no function here that DRAWS
+// an ordinal without also writing the row: the draw is reachable only through
+// SendMessage, so Invariant 1 is enforced by the operation's shape rather than
+// by a comment asking callers to be careful. (sentByKey returns ordinals but
+// draws none — it re-reads a row that is already committed.)
 //
 // A `bigserial` would be simpler and wrong. A sequence hands out its number
 // outside the transaction, so two inserters can commit out of order: a client
@@ -177,9 +178,14 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 		RETURNING at`,
 		out.ID, m.ConversationID, m.AuthorID, out.Seq, out.LogSeq,
 		m.Text, m.ClientID, m.SenderDeviceID, m.ReplyTo).Scan(&out.At); err != nil {
-		return Sent{}, err
+		// Wrapped, so the 23505 the caller retries on is still reachable
+		// through errors.As.
+		return Sent{}, fmt.Errorf("store: insert message: %w", err)
 	}
-	return out, tx.Commit(ctx)
+	if err := tx.Commit(ctx); err != nil {
+		return Sent{}, fmt.Errorf("store: commit: %w", err)
+	}
+	return out, nil
 }
 
 // sentByKey re-reads the winner of a dedup race.
@@ -191,8 +197,11 @@ func (s *Store) sentByKey(ctx context.Context, authorID, clientID uuid.UUID) (Se
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Sent{}, ErrNotFound
 	}
+	if err != nil {
+		return Sent{}, fmt.Errorf("store: re-read after dedup conflict: %w", err)
+	}
 	out.Duplicate = true
-	return out, err
+	return out, nil
 }
 
 // isUniqueViolation reports whether err is a 23505 against constraint. An

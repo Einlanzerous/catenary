@@ -18,11 +18,11 @@ One operation, `Store.SendMessage` in `internal/store/messages.go`. No migration
 Two writers taking the two in opposite orders deadlock, and Postgres resolves a deadlock by aborting somebody's send.
 
 - **CANT-63 will draw this counter** — an edit bumps `updated_log_seq` — and must take the two in this order.
-- **CANT-67 will not.** Its sweep advances `conversations.oldest_seq`, a floor, inside its own transaction. It never touches `log_counter`.
+- **CANT-67 will not.** Its sweep advances a floor on the conversation — a column that ticket lands — inside its own transaction. It never touches `log_counter`, which is what keeps it out of the cycle.
 
 ## What the operation guarantees
 
-- Both ordinals are drawn **inside the inserting transaction**. No function in `package store` returns an ordinal without writing the row; `logorder_test.go`'s `beginDraw` is the one deliberate exception and is test-only.
+- Both ordinals are drawn **inside the inserting transaction**. No function in `package store` draws an ordinal without writing the row; `logorder_test.go`'s `beginDraw` is the one deliberate exception and is test-only.
 - Idempotency is checked **before either ordinal is drawn**. On the residual race the unique violation is caught, rolled back — which un-draws both — and re-selected by key.
 - A replay is **not an error**. `Sent.Duplicate` reports it and the original's ordinals come back with it.
 - A nil `ClientID` means **no deduplication**, which is correct for a bot posting through CANT-75's REST send and for anything the server originates.
