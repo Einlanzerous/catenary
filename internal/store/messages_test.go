@@ -42,6 +42,12 @@ func TestASendWithNoIdempotencyKeyIsRefused(t *testing.T) {
 	// An assertion whose pass condition is the zero value cannot tell "clean"
 	// from "never ran". The claim it was making is real and worth keeping, so
 	// it moved to the test below, which can fail.
+	//
+	// This test keeps its freshDB deliberately, not residually. What it still
+	// holds over the one below is that the conversation and the author EXIST:
+	// the refusal is the guard's doing and not an incidental consequence of
+	// ids that resolve to nothing. Over a closed pool that distinction cannot
+	// be drawn, so the two tests are not the same test twice.
 }
 
 // The guard fires BEFORE the database is touched at all.

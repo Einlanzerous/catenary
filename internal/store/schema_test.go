@@ -82,6 +82,14 @@ func seqs(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv uuid.UUID)
 		}
 		out = append(out, s)
 	}
+	// CANT-79, same defect one shape over: rows.Next() returns false on error
+	// as well as on exhaustion, so an iteration cut short mid-way returns a
+	// PREFIX. Any prefix of a dense sequence is dense, so assertDense would go
+	// green on it — the density claim passing without having been checked, in
+	// the test whose comment says a bigserial would have left n-1 holes here.
+	if err := rows.Err(); err != nil {
+		t.Fatalf("seqs: iteration ended early, so this slice is a prefix and any assertion over it is vacuous: %v", err)
+	}
 	return out
 }
 

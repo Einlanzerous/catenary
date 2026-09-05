@@ -611,6 +611,13 @@ func TestOrdinalsAreNotDrawnFromASequence(t *testing.T) {
 		}
 		found = append(found, name)
 	}
+	// CANT-79: the pass condition here IS the empty result, so an iteration cut
+	// short reads as "no sequences in public" — the zero-value-is-the-pass
+	// problem that ticket removed, in the test guarding Invariant 1's bigserial
+	// clause. rows.Next() cannot distinguish the two; rows.Err() can.
+	if err := rows.Err(); err != nil {
+		t.Fatalf("list sequences: iteration ended early, so an empty result proves nothing: %v", err)
+	}
 	if len(found) > 0 {
 		t.Errorf("schema public holds %d sequence(s), want 0: %v — "+
 			"if one of these is %s a test leaked its fixture; otherwise an ordinal is being drawn outside its transaction",
