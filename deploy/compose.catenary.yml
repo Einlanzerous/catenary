@@ -1,0 +1,73 @@
+# Catenary service fragment for construct-server's docker-compose.yml.
+#
+# NOT a standalone stack — this is the block to paste into
+# ~/construct-server/docker-compose.yml, which owns the shared networks,
+# Postgres and Traefik. Kept here so Catenary's deploy shape is reviewable in
+# Catenary's own repo rather than only in the server repo, on the pattern
+# Chronicle and Lyceum already follow.
+#
+# PREREQUISITES, in order, and the third one does not exist yet:
+#
+#   1. deploy/provision.sql has run as a superuser (database + role exist).
+#      CANT-13 Ruling 3. It is deliberately not a migration: migrations run as
+#      the catenary role, and a role cannot create itself.
+#
+#   2. CATENARY_DB_PASSWORD reaches .env — add the Signet target:
+#        signet target add-key --project construct-server \
+#          --path /home/magos/construct-server/.env --name CATENARY_DB_PASSWORD
+#        signet target add-key --project construct-server \
+#          --path /opt/construct-server/.env --name CATENARY_DB_PASSWORD
+#        signet sync
+#      The password never appears in this file or anywhere in this repo.
+#
+#   3. *** THE IMAGE DOES NOT EXIST. *** ghcr.io/einlanzerous/catenary is named
+#      by CLAUDE.md as the release target, and NOTHING PUBLISHES IT — this repo
+#      has no Dockerfile and .github/workflows holds only ci.yml and
+#      pr-review.yml. Deploying this fragment today would pull a tag that was
+#      never pushed.
+#
+#      CANT-78 owns it. Written out here rather than left to be discovered,
+#      because Chronicle
+#      hit exactly this: its own fragment records that a wrong claim about
+#      which workflow built its image "is why CHRN-16 reached a deploy with no
+#      artifact to deploy". Filed as its own ticket rather than assumed.
+
+services:
+  catenary:
+    image: ghcr.io/einlanzerous/catenary:${CATENARY_TAG:-latest}
+    container_name: catenary
+    restart: unless-stopped
+    # No `ports:` on purpose. Catenary is reached through Traefik, never from
+    # the host. Publishing a port here would put an unauthenticated listener on
+    # the host and bypass the edge entirely — and until CANT-22 and CANT-28
+    # land there is no in-process auth behind that listener at all.
+    environment:
+      # 4012, the next free slot in the estate's 40xx block (internal/config).
+      - CATENARY_PORT=4012
+      - CATENARY_DATABASE_URL=postgres://catenary:${CATENARY_DB_PASSWORD}@postgres:5432/catenary?sslmode=disable
+      - CATENARY_LOG_LEVEL=${CATENARY_LOG_LEVEL:-info}
+      # JSON by default: Dozzle and Datadog both parse it into attributes with
+      # no pipeline configuration.
+      - CATENARY_LOG_FORMAT=${CATENARY_LOG_FORMAT:-json}
+      # Must be LESS than stop_grace_period below, or Docker kills the process
+      # while it is still draining.
+      - CATENARY_SHUTDOWN_GRACE=${CATENARY_SHUTDOWN_GRACE:-20s}
+    networks:
+      - construct_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      # /healthz takes no dependencies, so this reports on the process only.
+      # Readiness — which pings Postgres — is deliberately NOT the healthcheck:
+      # restarting the container is the wrong remedy for a database blip, and
+      # here it is worse than elsewhere, because every restart severs every
+      # open WebSocket at once and the clients all reconnect together.
+      test: ["CMD", "wget", "-qO-", "http://localhost:4012/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # Longer than Docker's 10s default and longer than CATENARY_SHUTDOWN_GRACE,
+    # so a redeploy drains in-flight sends rather than dropping them mid-insert.
+    stop_grace_period: 30s
