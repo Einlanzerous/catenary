@@ -269,20 +269,22 @@ func (r *syncReader) assertDeliveredEverything(ctx context.Context, t *testing.T
 	if err != nil {
 		t.Fatalf("read table: %v", err)
 	}
-	defer rows.Close()
-
+	// ForEachRow returns rows.Err(). Load-bearing here: the loop builds `missing`
+	// from rows the sync client did NOT deliver, so a prefix compares fewer rows,
+	// leaves `missing` empty, and the completeness half of CANT-19's property
+	// goes green having never read the suffix of the log it is asserting about.
+	var id uuid.UUID
+	var logSeq int64
 	var missing []string
 	var total int
-	for rows.Next() {
-		var id uuid.UUID
-		var logSeq int64
-		if err := rows.Scan(&id, &logSeq); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
+	if _, err := pgx.ForEachRow(rows, []any{&id, &logSeq}, func() error {
 		total++
 		if !got[id] {
 			missing = append(missing, fmt.Sprintf("log_seq %d (%s)", logSeq, id))
 		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read table: %v", err)
 	}
 	if len(missing) > 0 {
 		t.Fatalf("%d of %d messages were never delivered to a sync client: %v", len(missing), total, missing)
@@ -602,14 +604,13 @@ func TestOrdinalsAreNotDrawnFromASequence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list sequences: %v", err)
 	}
-	defer rows.Close()
-	var found []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		found = append(found, name)
+	// CANT-79: the pass condition here IS the empty result, so an iteration cut
+	// short reads as "no sequences in public" — in the test guarding Invariant
+	// 1's bigserial clause. CollectRows checks rows.Err(), which rows.Next()
+	// cannot: it returns false on failure and on exhaustion alike.
+	found, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("list sequences: iteration ended early, so an empty result proves nothing: %v", err)
 	}
 	if len(found) > 0 {
 		t.Errorf("schema public holds %d sequence(s), want 0: %v — "+

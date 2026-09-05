@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -21,6 +22,20 @@ import (
 // optional — CANT-14 requires it and refuses the zero value, because a
 // forgotten key would opt that send out of deduplication silently.
 func ptr[T any](v T) *T { return &v }
+
+// mustScan reads a one-row query and fails the test if it errors.
+//
+// CANT-79: the unchecked `pool.QueryRow(...).Scan(&x)` this replaces leaves x
+// at its zero value when the query fails, so an assertion cannot tell "the
+// property holds" from "the query never ran". That is harmless where the
+// expected value is non-zero and fatal where it is not, and the difference is
+// invisible at the call site — so no call site gets to make the choice.
+func mustScan(t *testing.T, row pgx.Row, dest ...any) {
+	t.Helper()
+	if err := row.Scan(dest...); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+}
 
 func mkUser(ctx context.Context, t *testing.T, pool *pgxpool.Pool, handle string) uuid.UUID {
 	t.Helper()
@@ -58,14 +73,15 @@ func seqs(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv uuid.UUID)
 	if err != nil {
 		t.Fatalf("seqs: %v", err)
 	}
-	defer rows.Close()
-	var out []int64
-	for rows.Next() {
-		var s int64
-		if err := rows.Scan(&s); err != nil {
-			t.Fatalf("scan seq: %v", err)
-		}
-		out = append(out, s)
+	// CANT-79: pgx.CollectRows checks rows.Err() and closes, so a truncated
+	// iteration is an ERROR here rather than a short slice. Hand-rolling the
+	// loop is what let that slip — rows.Next() returns false on failure as well
+	// as on exhaustion, and any prefix of a dense sequence is dense, so
+	// assertDense would have gone green on one. In the test whose own comment
+	// says a bigserial would have left n-1 holes here.
+	out, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil {
+		t.Fatalf("seqs: iteration ended early, so any assertion over it would be vacuous: %v", err)
 	}
 	return out
 }
@@ -181,8 +197,8 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	}
 
 	var lastSeq, counter int64
-	pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv).Scan(&lastSeq)
-	pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&counter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv), &lastSeq)
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &counter)
 
 	// Replay every key, twice over.
 	for range 2 {
@@ -198,8 +214,8 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	}
 
 	var lastSeqAfter, counterAfter int64
-	pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv).Scan(&lastSeqAfter)
-	pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&counterAfter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv), &lastSeqAfter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &counterAfter)
 
 	if lastSeqAfter != lastSeq {
 		t.Errorf("a replay burned a seq: last_seq %d -> %d", lastSeq, lastSeqAfter)
@@ -249,7 +265,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 	}
 
 	var count int64
-	pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE author_id = $1 AND client_id = $2`, u, key).Scan(&count)
+	mustScan(t, pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE author_id = $1 AND client_id = $2`, u, key), &count)
 	if count != 1 {
 		t.Errorf("%d concurrent sends under one key produced %d messages, want 1", n, count)
 	}
@@ -259,7 +275,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 	assertDense(t, seqs(ctx, t, pool, conv))
 
 	var counter int64
-	pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&counter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &counter)
 	if counter != 1 {
 		t.Errorf("log_counter = %d after %d racing sends of one message, want 1", counter, n)
 	}
@@ -310,17 +326,18 @@ func TestConcurrentDistinctSendsStayDenseAndOrdered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
-	defer rows.Close()
-	var prev int64
-	for rows.Next() {
-		var s, l int64
-		if err := rows.Scan(&s, &l); err != nil {
-			t.Fatal(err)
+	// ForEachRow returns rows.Err(), so a truncated read cannot pass as a short
+	// agreement: "ascending log_seq implies ascending seq" over a prefix is
+	// vacuously true after one row.
+	var seq, logSeq, prev int64
+	if _, err := pgx.ForEachRow(rows, []any{&seq, &logSeq}, func() error {
+		if seq <= prev {
+			return fmt.Errorf("ascending log_seq did not imply ascending seq: saw seq %d after %d", seq, prev)
 		}
-		if s <= prev {
-			t.Fatalf("ascending log_seq did not imply ascending seq: saw seq %d after %d", s, prev)
-		}
-		prev = s
+		prev = seq
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -393,7 +410,7 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 	// The attachment row went with the message. The BYTES are CANT-47's and
 	// CANT-67's problem and are not claimed here.
 	var attachments int
-	pool.QueryRow(ctx, `SELECT count(*) FROM attachments WHERE message_id = $1`, source.ID).Scan(&attachments)
+	mustScan(t, pool.QueryRow(ctx, `SELECT count(*) FROM attachments WHERE message_id = $1`, source.ID), &attachments)
 	if attachments != 0 {
 		t.Errorf("%d attachment rows outlived their message; message_id is not CASCADE", attachments)
 	}
@@ -480,7 +497,7 @@ func TestConcurrentFindOrCreateDirectMakesOneConversation(t *testing.T) {
 	wg.Wait()
 
 	var count int
-	pool.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE direct_key = $1`, key).Scan(&count)
+	mustScan(t, pool.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE direct_key = $1`, key), &count)
 	if count != 1 {
 		t.Errorf("%d concurrent find-or-create calls made %d direct conversations for one pair, want 1", n, count)
 	}
@@ -870,15 +887,16 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var n string
-		if err := rows.Scan(&n); err != nil {
-			t.Fatal(err)
-		}
+	// ForEachRow returns rows.Err(): a prefix cannot see the eighth table, so a
+	// truncated read must not pass as "nothing outside the plan".
+	var n string
+	if _, err := pgx.ForEachRow(rows, []any{&n}, func() error {
 		if _, ok := want[n]; !ok {
 			t.Errorf("table %q exists and is not in the plan", n)
 		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -895,12 +913,12 @@ func describeTable(ctx context.Context, t *testing.T, pool *pgxpool.Pool, table 
 	defer rows.Close()
 
 	var out []col
-	for rows.Next() {
-		var c col
-		if err := rows.Scan(&c.name, &c.dataType, &c.nullable); err != nil {
-			t.Fatal(err)
-		}
+	var c col
+	if _, err := pgx.ForEachRow(rows, []any{&c.name, &c.dataType, &c.nullable}, func() error {
 		out = append(out, c)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if len(out) == 0 {
 		t.Fatalf("table %s does not exist", table)
@@ -950,12 +968,12 @@ func TestEveryForeignKeyNamesItsOnDelete(t *testing.T) {
 	defer rows.Close()
 
 	got := map[string]string{}
-	for rows.Next() {
-		var srcTable, srcCol, tgtTable, action string
-		if err := rows.Scan(&srcTable, &srcCol, &tgtTable, &action); err != nil {
-			t.Fatal(err)
-		}
+	var srcTable, srcCol, tgtTable, action string
+	if _, err := pgx.ForEachRow(rows, []any{&srcTable, &srcCol, &tgtTable, &action}, func() error {
 		got[fmt.Sprintf("%s.%s -> %s", srcTable, srcCol, tgtTable)] = action
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 
 	for fk, wantAction := range want {
