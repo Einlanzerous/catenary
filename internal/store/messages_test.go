@@ -1,66 +1,56 @@
 package store
 
-// CANT-14 — the two nullable inputs, which no other test in this package
-// reaches. Every call site elsewhere passes a client_id and a text, so without
-// these the nil branches of SendMessage are unexecuted and the claim that a
-// server-originated row inserts at all is reasoning rather than evidence.
+// CANT-14 — the two things about SendMessage's inputs that no other test in
+// this package reaches: a missing idempotency key, and a message with no text.
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
 )
 
-// A nil ClientID means NO DEDUPLICATION, and that is correct rather than
-// sloppy: not every row arrives over a socket. A bot on CANT-75's REST send
-// and anything the server originates have no key. Postgres treats those NULLs
-// as distinct in the unique constraint, so two of them are two messages —
-// which is right, because they were never deduplicated in the first place.
-func TestSendsWithNoIdempotencyKeyAreNeverDeduplicated(t *testing.T) {
+// A send with no idempotency key is REFUSED, loudly.
+//
+// The key is required rather than optional because an optional one is a field
+// a caller forgets, and forgetting would quietly opt that send out of
+// deduplication — no error, no signal, and a bot that retries on a timer
+// double-posts. Every sending surface supplies one: CANT-75's REST send takes
+// it in the body and its Done-when requires that a sender with no device row
+// is deduplicated exactly like one with.
+func TestASendWithNoIdempotencyKeyIsRefused(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool)
-	u := mkUser(ctx, t, pool, "server")
+	u := mkUser(ctx, t, pool, "forgetful")
 	conv := mkGroup(ctx, t, pool, "room")
 
-	first, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, Text: ptr("one")})
-	if err != nil {
-		t.Fatalf("a send with no client_id failed outright: %v", err)
+	_, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, Text: ptr("no key")})
+	if err == nil {
+		t.Fatal("a send with no client_id was accepted; it would never be deduplicated and nothing would say so")
 	}
-	second, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, Text: ptr("two")})
-	if err != nil {
-		t.Fatalf("a second send with no client_id failed: %v", err)
-	}
-
-	if first.Duplicate || second.Duplicate {
-		t.Errorf("a keyless send reported itself a duplicate: %+v, %+v", first, second)
-	}
-	if first.ID == second.ID {
-		t.Fatal("two keyless sends collapsed into one message; NULLs are being treated as equal")
-	}
-	if second.Seq <= first.Seq || second.LogSeq <= first.LogSeq {
-		t.Errorf("ordinals did not advance across two keyless sends: %+v then %+v", first, second)
+	if !errors.Is(err, ErrNoClientID) {
+		t.Errorf("refused with %v, want ErrNoClientID so a caller can tell this from a database failure", err)
 	}
 
-	var nulls int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM messages WHERE author_id = $1 AND client_id IS NULL`, u).Scan(&nulls); err != nil {
-		t.Fatal(err)
+	// And it is refused BEFORE anything is drawn or written.
+	var msgs, lastSeq, counter int64
+	pool.QueryRow(ctx, `SELECT count(*) FROM messages`).Scan(&msgs)
+	pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv).Scan(&lastSeq)
+	pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&counter)
+	if msgs != 0 || lastSeq != 0 || counter != 0 {
+		t.Errorf("a refused send left state behind: %d messages, last_seq %d, log_counter %d", msgs, lastSeq, counter)
 	}
-	if nulls != 2 {
-		t.Errorf("%d rows stored a NULL client_id, want 2", nulls)
-	}
-	assertDense(t, seqs(ctx, t, pool, conv))
 }
 
-// A keyless send still takes both ordinals from the same transaction — the nil
-// key skips the idempotency check, not the draw.
-func TestAKeylessSendStillDrawsBothOrdinalsInOneTransaction(t *testing.T) {
+// The ordinals the caller is handed are the ones the transaction drew — the
+// caller acks with these, so they cannot be approximations.
+func TestSendReturnsTheOrdinalsItDrew(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool)
-	u := mkUser(ctx, t, pool, "server")
+	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
 
-	sent, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, Text: ptr("x")})
+	sent, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("x")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +75,7 @@ func TestAMessageMayCarryNoText(t *testing.T) {
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
 
-	sent, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New())})
+	sent, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New()})
 	if err != nil {
 		t.Fatalf("a message with no text was rejected: %v", err)
 	}

@@ -52,15 +52,21 @@ type NewMessage struct {
 
 	// ClientID is the idempotency key, scoped (author_id, client_id) to match
 	// ClientSend.client_id's normative "the server deduplicates on (account,
-	// client_id)".
+	// client_id)". REQUIRED, and SendMessage refuses the zero value.
 	//
-	// Nil is legal and means "no deduplication", which is correct rather than
-	// sloppy: not every row arrives over a socket. A bot posting through
-	// CANT-75's REST send and anything the server originates have no
-	// client_id, and Postgres treating those NULLs as distinct is right —
-	// they were never deduplicated in the first place. A nil key skips the
-	// check below, because a check against NULL could never match anyway.
-	ClientID *uuid.UUID
+	// Every sending surface supplies one, bots included: CANT-75's REST send
+	// takes it in the body and its Done-when requires that "a sender with no
+	// device row is deduplicated exactly like one with". A cron-driven bot
+	// needs it MORE than a phone does — it retries mechanically, on a timer,
+	// possibly from two replicas.
+	//
+	// It is required here rather than optional because an optional key is one
+	// a caller forgets, and forgetting would silently opt that send out of
+	// deduplication with no error and no signal. The column stays nullable
+	// (CANT-13's call) so a genuinely server-originated path could one day
+	// write NULL; nothing does today, and this primitive is not the thing
+	// that should be able to.
+	ClientID uuid.UUID
 
 	// SenderDeviceID is nil for a bot, which has no device.
 	SenderDeviceID *uuid.UUID
@@ -109,6 +115,12 @@ type Sent struct {
 //     a bigserial at the exact moment it matters, and it is why the race
 //     leaves no hole in either ordinal.
 func (s *Store) SendMessage(ctx context.Context, m NewMessage) (Sent, error) {
+	// Loud rather than silent: a forgotten key is a send that would quietly
+	// never be deduplicated.
+	if m.ClientID == uuid.Nil {
+		return Sent{}, fmt.Errorf("store: send without an idempotency key: %w", ErrNoClientID)
+	}
+
 	sent, err := s.attemptSend(ctx, m)
 	if err == nil {
 		return sent, nil
@@ -116,15 +128,9 @@ func (s *Store) SendMessage(ctx context.Context, m NewMessage) (Sent, error) {
 	if !isUniqueViolation(err, dedupConstraint) {
 		return Sent{}, err
 	}
-	if m.ClientID == nil {
-		// Unreachable by construction: without a key there is no dedup
-		// constraint to violate. Returned rather than ignored, because
-		// reaching it would mean the constraint means something else now.
-		return Sent{}, fmt.Errorf("store: dedup conflict on a send with no client_id: %w", err)
-	}
 	// Somebody else committed this key while we were drawing. Our ordinals
 	// went back with the rollback; re-read theirs.
-	return s.sentByKey(ctx, m.AuthorID, *m.ClientID)
+	return s.sentByKey(ctx, m.AuthorID, m.ClientID)
 }
 
 func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
@@ -135,18 +141,16 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	// 1 — check, before anything is drawn.
-	if m.ClientID != nil {
-		var existing Sent
-		err := tx.QueryRow(ctx,
-			`SELECT id, seq, log_seq, at FROM messages WHERE author_id = $1 AND client_id = $2`,
-			m.AuthorID, *m.ClientID).Scan(&existing.ID, &existing.Seq, &existing.LogSeq, &existing.At)
-		switch {
-		case err == nil:
-			existing.Duplicate = true
-			return existing, nil // rolled back by the defer: nothing was drawn
-		case !errors.Is(err, pgx.ErrNoRows):
-			return Sent{}, fmt.Errorf("store: check idempotency key: %w", err)
-		}
+	var existing Sent
+	err = tx.QueryRow(ctx,
+		`SELECT id, seq, log_seq, at FROM messages WHERE author_id = $1 AND client_id = $2`,
+		m.AuthorID, m.ClientID).Scan(&existing.ID, &existing.Seq, &existing.LogSeq, &existing.At)
+	switch {
+	case err == nil:
+		existing.Duplicate = true
+		return existing, nil // rolled back by the defer: nothing was drawn
+	case !errors.Is(err, pgx.ErrNoRows):
+		return Sent{}, fmt.Errorf("store: check idempotency key: %w", err)
 	}
 
 	// 2 — draw, conversation first. See the lock-order note at the top.

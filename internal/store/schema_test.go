@@ -126,7 +126,7 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 	conv := mkGroup(ctx, t, pool, "room")
 	key := uuid.New()
 
-	first, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: bot, ClientID: &key, Text: ptr("hello")})
+	first, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: bot, ClientID: key, Text: ptr("hello")})
 	if err != nil {
 		t.Fatalf("first send from a device-less sender: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 		t.Fatal("the first send reported itself a duplicate")
 	}
 
-	again, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: bot, ClientID: &key, Text: ptr("hello")})
+	again, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: bot, ClientID: key, Text: ptr("hello")})
 	if err != nil {
 		t.Fatalf("replay from a device-less sender: %v", err)
 	}
@@ -149,11 +149,11 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 	laptop := mkDevice(ctx, t, pool, human, "laptop")
 	shared := uuid.New()
 
-	a, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: human, SenderDeviceID: &phone, ClientID: &shared, Text: ptr("hi")})
+	a, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: human, SenderDeviceID: &phone, ClientID: shared, Text: ptr("hi")})
 	if err != nil {
 		t.Fatalf("send from phone: %v", err)
 	}
-	b, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: human, SenderDeviceID: &laptop, ClientID: &shared, Text: ptr("hi")})
+	b, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: human, SenderDeviceID: &laptop, ClientID: shared, Text: ptr("hi")})
 	if err != nil {
 		t.Fatalf("send from laptop: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 
 	keys := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
 	for i, k := range keys {
-		if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: &k, Text: ptr(fmt.Sprintf("m%d", i))}); err != nil {
+		if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: k, Text: ptr(fmt.Sprintf("m%d", i))}); err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
 	}
@@ -186,7 +186,7 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	// Replay every key, twice over.
 	for range 2 {
 		for i, k := range keys {
-			got, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: &k, Text: ptr(fmt.Sprintf("m%d", i))})
+			got, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: k, Text: ptr(fmt.Sprintf("m%d", i))})
 			if err != nil {
 				t.Fatalf("replay %d: %v", i, err)
 			}
@@ -230,7 +230,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			results[i], errs[i] = st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: &key, Text: ptr("once")})
+			results[i], errs[i] = st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: key, Text: ptr("once")})
 		}()
 	}
 	close(start)
@@ -288,7 +288,7 @@ func TestConcurrentDistinctSendsStayDenseAndOrdered(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, errs[i] = st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New()), Text: ptr(fmt.Sprintf("m%d", i))})
+			_, errs[i] = st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr(fmt.Sprintf("m%d", i))})
 		}()
 	}
 	close(start)
@@ -358,7 +358,7 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
 
-	source, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New()), Text: ptr("the original")})
+	source, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("the original")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -371,7 +371,7 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 
 	// reply_to is part of the send now rather than a follow-up UPDATE, so the
 	// column this test is about is written by the path under test.
-	reply, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New()), Text: ptr("the reply"), ReplyTo: &source.ID})
+	reply, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("the reply"), ReplyTo: &source.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +406,7 @@ func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
-	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New()), Text: ptr("hello")}); err != nil {
+	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("hello")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -432,7 +432,7 @@ func TestADeviceWithMessagesCannotBeDeleted(t *testing.T) {
 	u := mkUser(ctx, t, pool, "u")
 	d := mkDevice(ctx, t, pool, u, "phone")
 	conv := mkGroup(ctx, t, pool, "room")
-	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, SenderDeviceID: &d, ClientID: ptr(uuid.New()), Text: ptr("hello")}); err != nil {
+	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, SenderDeviceID: &d, ClientID: uuid.New(), Text: ptr("hello")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -606,7 +606,7 @@ func TestPeaksBoundsElementsAndLength(t *testing.T) {
 	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
-	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New()), Text: ptr("voice")})
+	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("voice")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +648,7 @@ func TestPerKindRequiredFields(t *testing.T) {
 	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
-	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New()), Text: ptr("attachments")})
+	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("attachments")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -730,7 +730,7 @@ func TestMessageAtIsServerAssigned(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: ptr(uuid.New()), Text: ptr("m")})
+			st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("m")})
 		}()
 	}
 	close(start)

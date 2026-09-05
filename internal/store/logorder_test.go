@@ -78,7 +78,7 @@ var referenceInserter inserter = func(ctx context.Context, pool *pgxpool.Pool, c
 	return New(pool).SendMessage(ctx, NewMessage{
 		ConversationID: conv,
 		AuthorID:       author,
-		ClientID:       &clientID,
+		ClientID:       clientID,
 		Text:           ptr(text),
 	})
 }

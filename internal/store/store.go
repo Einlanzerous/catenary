@@ -15,6 +15,11 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// ErrNoClientID is returned by SendMessage when the idempotency key is the
+// zero value. It is an error rather than a silent opt-out because a send that
+// is not deduplicated, and does not say so, is how a bot double-posts.
+var ErrNoClientID = errors.New("store: client_id is required")
+
 // ErrNotFound is returned by every lookup that resolves nothing.
 var ErrNotFound = errors.New("store: not found")
 

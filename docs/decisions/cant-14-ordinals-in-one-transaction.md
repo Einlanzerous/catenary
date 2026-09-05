@@ -25,7 +25,7 @@ Two writers taking the two in opposite orders deadlock, and Postgres resolves a 
 - Both ordinals are drawn **inside the inserting transaction**. No function in `package store` draws an ordinal without writing the row; `logorder_test.go`'s `beginDraw` is the one deliberate exception and is test-only.
 - Idempotency is checked **before either ordinal is drawn**. On the residual race the unique violation is caught, rolled back — which un-draws both — and re-selected by key.
 - A replay is **not an error**. `Sent.Duplicate` reports it and the original's ordinals come back with it.
-- A nil `ClientID` means **no deduplication**, which is correct for a bot posting through CANT-75's REST send and for anything the server originates.
+- The idempotency key is **required**, and the zero value is refused with `ErrNoClientID`. An optional key is one a caller forgets, and forgetting would opt that send out of deduplication silently. Bots supply one like everyone else — CANT-75's REST send takes it in the body. The column stays nullable (CANT-13's call) but nothing writes NULL.
 - `reply_to` is written by the send, not by a follow-up `UPDATE`.
 
 ## The throughput ceiling is deliberate
