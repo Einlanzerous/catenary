@@ -50,6 +50,17 @@ jobs:
           app-id: ${{ secrets.RELEASE_BOT_APP_ID }}
           private-key: ${{ secrets.RELEASE_BOT_PRIVATE_KEY }}
 
+      # The config carries `initial-version: 0.1.0` (CANT-80), and JSON cannot
+      # hold the reason, so it lives here.
+      #
+      # With no prior tag release-please takes its INITIAL RELEASE path, whose
+      # default is 1.0.0 — `bump-minor-pre-major` never gets a say, and the
+      # manifest's seeded 0.0.0 is not read as a release to bump from. Left
+      # alone it opened PR #13 as `chore(main): release 1.0.0`, for a service
+      # that answered /healthz and nothing else. `initial-version` applies only
+      # while there is no release, so it goes inert the moment v0.1.0 is tagged
+      # and needs no follow-up commit to remove — unlike `release-as`, which the
+      # schema marks deprecated and which pins EVERY later release until deleted.
       - uses: googleapis/release-please-action@v4
         with:
           token: ${{ steps.app-token.outputs.token }}
