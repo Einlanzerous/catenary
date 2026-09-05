@@ -49,10 +49,24 @@ import (
 // The write path under test
 
 // inserter is one complete send. Arm 1's positive half and Arm 2 both drive the
-// REAL write path through this parameter rather than through a copy, because
-// the regressions a schema guard cannot see are all code-side: drawing the
-// counter in its own short transaction "to cut contention", or drawing it
-// before something slow. Both leave the DDL identical and break the property.
+// REAL write path through this rather than through a copy, because the
+// regressions a schema guard cannot see are all code-side: drawing the counter
+// in its own short transaction "to cut contention", or drawing it before
+// something slow. Both leave the DDL identical and break the property.
+//
+// The two arms do NOT catch the same ones, and it is worth being exact about
+// which catches which, because Arm 2 is the one described below as "the net,
+// not the proof" and is therefore the one somebody later argues is expendable:
+//
+//   - Arm 1's positive half proves the counter's row lock IS TAKEN, and that
+//     ordering follows from it. It has one production writer and a scripted
+//     holder, so a draw moved out of the transaction still blocks against the
+//     held lock and this arm still goes green.
+//   - Arm 2 is what catches a draw that leaves the transaction, because it is
+//     the only arm with enough concurrent production writers for one to
+//     overtake another. Measured against a scratch copy drawing log_counter on
+//     the pool instead of the tx — the regression exactly — Arm 1's positive
+//     half passed 5/5 and Arm 2 failed 5/5.
 type inserter func(ctx context.Context, pool *pgxpool.Pool, conv, author, clientID uuid.UUID, text string) (sent, error)
 
 // referenceInserter is the ONE call site naming the write path. CANT-14
@@ -367,11 +381,12 @@ func TestForcedScheduleLosesAMessageWhenLogSeqComesFromASequence(t *testing.T) {
 	}
 	t.Logf("the property broke exactly where it should: %v", skip)
 
-	// A commits last. Its row is below the cursor for good.
+	// A commits last, and no further poll can surface it: the cursor is already
+	// past it, so `WHERE log_seq > $1` will never return it again. The row is
+	// still in the table — it is gone from THIS client's future, which is the
+	// whole failure. Nothing is asserted by polling again here; the scan below
+	// is what states it.
 	a.commitInsert(ctx, t)
-	if err := reader.poll(ctx); err != nil {
-		t.Logf("and stays broken on the next poll: %v", err)
-	}
 
 	// The closing comparison agrees, in the invariant's own words.
 	var delivered bool
@@ -496,6 +511,19 @@ func TestConcurrentWritersInDistinctConversationsAreNeverSkipped(t *testing.T) {
 	reader := newSyncReader(standaloneConn(ctx, t, "cant19-reader"))
 	readerDone := make(chan error, 1)
 	stop := make(chan struct{})
+
+	// finishReader stops the reader AND waits for it. Deferred as well as
+	// called, because a writer error below exits via t.Fatalf: without this the
+	// goroutine would still be using its *pgx.Conn when standaloneConn's
+	// cleanup closes it, and pgx.Conn is not goroutine-safe — the writer error
+	// that actually mattered would arrive wearing a conn-closed panic.
+	var readerErr error
+	finishReader := sync.OnceFunc(func() {
+		close(stop)
+		readerErr = <-readerDone
+	})
+	defer finishReader()
+
 	go func() {
 		for {
 			if err := reader.poll(ctx); err != nil {
@@ -535,10 +563,10 @@ func TestConcurrentWritersInDistinctConversationsAreNeverSkipped(t *testing.T) {
 		}
 	}
 
-	close(stop)
-	if err := <-readerDone; err != nil {
+	finishReader()
+	if readerErr != nil {
 		t.Fatalf("a sync client reading alongside %d concurrent writers in %d distinct conversations was skipped: %v",
-			arm2Writers, arm2Writers, err)
+			arm2Writers, arm2Writers, readerErr)
 	}
 	if err := reader.pollUntil(ctx, total, 10*time.Second); err != nil {
 		t.Fatalf("after every writer committed: %v", err)
@@ -549,9 +577,10 @@ func TestConcurrentWritersInDistinctConversationsAreNeverSkipped(t *testing.T) {
 // ---------------------------------------------------------------------------
 // The structural guard
 //
-// The cheap half of the permanent net, and the half that cannot rot. Arm 1's
-// positive half catches the code-side regressions; this catches the schema-side
-// one — someone collapsing log_counter into a sequence, which is the
+// The cheap half of the permanent net, and the half that cannot rot. Arm 2
+// catches the code-side regression — a draw that leaves the inserting
+// transaction — and Arm 1's positive half proves the lock is taken at all;
+// this catches the schema-side one — someone collapsing log_counter into a sequence, which is the
 // plausible-looking simplification this project would otherwise never notice.
 //
 // TestSchemaMatchesThePlanColumnForColumn checks type and nullability only, so
