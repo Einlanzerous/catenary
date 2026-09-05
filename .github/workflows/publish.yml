@@ -33,6 +33,11 @@ jobs:
   image:
     name: build and push
     runs-on: ubuntu-latest
+    outputs:
+      # Consumed by `smoke` below, which verifies the artefact THIS job pushed
+      # rather than a rebuild of the same source.
+      digest: ${{ steps.build.outputs.digest }}
+      stamp: ${{ steps.ver.outputs.stamp }}
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -121,7 +126,8 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: deploy/Dockerfile
@@ -145,3 +151,96 @@ jobs:
             GIT_SHA=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  smoke:
+    name: the published image answers /healthz
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+
+    # CANT-78's fourth Done-when clause is that the healthcheck is proved
+    # "against the image that actually ships rather than against a local build".
+    # A local `docker build` is evidence about the Dockerfile and no evidence
+    # about the published artefact — and the failure it would miss is the one
+    # the ticket names: a healthcheck calling a binary the image does not
+    # contain fails closed on EVERY deploy, and nothing between a merge and that
+    # deploy would catch it. So this job pulls the digest just pushed and runs
+    # the compose healthcheck command verbatim against it.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: catenary
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: run the pushed digest and probe it
+        env:
+          DIGEST: ${{ needs.image.outputs.digest }}
+          STAMP: ${{ needs.image.outputs.stamp }}
+        run: |
+          set -euo pipefail
+          IMAGE="ghcr.io/einlanzerous/catenary@${DIGEST}"
+          echo "probing $IMAGE"
+
+          # The DSN is pgx's KEYWORD/VALUE form, not a URL — the form CANT-16's
+          # deploy/README.md chose, because the URL form misparses a generated
+          # password containing @ / # ? or %. Exercising it here means the shape
+          # compose will use is the shape that was tested.
+          docker run -d --name catenary-smoke --network host \
+            -e CATENARY_PORT=4012 \
+            -e CATENARY_DATABASE_URL="host=127.0.0.1 port=5432 user=postgres dbname=catenary sslmode=disable" \
+            "$IMAGE"
+
+          # The compose healthcheck command, verbatim. If the runtime stage ever
+          # loses busybox — a move to scratch or distroless — this is what goes
+          # red, here, instead of leaving every deploy stuck `unhealthy`.
+          ok=""
+          for _ in $(seq 1 30); do
+            if docker exec catenary-smoke wget -qO- http://localhost:4012/healthz > healthz.json 2>/dev/null; then
+              ok=1; break
+            fi
+            sleep 1
+          done
+          [ -n "$ok" ] || { echo "::error::/healthz never answered in the published image"; exit 1; }
+          cat healthz.json; echo
+          grep -q '"status":"ok"' healthz.json
+
+          # /readyz pings Postgres, so this also proves the embedded migrator
+          # ran against a real database from inside the shipped image.
+          docker exec catenary-smoke wget -qO- http://localhost:4012/readyz | tee readyz.json; echo
+          grep -q '"status":"ready"' readyz.json
+
+          # On a RELEASE, the binary's reported version must equal the validated
+          # stamp — which is also what metadata-action put in the image label.
+          # The delivery ledger compares those two with strict equality, so a
+          # disagreement here is a permanently unresolvable row. On a main build
+          # STAMP is empty and the honest answer is `dev`.
+          reported=$(docker exec catenary-smoke catenary version | head -1)
+          echo "binary reports: $reported"
+          if [ -n "$STAMP" ]; then
+            [ "$reported" = "$STAMP" ] || {
+              echo "::error::published image reports '$reported' but was stamped '$STAMP'"; exit 1; }
+          else
+            [ "$reported" = "dev" ] || {
+              echo "::error::an unstamped build reports '$reported', want 'dev'"; exit 1; }
+          fi
+
+      - name: container logs on failure
+        if: failure()
+        run: docker logs catenary-smoke || true

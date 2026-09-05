@@ -33,9 +33,18 @@ RUN CGO_ENABLED=0 go build -trimpath \
 #    `service_healthy` stalls behind it. The alternatives were a `catenary
 #    healthcheck` subcommand or this. This matches Chronicle and keeps the
 #    compose block identical in shape to every other Go service on the box.
-FROM alpine:3.20 AS runtime
+#
+#    Pinned to a SUPPORTED Alpine. 3.20 is past its two-year window, so
+#    `apk add` there pulls from a branch no longer getting security updates —
+#    on a public image. (Chronicle still pins 3.20; flagged there separately.)
+FROM alpine:3.23 AS runtime
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/catenary /usr/local/bin/catenary
+
+# Unprivileged. 4012 is above 1024 and the process writes nothing to disk —
+# logs go to stdout and the migrations are embedded — so root buys nothing here.
+USER nobody
+
 ENV CATENARY_PORT=4012
 EXPOSE 4012
 ENTRYPOINT ["catenary"]
