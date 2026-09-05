@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -21,6 +22,20 @@ import (
 // optional — CANT-14 requires it and refuses the zero value, because a
 // forgotten key would opt that send out of deduplication silently.
 func ptr[T any](v T) *T { return &v }
+
+// mustScan reads a one-row query and fails the test if it errors.
+//
+// CANT-79: the unchecked `pool.QueryRow(...).Scan(&x)` this replaces leaves x
+// at its zero value when the query fails, so an assertion cannot tell "the
+// property holds" from "the query never ran". That is harmless where the
+// expected value is non-zero and fatal where it is not, and the difference is
+// invisible at the call site — so no call site gets to make the choice.
+func mustScan(t *testing.T, row pgx.Row, dest ...any) {
+	t.Helper()
+	if err := row.Scan(dest...); err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+}
 
 func mkUser(ctx context.Context, t *testing.T, pool *pgxpool.Pool, handle string) uuid.UUID {
 	t.Helper()
@@ -181,8 +196,8 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	}
 
 	var lastSeq, counter int64
-	pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv).Scan(&lastSeq)
-	pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&counter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv), &lastSeq)
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &counter)
 
 	// Replay every key, twice over.
 	for range 2 {
@@ -198,8 +213,8 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	}
 
 	var lastSeqAfter, counterAfter int64
-	pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv).Scan(&lastSeqAfter)
-	pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&counterAfter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv), &lastSeqAfter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &counterAfter)
 
 	if lastSeqAfter != lastSeq {
 		t.Errorf("a replay burned a seq: last_seq %d -> %d", lastSeq, lastSeqAfter)
@@ -249,7 +264,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 	}
 
 	var count int64
-	pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE author_id = $1 AND client_id = $2`, u, key).Scan(&count)
+	mustScan(t, pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE author_id = $1 AND client_id = $2`, u, key), &count)
 	if count != 1 {
 		t.Errorf("%d concurrent sends under one key produced %d messages, want 1", n, count)
 	}
@@ -259,7 +274,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 	assertDense(t, seqs(ctx, t, pool, conv))
 
 	var counter int64
-	pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&counter)
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &counter)
 	if counter != 1 {
 		t.Errorf("log_counter = %d after %d racing sends of one message, want 1", counter, n)
 	}
@@ -393,7 +408,7 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 	// The attachment row went with the message. The BYTES are CANT-47's and
 	// CANT-67's problem and are not claimed here.
 	var attachments int
-	pool.QueryRow(ctx, `SELECT count(*) FROM attachments WHERE message_id = $1`, source.ID).Scan(&attachments)
+	mustScan(t, pool.QueryRow(ctx, `SELECT count(*) FROM attachments WHERE message_id = $1`, source.ID), &attachments)
 	if attachments != 0 {
 		t.Errorf("%d attachment rows outlived their message; message_id is not CASCADE", attachments)
 	}
@@ -480,7 +495,7 @@ func TestConcurrentFindOrCreateDirectMakesOneConversation(t *testing.T) {
 	wg.Wait()
 
 	var count int
-	pool.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE direct_key = $1`, key).Scan(&count)
+	mustScan(t, pool.QueryRow(ctx, `SELECT count(*) FROM conversations WHERE direct_key = $1`, key), &count)
 	if count != 1 {
 		t.Errorf("%d concurrent find-or-create calls made %d direct conversations for one pair, want 1", n, count)
 	}
