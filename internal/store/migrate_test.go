@@ -60,8 +60,8 @@ func TestLoadMigrationsHasBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations: %v", err)
 	}
-	if len(migs) != 3 {
-		t.Fatalf("loaded %d migrations, want 3", len(migs))
+	if len(migs) != 4 {
+		t.Fatalf("loaded %d migrations, want 4", len(migs))
 	}
 	for _, m := range migs {
 		if m.up == "" {
@@ -98,8 +98,12 @@ func TestMigrateIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("applied: %v", err)
 	}
-	if len(applied) != 3 {
-		t.Errorf("applied versions = %v, want 3 rows and no duplicates", applied)
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	if len(applied) != len(migs) {
+		t.Errorf("applied versions = %v, want %d rows and no duplicates", applied, len(migs))
 	}
 }
 
@@ -143,12 +147,30 @@ func TestMigrateUpDownUpRoundTrip(t *testing.T) {
 func TestMigrateDownIsIncremental(t *testing.T) {
 	ctx, pool := freshDB(t)
 
-	if err := MigrateDown(ctx, pool, 1); err != nil {
-		t.Fatalf("down 1: %v", err)
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+
+	// Newest first, ONE at a time, checking after every step — which is what
+	// "incremental" means and what the single `down 1` below used to assert
+	// only for the last migration. Driven off the migration list rather than a
+	// literal: hardcoding "one down removes messages" makes every migration
+	// added after 0003 look like a regression, which is exactly what CANT-77's
+	// comment-only 0004 did to this test.
+	for remaining := len(migs); remaining > 2; remaining-- {
+		if err := MigrateDown(ctx, pool, 1); err != nil {
+			t.Fatalf("down from %d applied: %v", remaining, err)
+		}
+		applied, _ := AppliedVersions(ctx, pool)
+		if len(applied) != remaining-1 {
+			t.Fatalf("after rolling back one from %d: applied = %v, want %d versions",
+				remaining, applied, remaining-1)
+		}
 	}
 	applied, _ := AppliedVersions(ctx, pool)
 	if len(applied) != 2 || applied[len(applied)-1] != "0002" {
-		t.Errorf("after down 1: applied = %v, want [0001 0002]", applied)
+		t.Errorf("after rolling back to 0002: applied = %v, want [0001 0002]", applied)
 	}
 	// 0003's tables are gone; 0002's remain.
 	for table, want := range map[string]bool{"messages": false, "attachments": false, "log_counter": false, "conversations": true, "users": true} {

@@ -16,9 +16,10 @@ import (
 // ---------------------------------------------------------------------------
 // fixtures
 
-// ptr is for NewMessage's optional fields. Text and client_id are nullable in
-// the schema for reasons the wire records — a message may carry only
-// attachments, and a bot or a server-originated row has no idempotency key.
+// ptr is for NewMessage's one optional field, Text: a message may carry only
+// attachments, which is what the column's nullability is for. ClientID is NOT
+// optional — CANT-14 requires it and refuses the zero value, because a
+// forgotten key would opt that send out of deduplication silently.
 func ptr[T any](v T) *T { return &v }
 
 func mkUser(ctx context.Context, t *testing.T, pool *pgxpool.Pool, handle string) uuid.UUID {
