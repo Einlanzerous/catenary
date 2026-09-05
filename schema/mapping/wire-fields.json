@@ -443,7 +443,7 @@
       "table": "messages",
       "column": "client_id",
       "note": "Inbound: the idempotency key, checked BEFORE either ordinal is drawn and then stored.",
-      "nullable_because": "Required on the inbound frame — a client that omits it forfeits deduplication — but nullable in storage, because not every row arrives over a socket. A bot posting through CANT-75's REST send and anything the server originates have no client_id, and Postgres treating those NULLs as distinct is correct: they were never deduplicated in the first place."
+      "nullable_because": "Required on the inbound frame — a client that omits it forfeits deduplication — but nullable in storage, and the honest reason is narrower than it looks: NOTHING WRITES NULL TODAY. Every sending surface supplies a key, bots included — CANT-75's REST send takes client_id in its body and its Done-when requires that a sender with no device row is deduplicated exactly like one with, which is the case that matters most because a cron-driven bot retries mechanically and may run as two replicas. store.SendMessage refuses the zero value outright (CANT-14). The column is nullable as deliberate headroom for a genuinely server-originated row, should one ever exist; Postgres treating such NULLs as distinct would be correct, because they would never have been deduplicated. An earlier draft of this note claimed bots have no client_id — that was contradicted by CANT-75 and is corrected here (CANT-77)."
     },
     "ClientSend.conversation_id": {
       "kind": "column",
