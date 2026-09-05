@@ -1,0 +1,25 @@
+# Keep the build context to what the binary actually needs. Without this,
+# `COPY . .` sends .git, the spike tree and — for the `docker build … .` in
+# deploy/Dockerfile's own header — web/node_modules into the daemon, which makes
+# a local build hundreds of MB slower than the CI one for no gain.
+#
+# NOT a security boundary: nothing secret is in the repo, and the runtime stage
+# copies only the compiled binary. This is about context size.
+.git
+.github
+.dockerignore
+
+# Client trees. The server binary links none of them.
+web/node_modules
+web/dist
+dart
+
+# Read-only history and evidence (spike/), and the generated wire packages for
+# the other two languages. server/ holds the Go conformance runner, which is a
+# separate module and not part of ./cmd/catenary.
+spike
+server
+
+# Docs and board artefacts.
+docs
+*.md
