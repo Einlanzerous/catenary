@@ -67,13 +67,20 @@ import (
 //     overtake another. Measured against a scratch copy drawing log_counter on
 //     the pool instead of the tx — the regression exactly — Arm 1's positive
 //     half passed 5/5 and Arm 2 failed 5/5.
-type inserter func(ctx context.Context, pool *pgxpool.Pool, conv, author, clientID uuid.UUID, text string) (sent, error)
+type inserter func(ctx context.Context, pool *pgxpool.Pool, conv, author, clientID uuid.UUID, text string) (Sent, error)
 
-// referenceInserter is the ONE call site naming the write path. CANT-14
-// re-points this single line at the shipped insert primitive and deletes
-// schema_test.go's reference copy; nothing else in this file names it.
-var referenceInserter inserter = func(ctx context.Context, pool *pgxpool.Pool, conv, author, clientID uuid.UUID, text string) (sent, error) {
-	return sendMessage(ctx, pool, conv, author, nil, clientID, text)
+// referenceInserter is the ONE line naming the write path, and since CANT-14
+// it names the SHIPPED primitive rather than a copy of it. That is what makes
+// the two arms below guards on production code: a draw that leaves the
+// inserting transaction is a change to Store.SendMessage, and Arm 2 fails on
+// it. There is no reference copy any more — schema_test.go's went with CANT-14.
+var referenceInserter inserter = func(ctx context.Context, pool *pgxpool.Pool, conv, author, clientID uuid.UUID, text string) (Sent, error) {
+	return New(pool).SendMessage(ctx, NewMessage{
+		ConversationID: conv,
+		AuthorID:       author,
+		ClientID:       clientID,
+		Text:           ptr(text),
+	})
 }
 
 // Where log_seq comes from — the only difference between the two arms.
@@ -419,7 +426,7 @@ func TestForcedScheduleCannotLoseAMessageWithTheCounterRow(t *testing.T) {
 
 	// B is the shipped path. It must not get past the counter draw.
 	type result struct {
-		s   sent
+		s   Sent
 		err error
 	}
 	done := make(chan result, 1)
@@ -443,7 +450,7 @@ func TestForcedScheduleCannotLoseAMessageWithTheCounterRow(t *testing.T) {
 
 	select {
 	case r := <-done:
-		t.Fatalf("B completed while A still held the counter row (log_seq %d, err %v): the draws are not serialised", r.s.logSeq, r.err)
+		t.Fatalf("B completed while A still held the counter row (log_seq %d, err %v): the draws are not serialised", r.s.LogSeq, r.err)
 	default:
 	}
 
@@ -455,8 +462,8 @@ func TestForcedScheduleCannotLoseAMessageWithTheCounterRow(t *testing.T) {
 		if r.err != nil {
 			t.Fatalf("B failed after A committed: %v", r.err)
 		}
-		if r.s.logSeq <= a.logSeq {
-			t.Fatalf("B drew log_seq %d, not above A's %d: draw order and commit order disagree", r.s.logSeq, a.logSeq)
+		if r.s.LogSeq <= a.logSeq {
+			t.Fatalf("B drew log_seq %d, not above A's %d: draw order and commit order disagree", r.s.LogSeq, a.logSeq)
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("B never completed after A committed")

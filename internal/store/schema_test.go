@@ -9,123 +9,17 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ---------------------------------------------------------------------------
-// The reference insert
-//
-// This is NOT the production write path. CANT-14 owns the ordinal draw and
-// CANT-18 owns the send, both under their own review modes; what lives here is
-// the smallest insert that exercises the ORDERING this migration settled, so
-// the schema's claims are proved by the ticket that makes them rather than
-// inherited on trust by the ticket that comes next.
-//
-// Ruling 2, in code:
-//
-//  1. Check idempotency BEFORE either ordinal is drawn. The tempting idiom —
-//     INSERT ... ON CONFLICT DO NOTHING, then SELECT — commits either way,
-//     including the counter bumps, so a replay draws both ordinals, inserts
-//     nothing, and leaves a permanent hole in that conversation's seq. The
-//     wire tells every client a seq gap means a message it is missing.
-//
-//  2. Draw the conversation's ordinal first and the global counter LAST. Both
-//     are row locks held until commit; taking log_counter last keeps the
-//     deployment-wide serialised section down to draw-insert-commit instead of
-//     the whole transaction. Taking them in a consistent order is also what
-//     makes deadlock between two conversations impossible.
-//
-//  3. On the residual race — two concurrent sends under one key both pass the
-//     check — catch the unique violation, roll back, and re-select by key.
-//     The rollback UN-DRAWS both ordinals, because they came from rows rather
-//     than from a sequence. That is the difference between a row counter and a
-//     bigserial at the exact moment it matters, and it is why the race leaves
-//     no hole in either ordinal.
-type sent struct {
-	id        uuid.UUID
-	seq       int64
-	logSeq    int64
-	duplicate bool
-}
-
-func sendMessage(ctx context.Context, pool *pgxpool.Pool, convID, authorID uuid.UUID, deviceID *uuid.UUID, clientID uuid.UUID, text string) (sent, error) {
-	s, err := trySend(ctx, pool, convID, authorID, deviceID, clientID, text)
-	if err == nil {
-		return s, nil
-	}
-	if !isUniqueViolation(err, "messages_author_id_client_id_key") {
-		return sent{}, err
-	}
-	// Somebody else committed this key while we were drawing. Our ordinals
-	// went back with the rollback; re-read theirs.
-	return selectByKey(ctx, pool, authorID, clientID)
-}
-
-func trySend(ctx context.Context, pool *pgxpool.Pool, convID, authorID uuid.UUID, deviceID *uuid.UUID, clientID uuid.UUID, text string) (sent, error) {
-	tx, err := pool.Begin(ctx)
-	if err != nil {
-		return sent{}, err
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	// 1 — check, before anything is drawn.
-	var existing sent
-	err = tx.QueryRow(ctx,
-		`SELECT id, seq, log_seq FROM messages WHERE author_id = $1 AND client_id = $2`,
-		authorID, clientID).Scan(&existing.id, &existing.seq, &existing.logSeq)
-	switch {
-	case err == nil:
-		existing.duplicate = true
-		return existing, nil // rolled back by the defer: nothing was drawn
-	case !errors.Is(err, pgx.ErrNoRows):
-		return sent{}, err
-	}
-
-	// 2 — draw, conversation first.
-	var out sent
-	if err := tx.QueryRow(ctx,
-		`UPDATE conversations SET last_seq = last_seq + 1 WHERE id = $1 RETURNING last_seq`,
-		convID).Scan(&out.seq); err != nil {
-		return sent{}, fmt.Errorf("draw seq: %w", err)
-	}
-	if err := tx.QueryRow(ctx,
-		`UPDATE log_counter SET value = value + 1 WHERE id = 1 RETURNING value`).Scan(&out.logSeq); err != nil {
-		return sent{}, fmt.Errorf("draw log_seq: %w", err)
-	}
-
-	// 3 — insert. `at` and `updated_log_seq` are the schema's job, not the
-	// caller's: the default is server-assigned and updated_log_seq starts equal
-	// to log_seq.
-	out.id = uuid.New()
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO messages (id, conversation_id, author_id, seq, log_seq, updated_log_seq,
-		                      text, client_id, sender_device_id)
-		VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8)`,
-		out.id, convID, authorID, out.seq, out.logSeq, text, clientID, deviceID); err != nil {
-		return sent{}, err
-	}
-	return out, tx.Commit(ctx)
-}
-
-func selectByKey(ctx context.Context, pool *pgxpool.Pool, authorID, clientID uuid.UUID) (sent, error) {
-	var s sent
-	err := pool.QueryRow(ctx,
-		`SELECT id, seq, log_seq FROM messages WHERE author_id = $1 AND client_id = $2`,
-		authorID, clientID).Scan(&s.id, &s.seq, &s.logSeq)
-	s.duplicate = true
-	return s, err
-}
-
-func isUniqueViolation(err error, constraint string) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505" &&
-		(constraint == "" || pgErr.ConstraintName == constraint)
-}
-
-// ---------------------------------------------------------------------------
 // fixtures
+
+// ptr is for NewMessage's optional fields. Text and client_id are nullable in
+// the schema for reasons the wire records — a message may carry only
+// attachments, and a bot or a server-originated row has no idempotency key.
+func ptr[T any](v T) *T { return &v }
 
 func mkUser(ctx context.Context, t *testing.T, pool *pgxpool.Pool, handle string) uuid.UUID {
 	t.Helper()
@@ -227,23 +121,24 @@ func TestLogCounterIsOneRowDeploymentWide(t *testing.T) {
 // post, which is exactly what client_id exists to prevent.
 func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	bot := mkUser(ctx, t, pool, "bot")
 	conv := mkGroup(ctx, t, pool, "room")
 	key := uuid.New()
 
-	first, err := sendMessage(ctx, pool, conv, bot, nil, key, "hello")
+	first, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: bot, ClientID: key, Text: ptr("hello")})
 	if err != nil {
 		t.Fatalf("first send from a device-less sender: %v", err)
 	}
-	if first.duplicate {
+	if first.Duplicate {
 		t.Fatal("the first send reported itself a duplicate")
 	}
 
-	again, err := sendMessage(ctx, pool, conv, bot, nil, key, "hello")
+	again, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: bot, ClientID: key, Text: ptr("hello")})
 	if err != nil {
 		t.Fatalf("replay from a device-less sender: %v", err)
 	}
-	if !again.duplicate || again.id != first.id {
+	if !again.Duplicate || again.ID != first.ID {
 		t.Fatalf("a bot replay created a second message: %v then %v", first, again)
 	}
 
@@ -254,15 +149,15 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 	laptop := mkDevice(ctx, t, pool, human, "laptop")
 	shared := uuid.New()
 
-	a, err := sendMessage(ctx, pool, conv, human, &phone, shared, "hi")
+	a, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: human, SenderDeviceID: &phone, ClientID: shared, Text: ptr("hi")})
 	if err != nil {
 		t.Fatalf("send from phone: %v", err)
 	}
-	b, err := sendMessage(ctx, pool, conv, human, &laptop, shared, "hi")
+	b, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: human, SenderDeviceID: &laptop, ClientID: shared, Text: ptr("hi")})
 	if err != nil {
 		t.Fatalf("send from laptop: %v", err)
 	}
-	if b.id != a.id {
+	if b.ID != a.ID {
 		t.Errorf("one key from two devices of one account made two messages: %v, %v", a, b)
 	}
 }
@@ -273,12 +168,13 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 // message, and one no single-threaded test notices.
 func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
 
 	keys := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
 	for i, k := range keys {
-		if _, err := sendMessage(ctx, pool, conv, u, nil, k, fmt.Sprintf("m%d", i)); err != nil {
+		if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: k, Text: ptr(fmt.Sprintf("m%d", i))}); err != nil {
 			t.Fatalf("send %d: %v", i, err)
 		}
 	}
@@ -290,11 +186,11 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	// Replay every key, twice over.
 	for range 2 {
 		for i, k := range keys {
-			got, err := sendMessage(ctx, pool, conv, u, nil, k, fmt.Sprintf("m%d", i))
+			got, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: k, Text: ptr(fmt.Sprintf("m%d", i))})
 			if err != nil {
 				t.Fatalf("replay %d: %v", i, err)
 			}
-			if !got.duplicate {
+			if !got.Duplicate {
 				t.Errorf("replay of key %d was not reported as a duplicate", i)
 			}
 		}
@@ -318,13 +214,14 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 // surfaced. CANT-18's Done-when requires exactly this.
 func TestConcurrentSendsUnderOneKey(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
 	key := uuid.New()
 
 	const n = 12
 	var wg sync.WaitGroup
-	results := make([]sent, n)
+	results := make([]Sent, n)
 	errs := make([]error, n)
 	start := make(chan struct{})
 
@@ -333,7 +230,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			results[i], errs[i] = sendMessage(ctx, pool, conv, u, nil, key, "once")
+			results[i], errs[i] = st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: key, Text: ptr("once")})
 		}()
 	}
 	close(start)
@@ -345,8 +242,8 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 		}
 	}
 	for i, r := range results {
-		if r.id != results[0].id {
-			t.Errorf("send %d got a different message id: %v vs %v", i, r.id, results[0].id)
+		if r.ID != results[0].ID {
+			t.Errorf("send %d got a different message id: %v vs %v", i, r.ID, results[0].ID)
 		}
 	}
 
@@ -378,6 +275,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 // client actually applies, which is per conversation.
 func TestConcurrentDistinctSendsStayDenseAndOrdered(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
 
@@ -390,7 +288,7 @@ func TestConcurrentDistinctSendsStayDenseAndOrdered(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, errs[i] = sendMessage(ctx, pool, conv, u, nil, uuid.New(), fmt.Sprintf("m%d", i))
+			_, errs[i] = st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr(fmt.Sprintf("m%d", i))})
 		}()
 	}
 	close(start)
@@ -456,36 +354,35 @@ func TestHeadSeqIsNotAColumn(t *testing.T) {
 // definition.
 func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
 
-	source, err := sendMessage(ctx, pool, conv, u, nil, uuid.New(), "the original")
+	source, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("the original")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO attachments (id, message_id, kind, storage_key, position, duration_ms, peaks, transcript_state)
 		VALUES ($1, $2, 'voice', 'k/1', 0, 1200, ARRAY[0,50,100]::smallint[], 'ready')`,
-		uuid.New(), source.id); err != nil {
+		uuid.New(), source.ID); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 
-	reply, err := sendMessage(ctx, pool, conv, u, nil, uuid.New(), "the reply")
+	// reply_to is part of the send now rather than a follow-up UPDATE, so the
+	// column this test is about is written by the path under test.
+	reply, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("the reply"), ReplyTo: &source.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `UPDATE messages SET reply_to = $1 WHERE id = $2`, source.id, reply.id); err != nil {
-		t.Fatalf("set reply_to: %v", err)
-	}
-
-	if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE id = $1`, source.id); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE id = $1`, source.ID); err != nil {
 		t.Fatalf("the retention sweep cannot delete a message with a reply and an attachment: %v", err)
 	}
 
 	// The reply survives with a null ref — the wire builds ReplyRef live and
 	// Message.reply_to is optional, so a swept source is already "no ref".
 	var replyTo *uuid.UUID
-	if err := pool.QueryRow(ctx, `SELECT reply_to FROM messages WHERE id = $1`, reply.id).Scan(&replyTo); err != nil {
+	if err := pool.QueryRow(ctx, `SELECT reply_to FROM messages WHERE id = $1`, reply.ID).Scan(&replyTo); err != nil {
 		t.Fatalf("reply vanished with its source: %v", err)
 	}
 	if replyTo != nil {
@@ -495,7 +392,7 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 	// The attachment row went with the message. The BYTES are CANT-47's and
 	// CANT-67's problem and are not claimed here.
 	var attachments int
-	pool.QueryRow(ctx, `SELECT count(*) FROM attachments WHERE message_id = $1`, source.id).Scan(&attachments)
+	pool.QueryRow(ctx, `SELECT count(*) FROM attachments WHERE message_id = $1`, source.ID).Scan(&attachments)
 	if attachments != 0 {
 		t.Errorf("%d attachment rows outlived their message; message_id is not CASCADE", attachments)
 	}
@@ -506,9 +403,10 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 // a Purser offboard deactivates, and cannot destroy authored messages.
 func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
-	if _, err := sendMessage(ctx, pool, conv, u, nil, uuid.New(), "hello"); err != nil {
+	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("hello")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -530,10 +428,11 @@ func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 // A revoked device is still referenced by everything it ever sent.
 func TestADeviceWithMessagesCannotBeDeleted(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	d := mkDevice(ctx, t, pool, u, "phone")
 	conv := mkGroup(ctx, t, pool, "room")
-	if _, err := sendMessage(ctx, pool, conv, u, &d, uuid.New(), "hello"); err != nil {
+	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, SenderDeviceID: &d, ClientID: uuid.New(), Text: ptr("hello")}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -704,9 +603,10 @@ func TestRetentionDaysNullMeansInheritInfinite(t *testing.T) {
 // Criterion 9 — the wire bounds peaks' ELEMENTS as well as its length.
 func TestPeaksBoundsElementsAndLength(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
-	m, err := sendMessage(ctx, pool, conv, u, nil, uuid.New(), "voice")
+	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("voice")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,7 +615,7 @@ func TestPeaksBoundsElementsAndLength(t *testing.T) {
 		_, err := pool.Exec(ctx, fmt.Sprintf(`
 			INSERT INTO attachments (id, message_id, kind, storage_key, position, duration_ms, peaks, transcript_state)
 			VALUES ($1, $2, 'voice', 'k', $3, 100, %s, 'pending')`, peaks),
-			uuid.New(), m.id, nextPos())
+			uuid.New(), m.ID, nextPos())
 		return err
 	}
 
@@ -745,9 +645,10 @@ func nextPos() int { posCounter++; return posCounter }
 // cannot serve a voice note at all, not even a pending one.
 func TestPerKindRequiredFields(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room")
-	m, err := sendMessage(ctx, pool, conv, u, nil, uuid.New(), "attachments")
+	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("attachments")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -769,7 +670,7 @@ func TestPerKindRequiredFields(t *testing.T) {
 			_, err := pool.Exec(ctx, fmt.Sprintf(`
 				INSERT INTO attachments (id, message_id, kind, storage_key, position, %s)
 				VALUES ($1, $2, 'voice', 'k', $3, %s)`, tc.cols, tc.vals),
-				uuid.New(), m.id, nextPos())
+				uuid.New(), m.ID, nextPos())
 			if (err != nil) != tc.wantErr {
 				t.Errorf("err = %v, wantErr = %v", err, tc.wantErr)
 			}
@@ -792,7 +693,7 @@ func TestPerKindRequiredFields(t *testing.T) {
 			_, err := pool.Exec(ctx, fmt.Sprintf(`
 				INSERT INTO attachments (id, message_id, kind, storage_key, position, %s)
 				VALUES ($1, $2, 'image', 'k', $3, %s)`, tc.cols, tc.vals),
-				uuid.New(), m.id, nextPos())
+				uuid.New(), m.ID, nextPos())
 			if (err != nil) != tc.wantErr {
 				t.Errorf("err = %v, wantErr = %v", err, tc.wantErr)
 			}
@@ -805,6 +706,7 @@ func TestPerKindRequiredFields(t *testing.T) {
 // chronologically as strings.
 func TestMessageAtIsServerAssigned(t *testing.T) {
 	ctx, pool := freshDB(t)
+	st := New(pool)
 
 	var def *string
 	err := pool.QueryRow(ctx, `
@@ -828,7 +730,7 @@ func TestMessageAtIsServerAssigned(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			sendMessage(ctx, pool, conv, u, nil, uuid.New(), "m")
+			st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("m")})
 		}()
 	}
 	close(start)
@@ -1078,8 +980,9 @@ func TestDedupConstraintIsOnAuthorAndClientID(t *testing.T) {
 	ctx, pool := freshDB(t)
 
 	var cols []string
+	var name string
 	err := pool.QueryRow(ctx, `
-		SELECT array_agg(a.attname ORDER BY k.ord)
+		SELECT c.conname, array_agg(a.attname ORDER BY k.ord)
 		FROM pg_constraint c
 		CROSS JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS k(attnum, ord)
 		JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = k.attnum
@@ -1087,11 +990,21 @@ func TestDedupConstraintIsOnAuthorAndClientID(t *testing.T) {
 		  AND EXISTS (
 		      SELECT 1 FROM pg_attribute x
 		      WHERE x.attrelid = c.conrelid AND x.attnum = ANY (c.conkey) AND x.attname = 'client_id')
-		GROUP BY c.oid`).Scan(&cols)
+		GROUP BY c.oid, c.conname`).Scan(&name, &cols)
 	if err != nil {
 		t.Fatalf("no unique constraint covers client_id: %v", err)
 	}
 	if len(cols) != 2 || cols[0] != "author_id" || cols[1] != "client_id" {
 		t.Errorf("dedup constraint is on %v, want (author_id, client_id) per ClientSend.client_id", cols)
+	}
+
+	// The NAME is load-bearing, not cosmetic: SendMessage's residual-race
+	// retry matches on it (store.dedupConstraint), so a later migration that
+	// names the constraint explicitly would leave the column assertion above
+	// green while the retry silently stopped matching — and a racing send
+	// would surface a raw 23505 to the caller instead of the winner's
+	// ordinals.
+	if name != dedupConstraint {
+		t.Errorf("dedup constraint is named %q, but SendMessage retries on %q", name, dedupConstraint)
 	}
 }
