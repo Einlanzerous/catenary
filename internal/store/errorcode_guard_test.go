@@ -3,15 +3,21 @@ package store
 // CANT-83 criterion 2 — the guard that keeps senderror.go the only file that
 // decides a send's wire code.
 //
-// It bans IDENTIFIERS, not string literals, and that is the whole point. A
+// It bans BOTH, and the identifier half is the one that needs explaining. A
 // handler writing
 //
 //	case errors.Is(err, store.ErrNotFound):
 //	    return wire.ErrorCodeConversationNotFound
 //
-// writes no literal anywhere, and is exactly the second decision this forbids.
-// So the check parses Go rather than grepping text: a mention inside a comment
-// or a string is not a decision, and a selector on the wire package is.
+// writes no literal anywhere, and is exactly the second decision this forbids —
+// which is why criterion 2 says "identifiers, not only string literals". NOT
+// ONLY: a handler that skips the constants and writes `return "not_a_member"`,
+// or compares `string(se.Code) == "not_a_member"`, has made the same second
+// decision with fewer characters. Both are banned.
+//
+// So the check parses Go rather than grepping text. That is what lets it tell a
+// code VALUE in a string literal from the same words in a comment or in an
+// unrelated string, and a selector on the wire package from a coincidence.
 //
 // The shape is borrowed from the phrase guard in verify.sh's CANT-13 step,
 // which exists because one wrong phrasing of log_seq reached seven places
@@ -38,8 +44,13 @@ const (
 	// The table file. The one place allowed to decide.
 	tableFile = "internal/store/senderror.go"
 
-	// The generated package DEFINES the constants; naming them there is not a
-	// second decision.
+	// The generated package DEFINES the constants, and holds all eight code
+	// values as string literals. Naming them there is not a second decision.
+	//
+	// This exemption was dead code while only identifiers were checked — a file
+	// inside package wire never imports itself, so the import lookup returned
+	// empty first and the exemption was never reached. The literal half of the
+	// check is what makes it load-bearing.
 	generatedFile = "internal/wire/generated.go"
 )
 
@@ -61,10 +72,27 @@ var exemptCodes = map[string]string{
 	"ErrorCodeWireVersionUnsupported": "CANT-22's socket hello",
 }
 
+// The six send codes as VALUES, for the literal half of the check. The two
+// exempt codes are absent for the same reason their identifiers are.
+//
+// "internal" is the risky entry and it is deliberate: it is a common enough
+// word that an unrelated exact-match literal is imaginable. Exact match only —
+// never a substring — so an import path or a file path containing the word does
+// not trip it, and a bare "internal" in this module outside the table file is
+// worth a human look even when it turns out to be innocent.
+var bannedCodeValues = map[string]bool{
+	"not_a_member":           true,
+	"conversation_not_found": true,
+	"message_too_large":      true,
+	"upload_not_found":       true,
+	"rate_limited":           true,
+	"internal":               true,
+}
+
 // Directories that are not this module. server/ and spike/r6-purser are
 // separate modules; web/ and dart/ are other languages entirely.
 //
-// Scoped to the service module for the same reason criterion 9 scopes the
+// Scoped to the service module for the same reason criterion 12 scopes the
 // wire.Message guard there: a spike binary deciding a code for itself cannot
 // make the two transports disagree, because a spike is not a transport.
 var skipDirs = map[string]bool{
@@ -84,7 +112,11 @@ func TestOnlyOneFileDecidesASendErrorCode(t *testing.T) {
 Every send refusal gets its code in ONE place, so the socket and REST cannot
 produce different codes for the same cause. If you need a new refusal, add a
 cause and a row to the table in %s and return it from the store — do not map an
-error to a code at the point of use.
+error to a code at the point of use, and do not route around the constants by
+writing the code's value as a string.
+
+If you have an error and need the refusal for it, call store.SendErrorFor. That
+is the door this ban leaves open, and it is the only one.
 
 If you are CANT-22 or CANT-29 and need a transport-level code, ErrorCodeUnauthorized
 and ErrorCodeWireVersionUnsupported are exempt by name. If some future producer
@@ -137,6 +169,43 @@ var c = w.ErrorCodeMessageTooLarge
 			reason: "the guard resolves the local name from the import rather than assuming \"wire\"",
 		},
 		{
+			name: "a code written as a bare string literal",
+			src: `package api
+
+import "github.com/magos/catenary/internal/store"
+
+func codeFor(se *store.SendError) string {
+	if string(se.Code) == "not_a_member" {
+		return "not_a_member"
+	}
+	return "internal"
+}
+`,
+			// the comparison, the return, and "internal"
+			want:   3,
+			reason: "criterion 2 says identifiers NOT ONLY literals — this file names no constant and imports no wire package, and it is the same second decision with fewer characters",
+		},
+		{
+			name: "the exempt codes are exempt as values too",
+			src: `package transport
+
+var a = "unauthorized"
+var b = "wire_version_unsupported"
+`,
+			want:   0,
+			reason: "the value exemption has to match the identifier exemption, or CANT-22 is blocked either way",
+		},
+		{
+			name: "a path containing a code word is not a decision",
+			src: `package thing
+
+const p = "github.com/magos/catenary/internal/wire"
+const d = "internal/store"
+`,
+			want:   0,
+			reason: "exact match only, never substring — otherwise every import path in the module trips it",
+		},
+		{
 			name: "the two transport codes are exempt",
 			src: `package transport
 
@@ -179,6 +248,11 @@ func scanTree(t *testing.T, root string) []string {
 
 	var offences []string
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		// The callback's own error, which arrives with a nil DirEntry — so
+		// ignoring it does not skip a file, it panics on the next line.
+		if err != nil {
+			return err
+		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil {
 			return relErr
@@ -208,13 +282,12 @@ func scanTree(t *testing.T, root string) []string {
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
 	}
-	if err != nil {
-		t.Fatalf("walk %s: %v", root, err)
-	}
 	return offences
 }
 
-// scanFileForCodeDecisions returns one line per banned mention.
+// scanFileForCodeDecisions returns one line per banned mention: a selector on
+// the wire package naming the type or a send-code constant, or a string literal
+// whose value IS one of the six send codes.
 func scanFileForCodeDecisions(t *testing.T, path, rel string) []string {
 	t.Helper()
 
@@ -224,32 +297,48 @@ func scanFileForCodeDecisions(t *testing.T, path, rel string) []string {
 		t.Fatalf("parse %s: %v", rel, err)
 	}
 
+	// May be "" — a file can write "not_a_member" without importing anything,
+	// which is precisely the hole the literal half closes, so this does NOT
+	// short-circuit the walk.
 	local := wireImportName(t, rel, f)
-	if local == "" {
-		return nil // does not import the wire package at all
-	}
 
 	var out []string
+	at := func(n ast.Node, what string) {
+		out = append(out, "  "+rel+":"+strconv.Itoa(fset.Position(n.Pos()).Line)+": "+what)
+	}
+
 	ast.Inspect(f, func(n ast.Node) bool {
-		sel, ok := n.(*ast.SelectorExpr)
-		if !ok {
-			return true
+		switch node := n.(type) {
+		case *ast.SelectorExpr:
+			if local == "" {
+				return true
+			}
+			pkg, ok := node.X.(*ast.Ident)
+			if !ok || pkg.Name != local {
+				return true
+			}
+			// The bare type counts too: `func codeFor(...) wire.ErrorCode` in a
+			// transport is a decision point before it has a body. HasPrefix
+			// covers the type itself, so there is no separate equality test.
+			name := node.Sel.Name
+			if !strings.HasPrefix(name, "ErrorCode") {
+				return true
+			}
+			if _, exempt := exemptCodes[name]; exempt {
+				return true
+			}
+			at(node, local+"."+name)
+
+		case *ast.BasicLit:
+			if node.Kind != token.STRING {
+				return true
+			}
+			v, err := strconv.Unquote(node.Value)
+			if err != nil || !bannedCodeValues[v] {
+				return true
+			}
+			at(node, strconv.Quote(v)+" (the code value, written as a literal)")
 		}
-		pkg, ok := sel.X.(*ast.Ident)
-		if !ok || pkg.Name != local {
-			return true
-		}
-		name := sel.Sel.Name
-		// The bare type counts. `func codeFor(...) wire.ErrorCode` in a
-		// transport is a second decision point even before it has a body.
-		if name != "ErrorCode" && !strings.HasPrefix(name, "ErrorCode") {
-			return true
-		}
-		if _, exempt := exemptCodes[name]; exempt {
-			return true
-		}
-		pos := fset.Position(sel.Pos())
-		out = append(out, "  "+rel+":"+strconv.Itoa(pos.Line)+": "+local+"."+name)
 		return true
 	})
 	return out

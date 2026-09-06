@@ -83,7 +83,11 @@ type SendError struct {
 
 	// RetryAfterSec is set only with rate_limited, and only once a policy
 	// exists to set it.
-	RetryAfterSec *int
+	//
+	// *int64 because ServerError.retry_after_sec is *int64. The plan's snippet
+	// said *int, and an int here would need a conversion at the boundary —
+	// which is the translation this type exists to not have.
+	RetryAfterSec *int64
 
 	// Cause is the underlying error, preserved so a log can say what actually
 	// happened without the code having to carry it.
@@ -109,9 +113,15 @@ type sendErrorRow struct {
 
 // THE TABLE.
 //
-// Matched in order with errors.Is, so a wrapped cause resolves and the more
-// specific rows come first — ErrConversationNotFound wraps ErrNotFound, so it
-// must be tested before anything matching the bare sentinel.
+// Matched in order with errors.Is, so a wrapped cause resolves.
+//
+// There is no row for the bare ErrNotFound and there must not be one. That is
+// what sends it to `internal`, which is correct: the only place the store
+// returns a bare ErrNotFound on this path is sentByKey failing to re-read the
+// winner of a dedup race, and that is our inconsistency rather than the
+// sender's mistake. Adding a row for it would quietly relabel a server bug as
+// conversation_not_found — so the ordering is not what protects that
+// distinction, the absence of a row is.
 //
 // retryable is per cause, and it is false almost everywhere for one reason:
 // the identical frame will fail identically. Membership, existence, size and
@@ -134,9 +144,21 @@ var sendErrorTable = []sendErrorRow{
 	{cause: ErrRateLimited, code: wire.ErrorCodeRateLimited, retryable: true},
 }
 
-// sendErrorFor is the single decision. Everything the store refuses goes
+// SendErrorFor is the single decision. Everything the store refuses goes
 // through here, so there is exactly one answer per cause.
-func sendErrorFor(err error) *SendError {
+//
+// EXPORTED because the guard makes it the only door. With the six send codes
+// banned outside this file, a transport that needs to report a failure — a sync
+// that errors, a receipt write that fails — has no way to name `internal` and
+// no way to construct the refusal itself. That is the ban working as intended,
+// and this is the door it leaves: hand it a cause, get back the decision.
+//
+// The same argument reaches one place further. A REST transport has to map a
+// code to an HTTP status, and it cannot do that without naming codes either —
+// so the status belongs on the row, in this file, when CANT-75 needs it. It is
+// not added now because nothing consumes it yet; it is recorded on CANT-83 so
+// CANT-75 does not rediscover it as a blocked build.
+func SendErrorFor(err error) *SendError {
 	if err == nil {
 		return nil
 	}
@@ -171,29 +193,53 @@ func internalSendError(err error) *SendError {
 // than of Postgres clients generally: client_id deduplicates, so a retry of a
 // send that did in fact commit returns the original ack instead of a second
 // message. "Did it land?" does not need answering, which is what makes the
-// whole class safe to call retryable rather than sloppy. Reporting a deadlock
-// as permanent turns a hiccup into an outbox entry stuck at `failed`.
+// whole class safe to call retryable rather than sloppy.
+//
+// The asymmetry runs one way and it decides every close call below. Reporting a
+// transient failure as permanent parks a real message at `failed` forever.
+// Reporting a permanent failure as transient costs a retry the client was going
+// to back off from anyway. So where a case is genuinely unclear, it is
+// transient.
 func isTransient(err error) bool {
-	// A cancelled or expired context first, because context.DeadlineExceeded
-	// satisfies net.Error and would otherwise be classified by accident three
-	// branches down.
+	// Context first, because context.DeadlineExceeded satisfies net.Error and
+	// would otherwise be classified three branches down by accident.
 	//
-	// Canceled: the caller deliberately stopped. There is no frame in flight
-	// to retry and nobody waiting to be told to.
-	// DeadlineExceeded: the canonical transient. The send may or may not have
-	// landed, and client_id is what makes not knowing free.
-	if errors.Is(err, context.Canceled) {
-		return false
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	// BOTH are transient, and Canceled is the one that took an argument.
+	// A cancel has two possible authors and the flag is only ever read by one
+	// of them. If the CLIENT cancelled, its socket is gone and nobody observes
+	// what we set. If the SERVER cancelled — a drain, a shutdown — the client
+	// is alive and listening, and `false` marks a perfectly good message failed
+	// forever, which is the outcome the paragraph above exists to prevent. True
+	// is therefore right-or-unobserved in both cases and false is
+	// wrong-or-unobserved, so the asymmetry buys nothing.
+	//
+	// pgx normalises a mid-query cancel to a bare context.Canceled, so this
+	// branch is reached in practice and not only in theory —
+	// TestTerminatedBackendIsClassifiedTransient's sibling probe showed it
+	// arriving as *errors.errorString, which is context.Canceled itself.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return true
 	}
 
-	// A PgError means the server considered the statement. If it is not one of
-	// the three transient classes it is a decision, and re-sending sends the
-	// identical statement — so this returns rather than falling through.
+	// A PgError means the server considered the statement and answered. If it
+	// is not one of the classes below, that answer was a decision and
+	// re-sending sends the identical statement — so this RETURNS rather than
+	// falling through to the connection-shaped branches, which would otherwise
+	// rescue a permanent refusal.
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
+		// Severity cuts across class, so it is tested first. pgx CLOSES the
+		// connection on a FATAL, so whatever happens next happens on a fresh
+		// one — which is the definition of worth retrying.
+		//
+		// SeverityUnlocalized when the server offers it: Severity is
+		// translated under a non-English lc_messages and "FATAL" would then
+		// silently never match.
+		switch sev := firstNonEmpty(pgErr.SeverityUnlocalized, pgErr.Severity); sev {
+		case "FATAL", "PANIC":
+			return true
+		}
+
 		// 40001 serialization failure, 40P01 deadlock. Deadlock is not
 		// hypothetical here: this file's lock-order comment exists because two
 		// writers taking the row locks in opposite orders deadlock, and
@@ -201,24 +247,54 @@ func isTransient(err error) bool {
 		if pgErr.Code == "40001" || pgErr.Code == "40P01" {
 			return true
 		}
-		// Class 08 — connection exception.
-		return strings.HasPrefix(pgErr.Code, "08")
+
+		// Three classes, all of them "not now" rather than "not ever":
+		//
+		//   08  connection exception.
+		//   53  insufficient resources — 53300 too many connections, 53200 out
+		//       of memory, 53100 disk full. A restart or a quieter minute
+		//       fixes every one of them.
+		//   57  operator intervention — 57P01 admin shutdown, 57P02 crash
+		//       shutdown, 57P03 cannot connect now, 57014 query cancelled.
+		//
+		// Class 57 is the one this file got wrong first. `pg_terminate_backend`
+		// against the sending connection — which is how criterion 10 tests a
+		// real drop — makes the NEXT statement return 57P01 at FATAL severity,
+		// not a class 08 and not a bare connection error. Classifying that
+		// permanent would have failed criterion 10's own test. 57014 arrives at
+		// ERROR severity rather than FATAL, so the severity rule above does not
+		// cover it and the class rule has to.
+		for _, class := range [...]string{"08", "53", "57"} {
+			if strings.HasPrefix(pgErr.Code, class) {
+				return true
+			}
+		}
+		return false
 	}
 
 	// Nothing reached the server, so nothing can have committed. Deliberately
 	// narrow in pgx — it reports only the case it can prove — which is why it
-	// is one branch of three rather than the whole test.
+	// is one branch of several rather than the whole test. It is what catches
+	// the COMMIT that follows a terminated backend, which surfaces as
+	// pgconn's connLockError with no PgError attached.
 	if pgconn.SafeToRetry(err) {
 		return true
 	}
 
-	// A dropped connection usually carries NO PgError at all: pgx surfaces it
-	// as io.EOF, a net.Error, or its own closed-connection error. This is the
-	// branch that catches the common case, and the one a SQLSTATE-only test
-	// would never reach.
+	// A dropped connection often carries no PgError at all: pgx surfaces it as
+	// io.EOF, a net.Error, or a closed-connection error. This is also the
+	// branch that catches a refused connection, which arrives as a
+	// *pgconn.ConnectError wrapping a net.Error.
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	var netErr net.Error
 	return errors.As(err, &netErr)
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

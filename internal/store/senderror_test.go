@@ -35,7 +35,7 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 		{ErrRateLimited, wire.ErrorCodeRateLimited, true},
 	} {
 		t.Run(string(tc.code)+"/"+tc.cause.Error(), func(t *testing.T) {
-			got := sendErrorFor(tc.cause)
+			got := SendErrorFor(tc.cause)
 			if got.Code != tc.code {
 				t.Errorf("code = %q, want %q", got.Code, tc.code)
 			}
@@ -56,7 +56,7 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 // has to be errors.Is and not equality.
 func TestAWrappedCauseStillResolves(t *testing.T) {
 	err := fmt.Errorf("store: conversation %s: %w", "some-id", ErrNotAMember)
-	if got := sendErrorFor(err); got.Code != wire.ErrorCodeNotAMember {
+	if got := SendErrorFor(err); got.Code != wire.ErrorCodeNotAMember {
 		t.Errorf("code = %q, want %q", got.Code, wire.ErrorCodeNotAMember)
 	}
 }
@@ -66,10 +66,10 @@ func TestAWrappedCauseStillResolves(t *testing.T) {
 // sender named wrongly, and telling the sender conversation_not_found would
 // report our bug as their mistake.
 func TestABareNotFoundIsNotConversationNotFound(t *testing.T) {
-	if got := sendErrorFor(ErrNotFound); got.Code != wire.ErrorCodeInternal {
+	if got := SendErrorFor(ErrNotFound); got.Code != wire.ErrorCodeInternal {
 		t.Errorf("bare ErrNotFound → %q, want %q", got.Code, wire.ErrorCodeInternal)
 	}
-	if got := sendErrorFor(ErrConversationNotFound); got.Code != wire.ErrorCodeConversationNotFound {
+	if got := SendErrorFor(ErrConversationNotFound); got.Code != wire.ErrorCodeConversationNotFound {
 		t.Errorf("ErrConversationNotFound → %q, want %q", got.Code, wire.ErrorCodeConversationNotFound)
 	}
 	// And the wrapping holds, so callers written against the older sentinel
@@ -112,19 +112,31 @@ func TestInternalSplitsOnTransience(t *testing.T) {
 		{"unique violation 23505", &pgconn.PgError{Code: "23505"}, false,
 			"the server considered the statement and refused it; the identical statement fails identically"},
 		{"check violation 23514", &pgconn.PgError{Code: "23514"}, false, "a decision, not a hiccup"},
+		{"admin shutdown 57P01 at FATAL", &pgconn.PgError{Code: "57P01", Severity: "FATAL"}, true,
+			"pg_terminate_backend against the sending connection — criterion 10's own test — makes the NEXT statement return exactly this"},
+		{"query cancelled 57014 at ERROR", &pgconn.PgError{Code: "57014", Severity: "ERROR"}, true,
+			"statement_timeout, and also what a server-side drain cancels a query with; ERROR severity, so the class rule has to catch it"},
+		{"cannot connect now 57P03", &pgconn.PgError{Code: "57P03", Severity: "FATAL"}, true, "the server is still starting"},
+		{"too many connections 53300", &pgconn.PgError{Code: "53300", Severity: "FATAL"}, true,
+			"insufficient resources is not now, not not ever"},
+		{"a FATAL outside the three classes", &pgconn.PgError{Code: "28000", Severity: "FATAL"}, true,
+			"pgx closes the connection on every FATAL, so whatever happens next happens on a fresh one"},
+		{"a localised FATAL", &pgconn.PgError{Code: "57P01", Severity: "SCHWERWIEGEND", SeverityUnlocalized: "FATAL"}, true,
+			"Severity is translated under a non-English lc_messages; SeverityUnlocalized is not"},
 		{"io.EOF with no PgError", io.EOF, true, "the common shape of a dropped connection in pgx"},
-		{"net.ErrClosed", net.ErrClosed, true, "pgx's closed-connection case"},
-		{"a net.Error", timeoutErr{errors.New("dial tcp: i/o timeout")}, true, "nothing reached the server"},
+		{"net.ErrClosed", net.ErrClosed, true, "a closed connection with nothing else attached"},
+		{"a net.Error", timeoutErr{errors.New("dial tcp: i/o timeout")}, true,
+			"nothing reached the server; this is also the shape of a refused connection, which arrives as *pgconn.ConnectError"},
 		{"pgconn.SafeToRetry", safeToRetryErr{err: errors.New("write failed")}, true,
-			"pgx proving the query never reached the server"},
+			"pgx proving the query never reached the server — and what the COMMIT after a terminated backend returns, as connLockError"},
 		{"context.DeadlineExceeded", context.DeadlineExceeded, true,
 			"the canonical transient; client_id is what makes not knowing whether it landed free"},
-		{"context.Canceled", context.Canceled, false,
-			"the caller deliberately stopped — no frame in flight and nobody waiting to be told to retry"},
+		{"context.Canceled", context.Canceled, true,
+			"a cancel has two possible authors: if the client cancelled nobody reads the flag, and if the SERVER cancelled during a drain then false parks a good message at failed forever"},
 		{"a plain error", errors.New("something else"), false, "unknown is not transient"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sendErrorFor(tc.err)
+			got := SendErrorFor(tc.err)
 			if got.Code != wire.ErrorCodeInternal {
 				t.Fatalf("code = %q, want %q", got.Code, wire.ErrorCodeInternal)
 			}
@@ -142,17 +154,17 @@ func TestANonTransientPgErrorIsNotRescuedByALaterBranch(t *testing.T) {
 	// through Unwrap. If the PgError branch fell through instead of returning,
 	// SafeToRetry would rescue it and a permanent refusal would be reported as
 	// a hiccup.
-	err := safeToRetryErr{err: &pgconn.PgError{Code: "23505"}}
-	if got := sendErrorFor(err); got.Retryable {
+	err := safeToRetryErr{err: &pgconn.PgError{Code: "23505", Severity: "ERROR"}}
+	if got := SendErrorFor(err); got.Retryable {
 		t.Error("a unique violation was reported retryable — the PgError branch is falling through")
 	}
 }
 
 // A code decided deeper in the call stack is not re-decided on the way out.
 func TestAnAlreadyClassifiedErrorKeepsItsCode(t *testing.T) {
-	inner := sendErrorFor(ErrNotAMember)
+	inner := SendErrorFor(ErrNotAMember)
 	wrapped := fmt.Errorf("store: send: %w", inner)
-	if got := sendErrorFor(wrapped); got.Code != wire.ErrorCodeNotAMember {
+	if got := SendErrorFor(wrapped); got.Code != wire.ErrorCodeNotAMember {
 		t.Errorf("code = %q, want %q — a caller re-decided a refusal", got.Code, wire.ErrorCodeNotAMember)
 	}
 }
@@ -161,11 +173,15 @@ func TestAnAlreadyClassifiedErrorKeepsItsCode(t *testing.T) {
 // exists for it. Pinned so the field is not deleted as dead weight before the
 // policy that sets it arrives.
 func TestRateLimitedCarriesNoRetryAfterUntilAPolicySetsOne(t *testing.T) {
-	got := sendErrorFor(ErrRateLimited)
+	got := SendErrorFor(ErrRateLimited)
 	if !got.Retryable {
-		t.Error("rate_limited is the one retryable refusal")
+		t.Error("rate_limited is the one refusal that is retryable by cause rather than by transience")
 	}
 	if got.RetryAfterSec != nil {
 		t.Error("nothing decides retry_after_sec yet; no ticket on the board owns a limiter")
 	}
+	// *int64, matching ServerError.retry_after_sec on the wire. An int here
+	// would need a conversion at the boundary — which is exactly the
+	// translation SendError carrying wire types exists to avoid.
+	var _ *int64 = got.RetryAfterSec
 }
