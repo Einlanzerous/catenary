@@ -151,13 +151,33 @@ func (e *SendError) LogAttrs() []any {
 	if e.RetryAfterSec != nil {
 		attrs = append(attrs, "retry_after_sec", *e.RetryAfterSec)
 	}
-	// A RETRYABLE internal also carries its SQLSTATE, because "transient" is a
-	// claim somebody should be able to check after the fact — and the widening
-	// in CANT-83 made that claim cover three SQLSTATE classes and a severity,
-	// so which one fired is worth knowing.
+	// EVERY internal carries its SQLSTATE and constraint name, retryable or not.
+	//
+	// The approved criterion said "a retryable internal also logs its SQLSTATE,
+	// because transient is a claim somebody should be able to check after the
+	// fact". That answers one question and was read as answering two. The
+	// PERMANENT internals are the ones that most need diagnosing — a send that
+	// will never succeed, refused for a reason the sender cannot see and the
+	// operator cannot either — and they were the ones carrying the least. A
+	// warn line reading `code=internal retryable=false` and three ids is not a
+	// diagnosis, and there is no second place to look: this is the only line a
+	// refusal writes.
+	//
+	// SQLSTATE and ConstraintName are structural identifiers. Neither can
+	// contain a message body, which is what makes widening this safe rather
+	// than a hole in D1's honesty argument.
+	//
+	// pgErr.Detail STAYS OUT, permanently and for a reason worth stating rather
+	// than leaving to the shape of the code: on a CHECK violation Postgres
+	// renders it as "Failing row contains (…)", and that row is the message.
+	// Logging the cause wholesale would pull Detail in with it, which is why
+	// neither the cause nor Detail is ever an attribute here.
 	var pgErr *pgconn.PgError
-	if e.Code == wire.ErrorCodeInternal && e.Retryable && errors.As(e.Cause, &pgErr) {
+	if e.Code == wire.ErrorCodeInternal && errors.As(e.Cause, &pgErr) {
 		attrs = append(attrs, "sqlstate", pgErr.Code)
+		if pgErr.ConstraintName != "" {
+			attrs = append(attrs, "constraint", pgErr.ConstraintName)
+		}
 	}
 	return attrs
 }

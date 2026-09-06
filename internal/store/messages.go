@@ -16,23 +16,29 @@ package store
 // somebody's message that never arrived, and no single-threaded test catches
 // it. internal/store/logorder_test.go is the test that does.
 //
-// LOCK ORDER, and it is this file's rule to keep. FOUR row locks, all held
+// LOCK ORDER, and it is this file's rule to keep. THREE row locks, all held
 // until commit, taken in this order and no other:
 //
-//	conversations  →  messages (the reply_to source)  →  conversation_members  →  log_counter
+//	conversations  →  messages (the reply_to source)  →  log_counter
 //
-// CANT-14 established the outer two. CANT-83 added the other two.
-// `conversation_members` is new: an author's own send advances their read_seq
-// (position 9), which locks their member row between the two draws.
+// CANT-14 established the outer two. CANT-83 added `messages` in the middle —
+// though it was NOT new, only implicit and too late. The FK check on the
+// insert at position 11 takes KEY SHARE on the reply_to source row, which put
+// `messages` after `log_counter` in the real order while the comment claimed
+// two. Position 8b takes that same lock explicitly, above the counter draw, so
+// a source deleted mid-send cannot make the insert raise 23503 on a send the
+// author cannot fix. An implicit lock is still a lock, and one an ordering
+// rule does not name is one nobody can reason about.
 //
-// `messages` is NOT new — it was always taken, implicitly and too late. The
-// FK check on the insert at position 11 takes KEY SHARE on the reply_to source
-// row, which put `messages` after `log_counter` in the real order while the
-// comment claimed three locks. What CANT-83 changed is WHEN: position 8b takes
-// that same lock explicitly, above the counter draw, so a source deleted
-// mid-send cannot make the insert raise 23503 on a send the author cannot fix.
-// An implicit lock is still a lock, and one an ordering rule does not name is
-// one nobody can reason about.
+// `conversation_members` IS NOT TAKEN HERE, and that is a decision rather than
+// an omission. An earlier revision of this file advanced the author's own
+// read_seq between the two draws, which locked their member row and made this
+// a four-lock transaction. CANT-83 removed it: first_unread_seq is now derived
+// with an author filter (see 0005_read_seq_derivation), so the send has no
+// reason to touch a member row at all. That deletes a lock, a lock-ordering
+// obligation stated outward to two other tickets, and the deadlock class that
+// came with them — out of the one transaction in this project that cannot
+// afford any of the three.
 //
 // Taking log_counter LAST keeps the deployment-wide serialised section down to
 // draw-insert-commit rather than the whole transaction. The larger reason for
@@ -40,12 +46,9 @@ package store
 // opposite orders DEADLOCK, and Postgres resolves a deadlock by aborting
 // somebody's send.
 //
-// STATED OUTWARD, because three other tickets take some of these locks and
-// only this file states the order:
+// STATED OUTWARD, because two other tickets take some of these locks and only
+// this file states the order:
 //
-//   - Never take the conversation row AFTER a member row. CANT-26's receipt
-//     write takes the member row alone, which is safe as a single lock — but
-//     if it ever also touches the conversation, the conversation goes first.
 //   - CANT-67's sweep advances a floor on `conversations` and then deletes
 //     from `messages`. That is the same direction as this file, which is the
 //     whole reason 8b sits below the conversation draw rather than at
@@ -53,6 +56,10 @@ package store
 //     turn a rare permanent failure into a routine deadlock.
 //   - CANT-63 draws log_counter when an edit bumps updated_log_seq, and takes
 //     these in this order too.
+//
+// CANT-26's receipt write takes `conversation_members` alone. Nothing in this
+// file takes that row any more, so the two cannot order against each other at
+// all — which is the point of removing it.
 //
 // The rule lives here rather than on those three tickets because this is the
 // file all of them have to edit, and a rule stated where the work happens is a
@@ -394,60 +401,31 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 		}
 	}
 
-	// 9 — the author's own read_seq, in THIS transaction.
+	// 9 — DELIBERATELY EMPTY. The author's own read_seq used to be advanced
+	// here, and CANT-83 removed it.
 	//
-	// You have read what you just sent. 0002_conversations states this and
-	// rests CANT-26's first_unread_seq on it: with the author's own send
-	// advancing read_seq, first_unread_seq is arithmetic (read_seq + 1, absent
-	// when read_seq = last_seq) rather than a scan that has to skip your own
-	// messages. Nothing wrote it until now.
+	// 0002_conversations justified the write as making first_unread_seq
+	// arithmetic — read_seq + 1 — "rather than a scan that has to skip your own
+	// messages". It is not a scan: UNIQUE (conversation_id, seq) already indexes
+	// it, so CANT-26 derives it as the first seq above read_seq this viewer did
+	// not write, which stops at the first row it finds. 0005_read_seq_derivation
+	// carries the correction into the column comment.
 	//
-	// GREATEST, never a bare assignment — and NOT for the reason it is tempting
-	// to give. The obvious story is "a receipt for a later seq can commit
-	// between the draw and this statement", and that race cannot happen:
-	// position 8 holds the conversation row exclusively until commit, so for
-	// this whole window out.Seq is the highest seq that can exist here, and a
-	// receipt above it would have to name a message that does not exist.
+	// The arithmetic version was WRONG in a case that is not exotic. An author
+	// with five unread messages who replies without opening the thread drew a
+	// new seq, and the floor swallowed the five below it: the badge and the "N
+	// NEW" divider vanished on every one of their devices, permanently, for
+	// messages they had never seen. A single scalar read_seq cannot say "1-5
+	// unread, 6 is mine" — the author filter can, and it costs one indexed
+	// lookup per conversation on a rail nobody has built yet.
 	//
-	// The real reason is that read_seq is not this file's column. CANT-26 owns
-	// the receipt write, nothing clamps a receipt to last_seq, and a member
-	// row is reachable from outside this transaction entirely. A floor is
-	// correct under every arrival order including ones this file cannot see;
-	// an assignment is correct only under the ones it can. The cost of
-	// GREATEST is nothing, and the cost of being wrong is resurrecting
-	// messages a member has already read.
-	//
-	// Here rather than in CANT-26 because it is a write into this transaction,
-	// and CANT-26 is an evidence ticket. It takes the member row lock, which
-	// is why the lock-order note at the top now names three locks and states
-	// the rule outward for the tickets that take that row without sending.
-	//
-	// A REPLAY never reaches this line: position 4 returns before any draw, so
-	// re-sending an acked message cannot advance a read_seq that has since
-	// moved on.
-	tag, err := tx.Exec(ctx,
-		`UPDATE conversation_members SET read_seq = GREATEST(read_seq, $3)
-		  WHERE conversation_id = $1 AND user_id = $2`,
-		m.ConversationID, m.AuthorID, out.Seq)
-	if err != nil {
-		return Sent{}, fmt.Errorf("store: advance the author's read_seq: %w", err)
-	}
-	// AND THE ROW COUNT IS THE ANSWER, so it is not thrown away. Position 5 is
-	// an unlocked read; this statement takes the member row lock. A membership
-	// revoked in between leaves this matching zero rows, and without the check
-	// the send would commit anyway — a message authored by a non-member, which
-	// is the state criterion 1 exists to refuse. It is the same answer position
-	// 5 gave, taken again at the last moment it can still be wrong, and it
-	// costs one integer comparison.
-	//
-	// Untested deliberately: the window is between two statements of one
-	// transaction and cannot be driven from a test without a scheduler. The
-	// assertion is insurance rather than a claim, and it cannot misfire — a
-	// member who exists always matches one row.
-	if tag.RowsAffected() == 0 {
-		return Sent{}, fmt.Errorf("store: %s left conversation %s mid-send: %w",
-			m.AuthorID, m.ConversationID, ErrNotAMember)
-	}
+	// GIVEN UP WITH IT, knowingly: the row count of that UPDATE was an exact
+	// membership re-check under the member row lock, immediately before commit,
+	// and position 5's EXISTS takes no lock. A membership revoked between the
+	// two now lets one more message through from someone who was a member when
+	// asked. That is the trade — the alternative is a FOR SHARE at position 5,
+	// which takes the member row BEFORE `conversations` and inverts the order
+	// against CANT-67's sweep. A benign extra message beats a deadlock class.
 
 	// 10 — and the global counter LAST, so the deployment-wide serialised
 	// section is draw-insert-commit rather than the whole transaction.

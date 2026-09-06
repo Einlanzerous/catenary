@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -14,15 +15,6 @@ import (
 	"github.com/magos/catenary/internal/wire"
 )
 
-func readSeq(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv, user uuid.UUID) int64 {
-	t.Helper()
-	var n int64
-	mustScan(t, pool.QueryRow(ctx,
-		`SELECT read_seq FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`,
-		conv, user), &n)
-	return n
-}
-
 func counters(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv uuid.UUID) (lastSeq, logCounter int64) {
 	t.Helper()
 	mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv), &lastSeq)
@@ -30,79 +22,9 @@ func counters(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv uuid.U
 	return
 }
 
-// Criterion 6. You have read what you just sent — 0002_conversations says so,
-// and CANT-26's first_unread_seq rests on it: with the author's own send
-// advancing read_seq, first_unread_seq is arithmetic rather than a scan that
-// has to skip your own messages. Nothing wrote it until now.
-func TestAnAuthorsOwnSendAdvancesTheirReadSeq(t *testing.T) {
-	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits(), discardLogger())
-	author := mkUser(ctx, t, pool, "author")
-	other := mkUser(ctx, t, pool, "other")
-	conv := mkGroup(ctx, t, pool, "room", author, other)
-
-	if got := readSeq(ctx, t, pool, conv, author); got != 0 {
-		t.Fatalf("read_seq starts at %d, want 0", got)
-	}
-
-	sent, err := st.SendMessage(ctx, NewMessage{
-		ClientID: uuid.New(), ConversationID: conv, AuthorID: author, Text: ptr("mine"),
-	})
-	if err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	if got := readSeq(ctx, t, pool, conv, author); got != sent.Seq {
-		t.Errorf("the author's read_seq = %d after sending seq %d", got, sent.Seq)
-	}
-
-	// The OTHER member is untouched: you have read what you sent, not what
-	// anyone else sent, and an unread count that moved for a message somebody
-	// else wrote would be the drift Invariant 3 exists to prevent.
-	if got := readSeq(ctx, t, pool, conv, other); got != 0 {
-		t.Errorf("another member's read_seq moved to %d on somebody else's send", got)
-	}
-}
-
-// GREATEST, not assignment. A read receipt for a LATER seq can commit between
-// this send's seq draw and the advance; assigning would walk it backwards and
-// resurrect messages the member has already read.
-func TestTheReadSeqAdvanceIsAFloorAndNeverWalksBackwards(t *testing.T) {
-	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits(), discardLogger())
-	author := mkUser(ctx, t, pool, "author")
-	conv := mkGroup(ctx, t, pool, "room", author)
-
-	for i := 0; i < 3; i++ {
-		if _, err := st.SendMessage(ctx, NewMessage{
-			ClientID: uuid.New(), ConversationID: conv, AuthorID: author, Text: ptr("x"),
-		}); err != nil {
-			t.Fatalf("send %d: %v", i, err)
-		}
-	}
-
-	// A receipt lands ahead of anything this author has sent — the shape
-	// CANT-26 will write.
-	if _, err := pool.Exec(ctx,
-		`UPDATE conversation_members SET read_seq = 99 WHERE conversation_id = $1 AND user_id = $2`,
-		conv, author); err != nil {
-		t.Fatalf("planting a later receipt: %v", err)
-	}
-
-	sent, err := st.SendMessage(ctx, NewMessage{
-		ClientID: uuid.New(), ConversationID: conv, AuthorID: author, Text: ptr("after"),
-	})
-	if err != nil {
-		t.Fatalf("send: %v", err)
-	}
-	if got := readSeq(ctx, t, pool, conv, author); got != 99 {
-		t.Errorf("read_seq = %d after a send at seq %d under a receipt at 99 — "+
-			"the advance is an assignment, not a floor", got, sent.Seq)
-	}
-}
-
-// A replay never reaches position 9: the idempotency check returns before any
-// draw, so re-sending an acked message cannot drag a read_seq that has since
-// moved on back to where it was.
+// A replay draws nothing: the idempotency check returns before either ordinal
+// is drawn, so re-sending an acked message leaves both counters where they
+// were.
 func TestAReplayAdvancesNothing(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
@@ -115,11 +37,6 @@ func TestAReplayAdvancesNothing(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("first send: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
-		`UPDATE conversation_members SET read_seq = 50 WHERE conversation_id = $1 AND user_id = $2`,
-		conv, author); err != nil {
-		t.Fatal(err)
-	}
 	beforeLast, beforeLog := counters(ctx, t, pool, conv)
 
 	if _, err := st.SendMessage(ctx, NewMessage{
@@ -128,9 +45,6 @@ func TestAReplayAdvancesNothing(t *testing.T) {
 		t.Fatalf("replay: %v", err)
 	}
 
-	if got := readSeq(ctx, t, pool, conv, author); got != 50 {
-		t.Errorf("read_seq = %d after a replay, want 50 — the replay reached position 9", got)
-	}
 	afterLast, afterLog := counters(ctx, t, pool, conv)
 	if afterLast != beforeLast || afterLog != beforeLog {
 		t.Errorf("a replay moved the counters: last_seq %d→%d, log_counter %d→%d",
@@ -249,7 +163,7 @@ func TestAnUnresolvableReplyToIsStoredAsNullAndLogged(t *testing.T) {
 			if len(lines) != 1 {
 				t.Fatalf("want exactly one line about the dropped ref, got %d: %v", len(lines), lines)
 			}
-			if msg, _ := lines[0]["msg"].(string); !contains(msg, tc.wantLog) {
+			if msg, _ := lines[0]["msg"].(string); !strings.Contains(msg, tc.wantLog) {
 				t.Errorf("log message %q does not say why the ref was dropped", msg)
 			}
 			// Both ids, because someone will eventually ask why the reply
@@ -259,20 +173,6 @@ func TestAnUnresolvableReplyToIsStoredAsNullAndLogged(t *testing.T) {
 			}
 		})
 	}
-}
-
-func contains(haystack, needle string) bool {
-	return len(haystack) >= len(needle) && (haystack == needle ||
-		len(needle) == 0 || indexOf(haystack, needle) >= 0)
-}
-
-func indexOf(h, n string) int {
-	for i := 0; i+len(n) <= len(h); i++ {
-		if h[i:i+len(n)] == n {
-			return i
-		}
-	}
-	return -1
 }
 
 // Criterion 10's send-path half, and the refusal-logging contract. Every
@@ -330,7 +230,7 @@ func TestEveryRefusalLogsOnceWithItsCodeAndNeverTheBody(t *testing.T) {
 					t.Errorf("the line has no %s: %v", field, got)
 				}
 			}
-			if indexOf(buf.String(), secret) >= 0 {
+			if strings.Contains(buf.String(), secret) {
 				t.Error("the refusal log contains the message body")
 			}
 		})
@@ -398,5 +298,86 @@ func TestTheReplyToResolveHoldsItsSourceAgainstAConcurrentDelete(t *testing.T) {
 	_ = holder.Rollback(ctx)
 	if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE id = $1`, source.ID); err != nil {
 		t.Errorf("the source could not be deleted after the holder finished: %v", err)
+	}
+}
+
+// firstUnreadSeq is CANT-26's derivation, written here rather than imported
+// because CANT-26 has not been built. It is the query this ticket's decision
+// rests on, so it is exercised rather than asserted: the first seq above
+// read_seq that the VIEWER did not write.
+//
+// Not a scan — UNIQUE (conversation_id, seq) indexes it, and it stops at the
+// first row it finds.
+func firstUnreadSeq(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv, viewer uuid.UUID) *int64 {
+	t.Helper()
+	var seq *int64
+	mustScan(t, pool.QueryRow(ctx, `
+		SELECT MIN(seq) FROM messages
+		 WHERE conversation_id = $1
+		   AND author_id <> $2
+		   AND seq > (SELECT read_seq FROM conversation_members
+		               WHERE conversation_id = $1 AND user_id = $2)`,
+		conv, viewer), &seq)
+	return seq
+}
+
+// CANT-83's replacement for criterion 6, and the reason that criterion was
+// dropped rather than delivered.
+//
+// The removed version advanced the author's own read_seq to the seq they just
+// drew, so that first_unread_seq could be read_seq + 1. That is wrong whenever
+// the author was not already caught up: replying without opening the thread
+// swallowed everything below the new message. A scalar read_seq cannot say
+// "1-5 unread, 6 is mine"; the author filter can, and it is one indexed lookup.
+func TestReplyingDoesNotMarkAnUnreadBacklogRead(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	bob := mkUser(ctx, t, pool, "bob")
+	alice := mkUser(ctx, t, pool, "alice")
+	conv := mkGroup(ctx, t, pool, "room", bob, alice)
+
+	for i := 0; i < 5; i++ {
+		if _, err := st.SendMessage(ctx, NewMessage{
+			ClientID: uuid.New(), ConversationID: conv, AuthorID: bob, Text: ptr("unread"),
+		}); err != nil {
+			t.Fatalf("bob's send %d: %v", i+1, err)
+		}
+	}
+
+	// Alice replies from a notification without opening the thread.
+	sent, err := st.SendMessage(ctx, NewMessage{
+		ClientID: uuid.New(), ConversationID: conv, AuthorID: alice, Text: ptr("on it"),
+	})
+	if err != nil {
+		t.Fatalf("alice's reply: %v", err)
+	}
+	if sent.Seq != 6 {
+		t.Fatalf("alice's reply drew seq %d, want 6", sent.Seq)
+	}
+
+	// THE SEND TOUCHED NOTHING. This is the assertion that stops position 9
+	// coming back: read_seq is CANT-26's column and a send has no business in
+	// it.
+	var aliceRead int64
+	mustScan(t, pool.QueryRow(ctx,
+		`SELECT read_seq FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`,
+		conv, alice), &aliceRead)
+	if aliceRead != 0 {
+		t.Errorf("alice's read_seq = %d after replying; a send must not advance it — "+
+			"the old behaviour set it to 6 and silently marked bob's five messages read", aliceRead)
+	}
+
+	// And the derivation still gives her the right answer: bob's five are
+	// unread, her own reply is not.
+	got := firstUnreadSeq(ctx, t, pool, conv, alice)
+	if got == nil || *got != 1 {
+		t.Errorf("alice's first_unread_seq = %v, want 1 — her backlog was cleared by her own reply", got)
+	}
+
+	// The other direction, which is the half read_seq + 1 got right and must
+	// not be lost: your own message is never your own unread.
+	got = firstUnreadSeq(ctx, t, pool, conv, bob)
+	if got == nil || *got != 6 {
+		t.Errorf("bob's first_unread_seq = %v, want 6 — his own five must not count as his unread", got)
 	}
 }

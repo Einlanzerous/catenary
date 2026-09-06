@@ -25,7 +25,7 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 7. Upload resolution (`CANT-85`).
 8. Draw `seq` from `conversations.last_seq`.
 8b. `reply_to` resolution, `FOR KEY SHARE`.
-9. Advance the author's `read_seq`, `GREATEST(read_seq, $seq)`; zero rows refuses.
+9. *(empty — the author's `read_seq` advance was removed; see below.)*
 10. Draw `log_seq` from `log_counter`.
 11. Insert the message, then its attachments (`CANT-85`).
 12. `pg_notify` (`CANT-86`), then commit.
@@ -36,17 +36,17 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 
 **`reply_to` resolution moved from position 6 to 8b**, below the conversation lock. Superseded on the field finding recorded in `CANT-83`: at position 6 the read took no lock, so a source deleted before position 11 made the insert raise `23503` — not a transient class — and the send failed permanently over a `reply_to` the sender cannot fix.
 
-## The lock order is four, and it is still a deadlock rule
+## The lock order is three, and it is still a deadlock rule
 
-**`conversations` → `messages` → `conversation_members` → `log_counter`.** All row locks held until commit. CANT-14 established the outer two; CANT-83 added the other two.
+**`conversations` → `messages` → `log_counter`.** All row locks held until commit. CANT-14 established the outer two; CANT-83 added `messages` in the middle.
 
 `messages` is not new — position 11's FK check always took `KEY SHARE` on the `reply_to` source, after the counter draw. What changed is when: 8b takes the same lock earlier and explicitly. Taking it at position 6, above the conversation lock, would have inverted against CANT-67's sweep.
 
-Stated outward, for the tickets that take a member row without sending: **never take the conversation row after a member row.**
+**`conversation_members` is not taken at all**, and that is the point of removing position 9. It deletes a lock, the ordering obligation stated outward with it, and the deadlock class that came with both — out of the one transaction that can least afford any of the three.
 
-- **CANT-26's** receipt write takes the member row alone, which is safe as a single lock. If it ever also touches the conversation, the conversation goes first.
-- **CANT-67's** sweep advances a floor on `conversations` and must keep doing that before any member row it later needs.
+- **CANT-67's** sweep advances a floor on `conversations` and then deletes from `messages` — the same direction as this file.
 - **CANT-63** draws `log_counter` for an edit and takes these in this order.
+- **CANT-26's** receipt write takes `conversation_members` alone. Nothing here takes that row, so the two cannot order against each other.
 
 ## What the operation guarantees
 
@@ -55,11 +55,11 @@ Stated outward, for the tickets that take a member row without sending: **never 
 - `internal` splits on transience: FATAL/PANIC severity, `40001`, `40P01`, class `08`, `53` or `57`, `pgconn.SafeToRetry`, a closed pool, a context error, or a connection-shaped error with no `PgError`. Everything else is permanent.
 - A refusal **consumes no ordinals** — neither the conversation's dense `seq` nor the deployment-wide counter.
 - **`Sent.ConversationID` is the conversation the row is in**, which is not always the one the caller asked about: dedup is `(author_id, client_id)`, not per conversation. Transports build the ack from `Sent`, never from the request.
-- An author's own send advances their `read_seq` in the same transaction, as a floor. A replay advances nothing.
+- **A send does not touch `read_seq`.** `first_unread_seq` is derived as the first `seq` above `read_seq` the viewer did not author — an index scan over `UNIQUE (conversation_id, seq)`, not a table scan. `0005_read_seq_derivation` carries the correction into the column comment; CANT-26 owns the query.
 - A `reply_to` that is missing or in another conversation is stored NULL and logged at `info` with both ids. The send succeeds, and the source is held `FOR KEY SHARE` so a concurrent delete cannot turn a valid ref into a failed send.
-- A membership revoked mid-send is refused: position 9's row count is re-checked under the member row lock, after position 5's unlocked read.
+- **A membership revoked between position 5 and commit is not caught**, and that is accepted: one more message lands from someone who was a member when asked. Closing it means locking the member row at position 5, which takes it *before* `conversations` and inverts against CANT-67's sweep.
 - An **empty send** — no `text`, no attachments — is stored.
-- Every refusal **logs once**: `warn` for `internal`, `info` for the rest, with `conversation_id`, `author_id`, `client_id`, `code` and `retryable`; a retryable `internal` also logs its SQLSTATE. **The body is never logged, at any level.**
+- Every refusal **logs once**: `warn` for `internal`, `info` for the rest, with `conversation_id`, `author_id`, `client_id`, `code` and `retryable`; **every** `internal` also logs its SQLSTATE and constraint name, retryable or not, because the permanent ones are the ones that need diagnosing. **The body is never logged, at any level** — `pgErr.Detail` is excluded by name, because on a CHECK violation it renders as `Failing row contains (…)` and that row is the message.
 
 ## Rejected
 
@@ -74,6 +74,8 @@ Stated outward, for the tickets that take a member row without sending: **never 
 | Refusing an empty send | Needs either a new `ErrorCode` — a wire change under CANT-74's unresolved compatibility policy — or reporting a client bug as `internal`. |
 | Moving the size bounds below the idempotency check | Buys consistency for a rare, deliberate operator action at the price of a transaction per oversized frame. |
 | `bigserial` for either ordinal | Unchanged from CANT-14: the number is handed out outside the transaction. |
+| Advancing the author's own `read_seq` on send | Built, then removed. It made `first_unread_seq` arithmetic at the price of marking an unread backlog read whenever an author replied without opening the thread — and the arithmetic was never necessary, because the derivation is an index scan. It also put a fourth lock in this transaction. |
+| Leaving `read_seq` alone *and* keeping `read_seq + 1` | The author's own message then counts toward their own unread, which Invariant 3 forbids outright. |
 
 ## Not claimed here
 
