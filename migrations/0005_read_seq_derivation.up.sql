@@ -1,0 +1,37 @@
+-- CANT-83 · the read_seq column comment described a derivation we are dropping.
+--
+-- 0002 shipped this column commented "An author's own send advances it, which
+-- is what makes first_unread_seq arithmetic rather than a scan (CANT-26)."
+-- CANT-83 implemented that advance, and it was wrong in a case that is not
+-- exotic: an author with five unread messages who replies without opening the
+-- thread drew a new seq, and the floor swallowed the five below it. The badge
+-- and the "N NEW" divider vanished on every one of their devices, permanently,
+-- for messages they had never seen.
+--
+-- A single scalar read_seq cannot express "1-5 unread, 6 is mine and read".
+-- Leaving read_seq alone instead is no better: the author's own message then
+-- counts toward their unread, which CLAUDE.md forbids outright — you cannot
+-- have an unread message you sent.
+--
+-- The premise was the mistake. first_unread_seq is not a scan: UNIQUE
+-- (conversation_id, seq) already indexes it, so CANT-26 derives it as the
+-- first seq above read_seq that this viewer did not write, stopping at the
+-- first row it finds. Typically one row; worst case a run the viewer authored.
+-- That is correct in both cases above, and it removed a row lock from
+-- store.SendMessage's transaction along with the deadlock class that came with
+-- it.
+--
+-- A comment-only migration rather than an edit to 0002, because 0002 is
+-- applied: editing it in place would leave every deployed database carrying
+-- the sentence this corrects. Same reasoning as 0004.
+--
+-- 0002 ALSO carries the same premise in the inline `--` comment above the
+-- column, which no COMMENT ON can reach. That one is left standing on the same
+-- precedent — an applied migration is corrected forward, not rewritten — and it
+-- is named here so a reader who greps the false sentence lands on this file
+-- rather than concluding it is still the rule. The third copy lived in
+-- schema/mapping/wire-fields.json, which is not a migration and carries no such
+-- constraint, so it was corrected in place.
+
+COMMENT ON COLUMN conversation_members.read_seq IS
+    'Highest seq this member has READ. Advanced by CANT-26''s read receipts and by nothing else — an author''s own send does NOT advance it (CANT-83 implemented that and removed it; see 0005). first_unread_seq is DERIVED as the first seq above read_seq that the viewer did not author, which is an index scan over UNIQUE (conversation_id, seq) and not a table scan. The author filter is what keeps your own messages out of your own unread count, so nothing here needs to write read_seq to achieve it.';

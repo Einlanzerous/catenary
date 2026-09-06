@@ -286,7 +286,7 @@
     },
     "Conversation.first_unread_seq": {
       "kind": "derived",
-      "note": "conversation_members.read_seq + 1, absent when read_seq = last_seq. Arithmetic rather than a scan because an author's own send advances their own read_seq."
+      "note": "The first seq above conversation_members.read_seq that the VIEWER DID NOT AUTHOR; absent when there is none. An index scan over UNIQUE (conversation_id, seq), not a table scan. read_seq is advanced by CANT-26's read receipts and by nothing else — an author's own send does NOT advance it, and the author filter is what keeps your own messages out of your own unread count. CANT-83 implemented the advance and removed it; see migrations/0005_read_seq_derivation."
     },
     "Conversation.head_seq": {
       "kind": "derived",

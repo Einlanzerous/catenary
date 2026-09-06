@@ -1,7 +1,10 @@
 package store
 
 import (
+	"io/fs"
+
 	"context"
+	"github.com/magos/catenary/migrations"
 	"os"
 	"testing"
 	"time"
@@ -60,8 +63,18 @@ func TestLoadMigrationsHasBothDirections(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadMigrations: %v", err)
 	}
-	if len(migs) != 4 {
-		t.Fatalf("loaded %d migrations, want 4", len(migs))
+	// Counted from the embedded FS rather than hardcoded. The assertion's
+	// content is "loadMigrations drops none", which a literal answers only
+	// until the next migration, and then answers wrongly.
+	ups, err := fs.Glob(migrations.FS, "*.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ups) == 0 {
+		t.Fatal("no *.up.sql embedded — this test would pass vacuously")
+	}
+	if len(migs) != len(ups) {
+		t.Fatalf("loaded %d migrations, but %d *.up.sql are embedded", len(migs), len(ups))
 	}
 	for _, m := range migs {
 		if m.up == "" {
