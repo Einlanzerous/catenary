@@ -22,6 +22,7 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/puddle/v2"
 
 	"github.com/magos/catenary/internal/wire"
 )
@@ -319,6 +320,25 @@ func isTransient(err error) bool {
 			}
 		}
 		return false
+	}
+
+	// A CLOSED POOL never dialled. This is the least ambiguous case in the
+	// function — no statement was sent, nothing can have committed, and a
+	// retry against a fresh pool succeeds — and it arrives carrying nothing
+	// the branches below can see: puddle returns a plain errors.New, so there
+	// is no PgError, no SafeToRetry, no io.EOF and no net.Error, and every
+	// other branch declines. It was classified PERMANENT until CANT-83's
+	// review caught it.
+	//
+	// It becomes reachable the moment CANT-22 lands. http.Server.Shutdown does
+	// not wait for hijacked connections, so `defer pool.Close()` in main fires
+	// while socket handlers are still inside SendMessage: every send in flight
+	// during an ordinary deploy would come back not-retryable, and a client
+	// outbox reading that flag marks each one failed forever. That is the
+	// outcome the context.Canceled ruling was decided to prevent, arriving one
+	// branch earlier.
+	if errors.Is(err, puddle.ErrClosedPool) {
+		return true
 	}
 
 	// Nothing reached the server, so nothing can have committed. Deliberately

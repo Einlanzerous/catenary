@@ -410,24 +410,42 @@ func moduleRoot(t *testing.T) string {
 //
 // Read out of generated.go rather than restated here, because a restated list
 // is a third hand-maintained list with the same problem.
-func TestEveryWireErrorCodeIsEitherBannedOrExemptByName(t *testing.T) {
-	root := moduleRoot(t)
-	path := filepath.Join(root, filepath.FromSlash(generatedFile))
+// wireErrorCodeConsts reads every `ErrorCode` constant out of a Go file.
+func wireErrorCodeConsts(t *testing.T, path string) map[string]string {
+	t.Helper()
 
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 	if err != nil {
-		t.Fatalf("parse %s: %v", generatedFile, err)
+		t.Fatalf("parse %s: %v", path, err)
 	}
 
 	found := map[string]string{} // constant name -> code value
+
+	// The type CARRIES FORWARD across specs in a const block, which is Go's
+	// own rule and not a workaround for it. The generator repeats `ErrorCode`
+	// on all eight lines today, so requiring spec.Type worked — but if it ever
+	// emits the block with the type on the first spec only, specs 2..8 have
+	// spec.Type == nil, drop out silently, and the len(found) == 0 fatal below
+	// does NOT fire because the first one survived. The guard would then be
+	// checking one code out of eight while staying green, which is the failure
+	// it exists to prevent reached from the other side.
+	var blockType string
 	ast.Inspect(f, func(n ast.Node) bool {
+		if decl, ok := n.(*ast.GenDecl); ok && decl.Tok == token.CONST {
+			blockType = "" // each const block starts with no carried type
+			return true
+		}
 		spec, ok := n.(*ast.ValueSpec)
 		if !ok {
 			return true
 		}
-		typ, ok := spec.Type.(*ast.Ident)
-		if !ok || typ.Name != "ErrorCode" || len(spec.Names) != len(spec.Values) {
+		if typ, ok := spec.Type.(*ast.Ident); ok {
+			blockType = typ.Name
+		} else if spec.Type != nil {
+			blockType = "" // some other type expression; not ours
+		}
+		if blockType != "ErrorCode" || len(spec.Names) != len(spec.Values) {
 			return true
 		}
 		for i, name := range spec.Names {
@@ -444,9 +462,24 @@ func TestEveryWireErrorCodeIsEitherBannedOrExemptByName(t *testing.T) {
 		return true
 	})
 
-	// A parse that finds nothing would make every assertion below vacuous.
-	if len(found) == 0 {
-		t.Fatalf("no ErrorCode constants found in %s — this test is not checking anything", generatedFile)
+	return found
+}
+
+func TestEveryWireErrorCodeIsEitherBannedOrExemptByName(t *testing.T) {
+	found := wireErrorCodeConsts(t, filepath.Join(moduleRoot(t), filepath.FromSlash(generatedFile)))
+
+	// A FLOOR, not just non-empty. "Found nothing" is the obvious way this
+	// stops checking anything; "found one of eight" is the quiet one, and it
+	// leaves every assertion below passing. Same idiom as config_test.go's
+	// scanner, whose own floor says the scan is broken rather than the config.
+	//
+	// The floor is the count the wire has today. A ninth code SHOULD fail this
+	// until somebody classifies it, which is what the loop below is for — this
+	// only catches the parse silently shrinking.
+	if len(found) < 8 {
+		t.Fatalf("found %d ErrorCode constants in %s, expected at least 8 — the AST walk is broken, "+
+			"not the schema; every assertion below is passing on a set it did not really read",
+			len(found), generatedFile)
 	}
 
 	for name, value := range found {
@@ -478,5 +511,69 @@ func TestEveryWireErrorCodeIsEitherBannedOrExemptByName(t *testing.T) {
 		if _, ok := found[name]; !ok {
 			t.Errorf("exemptCodes has %s, which is not a wire.ErrorCode constant any more", name)
 		}
+	}
+}
+
+// The carry-forward is the half a clean tree cannot exercise, because the
+// generator repeats the type on every line today. Planted both ways, so the
+// guard keeps working if that ever changes.
+func TestTheConstScanSurvivesImplicitTypeRepetition(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{
+			name: "the type on every spec, as the generator emits it today",
+			src: `package wire
+type ErrorCode string
+const (
+	ErrorCodeOne   ErrorCode = "one"
+	ErrorCodeTwo   ErrorCode = "two"
+	ErrorCodeThree ErrorCode = "three"
+)
+`,
+		},
+		{
+			name: "the type on the first spec only, which Go carries forward",
+			src: `package wire
+type ErrorCode string
+const (
+	ErrorCodeOne ErrorCode = "one"
+	ErrorCodeTwo           = "two"
+	ErrorCodeThree         = "three"
+)
+`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "planted.go")
+			if err := os.WriteFile(path, []byte(tc.src), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			got := wireErrorCodeConsts(t, path)
+			if len(got) != 3 {
+				t.Fatalf("found %d constants, want 3 — specs after the first dropped out silently: %v", len(got), got)
+			}
+		})
+	}
+}
+
+// A const block of some OTHER type must not be swept in by the carry-forward.
+func TestTheConstScanDoesNotCarryAcrossBlocks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "planted.go")
+	src := `package wire
+type ErrorCode string
+type DeliveryState string
+const (
+	ErrorCodeOne ErrorCode = "one"
+)
+const (
+	DeliveryStateSent DeliveryState = "sent"
+	DeliveryStateRead               = "read"
+)
+`
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := wireErrorCodeConsts(t, path)
+	if len(got) != 1 {
+		t.Errorf("found %v, want only the ErrorCode block — the type carried across a block boundary", got)
 	}
 }

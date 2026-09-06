@@ -387,3 +387,32 @@ func TestNewRefusesANonPositiveBound(t *testing.T) {
 		t.Error("DefaultLimits() did not survive New")
 	}
 }
+
+// A closed pool is the LEAST ambiguous "nothing reached the server" there is,
+// and it was classified permanent until CANT-83's review caught it: puddle
+// returns a plain errors.New, so no PgError, no SafeToRetry, no io.EOF and no
+// net.Error — every branch of isTransient declined.
+//
+// It matters as soon as CANT-22 lands. http.Server.Shutdown does not wait for
+// hijacked connections, so `defer pool.Close()` fires while socket handlers are
+// still inside SendMessage: every send in flight during an ordinary deploy
+// comes back not-retryable, and a client outbox reading that flag marks each
+// one failed forever.
+func TestAClosedPoolIsTransient(t *testing.T) {
+	st := New(closedPool(t), DefaultLimits())
+
+	_, err := st.SendMessage(context.Background(), NewMessage{
+		ClientID: uuid.New(), ConversationID: uuid.New(), AuthorID: uuid.New(), Text: ptr("in flight"),
+	})
+	var se *SendError
+	if !errors.As(err, &se) {
+		t.Fatalf("refused with %T (%v), want a *SendError", err, err)
+	}
+	if se.Code != wire.ErrorCodeInternal {
+		t.Errorf("code = %q, want %q", se.Code, wire.ErrorCodeInternal)
+	}
+	if !se.Retryable {
+		t.Error("a closed pool was reported permanent — nothing was sent, so nothing can have committed, " +
+			"and an ordinary deploy would park every in-flight send at failed")
+	}
+}
