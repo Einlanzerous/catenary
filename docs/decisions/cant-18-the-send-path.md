@@ -40,6 +40,8 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 
 **`conversations` → `messages` → `log_counter`.** All row locks held until commit. CANT-14 established the outer two; CANT-83 added `messages` in the middle.
 
+The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when the sender has one, `devices(sender_device_id)` — `messages` has four foreign keys and an insert locks every row it references. Named because no path in this service takes a conflicting lock on either today, so a future one would be the first: `deactivated_at` and `revoked_at` are non-key updates and do not conflict, and nothing deletes from those tables outside the `RESTRICT` tests. `CANT-33` and `CANT-63` are the tickets most likely to change that.
+
 `messages` is not new — position 11's FK check always took `KEY SHARE` on the `reply_to` source, after the counter draw. What changed is when: 8b takes the same lock earlier and explicitly. Taking it at position 6, above the conversation lock, would have inverted against CANT-67's sweep.
 
 **The `messages` lock is only ever taken on a row in this conversation**, and the resolve is scoped to make that so. A table order cannot describe a per-row hazard: an unscoped resolve let a send in conversation A take `messages(X ∈ B)` for a ref it then discarded, closing a deadlock cycle in which both parties had obeyed `conversations` → `messages`. Scoped, the only row locked is one whose conversation this transaction already holds — which is also what makes "the lock is not new" true rather than nearly true.

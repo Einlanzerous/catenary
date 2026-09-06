@@ -16,8 +16,8 @@ package store
 // somebody's message that never arrived, and no single-threaded test catches
 // it. internal/store/logorder_test.go is the test that does.
 //
-// LOCK ORDER, and it is this file's rule to keep. THREE row locks, all held
-// until commit, taken in this order and no other:
+// LOCK ORDER, and it is this file's rule to keep. THREE row locks that this
+// file takes ON PURPOSE, all held until commit, in this order:
 //
 //	conversations  →  messages (the reply_to source, IN THIS CONVERSATION)  →  log_counter
 //
@@ -51,6 +51,26 @@ package store
 // obligation stated outward to two other tickets, and the deadlock class that
 // came with them — out of the one transaction in this project that cannot
 // afford any of the three.
+//
+// AND TWO MORE THAT THE INSERT TAKES WITHOUT ASKING, named here because the
+// paragraph above is otherwise a false absolute — and because that paragraph's
+// own argument is what convicts it. `messages` has four foreign keys, and an
+// insert takes KEY SHARE on every row it references, held to commit.
+// `conversations` is already held more strongly from position 8 and the
+// reply_to source from 8b, but `users(author_id)` and — when the sender has one
+// — `devices(sender_device_id)` are locked for the FIRST time at position 11,
+// after the log_counter draw.
+//
+// No path in this service takes a conflicting lock on either today, which is
+// why this is a note and not a defect: `users.deactivated_at` and
+// `devices.revoked_at` are non-key updates, so they take FOR NO KEY UPDATE and
+// do not conflict with KEY SHARE, and the only DELETEs against those tables are
+// the RESTRICT assertions in schema_test.go. Two sends never contend, because
+// KEY SHARE is shared.
+//
+// It is written down anyway for the two tickets most likely to want a key-level
+// lock there: CANT-33 offboards accounts, and CANT-63 touches this file. A
+// reader is entitled to treat this list as exhaustive, so it has to be.
 //
 // Taking log_counter LAST keeps the deployment-wide serialised section down to
 // draw-insert-commit rather than the whole transaction. The larger reason for
