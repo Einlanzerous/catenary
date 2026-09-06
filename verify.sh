@@ -43,7 +43,13 @@ DART="${DART:-$HOME/tools/dart-sdk/bin}"
 # already reasoned exactly this way about the staleness-proof backups, and this
 # is the same argument applied to the logs that reasoning left behind.
 new_logdir() { mktemp -d "${TMPDIR:-/tmp}/catenary-verify.XXXXXX"; }
-LOGDIR="$(new_logdir)"
+# CHECKED, and this file runs without `set -e` so it has to be. An unwritable
+# TMPDIR or a full /tmp leaves LOGDIR empty, every redirect below fails, and the
+# two emptiness gates then test a file that was never created — which is the
+# identical false PASS this whole change exists to remove, reintroduced by its
+# own fix. Fourteen other steps would go red, so a run could not report all
+# green; the two that would lie are exactly the two that matter.
+LOGDIR="$(new_logdir)" || { printf 'verify.sh: cannot create a log directory under %s\n' "${TMPDIR:-/tmp}" >&2; exit 1; }
 
 fails=0
 step() {
@@ -59,18 +65,18 @@ result() {
 }
 
 step "R4 · codegen is current (the generated files match the schema)"
-(cd "$ROOT/web" && npm run --silent gen:check) >"$LOGDIR/v.log" 2>&1
+(cd "$ROOT/web" && npm run --silent gen:check) >"$LOGDIR/v-gen-check.log" 2>&1
 result $? "gen:check"
 
 step "R4 · TypeScript"
-(cd "$ROOT/web" && npx --no-install vue-tsc --noEmit) >"$LOGDIR/v.log" 2>&1
+(cd "$ROOT/web" && npx --no-install vue-tsc --noEmit) >"$LOGDIR/v-tsc.log" 2>&1
 result $? "vue-tsc --noEmit"
 (cd "$ROOT/web" && npm run --silent conformance) >"$LOGDIR/v-ts.log" 2>&1
 result $? "$(grep -oE 'all green — [0-9]+ vectors|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-ts.log" | tail -1)"
 
 step "R4 · Dart"
 if command -v dart >/dev/null; then
-  (cd "$ROOT/dart" && dart analyze) >"$LOGDIR/v.log" 2>&1
+  (cd "$ROOT/dart" && dart analyze) >"$LOGDIR/v-dart-analyze.log" 2>&1
   result $? "dart analyze"
   (cd "$ROOT/dart" && dart run bin/conformance.dart) >"$LOGDIR/v-dart.log" 2>&1
   result $? "$(grep -oE 'all green — [0-9]+ vectors|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-dart.log" | tail -1)"
@@ -90,7 +96,7 @@ step "R4 · Go"
 # checking and is no longer the sentence above it.
 (cd "$ROOT/server" && gofmt -l .) >"$LOGDIR/v-fmt-server.log" 2>&1
 [ ! -s "$LOGDIR/v-fmt-server.log" ]; result $? "gofmt -l server/ is empty$( [ -s "$LOGDIR/v-fmt-server.log" ] && printf ' (%s)' "$(tr '\n' ' ' <"$LOGDIR/v-fmt-server.log")" )"
-(cd "$ROOT/server" && go vet ./...) >"$LOGDIR/v.log" 2>&1
+(cd "$ROOT/server" && go vet ./...) >"$LOGDIR/v-vet-server.log" 2>&1
 result $? "go vet"
 # CANT-11: verify.sh used to run `go test ./...` for spike/r6-purser only, while
 # CLAUDE.md's Testing section names it for the whole tree. If CI ran it and this
@@ -138,13 +144,13 @@ step "R4 · web smoke test (render assertions + conformance)"
 result $? "$(grep -cE '^ok  ' "$LOGDIR/v-smoke.log") assertions passed"
 
 step "R4 · a REAL server response validates against the generated decoder"
-(cd "$ROOT/web" && npm run --silent validate SyncResponse "$ROOT/spike/r1-websocket/captured-sync-response.json") >"$LOGDIR/v.log" 2>&1
+(cd "$ROOT/web" && npm run --silent validate SyncResponse "$ROOT/spike/r1-websocket/captured-sync-response.json") >"$LOGDIR/v-validate.log" 2>&1
 result $? "captured /sync from the Go rig decodes as SyncResponse"
 
 step "CANT-17/13 · the service binary — vet, gofmt, test"
 (cd "$ROOT" && gofmt -l ./cmd ./internal ./migrations) >"$LOGDIR/v-fmt.log" 2>&1
 [ ! -s "$LOGDIR/v-fmt.log" ]; result $? "gofmt -l is empty$( [ -s "$LOGDIR/v-fmt.log" ] && printf ' (%s)' "$(tr '\n' ' ' <"$LOGDIR/v-fmt.log")" )"
-(cd "$ROOT" && go vet ./...) >"$LOGDIR/v.log" 2>&1
+(cd "$ROOT" && go vet ./...) >"$LOGDIR/v-vet.log" 2>&1
 result $? "go vet"
 
 # The store's tests need a real Postgres 16 and there is deliberately no DSN
@@ -221,7 +227,12 @@ rm -rf "$other" "$LOGDIR/collide.log"
 # later with a hardcoded path reintroduces the bug, and the two assertions
 # above would both still pass. Comment prose is exempt by construction —
 # `[^#]*` cannot cross a `#`, so only a real code occurrence matches.
-scan_fixed_logs() { grep -nE '^[^#]*(>|<|[[:space:]])/tmp/v[a-z0-9.-]*\.log' "$1"; }
+# ANY fixed log path, not just the ten names that happened to exist. The
+# assertion below claims "no step writes to a fixed path", and a step added
+# later as `>/tmp/gen.log` would have sailed past a `v`-anchored pattern under a
+# green guard. Neither remaining /tmp literal in this file is a false positive:
+# both are `${TMPDIR:-/tmp}`-prefixed, which is `/tmp}` and not `/tmp/`.
+scan_fixed_logs() { grep -nE '^[^#]*(>|<|[[:space:]])/tmp/[a-z0-9._-]*\.log' "$1"; }
 bad_logs=$(scan_fixed_logs "$ROOT/verify.sh")
 [ -z "$bad_logs" ]; result $? "no step writes to a fixed path$( [ -n "$bad_logs" ] && printf ' — %s' "$(echo "$bad_logs" | tr '\n' ' ')" )"
 
@@ -229,10 +240,10 @@ bad_logs=$(scan_fixed_logs "$ROOT/verify.sh")
 # proving — the account-global guard above solves the same self-reference by
 # exempting verify.sh from its own tree scan. (It caught this line on its first
 # run, which is as good a demonstration that the grep bites as the probe is.)
-printf 'foo >%s/v-planted.log 2>&1\n' /tmp > "$LOGDIR/probe.sh"
+printf 'foo >%s/v-planted.log 2>&1\nbar >%s/gen.log 2>&1\nbaz >%s/build-output.log 2>&1\n' /tmp /tmp /tmp > "$LOGDIR/probe.sh"
 probe_logs=$(scan_fixed_logs "$LOGDIR/probe.sh")
 rm -f "$LOGDIR/probe.sh"
-[ -n "$probe_logs" ]; result $? "a planted fixed path makes it fail"
+[ "$(printf '%s\n' "$probe_logs" | grep -c .)" -eq 3 ]; result $? "three planted fixed paths all make it fail — not just the old v-*.log shape"
 
 step "R6 · Purser connector stub"
 # R6 needs a PEER REPOSITORY, which the header's "needs the world" list did not
