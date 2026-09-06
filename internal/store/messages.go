@@ -109,7 +109,30 @@ type NewAttachment struct {
 // server-assigned timestamp, and whether this call created the row or found a
 // replay of one that already existed.
 type Sent struct {
-	ID     uuid.UUID
+	ID uuid.UUID
+
+	// ConversationID is the conversation the row IS IN, which is not always
+	// the one the caller asked about.
+	//
+	// Deduplication is scoped (author_id, client_id) — per the wire's
+	// normative "the server deduplicates on (account, client_id)" — and NOT
+	// per conversation. So an author who reuses one key across two
+	// conversations gets the FIRST row back, with the first conversation's
+	// dense seq. The idempotency check has to sit above the membership and
+	// existence checks (criterion 4: a replay returns the original even when
+	// the sender has since been removed), so reordering is not available and
+	// is not wanted.
+	//
+	// That leaves one rule, and it is a rule for the transports rather than
+	// for this file: BUILD THE ACK FROM THIS STRUCT, NEVER FROM THE REQUEST.
+	// Acking the request's conversation with this row's seq tells a client
+	// that a seq exists in a thread it does not, and a dense seq the client
+	// cannot see is a message it will believe it is missing forever. There is
+	// no security question here — dedup is per author, so an author only ever
+	// learns about their own message — which is why the store returns the
+	// truth rather than refusing.
+	ConversationID uuid.UUID
+
 	Seq    int64
 	LogSeq int64
 	At     time.Time
@@ -199,8 +222,8 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// 4 — check, before anything is drawn.
 	var existing Sent
 	err = tx.QueryRow(ctx,
-		`SELECT id, seq, log_seq, at FROM messages WHERE author_id = $1 AND client_id = $2`,
-		m.AuthorID, m.ClientID).Scan(&existing.ID, &existing.Seq, &existing.LogSeq, &existing.At)
+		`SELECT id, conversation_id, seq, log_seq, at FROM messages WHERE author_id = $1 AND client_id = $2`,
+		m.AuthorID, m.ClientID).Scan(&existing.ID, &existing.ConversationID, &existing.Seq, &existing.LogSeq, &existing.At)
 	switch {
 	case err == nil:
 		existing.Duplicate = true
@@ -261,6 +284,7 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// updated_log_seq starts equal to log_seq; both come back rather than
 	// being assumed.
 	out.ID = uuid.New()
+	out.ConversationID = m.ConversationID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO messages (id, conversation_id, author_id, seq, log_seq, updated_log_seq,
 		                      text, client_id, sender_device_id, reply_to)
@@ -282,8 +306,8 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 func (s *Store) sentByKey(ctx context.Context, authorID, clientID uuid.UUID) (Sent, error) {
 	var out Sent
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, seq, log_seq, at FROM messages WHERE author_id = $1 AND client_id = $2`,
-		authorID, clientID).Scan(&out.ID, &out.Seq, &out.LogSeq, &out.At)
+		`SELECT id, conversation_id, seq, log_seq, at FROM messages WHERE author_id = $1 AND client_id = $2`,
+		authorID, clientID).Scan(&out.ID, &out.ConversationID, &out.Seq, &out.LogSeq, &out.At)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Sent{}, ErrNotFound
 	}

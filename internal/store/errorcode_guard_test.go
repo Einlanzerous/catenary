@@ -95,6 +95,10 @@ var bannedCodeValues = map[string]bool{
 // Scoped to the service module for the same reason criterion 12 scopes the
 // wire.Message guard there: a spike binary deciding a code for itself cannot
 // make the two transports disagree, because a spike is not a transport.
+// Matched against the path RELATIVE TO ROOT, not the base name. On base names
+// this silently skipped any directory so called at any depth — a future
+// internal/api/server, or a spike package inside the service module, would have
+// gone unscanned, and a guard is worth exactly its coverage.
 var skipDirs = map[string]bool{
 	".git": true, "node_modules": true, "web": true, "dart": true,
 	"server": true, "spike": true,
@@ -258,7 +262,7 @@ func scanTree(t *testing.T, root string) []string {
 			return relErr
 		}
 		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			if skipDirs[filepath.ToSlash(rel)] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -392,5 +396,87 @@ func moduleRoot(t *testing.T) string {
 			t.Fatalf("no go.mod above %s", dir)
 		}
 		dir = parent
+	}
+}
+
+// The two maps above are hand-maintained and between them have to account for
+// EVERY wire.ErrorCode. Nothing said so until this test.
+//
+// The failure they were open to is quiet in both directions at once. Add a
+// ninth code to the schema and regenerate: the guard does not ban it, so a
+// handler may decide it in a second place; and sendErrorTable has no row for
+// it, so nothing notices. Both this file's guard and the totality test stay
+// green while the exact divergence they exist to prevent becomes possible.
+//
+// Read out of generated.go rather than restated here, because a restated list
+// is a third hand-maintained list with the same problem.
+func TestEveryWireErrorCodeIsEitherBannedOrExemptByName(t *testing.T) {
+	root := moduleRoot(t)
+	path := filepath.Join(root, filepath.FromSlash(generatedFile))
+
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
+	if err != nil {
+		t.Fatalf("parse %s: %v", generatedFile, err)
+	}
+
+	found := map[string]string{} // constant name -> code value
+	ast.Inspect(f, func(n ast.Node) bool {
+		spec, ok := n.(*ast.ValueSpec)
+		if !ok {
+			return true
+		}
+		typ, ok := spec.Type.(*ast.Ident)
+		if !ok || typ.Name != "ErrorCode" || len(spec.Names) != len(spec.Values) {
+			return true
+		}
+		for i, name := range spec.Names {
+			lit, ok := spec.Values[i].(*ast.BasicLit)
+			if !ok || lit.Kind != token.STRING {
+				continue
+			}
+			v, err := strconv.Unquote(lit.Value)
+			if err != nil {
+				continue
+			}
+			found[name.Name] = v
+		}
+		return true
+	})
+
+	// A parse that finds nothing would make every assertion below vacuous.
+	if len(found) == 0 {
+		t.Fatalf("no ErrorCode constants found in %s — this test is not checking anything", generatedFile)
+	}
+
+	for name, value := range found {
+		_, exempt := exemptCodes[name]
+		banned := bannedCodeValues[value]
+		switch {
+		case exempt && banned:
+			t.Errorf("%s (%q) is both exempt by name and banned by value — pick one", name, value)
+		case !exempt && !banned:
+			t.Errorf("%s (%q) is neither banned nor exempt: the guard will not stop a second file "+
+				"deciding it, and sendErrorTable has no row for it. Add it to bannedCodeValues and "+
+				"give it a cause, or exempt it by name with the reason.", name, value)
+		}
+	}
+
+	// And the other direction: an entry naming a code the wire no longer has
+	// is a ban nobody is subject to, which reads as protection that is not
+	// there.
+	values := map[string]bool{}
+	for _, v := range found {
+		values[v] = true
+	}
+	for v := range bannedCodeValues {
+		if !values[v] {
+			t.Errorf("bannedCodeValues has %q, which is not a wire.ErrorCode value any more", v)
+		}
+	}
+	for name := range exemptCodes {
+		if _, ok := found[name]; !ok {
+			t.Errorf("exemptCodes has %s, which is not a wire.ErrorCode constant any more", name)
+		}
 	}
 }

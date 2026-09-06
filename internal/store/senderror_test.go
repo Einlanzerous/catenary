@@ -22,7 +22,7 @@ import (
 // would still compile and the sender would be told `internal` for something
 // that is not the server's fault.
 func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
-	for _, tc := range []struct {
+	want := []struct {
 		cause     error
 		code      wire.ErrorCode
 		retryable bool
@@ -33,19 +33,43 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 		{ErrTooManyAttachments, wire.ErrorCodeMessageTooLarge, false},
 		{ErrUploadNotFound, wire.ErrorCodeUploadNotFound, false},
 		{ErrRateLimited, wire.ErrorCodeRateLimited, true},
-	} {
-		t.Run(string(tc.code)+"/"+tc.cause.Error(), func(t *testing.T) {
-			got := SendErrorFor(tc.cause)
-			if got.Code != tc.code {
-				t.Errorf("code = %q, want %q", got.Code, tc.code)
+		{ErrNoClientID, wire.ErrorCodeInternal, false},
+	}
+
+	// A row added without a line here, or removed with one left behind, is the
+	// thing this test is for. Without the count it would pass while saying
+	// nothing about the new row.
+	if len(want) != len(sendErrorTable) {
+		t.Fatalf("sendErrorTable has %d rows and this test expects %d — a cause was added or "+
+			"removed without saying so here", len(sendErrorTable), len(want))
+	}
+
+	for _, w := range want {
+		t.Run(string(w.code)+"/"+w.cause.Error(), func(t *testing.T) {
+			// Present in the table, rather than reaching its code by falling
+			// off the end into internalSendError. The distinction matters for
+			// ErrNoClientID, whose code IS internal: without this check the
+			// row could be deleted and the behavioural assertions below would
+			// all still pass.
+			inTable := false
+			for _, row := range sendErrorTable {
+				if errors.Is(w.cause, row.cause) {
+					inTable = true
+					break
+				}
 			}
-			if got.Retryable != tc.retryable {
-				t.Errorf("retryable = %t, want %t", got.Retryable, tc.retryable)
+			if !inTable {
+				t.Error("no row in sendErrorTable for this cause — it is reaching its code by fallthrough")
 			}
-			if got.Code == wire.ErrorCodeInternal {
-				t.Error("fell through to internal — the cause has no row in the table")
+
+			got := sendErrorFor(w.cause)
+			if got.Code != w.code {
+				t.Errorf("code = %q, want %q", got.Code, w.code)
 			}
-			if !errors.Is(got, tc.cause) {
+			if got.Retryable != w.retryable {
+				t.Errorf("retryable = %t, want %t", got.Retryable, w.retryable)
+			}
+			if !errors.Is(got, w.cause) {
 				t.Error("the cause is not reachable through errors.Is")
 			}
 		})
@@ -56,7 +80,7 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 // has to be errors.Is and not equality.
 func TestAWrappedCauseStillResolves(t *testing.T) {
 	err := fmt.Errorf("store: conversation %s: %w", "some-id", ErrNotAMember)
-	if got := SendErrorFor(err); got.Code != wire.ErrorCodeNotAMember {
+	if got := sendErrorFor(err); got.Code != wire.ErrorCodeNotAMember {
 		t.Errorf("code = %q, want %q", got.Code, wire.ErrorCodeNotAMember)
 	}
 }
@@ -66,10 +90,10 @@ func TestAWrappedCauseStillResolves(t *testing.T) {
 // sender named wrongly, and telling the sender conversation_not_found would
 // report our bug as their mistake.
 func TestABareNotFoundIsNotConversationNotFound(t *testing.T) {
-	if got := SendErrorFor(ErrNotFound); got.Code != wire.ErrorCodeInternal {
+	if got := sendErrorFor(ErrNotFound); got.Code != wire.ErrorCodeInternal {
 		t.Errorf("bare ErrNotFound → %q, want %q", got.Code, wire.ErrorCodeInternal)
 	}
-	if got := SendErrorFor(ErrConversationNotFound); got.Code != wire.ErrorCodeConversationNotFound {
+	if got := sendErrorFor(ErrConversationNotFound); got.Code != wire.ErrorCodeConversationNotFound {
 		t.Errorf("ErrConversationNotFound → %q, want %q", got.Code, wire.ErrorCodeConversationNotFound)
 	}
 	// And the wrapping holds, so callers written against the older sentinel
@@ -136,7 +160,7 @@ func TestInternalSplitsOnTransience(t *testing.T) {
 		{"a plain error", errors.New("something else"), false, "unknown is not transient"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := SendErrorFor(tc.err)
+			got := sendErrorFor(tc.err)
 			if got.Code != wire.ErrorCodeInternal {
 				t.Fatalf("code = %q, want %q", got.Code, wire.ErrorCodeInternal)
 			}
@@ -155,16 +179,16 @@ func TestANonTransientPgErrorIsNotRescuedByALaterBranch(t *testing.T) {
 	// SafeToRetry would rescue it and a permanent refusal would be reported as
 	// a hiccup.
 	err := safeToRetryErr{err: &pgconn.PgError{Code: "23505", Severity: "ERROR"}}
-	if got := SendErrorFor(err); got.Retryable {
+	if got := sendErrorFor(err); got.Retryable {
 		t.Error("a unique violation was reported retryable — the PgError branch is falling through")
 	}
 }
 
 // A code decided deeper in the call stack is not re-decided on the way out.
 func TestAnAlreadyClassifiedErrorKeepsItsCode(t *testing.T) {
-	inner := SendErrorFor(ErrNotAMember)
+	inner := sendErrorFor(ErrNotAMember)
 	wrapped := fmt.Errorf("store: send: %w", inner)
-	if got := SendErrorFor(wrapped); got.Code != wire.ErrorCodeNotAMember {
+	if got := sendErrorFor(wrapped); got.Code != wire.ErrorCodeNotAMember {
 		t.Errorf("code = %q, want %q — a caller re-decided a refusal", got.Code, wire.ErrorCodeNotAMember)
 	}
 }
@@ -173,7 +197,7 @@ func TestAnAlreadyClassifiedErrorKeepsItsCode(t *testing.T) {
 // exists for it. Pinned so the field is not deleted as dead weight before the
 // policy that sets it arrives.
 func TestRateLimitedCarriesNoRetryAfterUntilAPolicySetsOne(t *testing.T) {
-	got := SendErrorFor(ErrRateLimited)
+	got := sendErrorFor(ErrRateLimited)
 	if !got.Retryable {
 		t.Error("rate_limited is the one refusal that is retryable by cause rather than by transience")
 	}
@@ -184,4 +208,47 @@ func TestRateLimitedCarriesNoRetryAfterUntilAPolicySetsOne(t *testing.T) {
 	// would need a conversion at the boundary — which is exactly the
 	// translation SendError carrying wire types exists to avoid.
 	var _ *int64 = got.RetryAfterSec
+}
+
+// The EXPORTED wrapper has a different contract from the decision behind it,
+// and the difference is the whole reason it exists. A function returning a
+// typed nil pointer as an interface produces a non-nil error, so a transport
+// writing `return store.SendErrorFor(err)` in a func() error would report a
+// success as a failure — and then panic logging it.
+func TestTheExportedDoorReturnsATrueNil(t *testing.T) {
+	if err := SendErrorFor(nil); err != nil {
+		t.Errorf("SendErrorFor(nil) = %v (%T), want a nil interface — "+
+			"a typed nil here turns every successful send into a reported failure", err, err)
+	}
+
+	// And a nil *SendError that reaches Error() anyway must not take the
+	// process down with it.
+	var nilSE *SendError
+	if s := nilSE.Error(); s == "" {
+		t.Error("Error() on a nil receiver returned empty rather than something a log can print")
+	}
+	if nilSE.Unwrap() != nil {
+		t.Error("Unwrap() on a nil receiver should be nil")
+	}
+}
+
+// The fields are still reachable, by the route Go uses for a typed error.
+// Transports read the code this way; they cannot name it any other way.
+func TestTheExportedDoorHandsBackTheDecisionThroughErrorsAs(t *testing.T) {
+	err := SendErrorFor(fmt.Errorf("store: %s: %w", "somebody", ErrNotAMember))
+	if err == nil {
+		t.Fatal("a real cause produced a nil error")
+	}
+	var se *SendError
+	if !errors.As(err, &se) {
+		t.Fatalf("errors.As could not reach *SendError from %T", err)
+	}
+	if se.Code != wire.ErrorCodeNotAMember {
+		t.Errorf("code = %q, want %q", se.Code, wire.ErrorCodeNotAMember)
+	}
+	// And the cause is still reachable, which is what keeps the older
+	// assertions on ErrNoClientID and ErrNotFound working.
+	if !errors.Is(err, ErrNotAMember) {
+		t.Error("the cause is not reachable through errors.Is")
+	}
 }

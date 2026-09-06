@@ -30,6 +30,9 @@ import (
 // total over them, and the guard test proves it stays that way.
 //
 // ErrNoClientID and ErrNotFound are in store.go and predate this file.
+// ErrNoClientID HAS a row — see the table — because a claim of totality that
+// quietly excludes one cause is not a claim worth making. ErrNotFound
+// deliberately does not, and the table says why.
 var (
 	// ErrNotAMember is a send into a conversation the author is not in.
 	ErrNotAMember = errors.New("store: not a member of this conversation")
@@ -95,13 +98,24 @@ type SendError struct {
 }
 
 func (e *SendError) Error() string {
+	// A nil receiver is reachable only through a typed nil that escaped as an
+	// interface, which the exported constructor now prevents. Guarded anyway:
+	// a logger calling Error() on one should not take the process down.
+	if e == nil {
+		return "store: <nil *SendError>"
+	}
 	if e.Cause == nil {
 		return fmt.Sprintf("store: send refused: %s (retryable=%t)", e.Code, e.Retryable)
 	}
 	return fmt.Sprintf("store: send refused: %s (retryable=%t): %v", e.Code, e.Retryable, e.Cause)
 }
 
-func (e *SendError) Unwrap() error { return e.Cause }
+func (e *SendError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
 
 // sendErrorRow is one row of the table: a cause, the code it gets, and whether
 // the server thinks the identical frame could succeed next time.
@@ -142,6 +156,14 @@ var sendErrorTable = []sendErrorRow{
 	{cause: ErrTooManyAttachments, code: wire.ErrorCodeMessageTooLarge, retryable: false},
 	{cause: ErrUploadNotFound, code: wire.ErrorCodeUploadNotFound, retryable: false},
 	{cause: ErrRateLimited, code: wire.ErrorCodeRateLimited, retryable: true},
+
+	// `internal`, and stated rather than reached by falling off the end of the
+	// table. A missing client_id is OUR bug — every sending surface supplies
+	// one and the wire requires it — so `internal` is the honest code here in
+	// a way it would not be for an empty send, where the fault would be the
+	// sender's and the plan declined to lie about it. Not retryable: the
+	// identical frame is missing the identical key.
+	{cause: ErrNoClientID, code: wire.ErrorCodeInternal, retryable: false},
 }
 
 // SendErrorFor is the single decision. Everything the store refuses goes
@@ -158,7 +180,27 @@ var sendErrorTable = []sendErrorRow{
 // so the status belongs on the row, in this file, when CANT-75 needs it. It is
 // not added now because nothing consumes it yet; it is recorded on CANT-83 so
 // CANT-75 does not rediscover it as a blocked build.
-func SendErrorFor(err error) *SendError {
+func SendErrorFor(err error) error {
+	// RETURNS error, NOT *SendError, and that is the whole point of the
+	// wrapper. A function returning a typed nil pointer as an interface value
+	// produces a NON-NIL error, so the natural call site this doc invites —
+	//
+	//     func (h *handler) send(...) error { ...; return store.SendErrorFor(err) }
+	//
+	// would turn a successful send into a reported failure, and logging the
+	// result would then call Error() on a nil receiver. Callers that want the
+	// code, retryable or retry_after_sec use errors.As, which is how a typed
+	// error is read in Go anyway.
+	se := sendErrorFor(err)
+	if se == nil {
+		return nil
+	}
+	return se
+}
+
+// sendErrorFor is the decision itself. Unexported, because inside this package
+// every call site already knows its error is non-nil and wants the struct.
+func sendErrorFor(err error) *SendError {
 	if err == nil {
 		return nil
 	}

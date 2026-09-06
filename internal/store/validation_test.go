@@ -82,7 +82,7 @@ func TestTheBodyBoundCountsBytesNotRunes(t *testing.T) {
 	st := New(closedPool(t), Limits{MaxMessageBytes: 8, MaxAttachments: 16})
 	ctx := context.Background()
 
-	// Four runes, twelve bytes.
+	// Six runes, twelve bytes.
 	_, err := st.SendMessage(ctx, NewMessage{
 		ClientID: uuid.New(), ConversationID: uuid.New(), AuthorID: uuid.New(),
 		Text: ptr(strings.Repeat("é", 6)),
@@ -252,5 +252,138 @@ func TestAnEmptySendIsStored(t *testing.T) {
 	mustScan(t, pool.QueryRow(ctx, `SELECT text FROM messages WHERE id = $1`, sent.ID), &text)
 	if text != nil {
 		t.Errorf("text = %q, want NULL", *text)
+	}
+}
+
+// CANT-85's seam, pinned as a gap rather than left to a comment.
+//
+// NewMessage.Attachments is COUNTED by checkBounds and never written: the
+// INSERT lists no attachment columns and no upload id is resolved. The field
+// comment says so, but a comment does not stop CANT-22 or CANT-75 wiring
+// ClientSend.Attachments through and acking a send whose attachments silently
+// vanished. This test makes the gap visible and gives CANT-85 something to
+// invert — when it lands, this assertion flips from 0 to 2 and the skip goes.
+func TestAttachmentsAreCountedButNotYetStored(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits())
+	u := mkUser(ctx, t, pool, "att")
+	conv := mkGroup(ctx, t, pool, "room", u)
+
+	sent, err := st.SendMessage(ctx, NewMessage{
+		ConversationID: conv,
+		AuthorID:       u,
+		ClientID:       uuid.New(),
+		Text:           ptr("two attachments, neither stored"),
+		Attachments: []NewAttachment{
+			{Kind: "image", UploadID: uuid.New()},
+			{Kind: "voice", UploadID: uuid.New()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("a send within CATENARY_MAX_ATTACHMENTS was refused: %v", err)
+	}
+
+	var rows int
+	mustScan(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM attachments WHERE message_id = $1`, sent.ID), &rows)
+	if rows != 0 {
+		t.Fatalf("%d attachment rows exist — CANT-85 has landed, so this test should now assert "+
+			"that both rows are present and committed with the message", rows)
+	}
+}
+
+// CANT-83's half of the cross-conversation replay. The transaction half —
+// membership, existence — is above; this is about what the ACK may say.
+//
+// Deduplication is scoped (author_id, client_id), not per conversation, so one
+// key reused across two conversations returns the FIRST row. That is correct
+// dedup and criterion 4 requires the check to sit above membership, so the
+// behaviour stays. What must not happen is a transport acking the REQUEST's
+// conversation with this row's seq: the client would then believe a seq exists
+// in a thread it does not, and a dense seq it cannot see is a message it
+// believes it is missing forever.
+func TestAReplayUnderOneKeyReportsTheConversationTheRowIsActuallyIn(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits())
+	u := mkUser(ctx, t, pool, "bot")
+	first := mkGroup(ctx, t, pool, "first", u)
+	second := mkGroup(ctx, t, pool, "second", u)
+
+	key := uuid.New()
+	original, err := st.SendMessage(ctx, NewMessage{
+		ConversationID: first, AuthorID: u, ClientID: key, Text: ptr("hello"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if original.ConversationID != first {
+		t.Fatalf("a fresh send reported conversation %s, want %s", original.ConversationID, first)
+	}
+
+	// The same key, a different conversation — the mechanical bot with a
+	// deterministic key that CANT-75 describes.
+	replay, err := st.SendMessage(ctx, NewMessage{
+		ConversationID: second, AuthorID: u, ClientID: key, Text: ptr("hello"),
+	})
+	if err != nil {
+		t.Fatalf("the replay was refused: %v", err)
+	}
+	if !replay.Duplicate {
+		t.Error("the replay was not reported as a duplicate")
+	}
+	if replay.ConversationID != first {
+		t.Errorf("the replay reported conversation %s, want %s — Sent must name the conversation the "+
+			"row IS IN, or a transport building the ack from the request will place this seq in the "+
+			"wrong thread's dense sequence", replay.ConversationID, first)
+	}
+	if replay.Seq != original.Seq || replay.LogSeq != original.LogSeq {
+		t.Errorf("the replay returned seq %d/log_seq %d, want the original's %d/%d",
+			replay.Seq, replay.LogSeq, original.Seq, original.LogSeq)
+	}
+
+	// And nothing was written into the second conversation.
+	var inSecond int
+	mustScan(t, pool.QueryRow(ctx,
+		`SELECT count(*) FROM messages WHERE conversation_id = $1`, second), &inSecond)
+	if inSecond != 0 {
+		t.Errorf("%d messages landed in the second conversation; a replay must draw nothing", inSecond)
+	}
+	var lastSeq int64
+	mustScan(t, pool.QueryRow(ctx,
+		`SELECT last_seq FROM conversations WHERE id = $1`, second), &lastSeq)
+	if lastSeq != 0 {
+		t.Errorf("the second conversation's last_seq advanced to %d; a replay must draw no ordinal", lastSeq)
+	}
+}
+
+// The zero Limits value is legal Go and inverts both bounds — a store that
+// refuses every message carrying any text, and every send carrying any
+// attachment, silently. New's doc argues an optional bound fails quietly by
+// not refusing; this is the same failure in the other and worse direction, so
+// it is loud instead.
+func TestNewRefusesANonPositiveBound(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		limits Limits
+	}{
+		{"the zero value", Limits{}},
+		{"no byte bound", Limits{MaxAttachments: 16}},
+		{"no attachment bound", Limits{MaxMessageBytes: 16384}},
+		{"a negative bound", Limits{MaxMessageBytes: -1, MaxAttachments: 16}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("New(pool, %+v) returned a store; it would refuse every send "+
+						"with any text as message_too_large and say nothing about why", tc.limits)
+				}
+			}()
+			_ = New(closedPool(t), tc.limits)
+		})
+	}
+
+	// And the shape a caller who does not care is meant to use still works.
+	if st := New(closedPool(t), DefaultLimits()); st.Limits() != DefaultLimits() {
+		t.Error("DefaultLimits() did not survive New")
 	}
 }

@@ -452,13 +452,34 @@ func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The membership row goes FIRST, so only one FK is left to refuse the
+	// delete. Without this the conversation_members.user_id FK — also ON
+	// DELETE RESTRICT — answers first, and this test passes without ever
+	// touching messages.author_id, which is the column CANT-33's exemption
+	// actually rests on. Confirmed the hard way: asserting the constraint name
+	// before removing this row reported conversation_members_user_id_fkey.
+	if _, err := pool.Exec(ctx, `DELETE FROM conversation_members WHERE user_id = $1`, u); err != nil {
+		t.Fatalf("could not clear membership before the delete: %v", err)
+	}
+
 	_, err := pool.Exec(ctx, `DELETE FROM users WHERE id = $1`, u)
 	if err == nil {
 		t.Fatal("an author with messages was deleted; CANT-33's Mode A exemption rests on this being impossible")
 	}
+	// The CONSTRAINT NAME, not just the SQLSTATE. mkGroup now inserts a
+	// conversation_members row whose user_id is also ON DELETE RESTRICT, so
+	// either FK produces 23503 and a code-only assertion cannot tell them
+	// apart — this test would stay green with messages.author_id changed to
+	// CASCADE, while CLAUDE.md rests CANT-33's Mode A exemption on exactly
+	// that column being RESTRICT. Same failure shape as CANT-79.
 	var pgErr *pgconn.PgError
 	if !errors.As(err, &pgErr) || pgErr.Code != "23503" {
-		t.Errorf("delete refused by %v, want a foreign-key violation", err)
+		t.Fatalf("delete refused by %v, want a foreign-key violation", err)
+	}
+	if pgErr.ConstraintName != "messages_author_id_fkey" {
+		t.Errorf("delete refused by %q, want messages_author_id_fkey — the membership FK also "+
+			"RESTRICTs, so this test only proves what CANT-33 needs if it names the constraint",
+			pgErr.ConstraintName)
 	}
 
 	// The offboard path that does work.

@@ -63,6 +63,27 @@ type Store struct {
 // failure is silent — sends stop being refused and nothing says so. Callers
 // that do not care pass DefaultLimits().
 func New(pool *pgxpool.Pool, limits Limits) *Store {
+	// PANICS on a non-positive bound, because the zero value is legal Go and
+	// silently inverts the check: `New(pool, Limits{})` compiles and then
+	// refuses every message carrying any text as message_too_large, and every
+	// send carrying any attachment, with nothing anywhere saying why.
+	//
+	// The doc above argues that an optional bound fails silently by not
+	// refusing. That is true, and the zero value fails silently in the other
+	// and worse direction — a service that accepts nothing looks like a
+	// service that is down. config.positiveInt already refuses 0 for both
+	// environment variables for the same reason, so this cannot fire from a
+	// real configuration; it fires when something constructs a Store by hand.
+	//
+	// A panic rather than an error return: New has no error result and ~20
+	// call sites, this is a wiring mistake rather than a runtime condition,
+	// and it happens once at composition where a dead process is the clearest
+	// possible signal.
+	if limits.MaxMessageBytes < 1 || limits.MaxAttachments < 1 {
+		panic(fmt.Sprintf("store.New: limits must be positive, got MaxMessageBytes=%d MaxAttachments=%d "+
+			"(a zero bound refuses every send rather than none; pass DefaultLimits() if you do not care)",
+			limits.MaxMessageBytes, limits.MaxAttachments))
+	}
 	return &Store{pool: pool, limits: limits}
 }
 

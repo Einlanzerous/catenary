@@ -78,7 +78,7 @@ func TestTerminatedBackendIsClassifiedTransient(t *testing.T) {
 	if sev := firstNonEmpty(pgErr.SeverityUnlocalized, pgErr.Severity); sev != "FATAL" {
 		t.Errorf("severity = %q, want FATAL", sev)
 	}
-	if got := SendErrorFor(stmtErr); !got.Retryable {
+	if got := sendErrorFor(stmtErr); !got.Retryable {
 		t.Errorf("a terminated backend was classified permanent (%v) — criterion 10's own test would fail", got)
 	}
 
@@ -91,7 +91,7 @@ func TestTerminatedBackendIsClassifiedTransient(t *testing.T) {
 	if errors.As(commitErr, &pgErr) {
 		t.Errorf("expected no PgError on the commit, got SQLSTATE %q", pgErr.Code)
 	}
-	if got := SendErrorFor(commitErr); !got.Retryable {
+	if got := sendErrorFor(commitErr); !got.Retryable {
 		t.Errorf("the commit after a terminate was classified permanent (%v)", got)
 	}
 }
