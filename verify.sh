@@ -241,13 +241,25 @@ step "CANT-87 · this run's logs cannot be read or truncated by another run"
 # a command substitution, which would run it in a subshell and turn its exit
 # back into an empty string at the caller. That is the exact trap the function's
 # comment describes, and it is one keystroke away at every future call site.
-scan_logdir_substitution() { grep -nE '^[^#]*\$\(new_logdir' "$1"; }
+# BOTH substitution forms. Matching only `$(` left backticks through, which is
+# the same one-keystroke gap as the `v`-anchored pattern this file already
+# widened once below — and the same shape as the bug this guard exists to catch.
+# `$( new_logdir )` with spaces was the third.
+#
+# A plain `( … )` subshell is deliberately NOT matched: the dynamic probe above
+# uses one on purpose, and it is safe because it does not capture the output.
+# What swallows the exit AND hands back "" is the substitution, not the subshell.
+scan_logdir_substitution() { grep -nE '^[^#]*(\$\(|`)[[:space:]]*new_logdir' "$1"; }
 bad_sub=$(scan_logdir_substitution "$ROOT/verify.sh")
 [ -z "$bad_sub" ]; result $? "new_logdir is never called in a command substitution$( [ -n "$bad_sub" ] && printf ' — %s' "$(echo "$bad_sub" | tr '\n' ' ')" )"
-printf 'x="%snew_logdir)"\n' '$(' > "$LOGDIR/probe-sub.sh"
+{
+  printf 'x="%snew_logdir)"\n' '$('
+  printf 'y=%snew_logdir%s\n' '`' '`'
+  printf 'z="%s new_logdir )"\n' '$('
+} > "$LOGDIR/probe-sub.sh"
 probe_sub=$(scan_logdir_substitution "$LOGDIR/probe-sub.sh")
 rm -f "$LOGDIR/probe-sub.sh"
-[ -n "$probe_sub" ]; result $? "a planted command substitution makes it fail"
+[ "$(printf '%s\n' "$probe_sub" | grep -c .)" -eq 3 ]; result $? "planted substitutions all make it fail — \$( ), backticks, and spaced"
 
 new_logdir; other="$LOGDIR_OUT"
 [ "$other" != "$LOGDIR" ]; result $? "a second run gets its own log directory"
@@ -263,10 +275,17 @@ rm -rf "$other" "$LOGDIR/collide.log"
 # ANY fixed log path, not just the ten names that happened to exist. The
 # assertion below claims "no step writes to a fixed path", and a step added
 # later as `>/tmp/gen.log` would have sailed past a `v`-anchored pattern under a
-# green guard. None of the /tmp literals left in this file is a false positive:
-# every one is `${TMPDIR:-/tmp}`-prefixed, which is `/tmp}` and not `/tmp/`.
-# Written without a count on purpose — the count was wrong within one commit of
-# being written, and the property is what matters.
+# green guard. No /tmp literal in this file is a false positive, and there are
+# two reasons rather than one: most are `${TMPDIR:-/tmp}`-prefixed, which is
+# `/tmp}` and not `/tmp/` — and the probe below passes bare `/tmp` as printf
+# ARGUMENTS, which is why its own source line does not match the scan it feeds.
+#
+# Both halves have to be stated. A previous version claimed every literal was
+# TMPDIR-prefixed, which is not true of the probe, and a reader auditing the
+# file against that sentence would "fix" the probe to `${TMPDIR:-/tmp}` — at
+# which point it plants `>/home/…/gen.log`, the scan matches nothing, and the
+# assertion that the scan bites goes red. Said without a count on purpose: the
+# count was wrong within one commit of being written.
 scan_fixed_logs() { grep -nE '^[^#]*(>|<|[[:space:]])/tmp/[a-z0-9._-]*\.log' "$1"; }
 bad_logs=$(scan_fixed_logs "$ROOT/verify.sh")
 [ -z "$bad_logs" ]; result $? "no step writes to a fixed path$( [ -n "$bad_logs" ] && printf ' — %s' "$(echo "$bad_logs" | tr '\n' ' ')" )"
