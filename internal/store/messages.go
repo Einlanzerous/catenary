@@ -77,8 +77,32 @@ type NewMessage struct {
 	ReplyTo *uuid.UUID
 
 	// Text is nil for a message carrying only attachments, which is why the
-	// column is nullable. Attachments themselves are CANT-18's.
+	// column is nullable.
+	//
+	// NEITHER Text NOR Attachments is required. A send with both absent is
+	// STORED rather than refused: `ClientSend` makes both optional, so it is a
+	// legal frame, and no ErrorCode describes it. Refusing would mean either
+	// widening a closed enum — a wire change under CANT-74's unresolved
+	// compatibility policy — or reporting a client bug as `internal`, which is
+	// a lie about whose fault it is. It costs one seq and renders as an empty
+	// bubble, and it counts toward everyone's unread exactly as a message
+	// containing a single space would. The composer is where an empty send
+	// should be prevented.
 	Text *string
+
+	// Attachments as the SENDER describes them. CANT-83 only counts them, to
+	// enforce CATENARY_MAX_ATTACHMENTS; CANT-85 resolves the upload ids and
+	// writes the rows inside this transaction.
+	Attachments []NewAttachment
+}
+
+// NewAttachment mirrors the wire's OutboundAttachment, which carries a kind and
+// an upload handle and nothing else: dimensions, duration, peaks, EXIF
+// stripping and the blurhash are all computed server-side on ingest, so the
+// client cannot report them and cannot get them wrong.
+type NewAttachment struct {
+	Kind     string
+	UploadID uuid.UUID
 }
 
 // Sent is the outcome of a send: the row's identity, both ordinals, the
@@ -115,10 +139,16 @@ type Sent struct {
 //     a bigserial at the exact moment it matters, and it is why the race
 //     leaves no hole in either ordinal.
 func (s *Store) SendMessage(ctx context.Context, m NewMessage) (Sent, error) {
-	// Loud rather than silent: a forgotten key is a send that would quietly
-	// never be deduplicated.
+	// 1 — the key, before the pool is touched. Loud rather than silent: a
+	// forgotten key is a send that would quietly never be deduplicated.
 	if m.ClientID == uuid.Nil {
-		return Sent{}, fmt.Errorf("store: send without an idempotency key: %w", ErrNoClientID)
+		return Sent{}, SendErrorFor(fmt.Errorf("store: send without an idempotency key: %w", ErrNoClientID))
+	}
+
+	// 2 — the bounds, also before the pool is touched. Pure arithmetic over
+	// the frame, so an oversized send costs no transaction and no round trip.
+	if err := s.checkBounds(m); err != nil {
+		return Sent{}, SendErrorFor(err)
 	}
 
 	sent, err := s.attemptSend(ctx, m)
@@ -126,11 +156,37 @@ func (s *Store) SendMessage(ctx context.Context, m NewMessage) (Sent, error) {
 		return sent, nil
 	}
 	if !isUniqueViolation(err, dedupConstraint) {
-		return Sent{}, err
+		return Sent{}, SendErrorFor(err)
 	}
 	// Somebody else committed this key while we were drawing. Our ordinals
 	// went back with the rollback; re-read theirs.
-	return s.sentByKey(ctx, m.AuthorID, m.ClientID)
+	sent, err = s.sentByKey(ctx, m.AuthorID, m.ClientID)
+	if err != nil {
+		return Sent{}, SendErrorFor(err)
+	}
+	return sent, nil
+}
+
+// checkBounds is position 2: everything refusable without a database.
+//
+// The BYTE length of text, not its rune count — the column and the wire both
+// count bytes, and a rune bound would refuse a different set of messages than
+// the database would accept.
+//
+// The size is in the error; the body never is, at any level. D1 declines
+// end-to-end encryption and names its mitigation as honesty about what the
+// server can see, and that honesty is worth less if a size refusal copies the
+// message into a log with a different retention story than the message itself.
+func (s *Store) checkBounds(m NewMessage) error {
+	if m.Text != nil && len(*m.Text) > s.limits.MaxMessageBytes {
+		return fmt.Errorf("store: message body is %d bytes, limit %d: %w",
+			len(*m.Text), s.limits.MaxMessageBytes, ErrMessageTooLarge)
+	}
+	if len(m.Attachments) > s.limits.MaxAttachments {
+		return fmt.Errorf("store: send carries %d attachments, limit %d: %w",
+			len(m.Attachments), s.limits.MaxAttachments, ErrTooManyAttachments)
+	}
+	return nil
 }
 
 func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
@@ -140,7 +196,7 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// 1 — check, before anything is drawn.
+	// 4 — check, before anything is drawn.
 	var existing Sent
 	err = tx.QueryRow(ctx,
 		`SELECT id, seq, log_seq, at FROM messages WHERE author_id = $1 AND client_id = $2`,
@@ -153,25 +209,55 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 		return Sent{}, fmt.Errorf("store: check idempotency key: %w", err)
 	}
 
-	// 2 — draw, conversation first. See the lock-order note at the top.
+	// 5 — membership and existence, in ONE query and as two EXISTS rather than
+	// a join. A join cannot distinguish "no such conversation" from "you are
+	// not in it", and the wire has a separate code for each.
+	//
+	// This LEAKS EXISTENCE, deliberately: a non-member learns that an id
+	// resolves. Collapsing the two would tell a member of a deleted
+	// conversation the wrong thing, and CANT-18's Done-when requires
+	// not_a_member for a non-member send. Among a small trusted group with
+	// authenticated senders that is the right trade; senderror.go carries the
+	// reasoning next to the codes.
+	var convExists, isMember bool
+	if err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM conversations WHERE id = $1),
+		       EXISTS (SELECT 1 FROM conversation_members
+		                WHERE conversation_id = $1 AND user_id = $2)`,
+		m.ConversationID, m.AuthorID).Scan(&convExists, &isMember); err != nil {
+		return Sent{}, fmt.Errorf("store: resolve conversation and membership: %w", err)
+	}
+	if !convExists {
+		return Sent{}, fmt.Errorf("store: conversation %s: %w", m.ConversationID, ErrConversationNotFound)
+	}
+	if !isMember {
+		return Sent{}, fmt.Errorf("store: %s in conversation %s: %w",
+			m.AuthorID, m.ConversationID, ErrNotAMember)
+	}
+
+	// 8 — draw, conversation first. See the lock-order note at the top.
 	var out Sent
 	if err := tx.QueryRow(ctx,
 		`UPDATE conversations SET last_seq = last_seq + 1 WHERE id = $1 RETURNING last_seq`,
 		m.ConversationID).Scan(&out.Seq); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return Sent{}, fmt.Errorf("store: conversation %s: %w", m.ConversationID, ErrNotFound)
+			// Unreachable by the ordinary miss, which position 5 already
+			// refused. What is left is the narrow race where the conversation
+			// is deleted between that read and this write — still
+			// conversation_not_found, and still the sender's answer.
+			return Sent{}, fmt.Errorf("store: conversation %s: %w", m.ConversationID, ErrConversationNotFound)
 		}
 		return Sent{}, fmt.Errorf("store: draw seq: %w", err)
 	}
 
-	// 3 — and the global counter LAST, so the deployment-wide serialised
+	// 10 — and the global counter LAST, so the deployment-wide serialised
 	// section is draw-insert-commit rather than the whole transaction.
 	if err := tx.QueryRow(ctx,
 		`UPDATE log_counter SET value = value + 1 WHERE id = 1 RETURNING value`).Scan(&out.LogSeq); err != nil {
 		return Sent{}, fmt.Errorf("store: draw log_seq: %w", err)
 	}
 
-	// 4 — insert. `at` is the schema's job, not the caller's, and
+	// 11 — insert. `at` is the schema's job, not the caller's, and
 	// updated_log_seq starts equal to log_seq; both come back rather than
 	// being assumed.
 	out.ID = uuid.New()

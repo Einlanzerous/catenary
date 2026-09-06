@@ -235,6 +235,13 @@ func isTransient(err error) bool {
 		// SeverityUnlocalized when the server offers it: Severity is
 		// translated under a non-English lc_messages and "FATAL" would then
 		// silently never match.
+		// This deliberately catches CONNECT-time failures too, which arrive as
+		// a *pgconn.ConnectError wrapping a PgError — measured: a nonexistent
+		// database gives 3D000 at FATAL. A wrong DSN never fixes itself, so
+		// calling it transient is arguably generous. It is the right side of
+		// the asymmetry anyway: a misconfiguration fails EVERY send, and an
+		// outbox that holds until an operator fixes it is a better outcome
+		// than one that marks every message failed on the way past.
 		switch sev := firstNonEmpty(pgErr.SeverityUnlocalized, pgErr.Severity); sev {
 		case "FATAL", "PANIC":
 			return true

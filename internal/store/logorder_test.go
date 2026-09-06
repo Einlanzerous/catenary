@@ -75,7 +75,7 @@ type inserter func(ctx context.Context, pool *pgxpool.Pool, conv, author, client
 // inserting transaction is a change to Store.SendMessage, and Arm 2 fails on
 // it. There is no reference copy any more — schema_test.go's went with CANT-14.
 var referenceInserter inserter = func(ctx context.Context, pool *pgxpool.Pool, conv, author, clientID uuid.UUID, text string) (Sent, error) {
-	return New(pool).SendMessage(ctx, NewMessage{
+	return New(pool, DefaultLimits()).SendMessage(ctx, NewMessage{
 		ConversationID: conv,
 		AuthorID:       author,
 		ClientID:       clientID,
@@ -359,8 +359,8 @@ func TestForcedScheduleLosesAMessageWhenLogSeqComesFromASequence(t *testing.T) {
 	createTestSequence(ctx, t, pool)
 
 	author := mkUser(ctx, t, pool, "holder")
-	convA := mkGroup(ctx, t, pool, "room-a")
-	convB := mkGroup(ctx, t, pool, "room-b")
+	convA := mkGroup(ctx, t, pool, "room-a", author)
+	convB := mkGroup(ctx, t, pool, "room-b", author)
 
 	connA := standaloneConn(ctx, t, "cant19-a")
 	connB := standaloneConn(ctx, t, "cant19-b")
@@ -416,8 +416,8 @@ func TestForcedScheduleCannotLoseAMessageWithTheCounterRow(t *testing.T) {
 	writers := writerPool(ctx, t, 4)
 
 	author := mkUser(ctx, t, pool, "holder")
-	convA := mkGroup(ctx, t, pool, "room-a")
-	convB := mkGroup(ctx, t, pool, "room-b")
+	convA := mkGroup(ctx, t, pool, "room-a", author)
+	convB := mkGroup(ctx, t, pool, "room-b", author)
 
 	connA := standaloneConn(ctx, t, "cant19-a")
 	reader := newSyncReader(standaloneConn(ctx, t, "cant19-reader"))
@@ -511,7 +511,7 @@ func TestConcurrentWritersInDistinctConversationsAreNeverSkipped(t *testing.T) {
 	author := mkUser(ctx, t, pool, "racer")
 	convs := make([]uuid.UUID, arm2Writers)
 	for i := range convs {
-		convs[i] = mkGroup(ctx, t, pool, fmt.Sprintf("room-%d", i))
+		convs[i] = mkGroup(ctx, t, pool, fmt.Sprintf("room-%d", i), author)
 	}
 
 	const perWriter = 15

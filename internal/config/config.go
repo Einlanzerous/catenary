@@ -60,6 +60,17 @@ type Config struct {
 
 	// ShutdownGrace is CATENARY_SHUTDOWN_GRACE.
 	ShutdownGrace time.Duration
+
+	// MaxMessageBytes is CATENARY_MAX_MESSAGE_BYTES: the UTF-8 byte bound on a
+	// message body. MaxAttachments is CATENARY_MAX_ATTACHMENTS.
+	//
+	// ZERO MEANS UNSET, and the defaults are deliberately NOT restated here.
+	// They live in store.DefaultLimits, which is what enforces them, and the
+	// composition root merges these over it. Two copies of a bound that must
+	// agree is one copy too many, and this file cannot import the store
+	// without inverting the layering.
+	MaxMessageBytes int
+	MaxAttachments  int
 }
 
 // Load reads the environment and validates it, or returns the first error.
@@ -105,7 +116,43 @@ func Load() (Config, error) {
 		}
 	}
 
+	// The name is passed AND the value is read here, rather than the helper
+	// doing its own lookup from the name. config_test.go derives the list of
+	// variables to clear between tests by scanning this file for os.Getenv
+	// calls with a LITERAL argument, so a name that reaches the environment
+	// through a parameter is a name that list silently stops clearing — the
+	// failure that helper's own comment warns about.
+	//
+	// Writing the pattern out in a comment does not work either: the scan is a
+	// regex over this file and does not know a comment from code, so a spelled
+	// example would invent a variable that does not exist. It did, once.
+	if c.MaxMessageBytes, err = positiveInt("CATENARY_MAX_MESSAGE_BYTES", os.Getenv("CATENARY_MAX_MESSAGE_BYTES")); err != nil {
+		return c, err
+	}
+	if c.MaxAttachments, err = positiveInt("CATENARY_MAX_ATTACHMENTS", os.Getenv("CATENARY_MAX_ATTACHMENTS")); err != nil {
+		return c, err
+	}
+
 	return c, nil
+}
+
+// positiveInt reads an optional positive bound. Unset returns 0, which the
+// composition root reads as "keep the store's default".
+//
+// Zero is REFUSED rather than accepted as a bound. An operator setting a limit
+// to 0 means "off" far more often than "refuse everything", and a store that
+// refuses every send because a variable was misread is a worse outage than a
+// startup failure that names the variable.
+func positiveInt(name, raw string) (int, error) {
+	v := strings.TrimSpace(raw)
+	if v == "" {
+		return 0, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("config: %s %q is not a positive integer", name, v)
+	}
+	return n, nil
 }
 
 // Logger builds the process logger. Structured to w, always — there is no

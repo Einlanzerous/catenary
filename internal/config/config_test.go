@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -169,5 +170,72 @@ func TestLoggerHonoursTheFormat(t *testing.T) {
 				t.Errorf("log line lost its content: %q", line)
 			}
 		})
+	}
+}
+
+// CANT-83. Both bounds are OPTIONAL and zero means unset: the defaults live in
+// store.DefaultLimits, which is what enforces them, and the composition root
+// merges these over it. Restating the numbers here would be a second copy that
+// has to agree with the first.
+func TestSendBoundsAreOptionalAndZeroMeansUnset(t *testing.T) {
+	setEnv(t, map[string]string{"CATENARY_DATABASE_URL": "postgres://x/y"})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MaxMessageBytes != 0 || c.MaxAttachments != 0 {
+		t.Errorf("unset bounds = %d/%d, want 0/0 so the store's defaults stand",
+			c.MaxMessageBytes, c.MaxAttachments)
+	}
+
+	setEnv(t, map[string]string{
+		"CATENARY_DATABASE_URL":      "postgres://x/y",
+		"CATENARY_MAX_MESSAGE_BYTES": "2048",
+		"CATENARY_MAX_ATTACHMENTS":   "4",
+	})
+	c, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.MaxMessageBytes != 2048 || c.MaxAttachments != 4 {
+		t.Errorf("bounds = %d/%d, want 2048/4", c.MaxMessageBytes, c.MaxAttachments)
+	}
+}
+
+// Zero is REFUSED rather than taken as a bound. An operator setting a limit to
+// 0 means "off" far more often than "refuse everything", and a store that
+// refuses every send because a variable was misread is a worse outage than a
+// startup failure naming the variable.
+func TestSendBoundsRejectNonPositiveValues(t *testing.T) {
+	for _, tc := range []struct{ name, key, val string }{
+		{"bytes zero", "CATENARY_MAX_MESSAGE_BYTES", "0"},
+		{"bytes negative", "CATENARY_MAX_MESSAGE_BYTES", "-1"},
+		{"bytes not a number", "CATENARY_MAX_MESSAGE_BYTES", "16k"},
+		{"attachments zero", "CATENARY_MAX_ATTACHMENTS", "0"},
+		{"attachments negative", "CATENARY_MAX_ATTACHMENTS", "-4"},
+		{"attachments not a number", "CATENARY_MAX_ATTACHMENTS", "many"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, map[string]string{"CATENARY_DATABASE_URL": "postgres://x/y", tc.key: tc.val})
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load succeeded, want an error naming the variable")
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("error does not name the variable: %v", err)
+			}
+		})
+	}
+}
+
+// The derived clear-list must actually see the two new variables, or every test
+// above inherits whatever the developer's shell has set.
+func TestTheNewBoundsAreVisibleToTheEnvScanner(t *testing.T) {
+	got := envVarsReadByLoad(t)
+	for _, want := range []string{"CATENARY_MAX_MESSAGE_BYTES", "CATENARY_MAX_ATTACHMENTS"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s is not visible to envVarsReadByLoad — it reaches os.Getenv through a "+
+				"parameter, so setEnv will stop clearing it: %v", want, got)
+		}
 	}
 }

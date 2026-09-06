@@ -57,14 +57,37 @@ func mkDevice(ctx context.Context, t *testing.T, pool *pgxpool.Pool, user uuid.U
 	return id
 }
 
-func mkGroup(ctx context.Context, t *testing.T, pool *pgxpool.Pool, name string) uuid.UUID {
+// mkGroup creates a conversation and, since CANT-83, JOINS the given users to
+// it. The members are variadic rather than required so the handful of tests
+// that assert on an empty conversation still read as asking for one.
+//
+// Every send-test grew a member argument at once when the membership check
+// landed: thirteen tests had been sending into conversations their author was
+// not in, which the store now refuses with not_a_member. That is the criterion
+// biting rather than churn — the seeds were describing a state the send path
+// had no opinion about, and now it does.
+func mkGroup(ctx context.Context, t *testing.T, pool *pgxpool.Pool, name string, members ...uuid.UUID) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
 	if _, err := pool.Exec(ctx,
 		`INSERT INTO conversations (id, kind, name) VALUES ($1, 'group', $2)`, id, name); err != nil {
 		t.Fatalf("mkGroup: %v", err)
 	}
+	for _, u := range members {
+		mkMember(ctx, t, pool, id, u)
+	}
 	return id
+}
+
+// mkMember joins one user to one conversation. Separate from mkGroup because
+// CANT-83's tests add and remove membership after the fact.
+func mkMember(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv, user uuid.UUID) {
+	t.Helper()
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1, $2)`,
+		conv, user); err != nil {
+		t.Fatalf("mkMember: %v", err)
+	}
 }
 
 func seqs(ctx context.Context, t *testing.T, pool *pgxpool.Pool, conv uuid.UUID) []int64 {
@@ -138,9 +161,9 @@ func TestLogCounterIsOneRowDeploymentWide(t *testing.T) {
 // post, which is exactly what client_id exists to prevent.
 func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	bot := mkUser(ctx, t, pool, "bot")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", bot)
 	key := uuid.New()
 
 	first, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: bot, ClientID: key, Text: ptr("hello")})
@@ -162,6 +185,7 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 	// And the same key from two devices of one account is ONE message, which
 	// is the other half of what (author_id, client_id) means.
 	human := mkUser(ctx, t, pool, "human")
+	mkMember(ctx, t, pool, conv, human)
 	phone := mkDevice(ctx, t, pool, human, "phone")
 	laptop := mkDevice(ctx, t, pool, human, "laptop")
 	shared := uuid.New()
@@ -185,9 +209,9 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 // message, and one no single-threaded test notices.
 func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 
 	keys := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
 	for i, k := range keys {
@@ -231,9 +255,9 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 // surfaced. CANT-18's Done-when requires exactly this.
 func TestConcurrentSendsUnderOneKey(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 	key := uuid.New()
 
 	const n = 12
@@ -292,9 +316,9 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 // client actually applies, which is per conversation.
 func TestConcurrentDistinctSendsStayDenseAndOrdered(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 
 	const n = 25
 	var wg sync.WaitGroup
@@ -372,9 +396,9 @@ func TestHeadSeqIsNotAColumn(t *testing.T) {
 // definition.
 func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 
 	source, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("the original")})
 	if err != nil {
@@ -421,9 +445,9 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 // a Purser offboard deactivates, and cannot destroy authored messages.
 func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("hello")}); err != nil {
 		t.Fatal(err)
 	}
@@ -446,10 +470,10 @@ func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 // A revoked device is still referenced by everything it ever sent.
 func TestADeviceWithMessagesCannotBeDeleted(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
 	d := mkDevice(ctx, t, pool, u, "phone")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, SenderDeviceID: &d, ClientID: uuid.New(), Text: ptr("hello")}); err != nil {
 		t.Fatal(err)
 	}
@@ -621,9 +645,9 @@ func TestRetentionDaysNullMeansInheritInfinite(t *testing.T) {
 // Criterion 9 — the wire bounds peaks' ELEMENTS as well as its length.
 func TestPeaksBoundsElementsAndLength(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("voice")})
 	if err != nil {
 		t.Fatal(err)
@@ -663,9 +687,9 @@ func nextPos() int { posCounter++; return posCounter }
 // cannot serve a voice note at all, not even a pending one.
 func TestPerKindRequiredFields(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("attachments")})
 	if err != nil {
 		t.Fatal(err)
@@ -724,7 +748,7 @@ func TestPerKindRequiredFields(t *testing.T) {
 // chronologically as strings.
 func TestMessageAtIsServerAssigned(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool)
+	st := New(pool, DefaultLimits())
 
 	var def *string
 	err := pool.QueryRow(ctx, `
@@ -739,7 +763,7 @@ func TestMessageAtIsServerAssigned(t *testing.T) {
 
 	// And `at` order agrees with seq order for sends that actually raced.
 	u := mkUser(ctx, t, pool, "u")
-	conv := mkGroup(ctx, t, pool, "room")
+	conv := mkGroup(ctx, t, pool, "room", u)
 	const n = 15
 	var wg sync.WaitGroup
 	start := make(chan struct{})

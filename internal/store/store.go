@@ -23,14 +23,51 @@ var ErrNoClientID = errors.New("store: client_id is required")
 // ErrNotFound is returned by every lookup that resolves nothing.
 var ErrNotFound = errors.New("store: not found")
 
+// Limits are the bounds a send is refused against. They live here rather than
+// being read from the environment inside the store, because config is env-only
+// and lives in internal/config — the store is handed its policy, it does not
+// go looking for it.
+type Limits struct {
+	// MaxMessageBytes bounds the UTF-8 bytes of `text`, not its runes: the
+	// column and the wire both count bytes, and a rune bound would refuse a
+	// different set of messages than the one the database would.
+	MaxMessageBytes int
+
+	// MaxAttachments bounds how many attachments one send may carry.
+	MaxAttachments int
+}
+
+// DefaultLimits is the single source for these two numbers. internal/config
+// parses the overriding environment variables and does NOT restate the
+// defaults, so there is nowhere for the two to drift apart.
+func DefaultLimits() Limits {
+	return Limits{
+		// 16 KiB. Comfortably above anything a person types and far below the
+		// point where a single row is a problem.
+		MaxMessageBytes: 16384,
+		MaxAttachments:  16,
+	}
+}
+
 // Store is the query surface over Catenary's pool. Repos hang off it rather
 // than off free functions so the growing set of queries has one place to live.
 type Store struct {
-	pool *pgxpool.Pool
+	pool   *pgxpool.Pool
+	limits Limits
 }
 
 // New wraps an existing pool.
-func New(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+//
+// Limits is a REQUIRED parameter rather than an option with a fallback. An
+// optional bound is a bound the composition root forgets to wire, and the
+// failure is silent — sends stop being refused and nothing says so. Callers
+// that do not care pass DefaultLimits().
+func New(pool *pgxpool.Pool, limits Limits) *Store {
+	return &Store{pool: pool, limits: limits}
+}
+
+// Limits reports the bounds this store enforces.
+func (s *Store) Limits() Limits { return s.limits }
 
 // Pool exposes the underlying pool for the migrator and for tests.
 func (s *Store) Pool() *pgxpool.Pool { return s.pool }

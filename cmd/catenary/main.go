@@ -103,6 +103,8 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
   CATENARY_LOG_LEVEL       debug | info | warn | error. Default info.
   CATENARY_LOG_FORMAT      json | text. Default json.
   CATENARY_SHUTDOWN_GRACE  how long in-flight work has on SIGTERM. Default 20s.
+  CATENARY_MAX_MESSAGE_BYTES  UTF-8 byte bound on a message body. Default 16384.
+  CATENARY_MAX_ATTACHMENTS    how many attachments one send may carry. Default 16.
 `
 }
 
@@ -172,7 +174,18 @@ func runServe(args []string) error {
 		return err
 	}
 
-	d := setup(cfg, logger, store.New(pool))
+	// The store is handed its bounds; it does not read the environment. Unset
+	// variables leave DefaultLimits alone, which is why config carries 0 rather
+	// than a second copy of the numbers.
+	limits := store.DefaultLimits()
+	if cfg.MaxMessageBytes > 0 {
+		limits.MaxMessageBytes = cfg.MaxMessageBytes
+	}
+	if cfg.MaxAttachments > 0 {
+		limits.MaxAttachments = cfg.MaxAttachments
+	}
+
+	d := setup(cfg, logger, store.New(pool, limits))
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,
