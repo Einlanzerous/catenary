@@ -364,11 +364,20 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// when read_seq = last_seq) rather than a scan that has to skip your own
 	// messages. Nothing wrote it until now.
 	//
-	// GREATEST, never a bare assignment: a read receipt for a LATER seq can
-	// commit between this send's seq draw and this statement, and assigning
-	// would walk it backwards — resurrecting messages the member has already
-	// read. GREATEST makes the write a floor, so the two orders of arrival
-	// converge on the same value.
+	// GREATEST, never a bare assignment — and NOT for the reason it is tempting
+	// to give. The obvious story is "a receipt for a later seq can commit
+	// between the draw and this statement", and that race cannot happen:
+	// position 8 holds the conversation row exclusively until commit, so for
+	// this whole window out.Seq is the highest seq that can exist here, and a
+	// receipt above it would have to name a message that does not exist.
+	//
+	// The real reason is that read_seq is not this file's column. CANT-26 owns
+	// the receipt write, nothing clamps a receipt to last_seq, and a member
+	// row is reachable from outside this transaction entirely. A floor is
+	// correct under every arrival order including ones this file cannot see;
+	// an assignment is correct only under the ones it can. The cost of
+	// GREATEST is nothing, and the cost of being wrong is resurrecting
+	// messages a member has already read.
 	//
 	// Here rather than in CANT-26 because it is a write into this transaction,
 	// and CANT-26 is an evidence ticket. It takes the member row lock, which
@@ -378,11 +387,28 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// A REPLAY never reaches this line: position 4 returns before any draw, so
 	// re-sending an acked message cannot advance a read_seq that has since
 	// moved on.
-	if _, err := tx.Exec(ctx,
+	tag, err := tx.Exec(ctx,
 		`UPDATE conversation_members SET read_seq = GREATEST(read_seq, $3)
 		  WHERE conversation_id = $1 AND user_id = $2`,
-		m.ConversationID, m.AuthorID, out.Seq); err != nil {
+		m.ConversationID, m.AuthorID, out.Seq)
+	if err != nil {
 		return Sent{}, fmt.Errorf("store: advance the author's read_seq: %w", err)
+	}
+	// AND THE ROW COUNT IS THE ANSWER, so it is not thrown away. Position 5 is
+	// an unlocked read; this statement takes the member row lock. A membership
+	// revoked in between leaves this matching zero rows, and without the check
+	// the send would commit anyway — a message authored by a non-member, which
+	// is the state criterion 1 exists to refuse. It is the same answer position
+	// 5 gave, taken again at the last moment it can still be wrong, and it
+	// costs one integer comparison.
+	//
+	// Untested deliberately: the window is between two statements of one
+	// transaction and cannot be driven from a test without a scheduler. The
+	// assertion is insurance rather than a claim, and it cannot misfire — a
+	// member who exists always matches one row.
+	if tag.RowsAffected() == 0 {
+		return Sent{}, fmt.Errorf("store: %s left conversation %s mid-send: %w",
+			m.AuthorID, m.ConversationID, ErrNotAMember)
 	}
 
 	// 10 — and the global counter LAST, so the deployment-wide serialised
