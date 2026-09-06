@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -266,7 +267,7 @@ func TestTheReplyToResolveHoldsItsSourceAgainstAConcurrentDelete(t *testing.T) {
 	}
 	defer func() { _ = holder.Rollback(ctx) }()
 	var got uuid.UUID
-	if err := holder.QueryRow(ctx, replyToResolveQuery, source.ID).Scan(&got); err != nil {
+	if err := holder.QueryRow(ctx, replyToResolveQuery, source.ID, conv).Scan(&got); err != nil {
 		t.Fatalf("the resolve query failed: %v", err)
 	}
 
@@ -379,5 +380,56 @@ func TestReplyingDoesNotMarkAnUnreadBacklogRead(t *testing.T) {
 	got = firstUnreadSeq(ctx, t, pool, conv, bob)
 	if got == nil || *got != 6 {
 		t.Errorf("bob's first_unread_seq = %v, want 6 — his own five must not count as his unread", got)
+	}
+}
+
+// The other half of the lock's contract, and the half the first version of this
+// change got wrong: a source in ANOTHER conversation must not be locked at all.
+//
+// `FOR KEY SHARE` locks only the rows a query returns, so scoping the read to
+// this conversation is what decides which row is touched. Unscoped, a send in
+// conversation A took and held a lock on a message in conversation B that it
+// was about to discard — a lock nothing in that transaction had any business
+// holding, and one the table-level ordering rule cannot express: two writers
+// can each obey "conversations then messages" and still deadlock when their
+// two locks are in different conversations.
+func TestACrossConversationReplyToSourceIsNeverLocked(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	author := mkUser(ctx, t, pool, "author")
+	here := mkGroup(ctx, t, pool, "here", author)
+	elsewhere := mkGroup(ctx, t, pool, "elsewhere", author)
+
+	other, err := st.SendMessage(ctx, NewMessage{
+		ClientID: uuid.New(), ConversationID: elsewhere, AuthorID: author, Text: ptr("not yours"),
+	})
+	if err != nil {
+		t.Fatalf("seeding the other conversation: %v", err)
+	}
+
+	// A sender in `here` resolving a source that lives in `elsewhere`, exactly
+	// as position 8b does.
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	var got uuid.UUID
+	if err := holder.QueryRow(ctx, replyToResolveQuery, other.ID, here).Scan(&got); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("the scoped resolve returned %v/%v for a source in another conversation, want no rows", got, err)
+	}
+
+	// The sweep must not be blocked by a send that is not going to store this.
+	deleter, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin deleter: %v", err)
+	}
+	defer func() { _ = deleter.Rollback(ctx) }()
+	if _, err := deleter.Exec(ctx, `SET LOCAL lock_timeout = '300ms'`); err != nil {
+		t.Fatalf("set lock_timeout: %v", err)
+	}
+	if _, err := deleter.Exec(ctx, `DELETE FROM messages WHERE id = $1`, other.ID); err != nil {
+		t.Fatalf("a send in another conversation is holding this row: %v — the resolve is "+
+			"locking a source it will discard, which is a lock the ordering rule cannot account for", err)
 	}
 }

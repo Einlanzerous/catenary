@@ -42,6 +42,8 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 
 `messages` is not new — position 11's FK check always took `KEY SHARE` on the `reply_to` source, after the counter draw. What changed is when: 8b takes the same lock earlier and explicitly. Taking it at position 6, above the conversation lock, would have inverted against CANT-67's sweep.
 
+**The `messages` lock is only ever taken on a row in this conversation**, and the resolve is scoped to make that so. A table order cannot describe a per-row hazard: an unscoped resolve let a send in conversation A take `messages(X ∈ B)` for a ref it then discarded, closing a deadlock cycle in which both parties had obeyed `conversations` → `messages`. Scoped, the only row locked is one whose conversation this transaction already holds — which is also what makes "the lock is not new" true rather than nearly true.
+
 **`conversation_members` is not taken at all**, and that is the point of removing position 9. It deletes a lock, the ordering obligation stated outward with it, and the deadlock class that came with both — out of the one transaction that can least afford any of the three.
 
 - **CANT-67's** sweep advances a floor on `conversations` and then deletes from `messages` — the same direction as this file.

@@ -19,7 +19,7 @@ package store
 // LOCK ORDER, and it is this file's rule to keep. THREE row locks, all held
 // until commit, taken in this order and no other:
 //
-//	conversations  →  messages (the reply_to source)  →  log_counter
+//	conversations  →  messages (the reply_to source, IN THIS CONVERSATION)  →  log_counter
 //
 // CANT-14 established the outer two. CANT-83 added `messages` in the middle —
 // though it was NOT new, only implicit and too late. The FK check on the
@@ -29,6 +29,18 @@ package store
 // a source deleted mid-send cannot make the insert raise 23503 on a send the
 // author cannot fix. An implicit lock is still a lock, and one an ordering
 // rule does not name is one nobody can reason about.
+//
+// "IN THIS CONVERSATION" IS LOAD-BEARING and it is why replyToResolveQuery is
+// scoped. This list names TABLES, and a table order cannot describe a hazard
+// that is per ROW. An unscoped resolve let a send in conversation A hold
+// `conversations(A)` and then take `messages(X ∈ B)` — for a ref it was about
+// to discard — so a sweep holding `conversations(B)` and `messages(X)` while
+// it moved on to A closed a cycle in which BOTH parties had obeyed
+// "conversations then messages". Scoped, the only row this transaction can
+// lock is one whose conversation it already holds, which is what turns the
+// arrow above into a real order instead of a table list. It is also what makes
+// the paragraph above TRUE: with the scope, the row locked at 8b is exactly
+// the row position 11's FK would have locked, and no other.
 //
 // `conversation_members` IS NOT TAKEN HERE, and that is a decision rather than
 // an omission. An earlier revision of this file advanced the author's own
@@ -82,11 +94,27 @@ import (
 // existence and columns, and this pins its name.
 const dedupConstraint = "messages_author_id_client_id_key"
 
-// replyToResolveQuery is position 8b's read, named so the test that proves FOR
-// KEY SHARE actually blocks a concurrent delete runs THIS query rather than a
-// copy of it. Drop the clause here and that test goes red, which is the point:
-// the whole fix is the clause.
-const replyToResolveQuery = `SELECT conversation_id FROM messages WHERE id = $1 FOR KEY SHARE`
+// replyToResolveQuery is position 8b's read, named so the tests that prove the
+// locking behaviour run THIS query rather than a copy of it.
+//
+// SCOPED TO THE CONVERSATION, and that is not a filter — it is what decides
+// which row gets locked. `FOR KEY SHARE` locks only rows the query RETURNS, so
+// with `WHERE id = $1` alone a send in conversation A would take, and hold to
+// commit, a lock on a message in conversation B that it is about to discard.
+// That is a lock nothing else in this transaction has any business holding, and
+// it breaks the ordering rule below in a way the rule cannot express: two sends
+// obeying "conversations then messages" can still deadlock with a sweep when
+// the two locks are in DIFFERENT conversations. Scoped, the only row ever
+// locked is the one position 11's foreign key would have locked anyway, which
+// is what makes the claim in the ordering note true rather than nearly true.
+const replyToResolveQuery = `SELECT conversation_id FROM messages
+                              WHERE id = $1 AND conversation_id = $2 FOR KEY SHARE`
+
+// replyToClassifyQuery runs ONLY when the scoped read above returns nothing,
+// and only to decide which of the two drop reasons to log. It takes no lock, by
+// design: this send will not store the value, so it has no business holding the
+// row, and a diagnostic is not worth an ordering obligation.
+const replyToClassifyQuery = `SELECT conversation_id FROM messages WHERE id = $1`
 
 // NewMessage is one send, as the caller describes it. Everything the SERVER
 // owns — both ordinals, `at`, the row id — is absent by construction: a
@@ -372,31 +400,46 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// Refusing would invent a new failure for a case the system already has an
 	// answer to, and would fail a send over a field the sender cannot fix.
 	//
-	// Read inside the transaction AND under a key-share lock, so the source
-	// cannot be deleted between this read and the insert. Without the lock
-	// there is a third outcome the snapshot argument does not cover: visible
-	// here, gone at position 11.
+	// Read inside the transaction AND under a key-share lock, so a source this
+	// send will actually store cannot be deleted between here and the insert.
+	// Without the lock there is a third outcome the snapshot argument does not
+	// cover: visible here, gone at position 11, and the FK raises 23503 — which
+	// is not a transient class, so the send fails permanently over a reply_to
+	// the sender cannot fix.
+	//
+	// One query in the happy path. The second runs only on a drop, which is
+	// rare and already writing a log line.
 	replyTo := m.ReplyTo
 	if replyTo != nil {
 		var sourceConv uuid.UUID
-		err := tx.QueryRow(ctx, replyToResolveQuery, *replyTo).Scan(&sourceConv)
+		err := tx.QueryRow(ctx, replyToResolveQuery, *replyTo, m.ConversationID).Scan(&sourceConv)
 		switch {
-		case err != nil && !errors.Is(err, pgx.ErrNoRows):
+		case err == nil:
+			// Resolved, in this conversation, and now held.
+		case !errors.Is(err, pgx.ErrNoRows):
 			return Sent{}, fmt.Errorf("store: resolve reply_to: %w", err)
-
-		// LOGGED, at info and with both ids, because this is the one case
-		// where the served Message differs from what the sender's client
-		// optimistically rendered — someone will eventually ask why the reply
-		// arrow vanished, and the answer should be findable.
-		case errors.Is(err, pgx.ErrNoRows):
-			s.logger.InfoContext(ctx, "reply_to dropped: the source does not resolve",
-				"conversation_id", m.ConversationID, "author_id", m.AuthorID,
-				"reply_to_message_id", *replyTo)
-			replyTo = nil
-		case sourceConv != m.ConversationID:
-			s.logger.InfoContext(ctx, "reply_to dropped: the source is in another conversation",
-				"conversation_id", m.ConversationID, "author_id", m.AuthorID,
-				"reply_to_message_id", *replyTo, "source_conversation_id", sourceConv)
+		default:
+			// Dropped. LOGGED at info with both ids, because this is the one
+			// case where the served Message differs from what the sender's
+			// client optimistically rendered — someone will eventually ask why
+			// the reply arrow vanished, and the answer should be findable.
+			//
+			// The unscoped read here is what keeps the two reasons apart. It
+			// is worth one extra round trip on a path that is already
+			// exceptional, and it takes no lock.
+			var elsewhere uuid.UUID
+			switch classifyErr := tx.QueryRow(ctx, replyToClassifyQuery, *replyTo).Scan(&elsewhere); {
+			case classifyErr == nil:
+				s.logger.InfoContext(ctx, "reply_to dropped: the source is in another conversation",
+					"conversation_id", m.ConversationID, "author_id", m.AuthorID,
+					"reply_to_message_id", *replyTo, "source_conversation_id", elsewhere)
+			case errors.Is(classifyErr, pgx.ErrNoRows):
+				s.logger.InfoContext(ctx, "reply_to dropped: the source does not resolve",
+					"conversation_id", m.ConversationID, "author_id", m.AuthorID,
+					"reply_to_message_id", *replyTo)
+			default:
+				return Sent{}, fmt.Errorf("store: classify a dropped reply_to: %w", classifyErr)
+			}
 			replyTo = nil
 		}
 	}
