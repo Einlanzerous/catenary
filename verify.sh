@@ -42,14 +42,28 @@ DART="${DART:-$HOME/tools/dart-sdk/bin}"
 # the normal case and not an exotic one; the CANT-12 comment further down
 # already reasoned exactly this way about the staleness-proof backups, and this
 # is the same argument applied to the logs that reasoning left behind.
-new_logdir() { mktemp -d "${TMPDIR:-/tmp}/catenary-verify.XXXXXX"; }
-# CHECKED, and this file runs without `set -e` so it has to be. An unwritable
-# TMPDIR or a full /tmp leaves LOGDIR empty, every redirect below fails, and the
-# two emptiness gates then test a file that was never created — which is the
+# CHECKED IN THE FUNCTION, not at the call site, and this file runs without
+# `set -e` so it has to be checked somewhere. An unwritable TMPDIR or a full
+# /tmp leaves the caller with an empty string, every redirect below fails, and
+# the two emptiness gates then test a file that was never created — the
 # identical false PASS this whole change exists to remove, reintroduced by its
-# own fix. Fourteen other steps would go red, so a run could not report all
-# green; the two that would lie are exactly the two that matter.
-LOGDIR="$(new_logdir)" || { printf 'verify.sh: cannot create a log directory under %s\n' "${TMPDIR:-/tmp}" >&2; exit 1; }
+# own fix. CANT-87 checked one call site; CANT-88 is the second one it missed,
+# inside the guard step, where an empty directory made BOTH assertions pass.
+#
+# SETS A VARIABLE rather than printing, and that is the whole trick. The
+# obvious version — `mktemp -d … || { …; exit 1; }` in the body, callers
+# writing `x="$(new_logdir)"` — does not work: a command substitution runs the
+# function in a SUBSHELL, so the exit kills the subshell, the caller is handed
+# "" and the run carries on. Verified rather than assumed. Assigning to
+# LOGDIR_OUT and calling `new_logdir` as a plain statement keeps the exit in
+# this shell, and closes every call site including ones added later.
+new_logdir() {
+  LOGDIR_OUT="$(mktemp -d "${TMPDIR:-/tmp}/catenary-verify.XXXXXX")" && [ -n "$LOGDIR_OUT" ] || {
+    printf 'verify.sh: cannot create a log directory under %s\n' "${TMPDIR:-/tmp}" >&2
+    exit 1
+  }
+}
+new_logdir; LOGDIR="$LOGDIR_OUT"
 
 fails=0
 step() {
@@ -216,7 +230,38 @@ step "CANT-87 · this run's logs cannot be read or truncated by another run"
 # live. The allocator has to hand out a fresh directory per run, AND every step
 # has to actually use it: a unique directory that nothing writes to fixes
 # nothing.
-other="$(new_logdir)"
+# CANT-88, and it is proved two ways because one alone would have missed it.
+#
+# DYNAMICALLY: a broken allocator must STOP the run, not hand back an empty
+# string. In a subshell, so this file survives proving it.
+( TMPDIR=/nonexistent-catenary-probe-dir; new_logdir; printf 'RETURNED\n' ) >/dev/null 2>&1
+[ $? -ne 0 ]; result $? "a broken allocator stops the run rather than returning an empty directory"
+
+# STATICALLY: the dynamic proof above only holds while nobody wraps the call in
+# a command substitution, which would run it in a subshell and turn its exit
+# back into an empty string at the caller. That is the exact trap the function's
+# comment describes, and it is one keystroke away at every future call site.
+# BOTH substitution forms. Matching only `$(` left backticks through, which is
+# the same one-keystroke gap as the `v`-anchored pattern this file already
+# widened once below — and the same shape as the bug this guard exists to catch.
+# `$( new_logdir )` with spaces was the third.
+#
+# A plain `( … )` subshell is deliberately NOT matched: the dynamic probe above
+# uses one on purpose, and it is safe because it does not capture the output.
+# What swallows the exit AND hands back "" is the substitution, not the subshell.
+scan_logdir_substitution() { grep -nE '^[^#]*(\$\(|`)[[:space:]]*new_logdir' "$1"; }
+bad_sub=$(scan_logdir_substitution "$ROOT/verify.sh")
+[ -z "$bad_sub" ]; result $? "new_logdir is never called in a command substitution$( [ -n "$bad_sub" ] && printf ' — %s' "$(echo "$bad_sub" | tr '\n' ' ')" )"
+{
+  printf 'x="%snew_logdir)"\n' '$('
+  printf 'y=%snew_logdir%s\n' '`' '`'
+  printf 'z="%s new_logdir )"\n' '$('
+} > "$LOGDIR/probe-sub.sh"
+probe_sub=$(scan_logdir_substitution "$LOGDIR/probe-sub.sh")
+rm -f "$LOGDIR/probe-sub.sh"
+[ "$(printf '%s\n' "$probe_sub" | grep -c .)" -eq 3 ]; result $? "planted substitutions all make it fail — \$( ), backticks, and spaced"
+
+new_logdir; other="$LOGDIR_OUT"
 [ "$other" != "$LOGDIR" ]; result $? "a second run gets its own log directory"
 printf 'planted\n' > "$LOGDIR/collide.log"
 : > "$other/collide.log"
@@ -230,8 +275,17 @@ rm -rf "$other" "$LOGDIR/collide.log"
 # ANY fixed log path, not just the ten names that happened to exist. The
 # assertion below claims "no step writes to a fixed path", and a step added
 # later as `>/tmp/gen.log` would have sailed past a `v`-anchored pattern under a
-# green guard. Neither remaining /tmp literal in this file is a false positive:
-# both are `${TMPDIR:-/tmp}`-prefixed, which is `/tmp}` and not `/tmp/`.
+# green guard. No /tmp literal in this file is a false positive, and there are
+# two reasons rather than one: most are `${TMPDIR:-/tmp}`-prefixed, which is
+# `/tmp}` and not `/tmp/` — and the probe below passes bare `/tmp` as printf
+# ARGUMENTS, which is why its own source line does not match the scan it feeds.
+#
+# Both halves have to be stated. A previous version claimed every literal was
+# TMPDIR-prefixed, which is not true of the probe, and a reader auditing the
+# file against that sentence would "fix" the probe to `${TMPDIR:-/tmp}` — at
+# which point it plants `>/home/…/gen.log`, the scan matches nothing, and the
+# assertion that the scan bites goes red. Said without a count on purpose: the
+# count was wrong within one commit of being written.
 scan_fixed_logs() { grep -nE '^[^#]*(>|<|[[:space:]])/tmp/[a-z0-9._-]*\.log' "$1"; }
 bad_logs=$(scan_fixed_logs "$ROOT/verify.sh")
 [ -z "$bad_logs" ]; result $? "no step writes to a fixed path$( [ -n "$bad_logs" ] && printf ' — %s' "$(echo "$bad_logs" | tr '\n' ' ')" )"
