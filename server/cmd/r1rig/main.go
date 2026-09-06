@@ -30,7 +30,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/magos/catenary/server/internal/wire"
+	"github.com/magos/catenary/internal/wire"
 )
 
 const (
