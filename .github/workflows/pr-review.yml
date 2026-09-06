@@ -65,6 +65,11 @@ jobs:
       #   internal/api/          the WebSocket upgrade, the auth handshake and
       #                          refresh rotation (CANT-22, CANT-29).
       #   internal/config/       the DSN and anything credential-shaped.
+      #   internal/wireview/     decides WHAT A VIEWER SEES — whose client_id is
+      #                          echoed back, whose reply preview is rendered.
+      #                          It is pure and has two oracles, so it cannot
+      #                          lose a message; it can widen access, which is
+      #                          this file's own test for the expensive tier.
       #   cmd/catenary/          the composition root and `migrate down`.
       #   schema/…               the wire contract and the generator over it.
       #                          Everything in three languages is downstream of
@@ -78,6 +83,9 @@ jobs:
       # lose server-side data; `server/` is the spike binaries and the Go
       # conformance runner; `spike/` is read-only evidence.
       #
+      # `internal/wireview/` is NOT in that list — it is the mapping package and
+      # it IS escalated, above. Only `internal/wire/`, the generated one, is out.
+      #
       # `internal/wire/` is named here because CANT-82 moved the generated wire
       # package into `internal/` and this regex would have escalated it had the
       # regex been written by directory. It is generated: `review-ignore`
@@ -86,7 +94,7 @@ jobs:
       # above — so the budget lands on the cause rather than the rendering.
       # Naming the internal packages individually is what makes that free, and
       # it is the same reason a later `internal/ui/` does not silently escalate.
-      sensitive_paths: '^(migrations/|internal/(store|api|config)/|cmd/catenary/|schema/(catenary\.wire\.v1\.schema\.json|codegen/|vectors/|mapping/)|deploy/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
+      sensitive_paths: '^(migrations/|internal/(store|api|config|wireview)/|cmd/catenary/|schema/(catenary\.wire\.v1\.schema\.json|codegen/|vectors/|mapping/)|deploy/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and
       # the generated wire files are handled by `.github/review-ignore` — which
