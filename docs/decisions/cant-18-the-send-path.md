@@ -22,10 +22,10 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 3. Begin.
 4. Idempotency check — before either ordinal is drawn.
 5. Membership and existence — one query, two `EXISTS`.
-6. `reply_to` resolution.
 7. Upload resolution (`CANT-85`).
 8. Draw `seq` from `conversations.last_seq`.
-9. Advance the author's `read_seq`, `GREATEST(read_seq, $seq)`.
+8b. `reply_to` resolution, `FOR KEY SHARE`.
+9. Advance the author's `read_seq`, `GREATEST(read_seq, $seq)`; zero rows refuses.
 10. Draw `log_seq` from `log_counter`.
 11. Insert the message, then its attachments (`CANT-85`).
 12. `pg_notify` (`CANT-86`), then commit.
@@ -34,9 +34,13 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 
 **It does not win over the two size bounds**, and that is an accepted cost: an operator who lowers `CATENARY_MAX_MESSAGE_BYTES` under an acked message makes that message's replay report `message_too_large`.
 
-## The lock order is three, and it is still a deadlock rule
+**`reply_to` resolution moved from position 6 to 8b**, below the conversation lock. Superseded on the field finding recorded in `CANT-83`: at position 6 the read took no lock, so a source deleted before position 11 made the insert raise `23503` — not a transient class — and the send failed permanently over a `reply_to` the sender cannot fix.
 
-**`conversations` → `conversation_members` → `log_counter`.** All row locks held until commit. CANT-14 established the outer two; position 9 added the middle one.
+## The lock order is four, and it is still a deadlock rule
+
+**`conversations` → `messages` → `conversation_members` → `log_counter`.** All row locks held until commit. CANT-14 established the outer two; CANT-83 added the other two.
+
+`messages` is not new — position 11's FK check always took `KEY SHARE` on the `reply_to` source, after the counter draw. What changed is when: 8b takes the same lock earlier and explicitly. Taking it at position 6, above the conversation lock, would have inverted against CANT-67's sweep.
 
 Stated outward, for the tickets that take a member row without sending: **never take the conversation row after a member row.**
 
@@ -52,7 +56,8 @@ Stated outward, for the tickets that take a member row without sending: **never 
 - A refusal **consumes no ordinals** — neither the conversation's dense `seq` nor the deployment-wide counter.
 - **`Sent.ConversationID` is the conversation the row is in**, which is not always the one the caller asked about: dedup is `(author_id, client_id)`, not per conversation. Transports build the ack from `Sent`, never from the request.
 - An author's own send advances their `read_seq` in the same transaction, as a floor. A replay advances nothing.
-- A `reply_to` that is missing or in another conversation is stored NULL and logged at `info` with both ids. The send succeeds.
+- A `reply_to` that is missing or in another conversation is stored NULL and logged at `info` with both ids. The send succeeds, and the source is held `FOR KEY SHARE` so a concurrent delete cannot turn a valid ref into a failed send.
+- A membership revoked mid-send is refused: position 9's row count is re-checked under the member row lock, after position 5's unlocked read.
 - An **empty send** — no `text`, no attachments — is stored.
 - Every refusal **logs once**: `warn` for `internal`, `info` for the rest, with `conversation_id`, `author_id`, `client_id`, `code` and `retryable`; a retryable `internal` also logs its SQLSTATE. **The body is never logged, at any level.**
 
@@ -64,6 +69,8 @@ Stated outward, for the tickets that take a member row without sending: **never 
 | A store-side error enum translated to the wire's | A translation table is the second place the two transports can disagree. |
 | Collapsing `not_a_member` into `conversation_not_found` | Tells a member of a deleted conversation the wrong thing; the existence leak to a non-member is the accepted trade. |
 | Refusing a `reply_to` that does not resolve | The schema and the wire already model "no ref" — `ON DELETE SET NULL`, optional `Message.reply_to` — and it fails a send over a field the sender cannot fix. |
+| `FOR KEY SHARE` at position 6, above the conversation lock | Inverts against `CANT-67`'s sweep, which takes `conversations` then `messages`: trades a rare permanent failure for a routine deadlock. |
+| A savepoint around the insert, catching `23503` and retrying with NULL | Recovers from the failure instead of preventing it, and puts a retry loop inside the one transaction `CANT-14` argues hardest for keeping small. |
 | Refusing an empty send | Needs either a new `ErrorCode` — a wire change under CANT-74's unresolved compatibility policy — or reporting a client bug as `internal`. |
 | Moving the size bounds below the idempotency check | Buys consistency for a rare, deliberate operator action at the price of a transaction per oversized frame. |
 | `bigserial` for either ordinal | Unchanged from CANT-14: the number is handed out outside the transaction. |

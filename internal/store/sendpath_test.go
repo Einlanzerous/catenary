@@ -4,9 +4,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/magos/catenary/internal/wire"
@@ -332,5 +334,69 @@ func TestEveryRefusalLogsOnceWithItsCodeAndNeverTheBody(t *testing.T) {
 				t.Error("the refusal log contains the message body")
 			}
 		})
+	}
+}
+
+// The fix for the reply_to TOCTOU is one clause, so the test is about that
+// clause. Position 8b reads the source FOR KEY SHARE, which blocks a concurrent
+// DELETE until the send commits — without it, a source deleted between the read
+// and the insert makes position 11's FK check raise 23503, and class 23 is not
+// transient, so the send fails PERMANENTLY over a reply_to the sender cannot
+// fix. That is the outcome Ruling 4 exists to prevent, arriving at the insert.
+//
+// It runs the query the send path runs, not a copy: drop FOR KEY SHARE from
+// replyToResolveQuery and this goes red.
+func TestTheReplyToResolveHoldsItsSourceAgainstAConcurrentDelete(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	author := mkUser(ctx, t, pool, "author")
+	conv := mkGroup(ctx, t, pool, "room", author)
+
+	source, err := st.SendMessage(ctx, NewMessage{
+		ClientID: uuid.New(), ConversationID: conv, AuthorID: author, Text: ptr("the source"),
+	})
+	if err != nil {
+		t.Fatalf("seeding the source: %v", err)
+	}
+
+	// A sender holding the lock, exactly as position 8b does.
+	holder, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = holder.Rollback(ctx) }()
+	var got uuid.UUID
+	if err := holder.QueryRow(ctx, replyToResolveQuery, source.ID).Scan(&got); err != nil {
+		t.Fatalf("the resolve query failed: %v", err)
+	}
+
+	// A sweep or an edit trying to delete it. lock_timeout turns "blocked
+	// forever" into an observable error rather than a hung test.
+	deleter, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin deleter: %v", err)
+	}
+	if _, err := deleter.Exec(ctx, `SET LOCAL lock_timeout = '300ms'`); err != nil {
+		t.Fatalf("set lock_timeout: %v", err)
+	}
+	_, delErr := deleter.Exec(ctx, `DELETE FROM messages WHERE id = $1`, source.ID)
+	_ = deleter.Rollback(ctx)
+
+	if delErr == nil {
+		t.Fatal("the source was deleted while a send held it — FOR KEY SHARE is not being taken, " +
+			"so a concurrent delete can still make the insert raise 23503")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(delErr, &pgErr) || pgErr.Code != "55P03" {
+		t.Fatalf("delete failed with %v, want 55P03 (lock_not_available) — it should be BLOCKED, "+
+			"not refused for some other reason", delErr)
+	}
+
+	// And the lock is released with the send: once the holder is done, the
+	// sweep gets its row. A lock that outlived the transaction would wedge
+	// CANT-67 rather than protect this send.
+	_ = holder.Rollback(ctx)
+	if _, err := pool.Exec(ctx, `DELETE FROM messages WHERE id = $1`, source.ID); err != nil {
+		t.Errorf("the source could not be deleted after the holder finished: %v", err)
 	}
 }

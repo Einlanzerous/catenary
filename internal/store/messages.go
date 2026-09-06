@@ -16,14 +16,23 @@ package store
 // somebody's message that never arrived, and no single-threaded test catches
 // it. internal/store/logorder_test.go is the test that does.
 //
-// LOCK ORDER, and it is this file's rule to keep. THREE row locks now, all
-// held until commit, and they are taken in this order and no other:
+// LOCK ORDER, and it is this file's rule to keep. FOUR row locks, all held
+// until commit, taken in this order and no other:
 //
-//	conversations  →  conversation_members  →  log_counter
+//	conversations  →  messages (the reply_to source)  →  conversation_members  →  log_counter
 //
-// CANT-14 established the outer two. CANT-83 added the middle one: an author's
-// own send advances their read_seq (position 9), which locks their member row
-// between the two draws.
+// CANT-14 established the outer two. CANT-83 added the other two.
+// `conversation_members` is new: an author's own send advances their read_seq
+// (position 9), which locks their member row between the two draws.
+//
+// `messages` is NOT new — it was always taken, implicitly and too late. The
+// FK check on the insert at position 11 takes KEY SHARE on the reply_to source
+// row, which put `messages` after `log_counter` in the real order while the
+// comment claimed three locks. What CANT-83 changed is WHEN: position 8b takes
+// that same lock explicitly, above the counter draw, so a source deleted
+// mid-send cannot make the insert raise 23503 on a send the author cannot fix.
+// An implicit lock is still a lock, and one an ordering rule does not name is
+// one nobody can reason about.
 //
 // Taking log_counter LAST keeps the deployment-wide serialised section down to
 // draw-insert-commit rather than the whole transaction. The larger reason for
@@ -31,13 +40,19 @@ package store
 // opposite orders DEADLOCK, and Postgres resolves a deadlock by aborting
 // somebody's send.
 //
-// STATED OUTWARD, for the tickets that touch a member row WITHOUT sending:
-// never take the conversation row after a member row. CANT-26's receipt write
-// takes the member row alone, which is safe because it is a single lock — but
-// if it ever also touches the conversation, the conversation goes first.
-// CANT-67's sweep advances a floor on `conversations` and must keep doing that
-// before any member row it later needs. CANT-63 draws log_counter when an edit
-// bumps updated_log_seq; it takes these in this order too.
+// STATED OUTWARD, because three other tickets take some of these locks and
+// only this file states the order:
+//
+//   - Never take the conversation row AFTER a member row. CANT-26's receipt
+//     write takes the member row alone, which is safe as a single lock — but
+//     if it ever also touches the conversation, the conversation goes first.
+//   - CANT-67's sweep advances a floor on `conversations` and then deletes
+//     from `messages`. That is the same direction as this file, which is the
+//     whole reason 8b sits below the conversation draw rather than at
+//     position 6: taking `messages` first would invert against that sweep and
+//     turn a rare permanent failure into a routine deadlock.
+//   - CANT-63 draws log_counter when an edit bumps updated_log_seq, and takes
+//     these in this order too.
 //
 // The rule lives here rather than on those three tickets because this is the
 // file all of them have to edit, and a rule stated where the work happens is a
@@ -59,6 +74,12 @@ import (
 // is visible: TestDedupConstraintIsOnAuthorAndClientID pins the constraint's
 // existence and columns, and this pins its name.
 const dedupConstraint = "messages_author_id_client_id_key"
+
+// replyToResolveQuery is position 8b's read, named so the test that proves FOR
+// KEY SHARE actually blocks a concurrent delete runs THIS query rather than a
+// copy of it. Drop the clause here and that test goes red, which is the point:
+// the whole fix is the clause.
+const replyToResolveQuery = `SELECT conversation_id FROM messages WHERE id = $1 FOR KEY SHARE`
 
 // NewMessage is one send, as the caller describes it. Everything the SERVER
 // owns — both ordinals, `at`, the row id — is absent by construction: a
@@ -297,7 +318,39 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 			m.AuthorID, m.ConversationID, ErrNotAMember)
 	}
 
-	// 6 — reply_to. The source must exist AND be in this conversation.
+	// 8 — draw, conversation first. See the lock-order note at the top.
+	var out Sent
+	if err := tx.QueryRow(ctx,
+		`UPDATE conversations SET last_seq = last_seq + 1 WHERE id = $1 RETURNING last_seq`,
+		m.ConversationID).Scan(&out.Seq); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Unreachable by the ordinary miss, which position 5 already
+			// refused. What is left is the narrow race where the conversation
+			// is deleted between that read and this write — still
+			// conversation_not_found, and still the sender's answer.
+			return Sent{}, fmt.Errorf("store: conversation %s: %w", m.ConversationID, ErrConversationNotFound)
+		}
+		return Sent{}, fmt.Errorf("store: draw seq: %w", err)
+	}
+
+	// 8b — reply_to. The source must exist AND be in this conversation.
+	//
+	// MOVED HERE FROM POSITION 6, below the conversation lock, and the plan is
+	// superseded on that point rather than quietly bent. At position 6 this
+	// read took no lock, so a source deleted between the read and the insert
+	// made position 11's FK check raise 23503 — class 23, not transient — and
+	// the send failed PERMANENTLY over a reply_to the sender cannot fix, which
+	// is the outcome Ruling 4 exists to prevent arriving at the insert instead
+	// of at the resolve.
+	//
+	// FOR KEY SHARE closes it, and the order is why it has to be here. The
+	// lock is not new: position 11's FK check already takes KEY SHARE on this
+	// exact row, just too late to help. What moves is WHEN — from after the
+	// log_counter draw to before it — and the constraint is CANT-67, whose
+	// sweep goes `conversations` then `messages`. Taking it at position 6,
+	// above the conversation lock, would have inverted against that sweep and
+	// traded a rare permanent failure for a routine deadlock. Here, both take
+	// `conversations` first and then `messages`, which is the same direction.
 	//
 	// RULING 4: a source that does not resolve stores NULL and the send
 	// SUCCEEDS. The FK only requires reply_to to be *a* message, and the wire
@@ -312,14 +365,14 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// Refusing would invent a new failure for a case the system already has an
 	// answer to, and would fail a send over a field the sender cannot fix.
 	//
-	// Read inside the transaction, so a source deleted concurrently is either
-	// visible to this snapshot or already gone — either way the stored value
-	// is one this conversation may show.
+	// Read inside the transaction AND under a key-share lock, so the source
+	// cannot be deleted between this read and the insert. Without the lock
+	// there is a third outcome the snapshot argument does not cover: visible
+	// here, gone at position 11.
 	replyTo := m.ReplyTo
 	if replyTo != nil {
 		var sourceConv uuid.UUID
-		err := tx.QueryRow(ctx,
-			`SELECT conversation_id FROM messages WHERE id = $1`, *replyTo).Scan(&sourceConv)
+		err := tx.QueryRow(ctx, replyToResolveQuery, *replyTo).Scan(&sourceConv)
 		switch {
 		case err != nil && !errors.Is(err, pgx.ErrNoRows):
 			return Sent{}, fmt.Errorf("store: resolve reply_to: %w", err)
@@ -339,21 +392,6 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 				"reply_to_message_id", *replyTo, "source_conversation_id", sourceConv)
 			replyTo = nil
 		}
-	}
-
-	// 8 — draw, conversation first. See the lock-order note at the top.
-	var out Sent
-	if err := tx.QueryRow(ctx,
-		`UPDATE conversations SET last_seq = last_seq + 1 WHERE id = $1 RETURNING last_seq`,
-		m.ConversationID).Scan(&out.Seq); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			// Unreachable by the ordinary miss, which position 5 already
-			// refused. What is left is the narrow race where the conversation
-			// is deleted between that read and this write — still
-			// conversation_not_found, and still the sender's answer.
-			return Sent{}, fmt.Errorf("store: conversation %s: %w", m.ConversationID, ErrConversationNotFound)
-		}
-		return Sent{}, fmt.Errorf("store: draw seq: %w", err)
 	}
 
 	// 9 — the author's own read_seq, in THIS transaction.
