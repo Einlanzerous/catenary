@@ -28,7 +28,8 @@ Run everything checkable without hardware:
 | `schema/` | **the wire contract** — schema, generator, 41 conformance vectors |
 | `web/` | Vue 3 client against mock data, plus the generated TS |
 | `dart/` | generated Dart wire package + its conformance runner |
-| `server/` | generated Go wire package, the R1 rig, and the Go conformance runner |
+| `internal/wire/` | generated Go wire package — here rather than under `server/` so the service can import it |
+| `server/` | the Go conformance runner and the R1/R2 spike binaries |
 | `spike/r1-websocket/` | **R1** — tunnel rig, kill/resume test, results |
 | `spike/r2-push/` | **R2** — FCM probe, collector, per-send latency data |
 | `spike/r3-whisper/` | **R3** — whisper.cpp benchmarks and build recipes |

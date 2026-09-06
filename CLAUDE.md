@@ -11,10 +11,11 @@ Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-
 - `internal/config/` — env-only config, `CATENARY_`-prefixed.
 - `internal/store/` — pgx pool, embedded migrator, repo queries, and the domain types themselves. Types sit beside the queries that return them rather than in a separate `internal/model/`.
 - `internal/api/` — the HTTP and WebSocket surface.
+- `internal/wire/` — the generated Go wire package, emitted from `schema/` and never hand-edited. It sits under the service's own `internal/` because Go applies the internal rule to the **import path**: at `server/internal/wire` only the `server` module could reach it, and no `require`/`replace` wiring changes that (`CANT-82`).
 - `migrations/` — `NNNN_name.up.sql` / `.down.sql`, embedded, auto-applied on boot.
 - `web/` — Vue 3 + TypeScript client, served by the Go binary. `npm run smoke` SSRs the app and asserts the design canvas's landmarks are actually on screen.
 - `dart/` — the generated Dart wire package and its conformance runner. The Flutter client lands here in E5.
-- `server/` — the generated Go wire package and the Go conformance runner.
+- `server/` — the Go conformance runner and the R1/R2 spike binaries. A second module, and it imports `internal/wire` back across the boundary; the wire package itself is no longer here.
 - `deploy/` — compose fragment and Traefik labels.
 - `spike/` — **the P0 evidence, and read-only history.** R1's tunnel rig, R2's push harness, R3's whisper benchmarks, R6's Purser stub, each with its own `FINDINGS.md`. Read them before re-deriving anything they already answer; `SPIKE-RESULTS.md` is the one-page index.
 

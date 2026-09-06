@@ -73,11 +73,19 @@ jobs:
       #   deploy/                grants, compose, Traefik labels.
       #   verify.sh              the verification definition itself.
       #
-      # Deliberately absent: `web/`, `dart/`, `server/` and `spike/`. A client
-      # bug is a bug, but it cannot widen access or lose server-side data;
-      # `server/` today is the generated wire package and the conformance
-      # runners; `spike/` is read-only evidence. Naming the internal packages
-      # individually means a later `internal/ui/` does not silently escalate.
+      # Deliberately absent: `web/`, `dart/`, `server/`, `spike/` and
+      # `internal/wire/`. A client bug is a bug, but it cannot widen access or
+      # lose server-side data; `server/` is the spike binaries and the Go
+      # conformance runner; `spike/` is read-only evidence.
+      #
+      # `internal/wire/` is named here because CANT-82 moved the generated wire
+      # package into `internal/` and this regex would have escalated it had the
+      # regex been written by directory. It is generated: `review-ignore`
+      # excludes it from every review, and the hand-written cause of anything
+      # wrong in it is `schema/codegen/` or the schema, both of which ARE named
+      # above — so the budget lands on the cause rather than the rendering.
+      # Naming the internal packages individually is what makes that free, and
+      # it is the same reason a later `internal/ui/` does not silently escalate.
       sensitive_paths: '^(migrations/|internal/(store|api|config)/|cmd/catenary/|schema/(catenary\.wire\.v1\.schema\.json|codegen/|vectors/|mapping/)|deploy/|verify\.sh|\.github/workflows/|REVIEW\.md|CLAUDE\.md|\.github/review-ignore)'
 
       # No `docs_skip_extra`: this repo commits no knowledge-graph cache, and

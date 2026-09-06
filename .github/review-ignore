@@ -29,7 +29,7 @@
 # that so much as adds a field.
 ^web/src/wire/generated\.ts$
 ^dart/lib/src/generated\.dart$
-^server/internal/wire/generated\.go$
+^internal/wire/generated\.go$
 ^schema/openapi\.yaml$
 
 # release-please owns this and rewrites it wholesale. Added prospectively:

@@ -25,7 +25,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/magos/catenary/server/internal/wire"
+	"github.com/magos/catenary/internal/wire"
 )
 
 type testCase struct {

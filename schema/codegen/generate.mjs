@@ -1113,7 +1113,7 @@ function emitOpenAPI() {
 const targets = [
   [join(ROOT, 'web', 'src', 'wire', 'generated.ts'), emitTS()],
   [join(ROOT, 'dart', 'lib', 'src', 'generated.dart'), emitDart()],
-  [join(ROOT, 'server', 'internal', 'wire', 'generated.go'), gofmt(emitGo())],
+  [join(ROOT, 'internal', 'wire', 'generated.go'), gofmt(emitGo())],
   [join(ROOT, 'schema', 'openapi.yaml'), emitOpenAPI()],
 ]
 

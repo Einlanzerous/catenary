@@ -63,6 +63,12 @@ step "R4 · Go"
 # CANT-15: gofmt-clean AND byte-identical to a fresh generator run AND green,
 # all three at once. Any two of them were always easy; the third is why the
 # formatting had to move into the generator rather than onto the file.
+#
+# CANT-82 moved the generated file OUT of this module, so this line no longer
+# makes the gofmt half of that claim — `gofmt -l ./internal` in the service
+# step below does, and `gen:check` above makes the byte-identical half. What is
+# left here is the three importers and the spike binaries, which is still worth
+# checking and is no longer the sentence above it.
 (cd "$ROOT/server" && gofmt -l .) >/tmp/v-fmt-server.log 2>&1
 [ ! -s /tmp/v-fmt-server.log ]; result $? "gofmt -l server/ is empty$( [ -s /tmp/v-fmt-server.log ] && printf ' (%s)' "$(tr '\n' ' ' </tmp/v-fmt-server.log)" )"
 (cd "$ROOT/server" && go vet ./...) >/tmp/v.log 2>&1
@@ -97,7 +103,7 @@ step "R4 · the staleness guard actually fails the build — once per generated 
 # file behind — now four times per run rather than once.
 _gen_restore() { [ -n "${_gen_bak:-}" ] && [ -f "$_gen_bak" ] && cp "$_gen_bak" "$ROOT/$_gen_cur" && rm -f "$_gen_bak"; }
 trap _gen_restore EXIT INT TERM
-for gen in web/src/wire/generated.ts dart/lib/src/generated.dart server/internal/wire/generated.go schema/openapi.yaml; do
+for gen in web/src/wire/generated.ts dart/lib/src/generated.dart internal/wire/generated.go schema/openapi.yaml; do
   _gen_cur="$gen"; _gen_bak="$(mktemp "${TMPDIR:-/tmp}/$(basename "$gen").XXXXXX.bak")"
   cp "$ROOT/$gen" "$_gen_bak"
   printf '\n# hand edit\n' >> "$ROOT/$gen"
