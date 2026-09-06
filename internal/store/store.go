@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -54,6 +55,7 @@ func DefaultLimits() Limits {
 type Store struct {
 	pool   *pgxpool.Pool
 	limits Limits
+	logger *slog.Logger
 }
 
 // New wraps an existing pool.
@@ -62,7 +64,13 @@ type Store struct {
 // optional bound is a bound the composition root forgets to wire, and the
 // failure is silent — sends stop being refused and nothing says so. Callers
 // that do not care pass DefaultLimits().
-func New(pool *pgxpool.Pool, limits Limits) *Store {
+//
+// So is logger, for the same reason and one more. Every refusal logs once
+// (CANT-83), and a store that silently discards those is a store whose refusals
+// are invisible in production — which is the failure mode the structured-log
+// house rule exists to prevent. A caller that genuinely wants them dropped says
+// so: slog.New(slog.DiscardHandler).
+func New(pool *pgxpool.Pool, limits Limits, logger *slog.Logger) *Store {
 	// PANICS on a non-positive bound, because the zero value is legal Go and
 	// silently inverts the check: `New(pool, Limits{})` compiles and then
 	// refuses every message carrying any text as message_too_large, and every
@@ -84,7 +92,13 @@ func New(pool *pgxpool.Pool, limits Limits) *Store {
 			"(a zero bound refuses every send rather than none; pass DefaultLimits() if you do not care)",
 			limits.MaxMessageBytes, limits.MaxAttachments))
 	}
-	return &Store{pool: pool, limits: limits}
+	// Nil for the same reason, and it is the cheaper mistake to make: a nil
+	// *slog.Logger panics at the first refusal rather than at composition, so
+	// the crash arrives in the middle of somebody's send instead of at boot.
+	if logger == nil {
+		panic("store.New: logger must not be nil (pass slog.New(slog.DiscardHandler) to drop refusal logs deliberately)")
+	}
+	return &Store{pool: pool, limits: limits, logger: logger}
 }
 
 // Limits reports the bounds this store enforces.

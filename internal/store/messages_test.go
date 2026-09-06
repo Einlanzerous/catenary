@@ -22,7 +22,7 @@ import (
 // is deduplicated exactly like one with.
 func TestASendWithNoIdempotencyKeyIsRefused(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "forgetful")
 	conv := mkGroup(ctx, t, pool, "room", u)
 
@@ -75,7 +75,7 @@ func TestTheMissingKeyGuardFiresBeforeTheDatabaseIsTouched(t *testing.T) {
 	}
 	pool.Close()
 
-	_, err = New(pool, DefaultLimits()).SendMessage(ctx, NewMessage{
+	_, err = New(pool, DefaultLimits(), discardLogger()).SendMessage(ctx, NewMessage{
 		ConversationID: uuid.New(),
 		AuthorID:       uuid.New(),
 		Text:           ptr("no key"),
@@ -90,7 +90,7 @@ func TestTheMissingKeyGuardFiresBeforeTheDatabaseIsTouched(t *testing.T) {
 // caller acks with these, so they cannot be approximations.
 func TestSendReturnsTheOrdinalsItDrew(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 
@@ -115,7 +115,7 @@ func TestSendReturnsTheOrdinalsItDrew(t *testing.T) {
 // the column's nullability is FOR, and CANT-18 is the ticket that sends one.
 func TestAMessageMayCarryNoText(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 

@@ -16,15 +16,32 @@ package store
 // somebody's message that never arrived, and no single-threaded test catches
 // it. internal/store/logorder_test.go is the test that does.
 //
-// LOCK ORDER, and it is this file's rule to keep: conversations.last_seq
-// FIRST, log_counter LAST. Both are row locks held until commit. Taking
-// log_counter last keeps the deployment-wide serialised section down to
-// draw-insert-commit rather than the whole transaction — and, the larger
-// reason, two writers taking the two locks in opposite orders DEADLOCK, and
-// Postgres resolves a deadlock by aborting somebody's send. CANT-63 will draw
-// this counter when an edit bumps updated_log_seq; it must take the two in
-// this order. (CANT-67's sweep does not draw it at all — it advances a floor
-// on the conversation.)
+// LOCK ORDER, and it is this file's rule to keep. THREE row locks now, all
+// held until commit, and they are taken in this order and no other:
+//
+//	conversations  →  conversation_members  →  log_counter
+//
+// CANT-14 established the outer two. CANT-83 added the middle one: an author's
+// own send advances their read_seq (position 9), which locks their member row
+// between the two draws.
+//
+// Taking log_counter LAST keeps the deployment-wide serialised section down to
+// draw-insert-commit rather than the whole transaction. The larger reason for
+// fixing any order at all is that two writers taking the same locks in
+// opposite orders DEADLOCK, and Postgres resolves a deadlock by aborting
+// somebody's send.
+//
+// STATED OUTWARD, for the tickets that touch a member row WITHOUT sending:
+// never take the conversation row after a member row. CANT-26's receipt write
+// takes the member row alone, which is safe because it is a single lock — but
+// if it ever also touches the conversation, the conversation goes first.
+// CANT-67's sweep advances a floor on `conversations` and must keep doing that
+// before any member row it later needs. CANT-63 draws log_counter when an edit
+// bumps updated_log_seq; it takes these in this order too.
+//
+// The rule lives here rather than on those three tickets because this is the
+// file all of them have to edit, and a rule stated where the work happens is a
+// rule that cannot be missed.
 
 import (
 	"context"
@@ -162,16 +179,42 @@ type Sent struct {
 //     a bigserial at the exact moment it matters, and it is why the race
 //     leaves no hole in either ordinal.
 func (s *Store) SendMessage(ctx context.Context, m NewMessage) (Sent, error) {
+	sent, err := s.send(ctx, m)
+	if err == nil {
+		return sent, nil
+	}
+
+	// EVERY refusal logs exactly once, and it does so here rather than at each
+	// return, so that is a property of the shape rather than a rule six call
+	// sites have to remember. The level and the code-derived fields are the
+	// table's decision (senderror.go); the ids are this file's.
+	//
+	// The BODY is not among them, at any level. The size is reportable and the
+	// text is not — a size refusal that copied the message into a log would
+	// give it a different retention story than the message itself, which is
+	// what D1's honesty about what the server can see costs if nobody keeps it.
+	se := sendErrorFor(err)
+	s.logger.Log(ctx, se.Level(), "send refused", append([]any{
+		"conversation_id", m.ConversationID,
+		"author_id", m.AuthorID,
+		"client_id", m.ClientID,
+	}, se.LogAttrs()...)...)
+	return Sent{}, se
+}
+
+// send is SendMessage without the logging, so the refusal path has exactly one
+// exit and the ordering below reads as the plan's twelve positions.
+func (s *Store) send(ctx context.Context, m NewMessage) (Sent, error) {
 	// 1 — the key, before the pool is touched. Loud rather than silent: a
 	// forgotten key is a send that would quietly never be deduplicated.
 	if m.ClientID == uuid.Nil {
-		return Sent{}, SendErrorFor(fmt.Errorf("store: send without an idempotency key: %w", ErrNoClientID))
+		return Sent{}, fmt.Errorf("store: send without an idempotency key: %w", ErrNoClientID)
 	}
 
 	// 2 — the bounds, also before the pool is touched. Pure arithmetic over
 	// the frame, so an oversized send costs no transaction and no round trip.
 	if err := s.checkBounds(m); err != nil {
-		return Sent{}, SendErrorFor(err)
+		return Sent{}, err
 	}
 
 	sent, err := s.attemptSend(ctx, m)
@@ -179,15 +222,11 @@ func (s *Store) SendMessage(ctx context.Context, m NewMessage) (Sent, error) {
 		return sent, nil
 	}
 	if !isUniqueViolation(err, dedupConstraint) {
-		return Sent{}, SendErrorFor(err)
+		return Sent{}, err
 	}
 	// Somebody else committed this key while we were drawing. Our ordinals
 	// went back with the rollback; re-read theirs.
-	sent, err = s.sentByKey(ctx, m.AuthorID, m.ClientID)
-	if err != nil {
-		return Sent{}, SendErrorFor(err)
-	}
-	return sent, nil
+	return s.sentByKey(ctx, m.AuthorID, m.ClientID)
 }
 
 // checkBounds is position 2: everything refusable without a database.
@@ -258,6 +297,50 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 			m.AuthorID, m.ConversationID, ErrNotAMember)
 	}
 
+	// 6 — reply_to. The source must exist AND be in this conversation.
+	//
+	// RULING 4: a source that does not resolve stores NULL and the send
+	// SUCCEEDS. The FK only requires reply_to to be *a* message, and the wire
+	// builds ReplyRef live and server-side with a one-line preview of the
+	// source — so a reply_to pointing into another conversation would render
+	// that conversation's text to every member of this one. Nothing renders
+	// previews yet, which is exactly why it is cheap to close now.
+	//
+	// NULL rather than a refusal, because the schema and the wire both already
+	// model "the source is gone, so there is no ref": messages.reply_to is ON
+	// DELETE SET NULL for CANT-67's sweep, and Message.reply_to is optional.
+	// Refusing would invent a new failure for a case the system already has an
+	// answer to, and would fail a send over a field the sender cannot fix.
+	//
+	// Read inside the transaction, so a source deleted concurrently is either
+	// visible to this snapshot or already gone — either way the stored value
+	// is one this conversation may show.
+	replyTo := m.ReplyTo
+	if replyTo != nil {
+		var sourceConv uuid.UUID
+		err := tx.QueryRow(ctx,
+			`SELECT conversation_id FROM messages WHERE id = $1`, *replyTo).Scan(&sourceConv)
+		switch {
+		case err != nil && !errors.Is(err, pgx.ErrNoRows):
+			return Sent{}, fmt.Errorf("store: resolve reply_to: %w", err)
+
+		// LOGGED, at info and with both ids, because this is the one case
+		// where the served Message differs from what the sender's client
+		// optimistically rendered — someone will eventually ask why the reply
+		// arrow vanished, and the answer should be findable.
+		case errors.Is(err, pgx.ErrNoRows):
+			s.logger.InfoContext(ctx, "reply_to dropped: the source does not resolve",
+				"conversation_id", m.ConversationID, "author_id", m.AuthorID,
+				"reply_to_message_id", *replyTo)
+			replyTo = nil
+		case sourceConv != m.ConversationID:
+			s.logger.InfoContext(ctx, "reply_to dropped: the source is in another conversation",
+				"conversation_id", m.ConversationID, "author_id", m.AuthorID,
+				"reply_to_message_id", *replyTo, "source_conversation_id", sourceConv)
+			replyTo = nil
+		}
+	}
+
 	// 8 — draw, conversation first. See the lock-order note at the top.
 	var out Sent
 	if err := tx.QueryRow(ctx,
@@ -271,6 +354,35 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 			return Sent{}, fmt.Errorf("store: conversation %s: %w", m.ConversationID, ErrConversationNotFound)
 		}
 		return Sent{}, fmt.Errorf("store: draw seq: %w", err)
+	}
+
+	// 9 — the author's own read_seq, in THIS transaction.
+	//
+	// You have read what you just sent. 0002_conversations states this and
+	// rests CANT-26's first_unread_seq on it: with the author's own send
+	// advancing read_seq, first_unread_seq is arithmetic (read_seq + 1, absent
+	// when read_seq = last_seq) rather than a scan that has to skip your own
+	// messages. Nothing wrote it until now.
+	//
+	// GREATEST, never a bare assignment: a read receipt for a LATER seq can
+	// commit between this send's seq draw and this statement, and assigning
+	// would walk it backwards — resurrecting messages the member has already
+	// read. GREATEST makes the write a floor, so the two orders of arrival
+	// converge on the same value.
+	//
+	// Here rather than in CANT-26 because it is a write into this transaction,
+	// and CANT-26 is an evidence ticket. It takes the member row lock, which
+	// is why the lock-order note at the top now names three locks and states
+	// the rule outward for the tickets that take that row without sending.
+	//
+	// A REPLAY never reaches this line: position 4 returns before any draw, so
+	// re-sending an acked message cannot advance a read_seq that has since
+	// moved on.
+	if _, err := tx.Exec(ctx,
+		`UPDATE conversation_members SET read_seq = GREATEST(read_seq, $3)
+		  WHERE conversation_id = $1 AND user_id = $2`,
+		m.ConversationID, m.AuthorID, out.Seq); err != nil {
+		return Sent{}, fmt.Errorf("store: advance the author's read_seq: %w", err)
 	}
 
 	// 10 — and the global counter LAST, so the deployment-wide serialised
@@ -291,7 +403,7 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 		VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9)
 		RETURNING at`,
 		out.ID, m.ConversationID, m.AuthorID, out.Seq, out.LogSeq,
-		m.Text, m.ClientID, m.SenderDeviceID, m.ReplyTo).Scan(&out.At); err != nil {
+		m.Text, m.ClientID, m.SenderDeviceID, replyTo).Scan(&out.At); err != nil {
 		// Wrapped, so the 23505 the caller retries on is still reachable
 		// through errors.As.
 		return Sent{}, fmt.Errorf("store: insert message: %w", err)

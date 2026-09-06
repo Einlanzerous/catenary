@@ -1,9 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"testing"
@@ -35,6 +38,38 @@ func mustScan(t *testing.T, row pgx.Row, dest ...any) {
 	if err := row.Scan(dest...); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
+}
+
+// discardLogger is what a test passes when it is not asserting on refusal logs.
+// Deliberately explicit rather than a nil-means-discard default in New: a store
+// whose refusals vanish is a store whose refusals are invisible in production,
+// so dropping them is a thing a caller says out loud.
+func discardLogger() *slog.Logger { return slog.New(slog.DiscardHandler) }
+
+// captureLogger returns a logger and the buffer it writes to, for the tests
+// that assert on what a refusal recorded. JSON so the assertions can be about
+// FIELDS rather than about a rendered line — the shape is what Dozzle and
+// Datadog read, and asserting on prose would pass while the shape drifted.
+func captureLogger() (*slog.Logger, *bytes.Buffer) {
+	var buf bytes.Buffer
+	return slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})), &buf
+}
+
+// logLines decodes the captured buffer, one map per record.
+func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var m map[string]any
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Fatalf("log line is not JSON: %q: %v", line, err)
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 func mkUser(ctx context.Context, t *testing.T, pool *pgxpool.Pool, handle string) uuid.UUID {
@@ -161,7 +196,7 @@ func TestLogCounterIsOneRowDeploymentWide(t *testing.T) {
 // post, which is exactly what client_id exists to prevent.
 func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	bot := mkUser(ctx, t, pool, "bot")
 	conv := mkGroup(ctx, t, pool, "room", bot)
 	key := uuid.New()
@@ -209,7 +244,7 @@ func TestDedupScopeIsAuthorNotDevice(t *testing.T) {
 // message, and one no single-threaded test notices.
 func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 
@@ -255,7 +290,7 @@ func TestReplayDrawsNoOrdinalsAndLeavesSeqDense(t *testing.T) {
 // surfaced. CANT-18's Done-when requires exactly this.
 func TestConcurrentSendsUnderOneKey(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 	key := uuid.New()
@@ -316,7 +351,7 @@ func TestConcurrentSendsUnderOneKey(t *testing.T) {
 // client actually applies, which is per conversation.
 func TestConcurrentDistinctSendsStayDenseAndOrdered(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 
@@ -396,7 +431,7 @@ func TestHeadSeqIsNotAColumn(t *testing.T) {
 // definition.
 func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 
@@ -445,7 +480,7 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 // a Purser offboard deactivates, and cannot destroy authored messages.
 func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 	if _, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("hello")}); err != nil {
@@ -491,7 +526,7 @@ func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 // A revoked device is still referenced by everything it ever sent.
 func TestADeviceWithMessagesCannotBeDeleted(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	d := mkDevice(ctx, t, pool, u, "phone")
 	conv := mkGroup(ctx, t, pool, "room", u)
@@ -666,7 +701,7 @@ func TestRetentionDaysNullMeansInheritInfinite(t *testing.T) {
 // Criterion 9 — the wire bounds peaks' ELEMENTS as well as its length.
 func TestPeaksBoundsElementsAndLength(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("voice")})
@@ -708,7 +743,7 @@ func nextPos() int { posCounter++; return posCounter }
 // cannot serve a voice note at all, not even a pending one.
 func TestPerKindRequiredFields(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "u")
 	conv := mkGroup(ctx, t, pool, "room", u)
 	m, err := st.SendMessage(ctx, NewMessage{ConversationID: conv, AuthorID: u, ClientID: uuid.New(), Text: ptr("attachments")})
@@ -769,7 +804,7 @@ func TestPerKindRequiredFields(t *testing.T) {
 // chronologically as strings.
 func TestMessageAtIsServerAssigned(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 
 	var def *string
 	err := pool.QueryRow(ctx, `

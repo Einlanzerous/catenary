@@ -185,7 +185,7 @@ func runServe(args []string) error {
 		limits.MaxAttachments = cfg.MaxAttachments
 	}
 
-	d := setup(cfg, logger, store.New(pool, limits))
+	d := setup(cfg, logger, store.New(pool, limits, logger))
 
 	srv := &http.Server{
 		Addr:    cfg.Addr,

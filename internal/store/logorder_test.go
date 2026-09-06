@@ -75,7 +75,7 @@ type inserter func(ctx context.Context, pool *pgxpool.Pool, conv, author, client
 // inserting transaction is a change to Store.SendMessage, and Arm 2 fails on
 // it. There is no reference copy any more — schema_test.go's went with CANT-14.
 var referenceInserter inserter = func(ctx context.Context, pool *pgxpool.Pool, conv, author, clientID uuid.UUID, text string) (Sent, error) {
-	return New(pool, DefaultLimits()).SendMessage(ctx, NewMessage{
+	return New(pool, DefaultLimits(), discardLogger()).SendMessage(ctx, NewMessage{
 		ConversationID: conv,
 		AuthorID:       author,
 		ClientID:       clientID,

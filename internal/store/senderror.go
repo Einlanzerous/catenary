@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 
@@ -116,6 +117,49 @@ func (e *SendError) Unwrap() error {
 		return nil
 	}
 	return e.Cause
+}
+
+// Level is the level a refusal logs at, and it is a per-CODE decision, so it
+// lives with the codes. `internal` is the server's fault and gets warn; every
+// other code describes the sender's own input and gets info — a non-member send
+// is not an incident.
+//
+// This method exists BECAUSE of the guard, and that is the guard working as
+// intended rather than in spite of it. Choosing the level in messages.go would
+// have meant naming wire.ErrorCodeInternal outside this file, which is a second
+// decision about a code in precisely the place the ban exists to keep them out
+// of. The pressure pointed at the right design.
+func (e *SendError) Level() slog.Level {
+	if e == nil || e.Code != wire.ErrorCodeInternal {
+		return slog.LevelInfo
+	}
+	return slog.LevelWarn
+}
+
+// LogAttrs is what a refusal records about itself. The caller adds the ids.
+//
+// THE BODY IS NEVER HERE, at any level. D1 declines end-to-end encryption and
+// names its mitigation as honesty about what the server can see; that honesty
+// is worth less if a size refusal copies the message into a log with a
+// different retention story than the message itself. The size, yes; the text,
+// no — and SendError has no field that could carry it.
+func (e *SendError) LogAttrs() []any {
+	if e == nil {
+		return nil
+	}
+	attrs := []any{"code", string(e.Code), "retryable", e.Retryable}
+	if e.RetryAfterSec != nil {
+		attrs = append(attrs, "retry_after_sec", *e.RetryAfterSec)
+	}
+	// A RETRYABLE internal also carries its SQLSTATE, because "transient" is a
+	// claim somebody should be able to check after the fact — and the widening
+	// in CANT-83 made that claim cover three SQLSTATE classes and a severity,
+	// so which one fired is worth knowing.
+	var pgErr *pgconn.PgError
+	if e.Code == wire.ErrorCodeInternal && e.Retryable && errors.As(e.Cause, &pgErr) {
+		attrs = append(attrs, "sqlstate", pgErr.Code)
+	}
+	return attrs
 }
 
 // sendErrorRow is one row of the table: a cause, the code it gets, and whether

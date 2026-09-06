@@ -33,7 +33,7 @@ func closedPool(t *testing.T) *pgxpool.Pool {
 // fail without a transaction and without a round trip. Over a closed pool, a
 // bound that has drifted below Begin returns a connection error instead.
 func TestTheSizeBoundsFireBeforeTheDatabaseIsTouched(t *testing.T) {
-	st := New(closedPool(t), Limits{MaxMessageBytes: 8, MaxAttachments: 2})
+	st := New(closedPool(t), Limits{MaxMessageBytes: 8, MaxAttachments: 2}, discardLogger())
 	ctx := context.Background()
 
 	for _, tc := range []struct {
@@ -79,7 +79,7 @@ func TestTheSizeBoundsFireBeforeTheDatabaseIsTouched(t *testing.T) {
 // and a rune bound would refuse a different set of messages than the database
 // would accept.
 func TestTheBodyBoundCountsBytesNotRunes(t *testing.T) {
-	st := New(closedPool(t), Limits{MaxMessageBytes: 8, MaxAttachments: 16})
+	st := New(closedPool(t), Limits{MaxMessageBytes: 8, MaxAttachments: 16}, discardLogger())
 	ctx := context.Background()
 
 	// Six runes, twelve bytes.
@@ -97,7 +97,7 @@ func TestTheBodyBoundCountsBytesNotRunes(t *testing.T) {
 // less if a size refusal copies the message into a log with a different
 // retention story than the message itself.
 func TestASizeRefusalDoesNotCarryTheBody(t *testing.T) {
-	st := New(closedPool(t), Limits{MaxMessageBytes: 4, MaxAttachments: 16})
+	st := New(closedPool(t), Limits{MaxMessageBytes: 4, MaxAttachments: 16}, discardLogger())
 	secret := "hunter2-and-the-rest-of-the-note"
 
 	_, err := st.SendMessage(context.Background(), NewMessage{
@@ -119,7 +119,7 @@ func TestASizeRefusalDoesNotCarryTheBody(t *testing.T) {
 // resolves.
 func TestMembershipAndExistenceAreDecidedInTheStore(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	author := mkUser(ctx, t, pool, "author")
 	stranger := mkUser(ctx, t, pool, "stranger")
 	conv := mkGroup(ctx, t, pool, "room", author)
@@ -165,7 +165,7 @@ func assertCode(t *testing.T, err error, want wire.ErrorCode, cause error) {
 // on it, while everyone else can see it.
 func TestAReplayWinsOverAStateDependentRefusal(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	author := mkUser(ctx, t, pool, "leaver")
 	conv := mkGroup(ctx, t, pool, "room", author)
 	key := uuid.New()
@@ -212,7 +212,7 @@ func TestAReplayDoesNotWinOverALoweredSizeBound(t *testing.T) {
 	key := uuid.New()
 	body := ptr("a body of some length")
 
-	generous := New(pool, DefaultLimits())
+	generous := New(pool, DefaultLimits(), discardLogger())
 	if _, err := generous.SendMessage(ctx, NewMessage{
 		ClientID: key, ConversationID: conv, AuthorID: author, Text: body,
 	}); err != nil {
@@ -220,7 +220,7 @@ func TestAReplayDoesNotWinOverALoweredSizeBound(t *testing.T) {
 	}
 
 	// The operator lowers the bound under the acked message.
-	strict := New(pool, Limits{MaxMessageBytes: 4, MaxAttachments: 16})
+	strict := New(pool, Limits{MaxMessageBytes: 4, MaxAttachments: 16}, discardLogger())
 	_, err := strict.SendMessage(ctx, NewMessage{
 		ClientID: key, ConversationID: conv, AuthorID: author, Text: body,
 	})
@@ -234,7 +234,7 @@ func TestAReplayDoesNotWinOverALoweredSizeBound(t *testing.T) {
 // `internal`, which is a lie about whose fault it is.
 func TestAnEmptySendIsStored(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	author := mkUser(ctx, t, pool, "quiet")
 	conv := mkGroup(ctx, t, pool, "room", author)
 
@@ -265,7 +265,7 @@ func TestAnEmptySendIsStored(t *testing.T) {
 // invert — when it lands, this assertion flips from 0 to 2 and the skip goes.
 func TestAttachmentsAreCountedButNotYetStored(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "att")
 	conv := mkGroup(ctx, t, pool, "room", u)
 
@@ -304,7 +304,7 @@ func TestAttachmentsAreCountedButNotYetStored(t *testing.T) {
 // believes it is missing forever.
 func TestAReplayUnderOneKeyReportsTheConversationTheRowIsActuallyIn(t *testing.T) {
 	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits())
+	st := New(pool, DefaultLimits(), discardLogger())
 	u := mkUser(ctx, t, pool, "bot")
 	first := mkGroup(ctx, t, pool, "first", u)
 	second := mkGroup(ctx, t, pool, "second", u)
@@ -378,12 +378,12 @@ func TestNewRefusesANonPositiveBound(t *testing.T) {
 						"with any text as message_too_large and say nothing about why", tc.limits)
 				}
 			}()
-			_ = New(closedPool(t), tc.limits)
+			_ = New(closedPool(t), tc.limits, discardLogger())
 		})
 	}
 
 	// And the shape a caller who does not care is meant to use still works.
-	if st := New(closedPool(t), DefaultLimits()); st.Limits() != DefaultLimits() {
+	if st := New(closedPool(t), DefaultLimits(), discardLogger()); st.Limits() != DefaultLimits() {
 		t.Error("DefaultLimits() did not survive New")
 	}
 }
@@ -399,7 +399,7 @@ func TestNewRefusesANonPositiveBound(t *testing.T) {
 // comes back not-retryable, and a client outbox reading that flag marks each
 // one failed forever.
 func TestAClosedPoolIsTransient(t *testing.T) {
-	st := New(closedPool(t), DefaultLimits())
+	st := New(closedPool(t), DefaultLimits(), discardLogger())
 
 	_, err := st.SendMessage(context.Background(), NewMessage{
 		ClientID: uuid.New(), ConversationID: uuid.New(), AuthorID: uuid.New(), Text: ptr("in flight"),

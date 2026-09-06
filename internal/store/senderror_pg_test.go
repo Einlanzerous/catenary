@@ -15,6 +15,7 @@ package store
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"testing"
 	"time"
@@ -80,6 +81,29 @@ func TestTerminatedBackendIsClassifiedTransient(t *testing.T) {
 	}
 	if got := sendErrorFor(stmtErr); !got.Retryable {
 		t.Errorf("a terminated backend was classified permanent (%v) — criterion 10's own test would fail", got)
+	}
+
+	// And the SQLSTATE reaches the LOG. "Transient" is a claim somebody should
+	// be able to check after the fact, and CANT-83 widened it to three SQLSTATE
+	// classes plus a severity — so which one fired is the difference between a
+	// deadlock and an operator restarting Postgres.
+	//
+	// Asserted here rather than by sending into a terminated pool: a pool
+	// reconnects, so that test skips more often than it runs, and a skip is not
+	// a pass. This is the same real 57P01, deterministically.
+	se := sendErrorFor(stmtErr)
+	if se.Level() != slog.LevelWarn {
+		t.Errorf("a terminated backend logs at %v, want warn — internal is the server's fault", se.Level())
+	}
+	var sqlstate any
+	attrs := se.LogAttrs()
+	for i := 0; i+1 < len(attrs); i += 2 {
+		if attrs[i] == "sqlstate" {
+			sqlstate = attrs[i+1]
+		}
+	}
+	if sqlstate != "57P01" {
+		t.Errorf("sqlstate in the log attrs = %v, want 57P01: %v", sqlstate, attrs)
 	}
 
 	// And the COMMIT that follows, which takes a different path entirely: no
