@@ -24,6 +24,14 @@
 -- A comment-only migration rather than an edit to 0002, because 0002 is
 -- applied: editing it in place would leave every deployed database carrying
 -- the sentence this corrects. Same reasoning as 0004.
+--
+-- 0002 ALSO carries the same premise in the inline `--` comment above the
+-- column, which no COMMENT ON can reach. That one is left standing on the same
+-- precedent — an applied migration is corrected forward, not rewritten — and it
+-- is named here so a reader who greps the false sentence lands on this file
+-- rather than concluding it is still the rule. The third copy lived in
+-- schema/mapping/wire-fields.json, which is not a migration and carries no such
+-- constraint, so it was corrected in place.
 
 COMMENT ON COLUMN conversation_members.read_seq IS
     'Highest seq this member has READ. Advanced by CANT-26''s read receipts and by nothing else — an author''s own send does NOT advance it (CANT-83 implemented that and removed it; see 0005). first_unread_seq is DERIVED as the first seq above read_seq that the viewer did not author, which is an index scan over UNIQUE (conversation_id, seq) and not a table scan. The author filter is what keeps your own messages out of your own unread count, so nothing here needs to write read_seq to achieve it.';
