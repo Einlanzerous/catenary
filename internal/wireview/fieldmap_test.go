@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -326,11 +327,17 @@ func assertColumnsPassThrough(t *testing.T, fields map[string]fieldEntry,
 	typeName string, sample any, got, want map[string]any) {
 	t.Helper()
 
-	for _, f := range wireFields(sample) {
-		e, ok := fields[typeName+"."+f]
-		if !ok || e.Kind != "column" {
-			continue
-		}
+	// THE UNION of the struct's reflectable fields and the map's own keys for
+	// this type, not just the former.
+	//
+	// wireFields reflects over json tags, and wire.VoiceAttachment has no Kind
+	// field at all — the generated MarshalJSON injects the constant. So the
+	// forward loop skipped `kind` entirely, `"kind": "voice"` was never
+	// compared against anything, and it would have passed unchanged if a voice
+	// row went down the image branch. Two entries the reader is most likely to
+	// trust, silently checking nothing.
+	for _, f := range columnFieldNames(fields, typeName, sample) {
+		e := fields[typeName+"."+f]
 		expected, covered := want[f]
 		if !covered {
 			t.Errorf("%s.%s is `column` (%s) and NOTHING here asserts it is a passthrough — "+
@@ -358,6 +365,30 @@ func assertColumnsPassThrough(t *testing.T, fields map[string]fieldEntry,
 				typeName, f, e.Kind)
 		}
 	}
+}
+
+// columnFieldNames is every field the map calls `column` on this type, whether
+// or not the generated struct exposes it — so an injected constant like `kind`
+// is checked like any other column.
+func columnFieldNames(fields map[string]fieldEntry, typeName string, sample any) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(f string) {
+		if e, ok := fields[typeName+"."+f]; ok && e.Kind == "column" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	for _, f := range wireFields(sample) {
+		add(f)
+	}
+	for key := range fields {
+		if strings.HasPrefix(key, typeName+".") {
+			add(strings.TrimPrefix(key, typeName+"."))
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 func marshalToMap(t *testing.T, v any) map[string]any {

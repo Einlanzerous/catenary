@@ -154,6 +154,73 @@ func build() *wire.Message {
 			want: 1,
 		},
 		{
+			name: "make with a known length, then field assignment",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+func page(rows []int) []wire.Message {
+	out := make([]wire.Message, len(rows))
+	for i := range rows {
+		out[i].Seq = 1
+	}
+	return out
+}
+`,
+			// The shape CANT-20's /sync reaches for: the page length is known
+			// from the row count, so make() is the natural idiom.
+			want: 1,
+		},
+		{
+			name: "a slice of POINTERS with elided &T",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+var page = []*wire.Message{{ID: "a"}, {ID: "b"}}
+`,
+			want: 2,
+		},
+		{
+			name: "a map of pointers with elided &T",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+var byID = map[string]*wire.Message{"a": {ID: "a"}}
+`,
+			want: 1,
+		},
+		{
+			name: "an array declaration is N zero Messages",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+func build() wire.Message {
+	var arr [2]wire.Message
+	arr[0].ID = "x"
+	return arr[0]
+}
+`,
+			want: 1,
+		},
+		{
+			name: "a nil slice declaration holds none",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+func collect() []wire.Message {
+	var out []wire.Message
+	return out
+}
+`,
+			// A slice header, not a Message. Appending one built by wireview is
+			// exactly what a transport SHOULD do.
+			want: 0,
+		},
+		{
 			name: "an empty slice constructs nothing",
 			src: `package api
 
@@ -210,7 +277,11 @@ func scanForMessageLiterals(t *testing.T, root string) []string {
 			return relErr
 		}
 		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			// MATCHED ON THE PATH RELATIVE TO ROOT, not the basename. A
+			// basename match exempts a directory so named at ANY depth, so a
+			// future internal/api/server/ would go unscanned in silence — the
+			// same fix internal/store's guard already carries.
+			if skipDirs[filepath.ToSlash(rel)] {
 				return filepath.SkipDir
 			}
 			return nil
@@ -231,35 +302,70 @@ func scanForMessageLiterals(t *testing.T, root string) []string {
 		if local == "" {
 			return nil
 		}
-		// FOUR SHAPES, because a syntax check that knows one is a guard proved
-		// against its own idiom and no other. The first version matched only a
-		// CompositeLit whose Type is a SelectorExpr, and a review ran the scan
-		// over planted sources to show the rest walking past:
+		// A SYNTAX WALK ENUMERATES SHAPES, AND THIS ONE ENUMERATES SEVEN.
+		// That sentence is the honest description and it took two rounds of
+		// review to earn: the first version knew one shape, the second knew
+		// four, and both times the reviewer found the gap by transcribing this
+		// scan into a standalone program and running it over planted sources
+		// rather than by reading it.
 		//
-		//	wire.Message{…}                        caught
-		//	[]wire.Message{{…}, {…}}               NOT — inner literals elide the type
-		//	map[string]wire.Message{"a": {…}}      NOT — same
-		//	var m wire.Message; m.ID = …           NOT — no CompositeLit at all
-		//	new(wire.Message)                      NOT — a CallExpr
+		//	wire.Message{…}                     round 1
+		//	[]wire.Message{{…}, {…}}            round 2 — elements elide the type
+		//	map[string]wire.Message{"a": {…}}   round 2
+		//	var m wire.Message                  round 2 — no CompositeLit at all
+		//	new(wire.Message)                   round 2 — a CallExpr
+		//	make([]wire.Message, n)             round 3 — n zero Messages
+		//	[]*wire.Message{{…}} / map of *T    round 3 — the &T elision
+		//	var arr [2]wire.Message             round 3 — an ARRAY is n values
 		//
-		// The slice form is not contrived: CANT-20's /sync returns a page, and
-		// `[]wire.Message{{…}}` is how a handler assembles one inline. `var m`
-		// then field assignment is the other everyday idiom. Either would have
-		// landed a second assembler in internal/api under a green guard.
+		// make([]T, n) is the one that mattered. SyncResponse.Messages is
+		// []Message and a page's length is known from the row count, so
+		// `out := make([]wire.Message, len(rows))` followed by out[i].ID = …
+		// is precisely how CANT-20's /sync would assemble a second Message
+		// assembler in internal/api, under a green guard.
 		//
-		// WHAT THIS STILL DOES NOT COVER, stated rather than left implied: a
-		// Message obtained from this package and then MUTATED names no type and
-		// is invisible here. That is a different offence from constructing one,
-		// and closing it needs go/types over the whole module rather than a
-		// syntax walk — worth doing if a second assembler ever appears by that
-		// route, and not worth a dependency before then.
-		isMessageType := func(e ast.Expr) bool {
+		// `var s []wire.Message` is deliberately NOT counted: a nil slice holds
+		// no Messages. `var arr [2]wire.Message` is, because an array of two IS
+		// two zero Messages waiting for field assignment.
+		//
+		// THE TOTAL ALTERNATIVE, named so the next person does not re-derive
+		// it: go/types over the module, flagging any expression whose type is
+		// wire.Message originating outside the mapper. That needs no shape list
+		// and cannot be enumerated short. It is not here because it wants
+		// golang.org/x/tools in a service module that CANT-82 went to some
+		// trouble to keep small, and the shapes below cover every idiom anybody
+		// has actually proposed. If a third round finds an eighth, that is the
+		// signal to pay for it.
+		//
+		// STILL NOT COVERED, and genuinely out of reach of any syntax walk: a
+		// Message obtained from this package and then MUTATED names no type at
+		// all. That is a different offence from constructing one.
+		// isMessageType unwraps a pointer, because the spec grants the &T
+		// elision alongside the T elision: []*wire.Message{{…}} constructs
+		// Messages exactly as []wire.Message{{…}} does.
+		var isMessageType func(ast.Expr) bool
+		isMessageType = func(e ast.Expr) bool {
+			if star, ok := e.(*ast.StarExpr); ok {
+				return isMessageType(star.X)
+			}
 			sel, ok := e.(*ast.SelectorExpr)
 			if !ok || sel.Sel.Name != "Message" {
 				return false
 			}
 			pkg, ok := sel.X.(*ast.Ident)
 			return ok && pkg.Name == local
+		}
+		// elementIsMessage reports whether a composite/array/map type holds
+		// Messages, and whether it is an ARRAY (a fixed number of values) as
+		// opposed to a slice or map (which start empty).
+		elementIsMessage := func(e ast.Expr) (holds bool, fixedLen bool) {
+			switch t := e.(type) {
+			case *ast.ArrayType:
+				return isMessageType(t.Elt), t.Len != nil
+			case *ast.MapType:
+				return isMessageType(t.Value), false
+			}
+			return false, false
 		}
 		note := func(n ast.Node, what string) {
 			offences = append(offences,
@@ -276,14 +382,7 @@ func scanForMessageLiterals(t *testing.T, root string) []string {
 				// A slice, array or map OF Messages: the elements elide the
 				// type, so each one is a construction with no type node of its
 				// own to match.
-				var elem ast.Expr
-				switch t := node.Type.(type) {
-				case *ast.ArrayType:
-					elem = t.Elt
-				case *ast.MapType:
-					elem = t.Value
-				}
-				if elem != nil && isMessageType(elem) {
+				if holds, _ := elementIsMessage(node.Type); holds {
 					for _, el := range node.Elts {
 						inner, ok := el.(*ast.CompositeLit)
 						if !ok {
@@ -300,13 +399,33 @@ func scanForMessageLiterals(t *testing.T, root string) []string {
 			case *ast.ValueSpec:
 				// var m wire.Message — a zero value waiting for field
 				// assignments, which is construction in two steps.
-				if isMessageType(node.Type) {
+				if node.Type != nil && isMessageType(node.Type) {
 					note(node, "var … "+local+".Message")
+					return true
+				}
+				// var arr [2]wire.Message — an array IS its elements, so this
+				// is two zero Messages. A slice or map declared this way holds
+				// none and is not counted.
+				if holds, fixedLen := elementIsMessage(node.Type); holds && fixedLen {
+					note(node, "var … [N]"+local+".Message")
 				}
 			case *ast.CallExpr:
-				if fn, ok := node.Fun.(*ast.Ident); ok && fn.Name == "new" &&
-					len(node.Args) == 1 && isMessageType(node.Args[0]) {
-					note(node, "new("+local+".Message)")
+				fn, ok := node.Fun.(*ast.Ident)
+				if !ok || len(node.Args) == 0 {
+					return true
+				}
+				switch fn.Name {
+				case "new":
+					if isMessageType(node.Args[0]) {
+						note(node, "new("+local+".Message)")
+					}
+				case "make":
+					// make([]wire.Message, n) constructs n zero Messages, and
+					// the field assignments follow. This is the shape CANT-20's
+					// /sync reaches for, because a page's length is known.
+					if holds, _ := elementIsMessage(node.Args[0]); holds {
+						note(node, "make(…"+local+".Message…)")
+					}
 				}
 			}
 			return true
