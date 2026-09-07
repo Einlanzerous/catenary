@@ -157,6 +157,10 @@ $ npm run smoke       →  exit 1
 
 So the Go runner executes the 31 roundtrip/ignore cases and **skips the 10 reject cases**, printing each skip by name rather than passing quietly.
 
+> **Addendum, 2026-09-07 — closed by `CANT-25`.** The paragraphs above are the state on 2026-08-17 and are left as written; this note is appended rather than editing them, on the same reasoning `verify.sh` gives for exempting `spike/` — rewriting a cleared gate report to say something it did not say at the time is its own dishonesty.
+>
+> The generator now emits a validating `UnmarshalJSON` for every object, using exactly the mechanism the paragraph above names: a shadow whose fields are all pointers, so an absent required scalar is distinguishable from an explicit zero one. The Go runner executes **all 41 vectors and skips none**, and the ten reject cases each refuse with the constraint and JSON path that fired. All three implementations now validate; the server is no longer the one that would accept bad input.
+
 This is the right thing to fix first in P1, because the server is the trust boundary — it is the implementation that most needs to refuse bad input, and the only one that currently would not. It is mechanical generator work, not a design question. It is out of scope here only because R4's exit criterion is Dart + TS, and Go was already a bonus.
 
 ---

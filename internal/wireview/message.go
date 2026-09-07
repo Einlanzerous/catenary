@@ -162,16 +162,50 @@ func attachment(a store.AttachmentRow, v Viewer) wire.Attachment {
 	return nil
 }
 
-// transcript takes `state` from its own column and everything else from the
-// stored JSON, which is what wire-fields.json says: transcript_state is a
-// CHECKed column so the state is queryable, and the rest is the authoritative
-// Transcript object as one document.
-func transcript(a store.AttachmentRow) wire.Transcript {
-	var t wire.Transcript
-	if len(a.TranscriptJSON) > 0 {
+// storedTranscript is the transcript_json document, which is deliberately NOT a
+// whole wire.Transcript: `state` lives in its own CHECKed column so it is
+// queryable, and wire-fields.json says exactly that — Transcript.state ←
+// transcript_state, everything else ← transcript_json.
+//
+// It needs its own type BECAUSE the wire type validates. CANT-25 gave
+// wire.Transcript an UnmarshalJSON that requires `state`, and decoding the
+// stored document straight into it therefore fails — which it silently did,
+// dropping text, segments, engine, language and word_count on the floor, until
+// the field-map oracle caught it. Decoding a partial document into a type that
+// demands a whole one is the bug; a type that matches what is stored is the
+// fix.
+type storedTranscript struct {
+	Text      *string                  `json:"text,omitempty"`
+	WordCount *int64                   `json:"word_count,omitempty"`
+	Segments  []wire.TranscriptSegment `json:"segments,omitempty"`
+	Engine    *string                  `json:"engine,omitempty"`
+	Language  *string                  `json:"language,omitempty"`
+	ETASec    *int64                   `json:"eta_sec,omitempty"`
+}
+
+func decodeStoredTranscript(raw []byte) storedTranscript {
+	var st storedTranscript
+	if len(raw) > 0 {
 		// A malformed document yields the zero value rather than a panic; the
-		// state column below still describes it truthfully.
-		_ = json.Unmarshal(a.TranscriptJSON, &t)
+		// state column still describes it truthfully. This is the one place
+		// the error is dropped, and it is dropped because the column is the
+		// authority on state and a half-read document is still servable.
+		_ = json.Unmarshal(raw, &st)
+	}
+	return st
+}
+
+// transcript takes `state` from its own column and everything else from the
+// stored JSON.
+func transcript(a store.AttachmentRow) wire.Transcript {
+	st := decodeStoredTranscript(a.TranscriptJSON)
+	t := wire.Transcript{
+		Text:      st.Text,
+		WordCount: st.WordCount,
+		Segments:  st.Segments,
+		Engine:    st.Engine,
+		Language:  st.Language,
+		ETASec:    st.ETASec,
 	}
 	if a.TranscriptState != nil {
 		t.State = wire.TranscriptState(*a.TranscriptState)
@@ -236,12 +270,9 @@ func sourceText(src store.ReplySource) string {
 		return *src.Text
 	}
 	if a := src.FirstAttachment; a != nil && a.Kind == "voice" {
-		var t wire.Transcript
-		if len(a.TranscriptJSON) > 0 {
-			_ = json.Unmarshal(a.TranscriptJSON, &t)
-		}
-		if t.Text != nil {
-			return *t.Text
+		// The stored document, not a wire.Transcript — see storedTranscript.
+		if st := decodeStoredTranscript(a.TranscriptJSON); st.Text != nil {
+			return *st.Text
 		}
 	}
 	return ""
