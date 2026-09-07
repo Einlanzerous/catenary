@@ -118,6 +118,12 @@ func fixedURL(u string) func(string) string {
 	return func(string) string { return u }
 }
 
+// noMedia is what a test passes when the row carries none. Viewer.MediaURL is
+// REQUIRED even then — a caller cannot know in advance whether a row has an
+// attachment, so a Viewer built without a deriver is one that serves text fine
+// and panics on the first photo. Making the tests say it is the point.
+var noMedia = func(k string) string { return "unused://" + k }
+
 func TestTheProducibleVectorsRoundTrip(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -138,7 +144,7 @@ func TestTheProducibleVectorsRoundTrip(t *testing.T) {
 					At:             mustTime(t, "2026-08-17T04:22:03.117Z"),
 					Text:           ptr("the wire is up"),
 					ClientID:       ptr(mustUUID(t, "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f")),
-				}, nil, nil, Viewer{UserID: author, State: wire.DeliveryStateSent})
+				}, nil, nil, Viewer{UserID: author, State: wire.DeliveryStateSent, MediaURL: noMedia})
 			},
 		},
 		{
@@ -157,7 +163,7 @@ func TestTheProducibleVectorsRoundTrip(t *testing.T) {
 					At:             mustTime(t, "2026-08-17T04:22:03.117Z"),
 					Text:           ptr("the wire is up"),
 					ClientID:       ptr(mustUUID(t, "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f")),
-				}, nil, nil, Viewer{UserID: mustUUID(t, theoID), State: wire.DeliveryStateRead})
+				}, nil, nil, Viewer{UserID: mustUUID(t, theoID), State: wire.DeliveryStateRead, MediaURL: noMedia})
 			},
 		},
 		{
@@ -172,7 +178,7 @@ func TestTheProducibleVectorsRoundTrip(t *testing.T) {
 					Seq:            9007199254740991,
 					LogSeq:         9007199254740991,
 					At:             mustTime(t, "2026-08-17T04:22:03.117Z"),
-				}, nil, nil, Viewer{UserID: author, State: wire.DeliveryStateSent})
+				}, nil, nil, Viewer{UserID: author, State: wire.DeliveryStateSent, MediaURL: noMedia})
 			},
 		},
 		{
@@ -187,7 +193,7 @@ func TestTheProducibleVectorsRoundTrip(t *testing.T) {
 					LogSeq:         41200,
 					At:             mustTime(t, "2026-08-16T22:10:00.000Z"),
 					Deleted:        true,
-				}, nil, nil, Viewer{UserID: mustUUID(t, theoID), State: wire.DeliveryStateRead})
+				}, nil, nil, Viewer{UserID: mustUUID(t, theoID), State: wire.DeliveryStateRead, MediaURL: noMedia})
 			},
 		},
 		{

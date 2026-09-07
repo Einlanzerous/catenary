@@ -186,10 +186,10 @@ func TestClientIDIsEchoedToItsAuthorOnly(t *testing.T) {
 	key := mustUUID(t, "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f")
 	row := store.MessageRow{ID: author, ConversationID: author, AuthorID: author, ClientID: &key}
 
-	if got := Message(row, nil, nil, Viewer{UserID: author}); got.ClientID == nil {
+	if got := Message(row, nil, nil, Viewer{UserID: author, MediaURL: noMedia}); got.ClientID == nil {
 		t.Error("the author did not get their own client_id back; their outbox cannot match the broadcast")
 	}
-	if got := Message(row, nil, nil, Viewer{UserID: other}); got.ClientID != nil {
+	if got := Message(row, nil, nil, Viewer{UserID: other, MediaURL: noMedia}); got.ClientID != nil {
 		t.Errorf("another member received client_id %v — the wire says they never do", *got.ClientID)
 	}
 }
@@ -214,4 +214,161 @@ func TestThePreviewRule(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Criterion 14's OTHER half: "every field the map calls `column` is a
+// passthrough of that column".
+//
+// The check above only asserted that the MAP names a column, which is a
+// statement about wire-fields.json and not about the mapper. Nothing connected
+// a `column` entry to the row field the mapper reads, and the vectors cover
+// most of the gap only incidentally.
+//
+// Message.edited_at was the live hole: no vector carries it, no other test set
+// it, and deleting the mapping left the whole package green — an edit made
+// through CANT-63 would have been invisible on the wire with a passing suite.
+//
+// So: one maximal row with every column field distinctly set, mapped, and every
+// `column` field asserted against the value that went in. The coverage table is
+// checked BOTH ways, so a column field with no assertion fails rather than
+// passing silently.
+func TestEveryColumnFieldIsAPassthrough(t *testing.T) {
+	fields := loadFieldMap(t)
+
+	author := mustUUID(t, nadiaID)
+	key := mustUUID(t, "1c2d3e4f-5a6b-4c7d-9e8f-0a1b2c3d4e5f")
+	src := mustUUID(t, voiceMsg)
+	edited := mustTime(t, "2026-08-18T09:00:00.000Z")
+
+	row := store.MessageRow{
+		ID:             mustUUID(t, "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f"),
+		ConversationID: mustUUID(t, convID),
+		AuthorID:       author,
+		Seq:            4242,
+		LogSeq:         909090,
+		At:             mustTime(t, "2026-08-17T04:22:03.117Z"),
+		Text:           ptr("a distinctive body"),
+		ClientID:       &key,
+		ReplyTo:        &src,
+		EditedAt:       &edited,
+		Deleted:        true,
+	}
+	got := marshalToMap(t, Message(row, nil, &store.ReplySource{
+		MessageID: src, AuthorID: author, Text: ptr("the source"),
+	}, Viewer{UserID: author, State: wire.DeliveryStateSent, MediaURL: fixedURL("u")}))
+
+	want := map[string]any{
+		"id":              row.ID.String(),
+		"seq":             float64(4242),
+		"log_seq":         float64(909090),
+		"conversation_id": row.ConversationID.String(),
+		"author_id":       author.String(),
+		"at":              "2026-08-17T04:22:03.117Z",
+		"text":            "a distinctive body",
+		"client_id":       key.String(),
+		"edited_at":       "2026-08-18T09:00:00.000Z",
+		"deleted":         true,
+	}
+	assertColumnsPassThrough(t, fields, "Message", wire.Message{}, got, want)
+
+	// The reply ref's one column field is the stored id.
+	ref, _ := got["reply_to"].(map[string]any)
+	if ref == nil {
+		t.Fatal("no reply_to on a row that has one")
+	}
+	assertColumnsPassThrough(t, fields, "ReplyRef", wire.ReplyRef{}, ref,
+		map[string]any{"message_id": src.String()})
+}
+
+func TestEveryAttachmentColumnFieldIsAPassthrough(t *testing.T) {
+	fields := loadFieldMap(t)
+	v := Viewer{MediaURL: fixedURL("u")}
+
+	voice := marshalToMap(t, attachment(store.AttachmentRow{
+		Kind: "voice", StorageKey: "k", DurationMs: ptr(int64(31337)),
+		Peaks: []int64{7, 8, 9}, TranscriptState: ptr("ready"),
+		TranscriptJSON: []byte(`{"text":"t","word_count":3,"engine":"e","language":"l",` +
+			`"segments":[{"at_ms":5,"text":"s"}]}`),
+	}, v))
+	assertColumnsPassThrough(t, fields, "VoiceAttachment", wire.VoiceAttachment{}, voice, map[string]any{
+		"kind": "voice", "duration_ms": float64(31337),
+		"peaks": []any{float64(7), float64(8), float64(9)},
+	})
+
+	tr, _ := voice["transcript"].(map[string]any)
+	if tr == nil {
+		t.Fatal("no transcript on a voice attachment")
+	}
+	assertColumnsPassThrough(t, fields, "Transcript", wire.Transcript{}, tr, map[string]any{
+		"state": "ready", "text": "t", "word_count": float64(3),
+		"engine": "e", "language": "l",
+		"segments": []any{map[string]any{"at_ms": float64(5), "text": "s"}},
+		// eta_sec is absent on a ready transcript, and its own column entry
+		// points at the same document. Covered by the pending vector.
+		"eta_sec": nil,
+	})
+
+	image := marshalToMap(t, attachment(store.AttachmentRow{
+		Kind: "image", StorageKey: "k", Filename: ptr("f.jpg"),
+		Width: ptr(int64(11)), Height: ptr(int64(22)), Bytes: ptr(int64(33)),
+		Placeholder: ptr("blur"),
+	}, v))
+	assertColumnsPassThrough(t, fields, "ImageAttachment", wire.ImageAttachment{}, image, map[string]any{
+		"kind": "image", "filename": "f.jpg", "width": float64(11),
+		"height": float64(22), "bytes": float64(33), "placeholder": "blur",
+	})
+}
+
+// assertColumnsPassThrough checks the two directions that matter: every field
+// the map calls `column` on this type has an expected value here and carries
+// it, and every expectation names a field the map still calls `column`.
+func assertColumnsPassThrough(t *testing.T, fields map[string]fieldEntry,
+	typeName string, sample any, got, want map[string]any) {
+	t.Helper()
+
+	for _, f := range wireFields(sample) {
+		e, ok := fields[typeName+"."+f]
+		if !ok || e.Kind != "column" {
+			continue
+		}
+		expected, covered := want[f]
+		if !covered {
+			t.Errorf("%s.%s is `column` (%s) and NOTHING here asserts it is a passthrough — "+
+				"delete its line in the mapper and this suite stays green", typeName, f, e.Column)
+			continue
+		}
+		if expected == nil {
+			if _, present := got[f]; present {
+				t.Errorf("%s.%s was expected absent, got %v", typeName, f, got[f])
+			}
+			continue
+		}
+		if !reflect.DeepEqual(got[f], expected) {
+			t.Errorf("%s.%s = %#v, want %#v — not a passthrough of %s",
+				typeName, f, got[f], expected, e.Column)
+		}
+	}
+
+	for f := range want {
+		e, ok := fields[typeName+"."+f]
+		if !ok {
+			t.Errorf("this test asserts %s.%s, which the field map does not have", typeName, f)
+		} else if e.Kind != "column" {
+			t.Errorf("this test asserts %s.%s is a column passthrough, but the map calls it %q",
+				typeName, f, e.Kind)
+		}
+	}
+}
+
+func marshalToMap(t *testing.T, v any) map[string]any {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return m
 }

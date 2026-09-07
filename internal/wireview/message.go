@@ -14,6 +14,7 @@ package wireview
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -48,6 +49,24 @@ type Viewer struct {
 // and Message.reply_to is optional, so "the source is gone" is a state the
 // schema and the wire already agree on.
 func Message(m store.MessageRow, atts []store.AttachmentRow, src *store.ReplySource, v Viewer) wire.Message {
+	// A NIL DERIVER IS A WIRING MISTAKE, and it is caught here rather than
+	// three frames down on the first row that happens to carry media.
+	//
+	// It used to be both things at once: attachment() called it unguarded and
+	// panicked, replyRef() guarded it and silently dropped the ref's url. One
+	// missing dependency, two behaviours, in a package whose whole point is
+	// that "what does this reader see" is answerable by reading one function.
+	//
+	// Required rather than optional because a caller cannot know in advance
+	// whether a row carries an attachment, so it must always supply one. Same
+	// reasoning as store.New's logger, and the same shape of failure if it were
+	// optional: a Viewer built without one serves text fine and breaks the
+	// first time somebody sends a photo.
+	if v.MediaURL == nil {
+		panic("wireview: Viewer.MediaURL is required — a viewer cannot serve a message carrying media " +
+			"without a deriver over storage_key; pass one even if this row has no attachments")
+	}
+
 	out := wire.Message{
 		ID:             wire.Uuid(m.ID.String()),
 		Seq:            wire.Seq(m.Seq),
@@ -83,8 +102,18 @@ func Message(m store.MessageRow, atts []store.AttachmentRow, src *store.ReplySou
 		out.Deleted = &d
 	}
 
-	for i := range atts {
-		if a := attachment(atts[i], v); a != nil {
+	// ORDERED BY position HERE, not by whichever query produced the rows.
+	//
+	// wire-fields.json says Message.attachments is "ordered by position", and
+	// that guarantee was being delegated to three queries that do not exist yet
+	// — CANT-20, CANT-75 and CANT-85 — each of which would have to remember an
+	// ORDER BY, and a missing one produces a reordered array no test in this
+	// package could see. The field was already in hand and unread. Sorting a
+	// COPY, so a caller's slice is not reordered under it.
+	ordered := append([]store.AttachmentRow(nil), atts...)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Position < ordered[j].Position })
+	for i := range ordered {
+		if a := attachment(ordered[i], v); a != nil {
 			out.Attachments = append(out.Attachments, a)
 		}
 	}
@@ -191,7 +220,7 @@ func replyRef(src store.ReplySource, v Viewer) *wire.ReplyRef {
 		// no description — and no vector exercises an image ref, so this is the
 		// reading that satisfies the evidence rather than a rule the wire
 		// states. If it is wrong, it is one branch.
-		if a.Kind == "image" && v.MediaURL != nil {
+		if a.Kind == "image" {
 			u := v.MediaURL(a.StorageKey)
 			ref.URL = &u
 		}

@@ -21,9 +21,13 @@ import (
 // through the back door — and it would not fail a test, it would just serve
 // slightly different objects to the two clients.
 //
-// SCOPED TO THE SERVICE MODULE, deliberately. server/cmd/r1rig constructs two
-// wire.Message literals today; it is a spike rig, not a transport, and a
-// repo-wide guard would have failed on the day it was written.
+// SCOPED TO THE SERVICE MODULE, deliberately. server/cmd/r1rig constructs ONE
+// wire.Message literal today, at main.go:77 — it is a spike rig, not a
+// transport, and a repo-wide guard would have failed on the day it was written.
+// (Earlier revisions of this comment said two. Line 112 is `[]wire.Message{}`,
+// an empty slice, which constructs nothing and which this scan would not count
+// anyway. Comments in this repository are load-bearing and that one was
+// checkable.)
 
 const (
 	wirePkgPath = "github.com/magos/catenary/internal/wire"
@@ -99,6 +103,68 @@ var m = &wire.Message{}
 			want: 1,
 		},
 		{
+			name: "a slice of Messages with elided element types",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+func page() []wire.Message {
+	return []wire.Message{{ID: "a"}, {ID: "b"}}
+}
+`,
+			// This is how CANT-20's /sync would assemble a page inline.
+			want: 2,
+		},
+		{
+			name: "a map of Messages with elided value types",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+var byID = map[string]wire.Message{"a": {ID: "a"}}
+`,
+			want: 1,
+		},
+		{
+			name: "a zero value and field assignment",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+func build() wire.Message {
+	var m wire.Message
+	m.ID = "x"
+	return m
+}
+`,
+			want: 1,
+		},
+		{
+			name: "new() and field assignment",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+func build() *wire.Message {
+	m := new(wire.Message)
+	m.ID = "x"
+	return m
+}
+`,
+			want: 1,
+		},
+		{
+			name: "an empty slice constructs nothing",
+			src: `package api
+
+import "github.com/magos/catenary/internal/wire"
+
+var none = []wire.Message{}
+`,
+			// r1rig:112's shape. A slice OF Messages holding none of them.
+			want: 0,
+		},
+		{
 			name: "naming the type is not constructing one",
 			src: `package api
 
@@ -165,20 +231,84 @@ func scanForMessageLiterals(t *testing.T, root string) []string {
 		if local == "" {
 			return nil
 		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			lit, ok := n.(*ast.CompositeLit)
-			if !ok {
-				return true
-			}
-			sel, ok := lit.Type.(*ast.SelectorExpr)
+		// FOUR SHAPES, because a syntax check that knows one is a guard proved
+		// against its own idiom and no other. The first version matched only a
+		// CompositeLit whose Type is a SelectorExpr, and a review ran the scan
+		// over planted sources to show the rest walking past:
+		//
+		//	wire.Message{…}                        caught
+		//	[]wire.Message{{…}, {…}}               NOT — inner literals elide the type
+		//	map[string]wire.Message{"a": {…}}      NOT — same
+		//	var m wire.Message; m.ID = …           NOT — no CompositeLit at all
+		//	new(wire.Message)                      NOT — a CallExpr
+		//
+		// The slice form is not contrived: CANT-20's /sync returns a page, and
+		// `[]wire.Message{{…}}` is how a handler assembles one inline. `var m`
+		// then field assignment is the other everyday idiom. Either would have
+		// landed a second assembler in internal/api under a green guard.
+		//
+		// WHAT THIS STILL DOES NOT COVER, stated rather than left implied: a
+		// Message obtained from this package and then MUTATED names no type and
+		// is invisible here. That is a different offence from constructing one,
+		// and closing it needs go/types over the whole module rather than a
+		// syntax walk — worth doing if a second assembler ever appears by that
+		// route, and not worth a dependency before then.
+		isMessageType := func(e ast.Expr) bool {
+			sel, ok := e.(*ast.SelectorExpr)
 			if !ok || sel.Sel.Name != "Message" {
-				return true
+				return false
 			}
-			if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != local {
-				return true
-			}
+			pkg, ok := sel.X.(*ast.Ident)
+			return ok && pkg.Name == local
+		}
+		note := func(n ast.Node, what string) {
 			offences = append(offences,
-				"  "+rel+":"+strconv.Itoa(fset.Position(lit.Pos()).Line)+": "+local+".Message{…}")
+				"  "+rel+":"+strconv.Itoa(fset.Position(n.Pos()).Line)+": "+what)
+		}
+
+		ast.Inspect(f, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.CompositeLit:
+				if isMessageType(node.Type) {
+					note(node, local+".Message{…}")
+					return true
+				}
+				// A slice, array or map OF Messages: the elements elide the
+				// type, so each one is a construction with no type node of its
+				// own to match.
+				var elem ast.Expr
+				switch t := node.Type.(type) {
+				case *ast.ArrayType:
+					elem = t.Elt
+				case *ast.MapType:
+					elem = t.Value
+				}
+				if elem != nil && isMessageType(elem) {
+					for _, el := range node.Elts {
+						inner, ok := el.(*ast.CompositeLit)
+						if !ok {
+							// map form: key: {…}
+							if kv, isKV := el.(*ast.KeyValueExpr); isKV {
+								inner, ok = kv.Value.(*ast.CompositeLit)
+							}
+						}
+						if ok && inner != nil {
+							note(inner, local+".Message{…} (elided, inside a composite)")
+						}
+					}
+				}
+			case *ast.ValueSpec:
+				// var m wire.Message — a zero value waiting for field
+				// assignments, which is construction in two steps.
+				if isMessageType(node.Type) {
+					note(node, "var … "+local+".Message")
+				}
+			case *ast.CallExpr:
+				if fn, ok := node.Fun.(*ast.Ident); ok && fn.Name == "new" &&
+					len(node.Args) == 1 && isMessageType(node.Args[0]) {
+					note(node, "new("+local+".Message)")
+				}
+			}
 			return true
 		})
 		return nil
