@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.2.0](https://github.com/Einlanzerous/catenary/compare/v0.1.0...v0.2.0) (2026-09-07)
+
+
+### Features
+
+* derive first_unread_seq, and drop the read_seq advance with its lock ([76cd466](https://github.com/Einlanzerous/catenary/commit/76cd46684761fe52f6ce9661537771d46ddd5818))
+* one wire mapping — the Message both transports return ([64e68c6](https://github.com/Einlanzerous/catenary/commit/64e68c676b807440874f607da6939c9b851797d3))
+* read_seq, reply_to, the third lock, and what a refusal logs ([811d13e](https://github.com/Einlanzerous/catenary/commit/811d13e54eda02e3e16f3a58b86fb3732858e214))
+* the refusals a send can make without touching the transaction ([ccd9c87](https://github.com/Einlanzerous/catenary/commit/ccd9c87c12c7c238e29f6fa84b3baa28f3529a0f))
+* the SendError taxonomy and the guard that keeps one file deciding codes ([d2ca70b](https://github.com/Einlanzerous/catenary/commit/d2ca70b86f3372ddb5728d86a4f1e8c5f387bf27))
+
+
+### Bug Fixes
+
+* a closed pool is transient, and the const scan survives implicit typing ([86de356](https://github.com/Einlanzerous/catenary/commit/86de356192c617e232e98d23c2f3baa76dce31e6))
+* check the mktemp, widen the guard, and stop six steps sharing one log ([799a36c](https://github.com/Einlanzerous/catenary/commit/799a36c5c039b278c4ba2cbccb3333137c054c63))
+* correct first_unread_seq's mapping note, which this branch falsified ([69a591b](https://github.com/Einlanzerous/catenary/commit/69a591be09a6ca628df55d4ef04825bf6294b366))
+* give each verify.sh run its own log directory ([33aeb36](https://github.com/Einlanzerous/catenary/commit/33aeb3620b49cec1e2969e9949541886c6af06cf))
+* hold the reply_to source, and say the lock order is four ([e516aac](https://github.com/Einlanzerous/catenary/commit/e516aac57837f2bb61d29133d55530c1e55a93b9))
+* make the log-directory allocator stop the run instead of returning empty ([dc6ee2d](https://github.com/Einlanzerous/catenary/commit/dc6ee2d156040eebea4db92456c379adc939bd17))
+* scope the reply_to lock to this conversation ([85bfe1c](https://github.com/Einlanzerous/catenary/commit/85bfe1cd5884103a3d33cd92ce67d58e0dad2cac))
+* seven shapes, not four — and make the kind assertion assert something ([eac6530](https://github.com/Einlanzerous/catenary/commit/eac6530e47beccdb4042961bd29a2a27986426f4))
+* state what is actually true about the /tmp literals, and catch backticks ([48c583d](https://github.com/Einlanzerous/catenary/commit/48c583d78d129135d218d769bfb2d7b91ca65120))
+* state why GREATEST is right, and keep the answer position 9 already has ([ec201ea](https://github.com/Einlanzerous/catenary/commit/ec201ea923d0cca671be7faaef7892b3077323ae))
+* the guard saw one of four constructions, and column was never checked ([8c30c36](https://github.com/Einlanzerous/catenary/commit/8c30c3660e98fc2e54fab13dcfc6a80023fc0678))
+* the nine items from the stage 1+2 review ([adc1a66](https://github.com/Einlanzerous/catenary/commit/adc1a66bca54f73e7508a88b743ff6e3cef96415))
+* widen the transient classes, catch code literals, and carry the wire type ([bb50777](https://github.com/Einlanzerous/catenary/commit/bb507774c3fae84c592ad36058b8a76495fb4981))
+
+
+### Code Refactoring
+
+* move the generated wire package where the service can import it ([3c2d928](https://github.com/Einlanzerous/catenary/commit/3c2d92827eaeb42b245958bc6dbff9ab557def94))
+
 ## 0.1.0 (2026-09-05)
 
 
