@@ -30,6 +30,13 @@ type SyncPage struct {
 	Attachments  map[uuid.UUID][]AttachmentRow
 	ReplySources map[uuid.UUID]ReplySource
 
+	// ReadBy is how many members have read each message — the numerator in the
+	// canvas's `READ 5/7`, counting the SAME POPULATION MemberCount does, the
+	// author included. Every message on the page has a key, because the author
+	// always counts. CANT-26 owns the query; see readstate.go, which is where
+	// the reasoning for the author clause lives.
+	ReadBy map[uuid.UUID]int64
+
 	Conversations []ConversationRow
 	Users         []UserRow
 
@@ -169,6 +176,9 @@ func (s *Store) Sync(ctx context.Context, viewer uuid.UUID, after int64, limit i
 		return SyncPage{}, err
 	}
 	if err := s.loadReplySources(ctx, tx, &page); err != nil {
+		return SyncPage{}, err
+	}
+	if err := s.loadReadBy(ctx, tx, &page); err != nil {
 		return SyncPage{}, err
 	}
 	if err := s.loadConversations(ctx, tx, viewer, &page); err != nil {
@@ -324,8 +334,7 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 	rows, err := tx.Query(ctx, `
 		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
 		       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
-		       (SELECT min(m.seq) FROM messages m
-		         WHERE m.conversation_id = c.id AND m.seq > cm.read_seq AND m.author_id <> $2),
+		       `+firstUnreadSeqExpr+`,
 		       (SELECT u.display_name FROM conversation_members o
 		          JOIN users u ON u.id = o.user_id
 		         WHERE o.conversation_id = c.id AND o.user_id <> $2

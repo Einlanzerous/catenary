@@ -893,8 +893,16 @@ type Message struct {
 	Attachments    AttachmentList `json:"attachments,omitempty"`
 	ReplyTo        *ReplyRef      `json:"reply_to,omitempty"`
 	State          DeliveryState  `json:"state"`
-	// How many members other than the author have read it. Rooms render the fraction
-	// against `Conversation.member_count`: READ 5/7.
+	// How many members have read it, out of `Conversation.member_count`: rooms render that
+	// fraction as READ 5/7. THE AUTHOR COUNTS, and counts from the moment the message
+	// exists — you have read what you wrote. Both halves of the fraction have to count the
+	// same population or the numerator can never reach the denominator: an earlier draft
+	// of this counted members other than the author while member_count counted everybody,
+	// so a room where every single member had read a message still reported READ 6/7,
+	// permanently, and the canvas's own READ 7/7 was unreachable. The author's half is a
+	// DERIVATION rather than a stored receipt, because sending does not advance the
+	// sender's read_seq — that was built and removed for swallowing their own unread
+	// backlog.
 	ReadBy *int64 `json:"read_by,omitempty"`
 	// Echoed back to the sender only, so a client can match a broadcast message against
 	// its own outbox entry when the `ack` and the `message` frame race. Other members

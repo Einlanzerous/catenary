@@ -235,7 +235,7 @@
     },
     "Message.read_by": {
       "kind": "derived",
-      "note": "Count over conversation_members.read_seq. Not stored, so it cannot drift from the read receipts it summarises."
+      "note": "Count over conversation_members.read_seq, PLUS THE AUTHOR, who counts by derivation rather than by a receipt — sending does not advance read_seq (0005). Not stored, so it cannot drift from the receipts it summarises, and it counts the same population member_count does, so the fraction can reach n/n. CANT-26."
     },
     "Message.client_id": {
       "kind": "column",

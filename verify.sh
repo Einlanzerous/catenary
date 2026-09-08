@@ -6,15 +6,18 @@
 # R1's tunnel run (spike/r1-websocket), and R2/R5, which need an Android device
 # and a willing friend. There are no steps for those.
 #
-# THREE STEPS HERE SKIP rather than fail when what they need is absent, and a
+# FOUR STEPS HERE SKIP rather than fail when what they need is absent, and a
 # skip is not a pass:
 #
-#   Dart          both the analyze and the conformance runner, when `dart` is
-#                 not on PATH or at $DART.
-#   the database  the store's schema tests, when CATENARY_TEST_DATABASE_URL is
-#                 unset. `go test` still runs; those tests call t.Skip.
-#   R6            when the Purser checkout the spike's `replace` points at is
-#                 absent, which is every machine but one.
+#   Dart            both the analyze and the conformance runner, when `dart` is
+#                   not on PATH or at $DART.
+#   the database    the store's schema tests, when CATENARY_TEST_DATABASE_URL is
+#                   unset. `go test` still runs; those tests call t.Skip.
+#   the served page CANT-26's client-rule check, on the same condition — its
+#                   input is a page captured from a real Postgres or it is a
+#                   fixture, and a fixture would prove nothing.
+#   R6              when the Purser checkout the spike's `replace` points at is
+#                   absent, which is every machine but one.
 #
 # They skip rather than fail because CI runs this file whole, and a step that
 # can never pass there is a red light everyone learns to ignore. CI forces the
@@ -171,7 +174,18 @@ result $? "go vet"
 # baked in: a test that silently points at a developer's own database is a test
 # that eventually drops it. Everything else in the root module still runs.
 if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
-  (cd "$ROOT" && go test ./...) >"$LOGDIR/v-go-svc.log" 2>&1
+  # `-p 1` IS LOAD BEARING, and only in this branch. There is ONE test
+  # database, and every package that touches it starts by rolling every
+  # migration back and reapplying — which is the right way to get a known
+  # state and the wrong thing to do to another package's rows. Go runs
+  # different packages' tests in PARALLEL by default, so the moment a second
+  # package grew a database test (cmd/catenary, CANT-26) the two started
+  # resetting the schema out from under each other: `relation "log_counter"
+  # does not exist` on one side and a duplicate log_seq on the other, both
+  # intermittent, neither about the code.
+  #
+  # The no-database branch below does not need it: those tests share nothing.
+  (cd "$ROOT" && go test -p 1 ./...) >"$LOGDIR/v-go-svc.log" 2>&1
   result $? "go test ./... (with a database — includes CANT-19's log_seq commit-ordering property)"
 else
   (cd "$ROOT" && go test ./...) >"$LOGDIR/v-go-svc.log" 2>&1
@@ -179,6 +193,33 @@ else
   printf '   \033[33mNOTE\033[0m CATENARY_TEST_DATABASE_URL unset — the schema and log_seq ordering tests skipped.\n'
   printf '        docker run -d --name cant-pg -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=catenary_test -p 55440:5432 postgres:16-alpine\n'
   printf '        export CATENARY_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55440/catenary_test?sslmode=disable\n'
+fi
+
+# CANT-26 · the web client's OWN unread rules, over a page this server built.
+#
+# Two steps rather than one because they are two different claims. The Go test
+# writes a real /sync response — seven members, a mark at seq 1, a run of five
+# above it, three from other people — straight out of Postgres through the real
+# serveSync, nothing tidied. The node step then decodes it with the GENERATED
+# decoder and calls newCount and unreadCount from web/src/store.ts, so the
+# numbers are checked by the client's own code and not by a second copy of the
+# rule that would agree with the first by construction.
+#
+# Only with a database, because the input is real data or it is a fixture.
+if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  step "CANT-26 · the client's unread rules over a real served page"
+  (cd "$ROOT" && CATENARY_SYNC_CAPTURE="$LOGDIR/served-sync.json" \
+    go test ./cmd/catenary/ -run TestTheServedPageCarriesTheCanvasNumbers -count=1) \
+    >"$LOGDIR/v-capture.log" 2>&1
+  result $? "a real /sync page is served from Postgres"
+  (cd "$ROOT/web" && npm run --silent readstate -- "$LOGDIR/served-sync.json") >"$LOGDIR/v-readstate.log" 2>&1
+  result $? "$(grep -cE '^ok  ' "$LOGDIR/v-readstate.log") of the client's own assertions pass against it"
+else
+  # Announced rather than absent. Every other skipping lane says so, and a step
+  # that simply does not appear is a run that proved less than it looks —
+  # which is the thing this file's own header exists to prevent.
+  step "CANT-26 · the client's unread rules over a real served page"
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the input is a real page or it is a fixture.\n'
 fi
 
 step "CANT-13 · log_seq is never described as per-account"
