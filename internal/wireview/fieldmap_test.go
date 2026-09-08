@@ -403,3 +403,37 @@ func marshalToMap(t *testing.T, v any) map[string]any {
 	}
 	return m
 }
+
+// A malformed segment costs its own field and nothing else.
+//
+// CANT-25 gave the wire types validating decoders, and while storedTranscript
+// pointed at wire.TranscriptSegment a single bad segment aborted the whole
+// json.Unmarshal at that key. transcript_json is JSONB, which stores keys in
+// canonical order — length, then bytewise — so `segments` sorts before
+// `word_count`, and one out-of-range at_ms silently cost the word count AND
+// truncated the segment list, while `state` still said `ready` from its own
+// column. Those are what search's JUMP TO and playback highlighting read.
+func TestAMalformedSegmentDoesNotTruncateTheRestOfTheTranscript(t *testing.T) {
+	// Keys in the order JSONB returns them, so this is the document shape the
+	// database actually hands back rather than the one a fixture would.
+	raw := []byte(`{"text":"hello there","engine":"whisper.cpp/small.en","language":"en",` +
+		`"segments":[{"at_ms":-1,"text":"x"},{"at_ms":10,"text":"y"}],"word_count":2}`)
+
+	got := transcript(store.AttachmentRow{
+		Kind: "voice", TranscriptState: ptr("ready"), TranscriptJSON: raw,
+	})
+
+	if got.WordCount == nil || *got.WordCount != 2 {
+		t.Errorf("word_count = %v, want 2 — it sorts AFTER segments in JSONB, so losing it "+
+			"means the decode aborted on a segment and took everything past it", got.WordCount)
+	}
+	if got.Text == nil || *got.Text != "hello there" {
+		t.Errorf("text = %v, want the stored text", got.Text)
+	}
+	if len(got.Segments) != 2 {
+		t.Errorf("segments = %d, want 2 — the list was truncated at the offending element", len(got.Segments))
+	}
+	if got.State != wire.TranscriptStateReady {
+		t.Errorf("state = %q, want ready — it comes from its own column either way", got.State)
+	}
+}

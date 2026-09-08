@@ -16,9 +16,18 @@
 // something encoding/json cannot do on its own, and the reason a Message with
 // no seq used to decode cleanly.
 //
-// A reject case passes when the decoder REFUSES it. Refusing for the wrong
-// reason would still pass here, which is why store-side tests assert on the
-// message rather than only on the error being non-nil.
+// A reject case passes when the decoder REFUSES it, and NOTHING HERE CHECKS
+// WHY. `reject_seq_zero` would still pass if the minimum check were dropped and
+// some unrelated constraint broke instead.
+//
+// That is a real gap and it is stated rather than papered over. An earlier
+// version of this comment claimed store-side tests assert on the decoder's
+// message; they do not — nothing in either module asserts on a DecodeError's
+// text. Closing it properly means an expected-message field on the vectors,
+// which is a change to the contract all three runners share and wants its own
+// ticket rather than riding along here. The refusal IS printed next to each
+// case, so a reader sees which constraint fired even though no assertion pins
+// it.
 //
 // Run: go run ./cmd/conformance   (from the server/ directory)
 package main

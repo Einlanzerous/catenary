@@ -704,10 +704,17 @@ function goCheck(ref, expr, path, depth = 0) {
     case 'list': {
       const inner = goCheck(ref.item, `v${depth}`, `${path}[]`, depth + 1)
       if (!inner.length) return []
+      /* PATH_EXPR is a placeholder the object emitter substitutes, so a nested
+       * list's path is built from the PARENT's runtime path rather than from
+       * the type name baked in here. The first version embedded the type name
+       * in a fmt.Sprintf and left the emitter's .replace() looking for a quoted
+       * literal the line no longer contained — the substitution no-opped in
+       * silence, and one frame reported ServerTyping.user_ids[0] while every
+       * sibling field on it reported ServerFrame[typing].… */
       return [`\tfor i${depth}, v${depth} := range ${expr} {`,
         `\t\t_ = i${depth}`,
         ...inner.map((l) => '\t' + l.replace(JSON.stringify(`${path}[]`),
-          `fmt.Sprintf(${JSON.stringify(path + '[%d]')}, i${depth})`)),
+          `fmt.Sprintf("%s[%d]", PATH_EXPR, i${depth})`)),
         '\t}']
     }
     case 'inlineEnum':
@@ -781,7 +788,7 @@ function emitGo() {
   const L = []
   L.push(BANNER, '')
   L.push('package wire', '')
-  L.push('import (', '\t"encoding/json"', '\t"fmt"', '\t"regexp"', ')', '')
+  L.push('import (', '\t"encoding/json"', '\t"errors"', '\t"fmt"', '\t"regexp"', ')', '')
   L.push(`// WireVersion is the schema version this package was generated from.`)
   L.push(`const WireVersion = ${WIRE_VERSION}`, '')
 
@@ -804,6 +811,27 @@ function emitGo() {
   L.push('func (e *DecodeError) Error() string { return "wire: " + e.Path + ": " + e.Msg }', '')
   L.push('func badf(path, format string, args ...any) error {')
   L.push('\treturn &DecodeError{Path: path, Msg: fmt.Sprintf(format, args...)}')
+  L.push('}', '')
+  L.push('// decodeErr renders an encoding/json failure as a DecodeError with a path.')
+  L.push('//')
+  L.push('// A raw UnmarshalTypeError names the SHADOW struct, which is an anonymous type')
+  L.push('// with every field and tag spelled out — fourteen of them on Message. The field')
+  L.push('// and the expected type are the useful part, and they are what TS and Dart')
+  L.push('// report. A DecodeError coming back from a nested decode already carries its')
+  L.push('// own path and is passed through untouched.')
+  L.push('func decodeErr(p string, err error) error {')
+  L.push('\tvar de *DecodeError')
+  L.push('\tif errors.As(err, &de) {')
+  L.push('\t\treturn de')
+  L.push('\t}')
+  L.push('\tvar te *json.UnmarshalTypeError')
+  L.push('\tif errors.As(err, &te) {')
+  L.push('\t\tif te.Field != "" {')
+  L.push('\t\t\treturn badf(p+"."+te.Field, "expected %s, got %s", te.Type, te.Value)')
+  L.push('\t\t}')
+  L.push('\t\treturn badf(p, "expected %s, got %s", te.Type, te.Value)')
+  L.push('\t}')
+  L.push('\treturn badf(p, "%s", err)')
   L.push('}', '')
   L.push('// oneOf reports whether s is in allowed. Used by inline enums, which have no')
   L.push('// named type to hang a Valid method on.')
@@ -907,15 +935,19 @@ function emitGo() {
     L.push('// element and not the whole message.')
     L.push(`type ${u.name}List []${u.name}`, '')
     L.push(`func (l *${u.name}List) UnmarshalJSON(b []byte) error {`)
+    L.push(`\treturn l.decode(b, ${JSON.stringify(u.name + 'List')})`)
+    L.push('}', '')
+    L.push(`// decode is UnmarshalJSON with the caller's JSON path.`)
+    L.push(`func (l *${u.name}List) decode(b []byte, p string) error {`)
     L.push('\tvar raw []json.RawMessage')
     L.push('\tif err := json.Unmarshal(b, &raw); err != nil {')
-    L.push(`\t\treturn fmt.Errorf("wire: %sList: %w", ${JSON.stringify(u.name)}, err)`)
+    L.push('\t\treturn decodeErr(p, err)')
     L.push('\t}')
     L.push(`\tout := make(${u.name}List, 0, len(raw))`)
     L.push('\tfor i, r := range raw {')
-    L.push(`\t\tv, err := Decode${u.name}(r)`)
+    L.push(`\t\tv, err := decode${u.name}(r, fmt.Sprintf("%s[%d]", p, i))`)
     L.push('\t\tif err != nil {')
-    L.push(`\t\t\treturn fmt.Errorf("wire: %s[%d]: %w", ${JSON.stringify(u.name)}, i, err)`)
+    L.push('\t\t\treturn err // already carries its element path')
     L.push('\t\t}')
     L.push('\t\tif v == nil {')
     L.push('\t\t\tcontinue')
@@ -959,13 +991,32 @@ function emitGo() {
     L.push('// decode carries the JSON path, so a nested failure names the field it came')
     L.push('// from rather than the outermost type.')
     L.push(`func (v *${d.name}) decode(b []byte, p string) error {`)
+    /* A field whose value has its own decode() is taken as RawMessage and
+     * decoded EXPLICITLY, so it is handed this frame's path. Letting
+     * json.Unmarshal reach it instead calls its UnmarshalJSON with the child's
+     * own default path, and a nested failure then reads "ReplyRef.preview"
+     * where TS and Dart say "Message.reply_to.preview" — the union dispatch had
+     * the same bug and this is the other half of it. */
+    const nested = (ref) => {
+      if (ref.kind === 'named') {
+        const t = byName.get(ref.name)
+        return t.kind === 'object' ? 'object' : null
+      }
+      if (ref.kind === 'list') {
+        if (isUnionRef(ref.item)) return 'unionList'
+        if (ref.item.kind === 'named' && byName.get(ref.item.name).kind === 'object') return 'objectList'
+      }
+      return null
+    }
     L.push('\tvar s struct {')
     for (const f of checkable) {
-      L.push(`\t\t${goName(f.wire)} *${goType(f.ref, false, `${d.name}.${f.wire}`)} \`json:"${f.wire}"\``)
+      const n = nested(f.ref)
+      const t = n === 'objectList' ? '[]json.RawMessage' : n ? 'json.RawMessage' : goType(f.ref, false, `${d.name}.${f.wire}`)
+      L.push(`\t\t${goName(f.wire)} *${t} \`json:"${f.wire}"\``)
     }
     L.push('\t}')
     L.push('\tif err := json.Unmarshal(b, &s); err != nil {')
-    L.push('\t\treturn badf(p, "%s", err)')
+    L.push('\t\treturn decodeErr(p, err)')
     L.push('\t}')
     L.push(`\tvar out ${d.name}`)
     for (const f of checkable) {
@@ -973,27 +1024,51 @@ function emitGo() {
       const path = `${d.name === 'X' ? '' : ''}`
       const fieldPath = `\${p}.${f.wire}`
       const realOptionalPtr = goType(f.ref, true, '').startsWith('*')
+      const n = nested(f.ref)
+      const fp = `p+${JSON.stringify('.' + f.wire)}`
       if (f.required) {
         L.push(`\tif s.${name} == nil {`)
-        L.push(`\t\treturn badf(p+${JSON.stringify('.' + f.wire)}, "required field is missing")`)
+        L.push(`\t\treturn badf(${fp}, "required field is missing")`)
         L.push('\t}')
-        L.push(`\tout.${name} = *s.${name}`)
-      } else if (realOptionalPtr) {
-        L.push(`\tout.${name} = s.${name}`)
       } else {
         L.push(`\tif s.${name} != nil {`)
-        L.push(`\t\tout.${name} = *s.${name}`)
-        L.push('\t}')
       }
+      const ind = f.required ? '\t' : '\t\t'
+      if (n === 'object') {
+        if (!f.required) L.push(`${ind}out.${name} = new(${goType(f.ref, false, '')})`)
+        L.push(`${ind}if err := out.${name}.decode(*s.${name}, ${fp}); err != nil {`)
+        L.push(`${ind}\treturn err`)
+        L.push(`${ind}}`)
+      } else if (n === 'unionList') {
+        L.push(`${ind}if err := out.${name}.decode(*s.${name}, ${fp}); err != nil {`)
+        L.push(`${ind}\treturn err`)
+        L.push(`${ind}}`)
+      } else if (n === 'objectList') {
+        const et = goType(f.ref.item, false, '')
+        L.push(`${ind}out.${name} = make([]${et}, len(*s.${name}))`)
+        L.push(`${ind}for i, raw := range *s.${name} {`)
+        L.push(`${ind}\tif err := out.${name}[i].decode(raw, fmt.Sprintf("%s[%d]", ${fp}, i)); err != nil {`)
+        L.push(`${ind}\t\treturn err`)
+        L.push(`${ind}\t}`)
+        L.push(`${ind}}`)
+      } else if (!f.required && realOptionalPtr) {
+        L.push(`${ind}out.${name} = s.${name}`)
+      } else {
+        L.push(`${ind}out.${name} = *s.${name}`)
+      }
+      if (!f.required) L.push('\t}')
     }
     for (const f of checkable) {
       const name = goName(f.wire)
       const realOptionalPtr = goType(f.ref, true, '').startsWith('*')
       const expr = !f.required && realOptionalPtr ? `*out.${name}` : `out.${name}`
+      if (nested(f.ref)) continue
       const lines = goCheck(f.ref, expr, `${d.name}.${f.wire}`)
       if (!lines.length) continue
-      const body = lines.map((l) => l.replace(
-        JSON.stringify(`${d.name}.${f.wire}`), `p+${JSON.stringify('.' + f.wire)}`))
+      const pathExpr = `p+${JSON.stringify('.' + f.wire)}`
+      const body = lines.map((l) => l
+        .replace(JSON.stringify(`${d.name}.${f.wire}`), pathExpr)
+        .replaceAll('PATH_EXPR', pathExpr))
       if (!f.required) {
         L.push(`\tif out.${name} != nil {`)
         L.push(...body.map((l) => '\t' + l))
@@ -1032,11 +1107,16 @@ function emitGo() {
     L.push(`// Decode${u.name} dispatches on ${JSON.stringify(disc)}. A nil result with a nil error`)
     L.push('// means an unrecognised tag, which callers MUST treat as "ignore and carry on".')
     L.push(`func Decode${u.name}(b []byte) (${u.name}, error) {`)
+    L.push(`\treturn decode${u.name}(b, ${JSON.stringify(u.name)})`)
+    L.push('}', '')
+    L.push(`// decode${u.name} is Decode${u.name} with the caller's JSON path, so a failure`)
+    L.push('// names the field the frame arrived in rather than the union type.')
+    L.push(`func decode${u.name}(b []byte, p string) (${u.name}, error) {`)
     L.push('\tvar probe struct {')
     L.push(`\t\tT string \`json:"${disc}"\``)
     L.push('\t}')
     L.push('\tif err := json.Unmarshal(b, &probe); err != nil {')
-    L.push(`\t\treturn nil, fmt.Errorf("wire: %s envelope: %w", ${JSON.stringify(u.name)}, err)`)
+    L.push('\t\treturn nil, decodeErr(p, err)')
     L.push('\t}')
     L.push('\tswitch probe.T {')
     for (const m of members) {
@@ -1047,7 +1127,7 @@ function emitGo() {
        * path that names the union and the tag it dispatched on. Wrapping the
        * error instead produced "wire: ready: wire: ServerReady.server_time: …",
        * which says "wire" twice and buries the field. */
-      L.push(`\t\tif err := v.decode(b, ${JSON.stringify(u.name + '[' + md.value + ']')}); err != nil {`)
+      L.push(`\t\tif err := v.decode(b, p+${JSON.stringify('[' + md.value + ']')}); err != nil {`)
       L.push('\t\t\treturn nil, err')
       L.push('\t\t}')
       L.push('\t\treturn v, nil')

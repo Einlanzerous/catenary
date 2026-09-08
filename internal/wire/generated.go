@@ -9,6 +9,7 @@ package wire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 )
@@ -27,6 +28,28 @@ func (e *DecodeError) Error() string { return "wire: " + e.Path + ": " + e.Msg }
 
 func badf(path, format string, args ...any) error {
 	return &DecodeError{Path: path, Msg: fmt.Sprintf(format, args...)}
+}
+
+// decodeErr renders an encoding/json failure as a DecodeError with a path.
+//
+// A raw UnmarshalTypeError names the SHADOW struct, which is an anonymous type
+// with every field and tag spelled out — fourteen of them on Message. The field
+// and the expected type are the useful part, and they are what TS and Dart
+// report. A DecodeError coming back from a nested decode already carries its
+// own path and is passed through untouched.
+func decodeErr(p string, err error) error {
+	var de *DecodeError
+	if errors.As(err, &de) {
+		return de
+	}
+	var te *json.UnmarshalTypeError
+	if errors.As(err, &te) {
+		if te.Field != "" {
+			return badf(p+"."+te.Field, "expected %s, got %s", te.Type, te.Value)
+		}
+		return badf(p, "expected %s, got %s", te.Type, te.Value)
+	}
+	return badf(p, "%s", err)
 }
 
 // oneOf reports whether s is in allowed. Used by inline enums, which have no
@@ -369,15 +392,20 @@ type Attachment interface {
 type AttachmentList []Attachment
 
 func (l *AttachmentList) UnmarshalJSON(b []byte) error {
+	return l.decode(b, "AttachmentList")
+}
+
+// decode is UnmarshalJSON with the caller's JSON path.
+func (l *AttachmentList) decode(b []byte, p string) error {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return fmt.Errorf("wire: %sList: %w", "Attachment", err)
+		return decodeErr(p, err)
 	}
 	out := make(AttachmentList, 0, len(raw))
 	for i, r := range raw {
-		v, err := DecodeAttachment(r)
+		v, err := decodeAttachment(r, fmt.Sprintf("%s[%d]", p, i))
 		if err != nil {
-			return fmt.Errorf("wire: %s[%d]: %w", "Attachment", i, err)
+			return err // already carries its element path
 		}
 		if v == nil {
 			continue
@@ -404,15 +432,20 @@ type ClientFrame interface {
 type ClientFrameList []ClientFrame
 
 func (l *ClientFrameList) UnmarshalJSON(b []byte) error {
+	return l.decode(b, "ClientFrameList")
+}
+
+// decode is UnmarshalJSON with the caller's JSON path.
+func (l *ClientFrameList) decode(b []byte, p string) error {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return fmt.Errorf("wire: %sList: %w", "ClientFrame", err)
+		return decodeErr(p, err)
 	}
 	out := make(ClientFrameList, 0, len(raw))
 	for i, r := range raw {
-		v, err := DecodeClientFrame(r)
+		v, err := decodeClientFrame(r, fmt.Sprintf("%s[%d]", p, i))
 		if err != nil {
-			return fmt.Errorf("wire: %s[%d]: %w", "ClientFrame", i, err)
+			return err // already carries its element path
 		}
 		if v == nil {
 			continue
@@ -438,15 +471,20 @@ type ServerFrame interface {
 type ServerFrameList []ServerFrame
 
 func (l *ServerFrameList) UnmarshalJSON(b []byte) error {
+	return l.decode(b, "ServerFrameList")
+}
+
+// decode is UnmarshalJSON with the caller's JSON path.
+func (l *ServerFrameList) decode(b []byte, p string) error {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
-		return fmt.Errorf("wire: %sList: %w", "ServerFrame", err)
+		return decodeErr(p, err)
 	}
 	out := make(ServerFrameList, 0, len(raw))
 	for i, r := range raw {
-		v, err := DecodeServerFrame(r)
+		v, err := decodeServerFrame(r, fmt.Sprintf("%s[%d]", p, i))
 		if err != nil {
-			return fmt.Errorf("wire: %s[%d]: %w", "ServerFrame", i, err)
+			return err // already carries its element path
 		}
 		if v == nil {
 			continue
@@ -483,7 +521,7 @@ func (v *User) decode(b []byte, p string) error {
 		Initials *string `json:"initials"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out User
 	if s.ID == nil {
@@ -494,7 +532,9 @@ func (v *User) decode(b []byte, p string) error {
 		return badf(p+".name", "required field is missing")
 	}
 	out.Name = *s.Name
-	out.Initials = s.Initials
+	if s.Initials != nil {
+		out.Initials = s.Initials
+	}
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
 	}
@@ -523,7 +563,7 @@ func (v *TranscriptSegment) decode(b []byte, p string) error {
 		Text *string     `json:"text"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out TranscriptSegment
 	if s.AtMs == nil {
@@ -571,30 +611,45 @@ func (v *Transcript) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *Transcript) decode(b []byte, p string) error {
 	var s struct {
-		State     *TranscriptState     `json:"state"`
-		Text      *string              `json:"text"`
-		WordCount *int64               `json:"word_count"`
-		Segments  *[]TranscriptSegment `json:"segments"`
-		Engine    *string              `json:"engine"`
-		Language  *string              `json:"language"`
-		ETASec    *int64               `json:"eta_sec"`
+		State     *TranscriptState   `json:"state"`
+		Text      *string            `json:"text"`
+		WordCount *int64             `json:"word_count"`
+		Segments  *[]json.RawMessage `json:"segments"`
+		Engine    *string            `json:"engine"`
+		Language  *string            `json:"language"`
+		ETASec    *int64             `json:"eta_sec"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out Transcript
 	if s.State == nil {
 		return badf(p+".state", "required field is missing")
 	}
 	out.State = *s.State
-	out.Text = s.Text
-	out.WordCount = s.WordCount
-	if s.Segments != nil {
-		out.Segments = *s.Segments
+	if s.Text != nil {
+		out.Text = s.Text
 	}
-	out.Engine = s.Engine
-	out.Language = s.Language
-	out.ETASec = s.ETASec
+	if s.WordCount != nil {
+		out.WordCount = s.WordCount
+	}
+	if s.Segments != nil {
+		out.Segments = make([]TranscriptSegment, len(*s.Segments))
+		for i, raw := range *s.Segments {
+			if err := out.Segments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".segments", i)); err != nil {
+				return err
+			}
+		}
+	}
+	if s.Engine != nil {
+		out.Engine = s.Engine
+	}
+	if s.Language != nil {
+		out.Language = s.Language
+	}
+	if s.ETASec != nil {
+		out.ETASec = s.ETASec
+	}
 	if err := checkTranscriptState(out.State, p+".state"); err != nil {
 		return err
 	}
@@ -629,13 +684,13 @@ func (v *VoiceAttachment) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *VoiceAttachment) decode(b []byte, p string) error {
 	var s struct {
-		URL        *string     `json:"url"`
-		DurationMs *DurationMs `json:"duration_ms"`
-		Peaks      *[]int64    `json:"peaks"`
-		Transcript *Transcript `json:"transcript"`
+		URL        *string          `json:"url"`
+		DurationMs *DurationMs      `json:"duration_ms"`
+		Peaks      *[]int64         `json:"peaks"`
+		Transcript *json.RawMessage `json:"transcript"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out VoiceAttachment
 	if s.URL == nil {
@@ -653,7 +708,9 @@ func (v *VoiceAttachment) decode(b []byte, p string) error {
 	if s.Transcript == nil {
 		return badf(p+".transcript", "required field is missing")
 	}
-	out.Transcript = *s.Transcript
+	if err := out.Transcript.decode(*s.Transcript, p+".transcript"); err != nil {
+		return err
+	}
 	if err := checkDurationMs(out.DurationMs, p+".duration_ms"); err != nil {
 		return err
 	}
@@ -707,7 +764,7 @@ func (v *ImageAttachment) decode(b []byte, p string) error {
 		Placeholder *string `json:"placeholder"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ImageAttachment
 	if s.URL == nil {
@@ -730,7 +787,9 @@ func (v *ImageAttachment) decode(b []byte, p string) error {
 		return badf(p+".bytes", "required field is missing")
 	}
 	out.Bytes = *s.Bytes
-	out.Placeholder = s.Placeholder
+	if s.Placeholder != nil {
+		out.Placeholder = s.Placeholder
+	}
 	*v = out
 	return nil
 }
@@ -780,7 +839,7 @@ func (v *ReplyRef) decode(b []byte, p string) error {
 		URL        *string       `json:"url"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ReplyRef
 	if s.MessageID == nil {
@@ -799,8 +858,12 @@ func (v *ReplyRef) decode(b []byte, p string) error {
 		return badf(p+".preview", "required field is missing")
 	}
 	out.Preview = *s.Preview
-	out.DurationMs = s.DurationMs
-	out.URL = s.URL
+	if s.DurationMs != nil {
+		out.DurationMs = s.DurationMs
+	}
+	if s.URL != nil {
+		out.URL = s.URL
+	}
 	if err := checkUuid(out.MessageID, p+".message_id"); err != nil {
 		return err
 	}
@@ -853,23 +916,23 @@ func (v *Message) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *Message) decode(b []byte, p string) error {
 	var s struct {
-		ID             *Uuid           `json:"id"`
-		Seq            *Seq            `json:"seq"`
-		LogSeq         *LogSeq         `json:"log_seq"`
-		ConversationID *Uuid           `json:"conversation_id"`
-		AuthorID       *Uuid           `json:"author_id"`
-		At             *Timestamp      `json:"at"`
-		Text           *string         `json:"text"`
-		Attachments    *AttachmentList `json:"attachments"`
-		ReplyTo        *ReplyRef       `json:"reply_to"`
-		State          *DeliveryState  `json:"state"`
-		ReadBy         *int64          `json:"read_by"`
-		ClientID       *Uuid           `json:"client_id"`
-		EditedAt       *Timestamp      `json:"edited_at"`
-		Deleted        *bool           `json:"deleted"`
+		ID             *Uuid            `json:"id"`
+		Seq            *Seq             `json:"seq"`
+		LogSeq         *LogSeq          `json:"log_seq"`
+		ConversationID *Uuid            `json:"conversation_id"`
+		AuthorID       *Uuid            `json:"author_id"`
+		At             *Timestamp       `json:"at"`
+		Text           *string          `json:"text"`
+		Attachments    *json.RawMessage `json:"attachments"`
+		ReplyTo        *json.RawMessage `json:"reply_to"`
+		State          *DeliveryState   `json:"state"`
+		ReadBy         *int64           `json:"read_by"`
+		ClientID       *Uuid            `json:"client_id"`
+		EditedAt       *Timestamp       `json:"edited_at"`
+		Deleted        *bool            `json:"deleted"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out Message
 	if s.ID == nil {
@@ -896,19 +959,36 @@ func (v *Message) decode(b []byte, p string) error {
 		return badf(p+".at", "required field is missing")
 	}
 	out.At = *s.At
-	out.Text = s.Text
-	if s.Attachments != nil {
-		out.Attachments = *s.Attachments
+	if s.Text != nil {
+		out.Text = s.Text
 	}
-	out.ReplyTo = s.ReplyTo
+	if s.Attachments != nil {
+		if err := out.Attachments.decode(*s.Attachments, p+".attachments"); err != nil {
+			return err
+		}
+	}
+	if s.ReplyTo != nil {
+		out.ReplyTo = new(ReplyRef)
+		if err := out.ReplyTo.decode(*s.ReplyTo, p+".reply_to"); err != nil {
+			return err
+		}
+	}
 	if s.State == nil {
 		return badf(p+".state", "required field is missing")
 	}
 	out.State = *s.State
-	out.ReadBy = s.ReadBy
-	out.ClientID = s.ClientID
-	out.EditedAt = s.EditedAt
-	out.Deleted = s.Deleted
+	if s.ReadBy != nil {
+		out.ReadBy = s.ReadBy
+	}
+	if s.ClientID != nil {
+		out.ClientID = s.ClientID
+	}
+	if s.EditedAt != nil {
+		out.EditedAt = s.EditedAt
+	}
+	if s.Deleted != nil {
+		out.Deleted = s.Deleted
+	}
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
 	}
@@ -985,7 +1065,7 @@ func (v *Conversation) decode(b []byte, p string) error {
 		RetentionDays  *int64            `json:"retention_days"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out Conversation
 	if s.ID == nil {
@@ -1004,13 +1084,19 @@ func (v *Conversation) decode(b []byte, p string) error {
 		return badf(p+".member_count", "required field is missing")
 	}
 	out.MemberCount = *s.MemberCount
-	out.Muted = s.Muted
-	out.FirstUnreadSeq = s.FirstUnreadSeq
+	if s.Muted != nil {
+		out.Muted = s.Muted
+	}
+	if s.FirstUnreadSeq != nil {
+		out.FirstUnreadSeq = s.FirstUnreadSeq
+	}
 	if s.HeadSeq == nil {
 		return badf(p+".head_seq", "required field is missing")
 	}
 	out.HeadSeq = *s.HeadSeq
-	out.RetentionDays = s.RetentionDays
+	if s.RetentionDays != nil {
+		out.RetentionDays = s.RetentionDays
+	}
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
 	}
@@ -1063,7 +1149,7 @@ func (v *ClientHello) decode(b []byte, p string) error {
 		ClientInfo       *string `json:"client_info"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ClientHello
 	if s.WireVersion == nil {
@@ -1074,8 +1160,12 @@ func (v *ClientHello) decode(b []byte, p string) error {
 		return badf(p+".device_id", "required field is missing")
 	}
 	out.DeviceID = *s.DeviceID
-	out.ResumeFromLogSeq = s.ResumeFromLogSeq
-	out.ClientInfo = s.ClientInfo
+	if s.ResumeFromLogSeq != nil {
+		out.ResumeFromLogSeq = s.ResumeFromLogSeq
+	}
+	if s.ClientInfo != nil {
+		out.ClientInfo = s.ClientInfo
+	}
 	if err := checkUuid(out.DeviceID, p+".device_id"); err != nil {
 		return err
 	}
@@ -1143,7 +1233,7 @@ func (v *ServerReady) decode(b []byte, p string) error {
 		Resumed              *bool      `json:"resumed"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ServerReady
 	if s.SessionID == nil {
@@ -1225,14 +1315,16 @@ func (v *Ping) decode(b []byte, p string) error {
 		At *Timestamp `json:"at"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out Ping
 	if s.ID == nil {
 		return badf(p+".id", "required field is missing")
 	}
 	out.ID = *s.ID
-	out.At = s.At
+	if s.At != nil {
+		out.At = s.At
+	}
 	if out.At != nil {
 		if err := checkTimestamp(*out.At, p+".at"); err != nil {
 			return err
@@ -1279,14 +1371,16 @@ func (v *Pong) decode(b []byte, p string) error {
 		At *Timestamp `json:"at"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out Pong
 	if s.ID == nil {
 		return badf(p+".id", "required field is missing")
 	}
 	out.ID = *s.ID
-	out.At = s.At
+	if s.At != nil {
+		out.At = s.At
+	}
 	if out.At != nil {
 		if err := checkTimestamp(*out.At, p+".at"); err != nil {
 			return err
@@ -1335,7 +1429,7 @@ func (v *OutboundAttachment) decode(b []byte, p string) error {
 		UploadID *Uuid   `json:"upload_id"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out OutboundAttachment
 	if s.Kind == nil {
@@ -1383,14 +1477,14 @@ func (v *ClientSend) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *ClientSend) decode(b []byte, p string) error {
 	var s struct {
-		ClientID         *Uuid                 `json:"client_id"`
-		ConversationID   *Uuid                 `json:"conversation_id"`
-		Text             *string               `json:"text"`
-		Attachments      *[]OutboundAttachment `json:"attachments"`
-		ReplyToMessageID *Uuid                 `json:"reply_to_message_id"`
+		ClientID         *Uuid              `json:"client_id"`
+		ConversationID   *Uuid              `json:"conversation_id"`
+		Text             *string            `json:"text"`
+		Attachments      *[]json.RawMessage `json:"attachments"`
+		ReplyToMessageID *Uuid              `json:"reply_to_message_id"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ClientSend
 	if s.ClientID == nil {
@@ -1401,11 +1495,20 @@ func (v *ClientSend) decode(b []byte, p string) error {
 		return badf(p+".conversation_id", "required field is missing")
 	}
 	out.ConversationID = *s.ConversationID
-	out.Text = s.Text
-	if s.Attachments != nil {
-		out.Attachments = *s.Attachments
+	if s.Text != nil {
+		out.Text = s.Text
 	}
-	out.ReplyToMessageID = s.ReplyToMessageID
+	if s.Attachments != nil {
+		out.Attachments = make([]OutboundAttachment, len(*s.Attachments))
+		for i, raw := range *s.Attachments {
+			if err := out.Attachments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".attachments", i)); err != nil {
+				return err
+			}
+		}
+	}
+	if s.ReplyToMessageID != nil {
+		out.ReplyToMessageID = s.ReplyToMessageID
+	}
 	if err := checkUuid(out.ClientID, p+".client_id"); err != nil {
 		return err
 	}
@@ -1474,7 +1577,7 @@ func (v *ServerAck) decode(b []byte, p string) error {
 		Duplicate      *bool      `json:"duplicate"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ServerAck
 	if s.ClientID == nil {
@@ -1501,7 +1604,9 @@ func (v *ServerAck) decode(b []byte, p string) error {
 		return badf(p+".at", "required field is missing")
 	}
 	out.At = *s.At
-	out.Duplicate = s.Duplicate
+	if s.Duplicate != nil {
+		out.Duplicate = s.Duplicate
+	}
 	if err := checkUuid(out.ClientID, p+".client_id"); err != nil {
 		return err
 	}
@@ -1558,16 +1663,18 @@ func (v *ServerMessageFrame) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *ServerMessageFrame) decode(b []byte, p string) error {
 	var s struct {
-		Message *Message `json:"message"`
+		Message *json.RawMessage `json:"message"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ServerMessageFrame
 	if s.Message == nil {
 		return badf(p+".message", "required field is missing")
 	}
-	out.Message = *s.Message
+	if err := out.Message.decode(*s.Message, p+".message"); err != nil {
+		return err
+	}
 	*v = out
 	return nil
 }
@@ -1611,7 +1718,7 @@ func (v *ServerReceipt) decode(b []byte, p string) error {
 		UpToSeq        *Seq  `json:"up_to_seq"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ServerReceipt
 	if s.ConversationID == nil {
@@ -1673,7 +1780,7 @@ func (v *ClientRead) decode(b []byte, p string) error {
 		UpToSeq        *Seq  `json:"up_to_seq"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ClientRead
 	if s.ConversationID == nil {
@@ -1728,7 +1835,7 @@ func (v *ClientTyping) decode(b []byte, p string) error {
 		State          *TypingState `json:"state"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ClientTyping
 	if s.ConversationID == nil {
@@ -1789,7 +1896,7 @@ func (v *ServerTyping) decode(b []byte, p string) error {
 		UserIds        *[]Uuid `json:"user_ids"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ServerTyping
 	if s.ConversationID == nil {
@@ -1805,7 +1912,7 @@ func (v *ServerTyping) decode(b []byte, p string) error {
 	}
 	for i0, v0 := range out.UserIds {
 		_ = i0
-		if err := checkUuid(v0, fmt.Sprintf("ServerTyping.user_ids[%d]", i0)); err != nil {
+		if err := checkUuid(v0, fmt.Sprintf("%s[%d]", p+".user_ids", i0)); err != nil {
 			return err
 		}
 	}
@@ -1861,7 +1968,7 @@ func (v *ServerError) decode(b []byte, p string) error {
 		RetryAfterSec *int64     `json:"retry_after_sec"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ServerError
 	if s.Code == nil {
@@ -1876,8 +1983,12 @@ func (v *ServerError) decode(b []byte, p string) error {
 		return badf(p+".retryable", "required field is missing")
 	}
 	out.Retryable = *s.Retryable
-	out.ClientID = s.ClientID
-	out.RetryAfterSec = s.RetryAfterSec
+	if s.ClientID != nil {
+		out.ClientID = s.ClientID
+	}
+	if s.RetryAfterSec != nil {
+		out.RetryAfterSec = s.RetryAfterSec
+	}
 	if err := checkErrorCode(out.Code, p+".code"); err != nil {
 		return err
 	}
@@ -1929,7 +2040,7 @@ func (v *ServerResyncRequired) decode(b []byte, p string) error {
 		LogSeq *LogSeq `json:"log_seq"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out ServerResyncRequired
 	if s.Reason == nil {
@@ -2012,15 +2123,15 @@ func (v *SyncResponse) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *SyncResponse) decode(b []byte, p string) error {
 	var s struct {
-		LogSeq        *LogSeq         `json:"log_seq"`
-		Messages      *[]Message      `json:"messages"`
-		Conversations *[]Conversation `json:"conversations"`
-		Users         *[]User         `json:"users"`
-		HasMore       *bool           `json:"has_more"`
-		ServerTime    *Timestamp      `json:"server_time"`
+		LogSeq        *LogSeq            `json:"log_seq"`
+		Messages      *[]json.RawMessage `json:"messages"`
+		Conversations *[]json.RawMessage `json:"conversations"`
+		Users         *[]json.RawMessage `json:"users"`
+		HasMore       *bool              `json:"has_more"`
+		ServerTime    *Timestamp         `json:"server_time"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
-		return badf(p, "%s", err)
+		return decodeErr(p, err)
 	}
 	var out SyncResponse
 	if s.LogSeq == nil {
@@ -2030,15 +2141,30 @@ func (v *SyncResponse) decode(b []byte, p string) error {
 	if s.Messages == nil {
 		return badf(p+".messages", "required field is missing")
 	}
-	out.Messages = *s.Messages
+	out.Messages = make([]Message, len(*s.Messages))
+	for i, raw := range *s.Messages {
+		if err := out.Messages[i].decode(raw, fmt.Sprintf("%s[%d]", p+".messages", i)); err != nil {
+			return err
+		}
+	}
 	if s.Conversations == nil {
 		return badf(p+".conversations", "required field is missing")
 	}
-	out.Conversations = *s.Conversations
+	out.Conversations = make([]Conversation, len(*s.Conversations))
+	for i, raw := range *s.Conversations {
+		if err := out.Conversations[i].decode(raw, fmt.Sprintf("%s[%d]", p+".conversations", i)); err != nil {
+			return err
+		}
+	}
 	if s.Users == nil {
 		return badf(p+".users", "required field is missing")
 	}
-	out.Users = *s.Users
+	out.Users = make([]User, len(*s.Users))
+	for i, raw := range *s.Users {
+		if err := out.Users[i].decode(raw, fmt.Sprintf("%s[%d]", p+".users", i)); err != nil {
+			return err
+		}
+	}
 	if s.HasMore == nil {
 		return badf(p+".has_more", "required field is missing")
 	}
@@ -2060,22 +2186,28 @@ func (v *SyncResponse) decode(b []byte, p string) error {
 // DecodeAttachment dispatches on "kind". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeAttachment(b []byte) (Attachment, error) {
+	return decodeAttachment(b, "Attachment")
+}
+
+// decodeAttachment is DecodeAttachment with the caller's JSON path, so a failure
+// names the field the frame arrived in rather than the union type.
+func decodeAttachment(b []byte, p string) (Attachment, error) {
 	var probe struct {
 		T string `json:"kind"`
 	}
 	if err := json.Unmarshal(b, &probe); err != nil {
-		return nil, fmt.Errorf("wire: %s envelope: %w", "Attachment", err)
+		return nil, decodeErr(p, err)
 	}
 	switch probe.T {
 	case "voice":
 		var v VoiceAttachment
-		if err := v.decode(b, "Attachment[voice]"); err != nil {
+		if err := v.decode(b, p+"[voice]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "image":
 		var v ImageAttachment
-		if err := v.decode(b, "Attachment[image]"); err != nil {
+		if err := v.decode(b, p+"[image]"); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -2086,46 +2218,52 @@ func DecodeAttachment(b []byte) (Attachment, error) {
 // DecodeClientFrame dispatches on "type". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeClientFrame(b []byte) (ClientFrame, error) {
+	return decodeClientFrame(b, "ClientFrame")
+}
+
+// decodeClientFrame is DecodeClientFrame with the caller's JSON path, so a failure
+// names the field the frame arrived in rather than the union type.
+func decodeClientFrame(b []byte, p string) (ClientFrame, error) {
 	var probe struct {
 		T string `json:"type"`
 	}
 	if err := json.Unmarshal(b, &probe); err != nil {
-		return nil, fmt.Errorf("wire: %s envelope: %w", "ClientFrame", err)
+		return nil, decodeErr(p, err)
 	}
 	switch probe.T {
 	case "hello":
 		var v ClientHello
-		if err := v.decode(b, "ClientFrame[hello]"); err != nil {
+		if err := v.decode(b, p+"[hello]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ping":
 		var v Ping
-		if err := v.decode(b, "ClientFrame[ping]"); err != nil {
+		if err := v.decode(b, p+"[ping]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "pong":
 		var v Pong
-		if err := v.decode(b, "ClientFrame[pong]"); err != nil {
+		if err := v.decode(b, p+"[pong]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "send":
 		var v ClientSend
-		if err := v.decode(b, "ClientFrame[send]"); err != nil {
+		if err := v.decode(b, p+"[send]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "read":
 		var v ClientRead
-		if err := v.decode(b, "ClientFrame[read]"); err != nil {
+		if err := v.decode(b, p+"[read]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "typing":
 		var v ClientTyping
-		if err := v.decode(b, "ClientFrame[typing]"); err != nil {
+		if err := v.decode(b, p+"[typing]"); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -2136,64 +2274,70 @@ func DecodeClientFrame(b []byte) (ClientFrame, error) {
 // DecodeServerFrame dispatches on "type". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeServerFrame(b []byte) (ServerFrame, error) {
+	return decodeServerFrame(b, "ServerFrame")
+}
+
+// decodeServerFrame is DecodeServerFrame with the caller's JSON path, so a failure
+// names the field the frame arrived in rather than the union type.
+func decodeServerFrame(b []byte, p string) (ServerFrame, error) {
 	var probe struct {
 		T string `json:"type"`
 	}
 	if err := json.Unmarshal(b, &probe); err != nil {
-		return nil, fmt.Errorf("wire: %s envelope: %w", "ServerFrame", err)
+		return nil, decodeErr(p, err)
 	}
 	switch probe.T {
 	case "ready":
 		var v ServerReady
-		if err := v.decode(b, "ServerFrame[ready]"); err != nil {
+		if err := v.decode(b, p+"[ready]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ping":
 		var v Ping
-		if err := v.decode(b, "ServerFrame[ping]"); err != nil {
+		if err := v.decode(b, p+"[ping]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "pong":
 		var v Pong
-		if err := v.decode(b, "ServerFrame[pong]"); err != nil {
+		if err := v.decode(b, p+"[pong]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ack":
 		var v ServerAck
-		if err := v.decode(b, "ServerFrame[ack]"); err != nil {
+		if err := v.decode(b, p+"[ack]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "message":
 		var v ServerMessageFrame
-		if err := v.decode(b, "ServerFrame[message]"); err != nil {
+		if err := v.decode(b, p+"[message]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "receipt":
 		var v ServerReceipt
-		if err := v.decode(b, "ServerFrame[receipt]"); err != nil {
+		if err := v.decode(b, p+"[receipt]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "typing":
 		var v ServerTyping
-		if err := v.decode(b, "ServerFrame[typing]"); err != nil {
+		if err := v.decode(b, p+"[typing]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "error":
 		var v ServerError
-		if err := v.decode(b, "ServerFrame[error]"); err != nil {
+		if err := v.decode(b, p+"[error]"); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "resync_required":
 		var v ServerResyncRequired
-		if err := v.decode(b, "ServerFrame[resync_required]"); err != nil {
+		if err := v.decode(b, p+"[resync_required]"); err != nil {
 			return nil, err
 		}
 		return v, nil

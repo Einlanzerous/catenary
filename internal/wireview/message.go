@@ -175,19 +175,54 @@ func attachment(a store.AttachmentRow, v Viewer) wire.Attachment {
 // demands a whole one is the bug; a type that matches what is stored is the
 // fix.
 type storedTranscript struct {
-	Text      *string                  `json:"text,omitempty"`
-	WordCount *int64                   `json:"word_count,omitempty"`
-	Segments  []wire.TranscriptSegment `json:"segments,omitempty"`
-	Engine    *string                  `json:"engine,omitempty"`
-	Language  *string                  `json:"language,omitempty"`
-	ETASec    *int64                   `json:"eta_sec,omitempty"`
+	Text      *string         `json:"text,omitempty"`
+	WordCount *int64          `json:"word_count,omitempty"`
+	Segments  []storedSegment `json:"segments,omitempty"`
+	Engine    *string         `json:"engine,omitempty"`
+	Language  *string         `json:"language,omitempty"`
+	ETASec    *int64          `json:"eta_sec,omitempty"`
+}
+
+// storedSegment is the same decoupling ONE LEVEL DOWN, and it is not
+// decoration. wire.TranscriptSegment validates too — at_ms is a DurationMs
+// bounded >= 0 and text is required — so pointing storedTranscript at it left
+// the stored document coupled to the wire contract after all.
+//
+// The cost was worse than a rejected segment. encoding/json aborts the whole
+// object at the offending key, and the swallowed error means what survives is
+// whatever it had already reached. transcript_json is JSONB, which stores keys
+// in canonical order — length, then bytewise — so `segments` sorts before
+// `word_count`: one bad segment silently cost the word count AND truncated the
+// segment list, which are what search's JUMP TO and playback highlighting read,
+// while `state` still said `ready` from its own column.
+//
+// A stored-document type has to mirror what is stored all the way down, or the
+// decoupling is only at the root.
+type storedSegment struct {
+	AtMs int64  `json:"at_ms"`
+	Text string `json:"text"`
+}
+
+// segments lifts the stored segments onto the wire — a copy rather than a cast,
+// because the two types are deliberately separate.
+func segments(stored []storedSegment) []wire.TranscriptSegment {
+	if len(stored) == 0 {
+		return nil
+	}
+	out := make([]wire.TranscriptSegment, len(stored))
+	for i, s := range stored {
+		out[i] = wire.TranscriptSegment{AtMs: wire.DurationMs(s.AtMs), Text: s.Text}
+	}
+	return out
 }
 
 func decodeStoredTranscript(raw []byte) storedTranscript {
 	var st storedTranscript
 	if len(raw) > 0 {
-		// A malformed document yields the zero value rather than a panic; the
-		// state column still describes it truthfully. This is the one place
+		// A malformed document yields whatever parsed rather than a panic; the
+		// state column still describes it truthfully. "Whatever parsed" is the
+		// honest description — it used to say "the zero value", which held only
+		// while storedTranscript carried no validating types. This is the one place
 		// the error is dropped, and it is dropped because the column is the
 		// authority on state and a half-read document is still servable.
 		_ = json.Unmarshal(raw, &st)
@@ -202,7 +237,7 @@ func transcript(a store.AttachmentRow) wire.Transcript {
 	t := wire.Transcript{
 		Text:      st.Text,
 		WordCount: st.WordCount,
-		Segments:  st.Segments,
+		Segments:  segments(st.Segments),
 		Engine:    st.Engine,
 		Language:  st.Language,
 		ETASec:    st.ETASec,
