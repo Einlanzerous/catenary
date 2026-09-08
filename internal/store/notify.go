@@ -117,6 +117,18 @@ type Listener struct {
 
 	// OnGap says "you may have missed some", and it is not optional detail.
 	//
+	// SYNCHRONOUS, on the Run goroutine, between LISTEN succeeding and the wait
+	// loop starting — which is the ordering that makes it correct, so it cannot
+	// be moved off the goroutine to make it faster. It delays entry to the wait
+	// loop and costs nothing: pgx buffers notifications that arrive during any
+	// other operation and drains them before it reads the socket, so a message
+	// that lands while a resync is running is delivered when the loop starts.
+	//
+	// What it must not do is wait on something this listener has to deliver.
+	// That is the one shape that wedges, and it is self-referential rather than
+	// accidental — but OnNotify states its blocking contract and this is the
+	// callback that will be handed a resync, so it says so too.
+	//
 	// POSTGRES DOES NOT QUEUE NOTIFICATIONS FOR A DISCONNECTED LISTENER. Every
 	// notification raised while this connection was down is gone, permanently
 	// and with no record of how many. So a reconnect is not a recovery, it is a
