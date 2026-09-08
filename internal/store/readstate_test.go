@@ -4,10 +4,13 @@ package store
 // badge and the "N NEW" divider both come from.
 
 import (
+	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/magos/catenary/internal/wire"
 )
@@ -135,10 +138,21 @@ func TestAMalformedMarkIsRefusedAndIsNotAWireCode(t *testing.T) {
 	}
 }
 
-// read_by counts everyone EXCEPT the author, which is what makes `READ 5/7`
-// mean five other people. The author's own receipt is the trap: bob reads his
-// own message back and it must still be READ 1, not READ 2.
-func TestReadByCountsEveryMemberButTheAuthor(t *testing.T) {
+// read_by COUNTS THE SAME POPULATION member_count DOES, or the fraction the
+// room renders can never reach n/n.
+//
+// The first version of this excluded the author from the numerator while
+// Conversation.member_count counted everybody. In a three-member room where all
+// three had read a message the label said READ 2/3 — the author told one member
+// had not seen it when everybody had, permanently, because 3/3 was unreachable.
+// The canvas's reference data draws READ 7/7 and READ 9/9, which that query
+// could not produce.
+//
+// The author counts from the moment the message exists and without a receipt,
+// because sending does not advance read_seq — that was built and removed in
+// CANT-83 for swallowing the sender's own unread backlog (0005). So `1` here
+// before anybody has read anything is the correct floor, not an off-by-one.
+func TestReadByCountsEveryMemberIncludingTheAuthor(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
 	alice := mkUser(ctx, t, pool, "alice")
@@ -155,27 +169,41 @@ func TestReadByCountsEveryMemberButTheAuthor(t *testing.T) {
 		}
 		return page.ReadBy[m.ID]
 	}
-
-	if got := readBy(); got != 0 {
-		t.Errorf("read_by = %d before anyone read it, want 0", got)
+	members := func() int64 {
+		t.Helper()
+		page, err := st.Sync(ctx, bob, 0, 100)
+		if err != nil {
+			t.Fatalf("sync: %v", err)
+		}
+		return page.Conversations[0].MemberCount
 	}
+
+	if got := readBy(); got != 1 {
+		t.Errorf("read_by = %d before anyone else read it, want 1 — the author", got)
+	}
+	// The author sending a receipt for their own message changes nothing: they
+	// were already counted, and double-counting them would put the numerator
+	// above the denominator.
 	if _, err := st.MarkRead(ctx, conv, bob, m.Seq); err != nil {
 		t.Fatalf("bob reads his own: %v", err)
 	}
-	if got := readBy(); got != 0 {
-		t.Errorf("read_by = %d after only the AUTHOR read it, want 0", got)
+	if got := readBy(); got != 1 {
+		t.Errorf("read_by = %d after the author's own receipt, want 1", got)
 	}
 	if _, err := st.MarkRead(ctx, conv, alice, m.Seq); err != nil {
 		t.Fatalf("alice reads: %v", err)
 	}
-	if got := readBy(); got != 1 {
-		t.Errorf("read_by = %d after one other member read it, want 1", got)
+	if got := readBy(); got != 2 {
+		t.Errorf("read_by = %d after one other member read it, want 2", got)
 	}
 	if _, err := st.MarkRead(ctx, conv, carol, m.Seq); err != nil {
 		t.Fatalf("carol reads: %v", err)
 	}
-	if got := readBy(); got != 2 {
-		t.Errorf("read_by = %d after both others read it, want 2", got)
+
+	// The claim that matters: n/n is reachable.
+	if got, want := readBy(), members(); got != want {
+		t.Errorf("read_by = %d of member_count %d after EVERY member read it — "+
+			"the fraction can never close", got, want)
 	}
 }
 
@@ -235,5 +263,98 @@ func TestBothPathsToFirstUnreadSeqAgree(t *testing.T) {
 	}
 	if unread != 3 {
 		t.Errorf("the client's rule over this page counts %d unread, want 3", unread)
+	}
+}
+
+// `Advanced` MEANS "THIS CALL MOVED IT", and two of one member's devices are
+// what makes that hard.
+//
+// The single-statement version read the held mark from the statement's own
+// snapshot while the SET re-read the row after the lock was granted. So with
+// two receipts in flight for the same member, the loser saw the OLD mark as
+// "before" and the winner's value as "after", and reported Advanced for a move
+// it had not made — which is exactly the redundant broadcast the field exists
+// to suppress. Reading the mark under the same lock the write takes is what
+// makes the question answerable.
+//
+// Staged rather than raced: a transaction holds the row, MarkRead blocks on it,
+// the holder moves the mark past what MarkRead is claiming and commits. Under
+// the old shape this reported Advanced: true.
+func TestAdvancedIsFalseWhenAnotherDeviceGotThereFirst(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	alice := mkUser(ctx, t, pool, "alice")
+	bob := mkUser(ctx, t, pool, "bob")
+	conv := mkGroup(ctx, t, pool, "room", alice, bob)
+	for i := 0; i < 6; i++ {
+		send(ctx, t, st, conv, bob, "backlog")
+	}
+
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `
+		SELECT read_seq FROM conversation_members
+		 WHERE conversation_id = $1 AND user_id = $2 FOR UPDATE`, conv, alice); err != nil {
+		t.Fatalf("hold the row: %v", err)
+	}
+
+	type result struct {
+		r   ReadReceipt
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		r, err := st.MarkRead(ctx, conv, alice, 3)
+		done <- result{r, err}
+	}()
+	waitForLockWaiter(ctx, t, pool)
+
+	// The other device gets there first, with a higher mark.
+	if _, err := tx.Exec(ctx, `
+		UPDATE conversation_members SET read_seq = 5
+		 WHERE conversation_id = $1 AND user_id = $2`, conv, alice); err != nil {
+		t.Fatalf("the other device's write: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	select {
+	case got := <-done:
+		if got.err != nil {
+			t.Fatalf("mark read: %v", got.err)
+		}
+		if got.r.UpToSeq != 5 {
+			t.Errorf("up_to_seq = %d, want 5 — the mark, not the claim", got.r.UpToSeq)
+		}
+		if got.r.Advanced {
+			t.Error("advanced = true for a mark another device had already moved past; " +
+				"this is the redundant broadcast the field exists to suppress")
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("MarkRead never returned; it is still waiting on a lock nobody holds")
+	}
+}
+
+// waitForLockWaiter blocks until some session is waiting on a lock, so the
+// staging above does not depend on a sleep being long enough.
+func waitForLockWaiter(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var n int
+		mustScan(t, pool.QueryRow(ctx, `
+			SELECT count(*) FROM pg_stat_activity
+			 WHERE datname = current_database() AND wait_event_type = 'Lock'`), &n)
+		if n > 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("no session ever blocked on the row lock")
+		}
+		time.Sleep(25 * time.Millisecond)
 	}
 }

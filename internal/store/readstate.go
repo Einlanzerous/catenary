@@ -41,16 +41,25 @@ const firstUnreadSeqExpr = `(SELECT min(m.seq) FROM messages m
 	           AND m.seq > cm.read_seq
 	           AND m.author_id <> cm.user_id)`
 
-// readByExpr counts how many members OTHER THAN THE AUTHOR have read a
-// message. `READ 5/7` in a room is this over Conversation.member_count.
+// readByExpr counts how many members have read a message. `READ 5/7` in a room
+// is this over Conversation.member_count.
 //
-// `cm.user_id <> m.author_id` is what makes the author's own receipt not count
-// toward their own message, so a message you sent and then re-read does not
-// report READ 1/7 with nobody else having seen it.
+// IT COUNTS THE SAME POPULATION member_count DOES, and that is the whole of the
+// design here. The first version excluded the author from the numerator while
+// the denominator counted everybody, so in a seven-member room where all seven
+// had read a message the label said READ 6/7 — telling the author one person
+// had not seen it when everybody had, permanently, because 7/7 was unreachable.
+// The canvas's own reference data draws READ 7/7 and READ 9/9.
+//
+// THE AUTHOR COUNTS FROM THE MOMENT THE MESSAGE EXISTS, by derivation rather
+// than by a receipt: `cm.user_id = m.author_id OR …`. You have read what you
+// wrote, and their read_seq cannot say so — advancing it on send was built and
+// removed, because it swallowed the sender's own unread backlog (0005). This is
+// the same fact, in the one place where a derivation can express it without a
+// scalar column having to.
 const readByExpr = `(SELECT count(*) FROM conversation_members cm
 	         WHERE cm.conversation_id = m.conversation_id
-	           AND cm.user_id <> m.author_id
-	           AND cm.read_seq >= m.seq)`
+	           AND (cm.user_id = m.author_id OR cm.read_seq >= m.seq))`
 
 // ErrNotAMember is returned when the reader is not in the conversation. It
 // carries wire.ErrorCodeNotAMember through sendErrorTable, so a transport does
@@ -141,19 +150,25 @@ func (s *Store) markRead(ctx context.Context, conv, user uuid.UUID, upToSeq int6
 		return ReadReceipt{}, fmt.Errorf("%w (got %d)", ErrSeqOutOfRange, upToSeq)
 	}
 
+	// TWO STATEMENTS IN ONE TRANSACTION, and the reason is Advanced rather than
+	// the write. As one statement with a CTE, the "before" value came from the
+	// statement's snapshot while the SET read the row again after the lock was
+	// granted — so two of the same member's devices racing both saw before = 1,
+	// and the loser reported Advanced for a mark it had not moved. UpToSeq was
+	// still right; what was wrong was exactly the redundant broadcast the field
+	// exists to suppress. FOR UPDATE reads the mark under the same lock the
+	// write takes, so "did this call move it" is answerable.
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ReadReceipt{}, fmt.Errorf("store: mark read: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	var before, after int64
-	err := s.pool.QueryRow(ctx, `
-		WITH held AS (
-		     SELECT read_seq FROM conversation_members
-		      WHERE conversation_id = $1 AND user_id = $2
-		)
-		UPDATE conversation_members cm
-		   SET read_seq = LEAST(GREATEST(cm.read_seq, $3), c.last_seq)
-		  FROM conversations c, held
-		 WHERE c.id = cm.conversation_id
-		   AND cm.conversation_id = $1 AND cm.user_id = $2
-		RETURNING held.read_seq, cm.read_seq`,
-		conv, user, upToSeq).Scan(&before, &after)
+	err = tx.QueryRow(ctx, `
+		SELECT read_seq FROM conversation_members
+		 WHERE conversation_id = $1 AND user_id = $2
+		   FOR UPDATE`, conv, user).Scan(&before)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// No row means no membership. `conversations` is joined rather than
 		// checked separately, so a conversation that does not exist reaches
@@ -163,6 +178,19 @@ func (s *Store) markRead(ctx context.Context, conv, user uuid.UUID, upToSeq int6
 	}
 	if err != nil {
 		return ReadReceipt{}, fmt.Errorf("store: mark read: %w", err)
+	}
+
+	if err := tx.QueryRow(ctx, `
+		UPDATE conversation_members cm
+		   SET read_seq = LEAST(GREATEST(cm.read_seq, $3), c.last_seq)
+		  FROM conversations c
+		 WHERE c.id = cm.conversation_id
+		   AND cm.conversation_id = $1 AND cm.user_id = $2
+		RETURNING cm.read_seq`, conv, user, upToSeq).Scan(&after); err != nil {
+		return ReadReceipt{}, fmt.Errorf("store: mark read: %w", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ReadReceipt{}, fmt.Errorf("store: mark read: commit: %w", err)
 	}
 
 	return ReadReceipt{
@@ -196,10 +224,16 @@ func (s *Store) FirstUnreadSeq(ctx context.Context, conv, viewer uuid.UUID) (*in
 
 // loadReadBy fills in read_by for the page's messages.
 //
-// One aggregate for the whole page rather than a correlated subquery per row.
-// Messages nobody else has read are ABSENT from the map rather than present at
-// zero, and the mapper serves the zero — the distinction is only that the SQL
-// does not need a row to say "none".
+// ONE ROUND TRIP for the page, not one aggregate: readByExpr is a correlated
+// subquery and Postgres evaluates it once per row of the outer scan, over
+// conversation_members' own index. Said precisely because the comments in this
+// file are load-bearing and somebody will reason from this one — "one
+// aggregate" would have invited a rewrite to a GROUP BY join on the strength of
+// a claim that was never true.
+//
+// Every message on the page gets a row, because the author always counts, so
+// nothing here is ever absent. The mapper still treats an absent key as zero,
+// which is what makes a hand-built page in a test behave.
 func (s *Store) loadReadBy(ctx context.Context, tx pgx.Tx, page *SyncPage) error {
 	page.ReadBy = map[uuid.UUID]int64{}
 	if len(page.Messages) == 0 {

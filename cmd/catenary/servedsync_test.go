@@ -121,13 +121,24 @@ func TestTheServedPageCarriesTheCanvasNumbers(t *testing.T) {
 	if conversation.MemberCount != 7 {
 		t.Errorf("member_count = %d, want 7", conversation.MemberCount)
 	}
+	// Found-or-fail rather than a loop that can `continue` past every message
+	// and report success having compared nothing.
+	var found bool
 	for _, m := range page.Messages {
 		if string(m.ID) != last.ID.String() {
 			continue
 		}
-		if m.ReadBy == nil || *m.ReadBy != 5 {
-			t.Errorf("read_by on the last message = %v, want 5 — READ 5/7", m.ReadBy)
+		found = true
+		// Six: the five members who marked read, plus Nadia who wrote it. The
+		// numerator counts the same population member_count does, so READ 6/7
+		// here means one member — Theo — has not seen it, which is exactly the
+		// three-unread state the rest of this test asserts.
+		if m.ReadBy == nil || *m.ReadBy != 6 {
+			t.Errorf("read_by on the last message = %v, want 6 — READ 6/7", m.ReadBy)
 		}
+	}
+	if !found {
+		t.Errorf("the last message (%s) is not on the page; nothing above was compared", last.ID)
 	}
 
 	raw, err := json.MarshalIndent(page, "", "  ")

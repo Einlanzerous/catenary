@@ -6,15 +6,18 @@
 # R1's tunnel run (spike/r1-websocket), and R2/R5, which need an Android device
 # and a willing friend. There are no steps for those.
 #
-# THREE STEPS HERE SKIP rather than fail when what they need is absent, and a
+# FOUR STEPS HERE SKIP rather than fail when what they need is absent, and a
 # skip is not a pass:
 #
-#   Dart          both the analyze and the conformance runner, when `dart` is
-#                 not on PATH or at $DART.
-#   the database  the store's schema tests, when CATENARY_TEST_DATABASE_URL is
-#                 unset. `go test` still runs; those tests call t.Skip.
-#   R6            when the Purser checkout the spike's `replace` points at is
-#                 absent, which is every machine but one.
+#   Dart            both the analyze and the conformance runner, when `dart` is
+#                   not on PATH or at $DART.
+#   the database    the store's schema tests, when CATENARY_TEST_DATABASE_URL is
+#                   unset. `go test` still runs; those tests call t.Skip.
+#   the served page CANT-26's client-rule check, on the same condition — its
+#                   input is a page captured from a real Postgres or it is a
+#                   fixture, and a fixture would prove nothing.
+#   R6              when the Purser checkout the spike's `replace` points at is
+#                   absent, which is every machine but one.
 #
 # They skip rather than fail because CI runs this file whole, and a step that
 # can never pass there is a red light everyone learns to ignore. CI forces the
@@ -211,6 +214,12 @@ if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   result $? "a real /sync page is served from Postgres"
   (cd "$ROOT/web" && npm run --silent readstate -- "$LOGDIR/served-sync.json") >"$LOGDIR/v-readstate.log" 2>&1
   result $? "$(grep -cE '^ok  ' "$LOGDIR/v-readstate.log") of the client's own assertions pass against it"
+else
+  # Announced rather than absent. Every other skipping lane says so, and a step
+  # that simply does not appear is a run that proved less than it looks —
+  # which is the thing this file's own header exists to prevent.
+  step "CANT-26 · the client's unread rules over a real served page"
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the input is a real page or it is a fixture.\n'
 fi
 
 step "CANT-13 · log_seq is never described as per-account"

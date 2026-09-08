@@ -106,16 +106,24 @@ select(conversation.id)
 check('opening clears the badge', unreadCount(conversation) === 0)
 check('the "N NEW" rule stays put for the visit', newCount(conversation) === 3)
 
-// READ 5/7 — the fraction the room renders, against a real count of receipts.
+// READ 6/7 — the fraction the room renders, against a real count of receipts:
+// five members marked read, plus the author, out of seven.
 const last = state.messages[state.messages.length - 1]
-check('the last message reports READ 5/7', last.readBy === 5 && conversation.memberCount === 7,
+check('the last message reports READ 6/7', last.readBy === 6 && conversation.memberCount === 7,
   `readBy=${last.readBy} of ${conversation.memberCount}`)
 
-// A receipt from the author does not count toward their own message: the
-// reader's own messages sit in the same run and report the same five.
+// THE NUMERATOR NEVER EXCEEDS THE DENOMINATOR, and it counts the same
+// population. The reader is the one member who has NOT read the last message,
+// so 6 of 7 is the honest gap — and a numerator that ignored the author would
+// read 5/7 with the same receipts, which is the off-by-one that made n/n
+// unreachable.
 check(
-  "the author's own receipt is not in their own read_by",
-  state.messages.filter((m) => m.authorId === me).every((m) => m.readBy === 5),
+  'no message claims more readers than the room has members',
+  state.messages.every((m) => (m.readBy ?? 0) <= conversation.memberCount),
+)
+check(
+  'every message is read by at least its own author',
+  state.messages.every((m) => (m.readBy ?? 0) >= 1),
 )
 
 if (fail.length) {
