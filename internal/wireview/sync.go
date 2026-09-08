@@ -32,6 +32,11 @@ type SyncViewer struct {
 // store returned it that way and the wire calls that ordering normative — a
 // client applies the page as a stream and may stop anywhere without leaving a
 // hole behind its cursor, which is only true if the order is the log's.
+// TimeLayout is the wire's timestamp format, exported so the composition root
+// does not carry a second copy of a format the schema calls normative. The
+// reasoning for the precision and the literal Z lives with it in message.go.
+const TimeLayout = wireTimeLayout
+
 func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncResponse {
 	out := wire.SyncResponse{
 		LogSeq:     wire.LogSeq(page.HighWater),
@@ -51,7 +56,7 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 			if s, ok := page.ReplySources[*m.ReplyTo]; ok {
 				// Scoped to this conversation, matching what the send path
 				// stores: a source elsewhere is no ref at all.
-				if s.MessageID != uuid.Nil && sameConversation(page, m, s) {
+				if s.MessageID != uuid.Nil && sameConversation(m, s) {
 					src = &s
 				}
 			}
@@ -76,32 +81,49 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 	return out
 }
 
-// sameConversation keeps a reply ref inside its own thread. The store already
-// scopes the lookup, so this is the second half of a belt-and-braces pair
-// rather than the only check.
-func sameConversation(page store.SyncPage, m store.MessageRow, src store.ReplySource) bool {
-	for _, other := range page.Messages {
-		if other.ID == src.MessageID {
-			return other.ConversationID == m.ConversationID
-		}
-	}
-	// The source is not on this page, so its conversation is not knowable from
-	// here. The store's query scoped it; trusting that is the alternative to a
-	// second round trip per reply.
-	return true
+// sameConversation keeps a reply ref inside its own thread, and it answers for
+// EVERY source rather than only the ones that happen to be on the page.
+//
+// It used to look for the source among page.Messages and return true when it
+// was not there — "the store scoped it, trust that". The store's scope is a
+// MEMBERSHIP guard: it bounds sources to the conversations on this page, and a
+// reader who is in two conversations has both, so a source in the other one
+// passed. Any source older than the cursor was off the page entirely and took
+// the default. So the case the check existed for was the case it could not see,
+// and "belt and braces" described one belt.
+//
+// The store now returns the source's conversation_id, so this compares the
+// thing itself. No page scan, no default, no second round trip.
+func sameConversation(m store.MessageRow, src store.ReplySource) bool {
+	return src.ConversationID == m.ConversationID
 }
 
-// deliveryState is what THIS reader sees, derived from their read_seq.
+// deliveryState is what THIS reader sees.
 //
-// `read` once the reader's own read_seq has passed the message, `delivered`
-// otherwise — they are receiving it in this very response, which is what
-// delivered means. `sent` is the state the author's own send returns and is not
-// reachable here.
+// YOUR OWN MESSAGE IS `sent`, AND THAT IS THE CASE THAT MATTERS. `state` asks
+// "have the OTHER members read this", and for a message the reader authored,
+// their own read_seq answers a different question entirely — yet that is the
+// only message the field is rendered on: MessageRow.vue guards the status label
+// with `v-if="mine"`. So a derivation off the reader's own read_seq was wrong
+// exactly where the UI shows it, and in a conversation where the reader is the
+// only sender it marked EVERY message they had ever sent as READ on every
+// reconnect.
 //
-// CANT-26 owns read state proper. This is the minimum honest thing /sync can
-// say using only the column that already exists, and it is stated here rather
-// than left as an unexplained constant.
+// `sent` is the honest floor and it is what this service's own send path
+// already acks — "nobody has read a message that was just written". Two answers
+// for one message, one of them backed by nothing the server stores, is the
+// Invariant 3 failure this returns to.
+//
+// For someone ELSE's message: `read` once this reader's read_seq has passed it,
+// `delivered` otherwise — they are receiving it in this very response, which is
+// what delivered means.
+//
+// CANT-26 owns read state proper, and `read_by` — the count of other members
+// who have read it — is its query and stays omitted rather than guessed.
 func deliveryState(m store.MessageRow, v SyncViewer) wire.DeliveryState {
+	if m.AuthorID == v.UserID {
+		return wire.DeliveryStateSent
+	}
 	if seq, ok := v.ReadSeq[m.ConversationID]; ok && m.Seq <= seq {
 		return wire.DeliveryStateRead
 	}
@@ -144,12 +166,20 @@ func conversation(c store.ConversationRow) wire.Conversation {
 }
 
 func user(u store.UserRow) wire.User {
-	init := initials(u.DisplayName)
-	return wire.User{
-		ID:       wire.Uuid(u.ID.String()),
-		Name:     u.DisplayName,
-		Initials: &init,
+	out := wire.User{
+		ID:   wire.Uuid(u.ID.String()),
+		Name: u.DisplayName,
 	}
+	// ABSENT rather than empty. User.initials is minLength: 1, and
+	// users.display_name is TEXT NOT NULL with no CHECK — so a name of "!!!" or
+	// a lone emoji is storable and derives to nothing. Neither the generated Go
+	// decoder nor the TypeScript one enforces minLength, so `"initials":""`
+	// would have shipped as an empty avatar tile rather than being refused.
+	// Optional-and-absent is what the schema actually allows.
+	if init := initials(u.DisplayName); init != "" {
+		out.Initials = &init
+	}
+	return out
 }
 
 // initials is the avatar tile's two letters, DERIVED server-side so web and

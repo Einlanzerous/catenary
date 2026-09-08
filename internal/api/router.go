@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -172,12 +173,39 @@ func syncHandler(d Deps) http.HandlerFunc {
 			// line writing "internal" as a literal — which is the second
 			// decision about a code that the guard exists to forbid, arriving
 			// in exactly the transport it was written for.
-			se := store.SendErrorFor(err)
-			writeJSON(w, http.StatusInternalServerError, se)
+			//
+			// THE BODY IS A wire.ServerError AND NOT THE store.SendError. Handing
+			// the store type to the encoder emitted its Go field names —
+			// `{"Code":"internal","Retryable":false,"RetryAfterSec":null,
+			// "Cause":{}}` — which is PascalCase, carries no `type` tag, and
+			// leaks the cause. ServerError is `additionalProperties: false`, so
+			// every generated client would refuse to decode that: the one shape
+			// the schema exists to guarantee, absent from the one response that
+			// most needs a client to understand it. Translating here is what
+			// makes SendError a store type rather than a wire type wearing the
+			// wrong name.
+			writeJSON(w, http.StatusInternalServerError, serverError(err, "sync failed"))
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
 	}
+}
+
+// serverError is the 500 body: whatever the store refused with, as the frame
+// the schema promises.
+//
+// errors.As rather than a type assertion, because the store wraps. The
+// TRANSLATION ITSELF lives on store.SendError — the code is CANT-83's decision
+// and building the frame here would mean naming a fallback code in this
+// package, which is exactly the second decision the guard forbids. So this
+// reads "who refused" and the store answers "what the client is told".
+//
+// A nil se is unreachable — SendErrorFor classifies every non-nil error — and
+// Wire is nil-safe anyway rather than this relying on that.
+func serverError(err error, message string) wire.ServerError {
+	var se *store.SendError
+	_ = errors.As(store.SendErrorFor(err), &se)
+	return se.Wire(message)
 }
 
 // intParam reads a non-negative integer query parameter. Absent is the default;

@@ -66,6 +66,15 @@ type ConversationRow struct {
 	Muted         bool
 	MemberCount   int64
 
+	// ReadSeq is this member's own read_seq, carried rather than reconstructed.
+	//
+	// The composition root used to invert FirstUnreadSeq back into it, and that
+	// inversion is LOSSY in exactly one direction: when every seq between
+	// read_seq and first_unread is the viewer's OWN, first_unread is NULL and
+	// `*FirstUnreadSeq - 1` overstates what they have read. The column is right
+	// here in the join; there is no reason to derive it back.
+	ReadSeq int64
+
 	// FirstUnreadSeq is nil when the reader is fully caught up.
 	//
 	// 0005_read_seq_derivation: the first seq above this member's read_seq that
@@ -215,9 +224,22 @@ func (s *Store) loadAttachments(ctx context.Context, tx pgx.Tx, page *SyncPage) 
 // loadReplySources reads each referenced source AS IT IS NOW, which is what
 // lets a reply to a voice note back-fill its preview when the transcript lands.
 //
-// Scoped to the same conversation as the reply, so a source that has since been
-// swept or that never belonged here resolves to nothing and the served Message
-// carries no reply_to — the same outcome CANT-18's send path stores as NULL.
+// THE CONVERSATION SCOPE IS A MEMBERSHIP GUARD, AND IT IS NOT THE SAME-THREAD
+// CHECK. `src.id = ANY($1)` on its own reads ANY message by id, including one
+// in a conversation this reader is not a member of — so a reply_to pointing
+// there would serve its author and a 48-rune preview of its text to someone
+// with no right to either. `AND src.conversation_id = ANY($2)` bounds the read
+// to the conversations already on this page, every one of which the reader is
+// a member of, because Sync selected them that way.
+//
+// It does NOT keep a ref inside its own thread: a reader in two conversations
+// has both on the page, and a source in the other one passes this filter. That
+// is wireview.sameConversation's job, and it is why ReplySource carries
+// conversation_id rather than leaving the mapper to infer it.
+//
+// CANT-18's send path refuses to store a cross-conversation reply_to in the
+// first place. Both of these are second lines: a row planted past it, or an
+// edit, must not turn into a leak on the read side.
 func (s *Store) loadReplySources(ctx context.Context, tx pgx.Tx, page *SyncPage) error {
 	page.ReplySources = map[uuid.UUID]ReplySource{}
 	var ids []uuid.UUID
@@ -229,8 +251,16 @@ func (s *Store) loadReplySources(ctx context.Context, tx pgx.Tx, page *SyncPage)
 	if len(ids) == 0 {
 		return nil
 	}
+	seenConv := map[uuid.UUID]bool{}
+	var convIDs []uuid.UUID
+	for _, m := range page.Messages {
+		if !seenConv[m.ConversationID] {
+			seenConv[m.ConversationID] = true
+			convIDs = append(convIDs, m.ConversationID)
+		}
+	}
 	rows, err := tx.Query(ctx, `
-		SELECT src.id, src.author_id, src.text,
+		SELECT src.id, src.conversation_id, src.author_id, src.text,
 		       a.kind, a.storage_key, a.duration_ms, a.transcript_json
 		  FROM messages src
 		  LEFT JOIN LATERAL (
@@ -238,7 +268,7 @@ func (s *Store) loadReplySources(ctx context.Context, tx pgx.Tx, page *SyncPage)
 		         FROM attachments WHERE message_id = src.id
 		        ORDER BY position LIMIT 1
 		  ) a ON TRUE
-		 WHERE src.id = ANY($1)`, ids)
+		 WHERE src.id = ANY($1) AND src.conversation_id = ANY($2)`, ids, convIDs)
 	if err != nil {
 		return fmt.Errorf("store: sync: reply sources: %w", err)
 	}
@@ -248,7 +278,7 @@ func (s *Store) loadReplySources(ctx context.Context, tx pgx.Tx, page *SyncPage)
 		var kind, storageKey *string
 		var durationMs *int64
 		var transcript []byte
-		if err := rows.Scan(&src.MessageID, &src.AuthorID, &src.Text,
+		if err := rows.Scan(&src.MessageID, &src.ConversationID, &src.AuthorID, &src.Text,
 			&kind, &storageKey, &durationMs, &transcript); err != nil {
 			return fmt.Errorf("store: sync: scan reply source: %w", err)
 		}
@@ -292,7 +322,7 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 		return nil
 	}
 	rows, err := tx.Query(ctx, `
-		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted,
+		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
 		       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
 		       (SELECT min(m.seq) FROM messages m
 		         WHERE m.conversation_id = c.id AND m.seq > cm.read_seq AND m.author_id <> $2),
@@ -310,7 +340,7 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 	}
 	page.Conversations, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (ConversationRow, error) {
 		var c ConversationRow
-		err := r.Scan(&c.ID, &c.Kind, &c.Name, &c.LastSeq, &c.RetentionDays, &c.Muted,
+		err := r.Scan(&c.ID, &c.Kind, &c.Name, &c.LastSeq, &c.RetentionDays, &c.Muted, &c.ReadSeq,
 			&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberName)
 		return c, err
 	})

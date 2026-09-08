@@ -3,9 +3,11 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -149,5 +151,53 @@ func TestTheServedBodyValidates(t *testing.T) {
 	}
 	if _, err := wire.DecodeNamed("SyncResponse", []byte(body)); err != nil {
 		t.Fatalf("the served body does not validate: %v\n%s", err, body)
+	}
+}
+
+// A FAILING /sync ANSWERS WITH A FRAME A CLIENT CAN DECODE.
+//
+// The handler used to hand the encoder the store's own error value, which
+// emitted Go field names — `{"Code":"internal","Retryable":false,
+// "RetryAfterSec":null,"Cause":{}}`. ServerError is additionalProperties:
+// false and requires `type`, so every generated client refuses that: the one
+// response where a client most needs to know whether to retry was the one
+// response none of them could read.
+//
+// DecodeNamed is the assertion rather than a field-by-field comparison,
+// because "our own clients accept it" is the actual claim.
+func TestAStoreFailureIsAServerErrorFrameAndNotAFieldDump(t *testing.T) {
+	boom := errors.New("store: the pool is closed")
+	h := NewRouter(Deps{
+		Logger: discardLogger(), CallerID: someCaller,
+		Sync: func(context.Context, uuid.UUID, int64, int) (wire.SyncResponse, error) {
+			return wire.SyncResponse{}, boom
+		},
+	})
+
+	res, body := getRaw(t, h, "/sync")
+	if res.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", res.StatusCode)
+	}
+	if _, err := wire.DecodeNamed("ServerError", []byte(body)); err != nil {
+		t.Fatalf("the 500 body is not a ServerError: %v\n%s", err, body)
+	}
+
+	var got wire.ServerError
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Code != wire.ErrorCodeInternal {
+		t.Errorf("code = %q, want internal", got.Code)
+	}
+	if got.Retryable {
+		t.Errorf("retryable = true for a plain error — only the transient set is")
+	}
+	// THE CAUSE DOES NOT TRAVEL. It is on the log line with the ids that find
+	// the request; a 500 body goes to a member's browser.
+	if strings.Contains(body, "the pool is closed") {
+		t.Errorf("the cause reached the client: %s", body)
+	}
+	if !strings.Contains(body, `"type":"error"`) {
+		t.Errorf("the frame has no type tag: %s", body)
 	}
 }

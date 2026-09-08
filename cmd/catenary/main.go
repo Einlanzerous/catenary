@@ -128,22 +128,21 @@ func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int
 	if err != nil {
 		return wire.SyncResponse{}, err
 	}
-	readSeq := map[uuid.UUID]int64{}
+	// THE COLUMN, NOT THE DERIVATION. first_unread_seq is derived FROM read_seq
+	// and the inversion back is lossy: `*c.FirstUnreadSeq - 1` is the seq before
+	// the first unread one, which is not read_seq whenever the messages in
+	// between are the viewer's own — first_unread_seq skips those by design,
+	// because you cannot have an unread message you sent. The page now carries
+	// cm.read_seq itself, so nothing has to guess.
+	readSeq := make(map[uuid.UUID]int64, len(page.Conversations))
 	for _, c := range page.Conversations {
-		// first_unread_seq is derived from read_seq, and the page carries the
-		// derivation rather than the column — so the per-message delivery state
-		// is read back off it here.
-		if c.FirstUnreadSeq != nil {
-			readSeq[c.ID] = *c.FirstUnreadSeq - 1
-		} else {
-			readSeq[c.ID] = c.LastSeq
-		}
+		readSeq[c.ID] = c.ReadSeq
 	}
 	return wireview.Sync(page, wireview.SyncViewer{
 		UserID:   viewer,
 		ReadSeq:  readSeq,
 		MediaURL: func(storageKey string) string { return storageKey },
-	}, store.ServerTime().Format("2006-01-02T15:04:05.000Z")), nil
+	}, store.ServerTime().Format(wireview.TimeLayout)), nil
 }
 
 // deps is what setup() produces: everything the process needs to serve, built

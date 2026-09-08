@@ -242,3 +242,115 @@ func TestFirstUnreadSeqSkipsTheReadersOwnMessages(t *testing.T) {
 			"own; Invariant 3 says you cannot have an unread message you sent", *got)
 	}
 }
+
+// THE PAGE CARRIES read_seq ITSELF, BECAUSE THE INVERSION BACK IS LOSSY.
+//
+// The composition root used to reconstruct read_seq from first_unread_seq —
+// `*FirstUnreadSeq - 1`, or LastSeq when nothing was unread — and that is wrong
+// in exactly the case CANT-18 built first_unread_seq for: it SKIPS the reader's
+// own messages, because you cannot have an unread message you sent. So a reader
+// whose only unread messages are their own gets first_unread_seq = nil and the
+// inversion read "you have read up to the head", overstating read_seq by every
+// message they had sent since.
+//
+// This is the pair to TestFirstUnreadSeqSkipsTheReadersOwnMessages: the same
+// setup, asserting the other column is not the derivation.
+func TestSyncCarriesReadSeqAndNotTheDerivationInverted(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	alice := mkUser(ctx, t, pool, "alice")
+	bob := mkUser(ctx, t, pool, "bob")
+	conv := mkGroup(ctx, t, pool, "room", alice, bob)
+	send(ctx, t, st, conv, alice, "mine")
+	send(ctx, t, st, conv, alice, "also mine")
+
+	page, err := st.Sync(ctx, alice, 0, 100)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	c := page.Conversations[0]
+	if c.FirstUnreadSeq != nil {
+		t.Fatalf("first_unread_seq = %d, want nil — the premise of this test", *c.FirstUnreadSeq)
+	}
+	// What the inversion would have produced, and what the column actually says.
+	if c.LastSeq != 2 {
+		t.Fatalf("last_seq = %d, want 2", c.LastSeq)
+	}
+	if c.ReadSeq != 0 {
+		t.Errorf("read_seq = %d, want 0 — alice has read nothing; the inversion "+
+			"would have said %d", c.ReadSeq, c.LastSeq)
+	}
+
+	// And it tracks the column when the column moves, so the assertion above
+	// cannot pass by returning a constant zero.
+	if _, err := pool.Exec(ctx,
+		`UPDATE conversation_members SET read_seq = 1 WHERE conversation_id = $1 AND user_id = $2`,
+		conv, alice); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	page, err = st.Sync(ctx, alice, 0, 100)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if got := page.Conversations[0].ReadSeq; got != 1 {
+		t.Errorf("read_seq = %d after marking 1 read, want 1", got)
+	}
+}
+
+// A REPLY POINTING INTO A CONVERSATION THE READER IS NOT IN LOADS NOTHING.
+//
+// `src.id = ANY($1)` alone reads any message by id. A reply_to aimed at a room
+// this reader has never been in would then come back with its author and its
+// text, and the mapper would put a 48-rune preview of it on screen — a leak
+// out of a group they are not a member of, reached with nothing but a message
+// id. `AND src.conversation_id = ANY($2)` is what stops that, and the page's
+// conversations are exactly the ones Sync already proved membership of.
+//
+// The row is planted with a direct UPDATE because the send path refuses to
+// create one: CANT-83's position 8b resolves reply_to inside the sender's own
+// conversation. That is the first guarantee, and planting past it is the only
+// way to test the second.
+func TestAReplySourceInAConversationTheReaderIsNotInIsNotLoaded(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	alice := mkUser(ctx, t, pool, "alice")
+	bob := mkUser(ctx, t, pool, "bob")
+	carol := mkUser(ctx, t, pool, "carol")
+	here := mkGroup(ctx, t, pool, "here", alice, bob)
+	theirs := mkGroup(ctx, t, pool, "theirs", bob, carol)
+
+	secret := send(ctx, t, st, theirs, bob, "not for alice")
+	reply := send(ctx, t, st, here, alice, "a reply")
+	if _, err := pool.Exec(ctx, `UPDATE messages SET reply_to = $1 WHERE id = $2`,
+		secret.ID, reply.ID); err != nil {
+		t.Fatalf("plant the out-of-membership reply_to: %v", err)
+	}
+
+	page, err := st.Sync(ctx, alice, 0, 100)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if src, ok := page.ReplySources[secret.ID]; ok {
+		t.Errorf("a source from a conversation alice is not in was loaded: %+v", src)
+	}
+
+	// The same shape inside her own conversation still resolves, so the
+	// assertion above cannot pass by loading no sources at all.
+	if _, err := pool.Exec(ctx, `UPDATE messages SET reply_to = $1 WHERE id = $2`,
+		reply.ID, reply.ID); err != nil {
+		t.Fatalf("plant the in-conversation reply_to: %v", err)
+	}
+	page, err = st.Sync(ctx, alice, 0, 100)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	got, ok := page.ReplySources[reply.ID]
+	if !ok {
+		t.Fatalf("an in-conversation source was not loaded; the scoping is too tight")
+	}
+	// And it carries its conversation, which is what wireview compares against
+	// rather than searching the page for the source.
+	if got.ConversationID != here {
+		t.Errorf("source conversation_id = %s, want %s", got.ConversationID, here)
+	}
+}
