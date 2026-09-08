@@ -34,16 +34,11 @@ func TestANotificationReachesEveryListeningInstance(t *testing.T) {
 
 	got := make(chan NotifyPayload, 4)
 	for i := 0; i < 2; i++ {
-		ready := make(chan struct{})
 		l := &Listener{
 			DSN: dsn, Channel: NotifyChannel, Logger: discardLogger(),
 			OnNotify: func(_ context.Context, p NotifyPayload) { got <- p },
 		}
-		go func() {
-			close(ready)
-			_ = l.Run(runCtx)
-		}()
-		<-ready
+		go func() { _ = l.Run(runCtx) }()
 	}
 	// LISTEN has to be registered before the NOTIFY is raised — Postgres does
 	// not deliver to a session that was not listening at the time, which is the
@@ -162,85 +157,109 @@ func TestAMalformedPayloadIsSkippedRatherThanFatal(t *testing.T) {
 	}
 }
 
-// A RECONNECT IS A HOLE, AND THE LISTENER SAYS SO.
+// A RECONNECT IS A HOLE, THE LISTENER SAYS SO, AND IT SAYS SO ONLY ONCE IT IS
+// LISTENING AGAIN.
 //
-// Postgres does not queue notifications for a disconnected listener: everything
-// raised while the connection was down is gone, permanently, with no record of
-// how many. So the dangerous outcome is not the disconnect, it is a listener
-// that comes back quietly — the socket above it looks healthy while it has
-// silently missed every message sent during the outage, and a client is left
-// confidently displaying a thread with a hole in it.
+// Postgres does not queue notifications for a disconnected listener, so
+// everything raised while the connection was down is gone. The layer above
+// answers a gap by resyncing from its cursor — which means the ORDER of the two
+// is the correctness of the whole callback. Announced before the subscription
+// is back, the sequence is: resync reads to head N, a message commits with
+// nobody listening, the subscription registers. That message is on neither
+// path and no second gap is raised to say so.
 //
-// The backend is killed the way a real one dies, with pg_terminate_backend,
-// rather than by closing the connection from this side. And a notification
-// raised while it is down is deliberately NOT expected to arrive — asserting
-// that it does not is the same claim as OnGap being necessary.
-func TestAReconnectReportsAGapRatherThanResumingQuietly(t *testing.T) {
+// So the assertion that matters is not "a gap happened", it is "a gap happened
+// while a subscription was live" — checked from inside OnGap itself, which is
+// the only moment the ordering is observable.
+//
+// WHAT THIS TEST DELIBERATELY DOES NOT ASSERT is that the notification raised
+// during the outage is lost. An earlier version claimed to, and could not: it
+// read through a filter that discarded everything but the payload it was
+// waiting for, so the check was unreachable. It is also not a property to
+// assert — pg_terminate_backend signals the backend and returns without waiting
+// for it to exit, so a notification raised immediately after it can genuinely
+// reach the still-dying session. Losing it is the ordinary case, not a
+// guarantee, and the gap exists precisely because the loss cannot be predicted.
+func TestAReconnectReportsAGapOnlyOnceItIsListeningAgain(t *testing.T) {
 	ctx, pool := freshDB(t)
 	dsn := testDSN(t)
 
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	got := make(chan NotifyPayload, 8)
-	gaps := make(chan struct{}, 8)
+
+	type gap struct{ listening int }
+	gaps := make(chan gap, 8)
 	l := &Listener{
 		DSN: dsn, Channel: NotifyChannel, Logger: discardLogger(),
 		OnNotify: func(_ context.Context, p NotifyPayload) { got <- p },
-		OnGap:    func(context.Context) { gaps <- struct{}{} },
+		OnGap: func(context.Context) {
+			// Counted from another connection, at the instant the gap is
+			// announced. Zero here means the resync this triggers has a window
+			// after it in which nothing is subscribed.
+			var n int
+			mustScan(t, pool.QueryRow(ctx, `
+				SELECT count(*) FROM pg_stat_activity
+				 WHERE datname = current_database() AND query ILIKE 'LISTEN %'`), &n)
+			gaps <- gap{listening: n}
+		},
 	}
 	go func() { _ = l.Run(runCtx) }()
 	waitForListeners(ctx, t, pool, 1)
 
-	// No gap on the FIRST connection: there was nothing before it to miss, and
-	// announcing one at boot would train the layer above to ignore the signal.
+	before := uuid.New()
+	notify(ctx, t, pool, NotifyPayload{ConversationID: before, Seq: 1})
+	awaitNotify(t, got, before, "the notification before the outage")
+
+	// NO GAP ON THE FIRST SUBSCRIPTION: there was nothing before it to have
+	// missed, and a signal that fires on every boot is one the layer above
+	// learns to ignore.
+	//
+	// Checked HERE rather than right after waitForListeners, and the ordering
+	// is not cosmetic: OnGap is raised from inside the ready callback, so a
+	// spurious one would still be in flight while pg_stat_activity already
+	// showed the LISTEN. A delivered notification is proof the listener is past
+	// that callback and into its wait loop, which makes the empty channel mean
+	// something.
 	select {
 	case <-gaps:
 		t.Fatal("a gap was reported before anything had been missed")
 	default:
 	}
 
-	before := uuid.New()
-	notify(ctx, t, pool, NotifyPayload{ConversationID: before, Seq: 1})
-	awaitNotify(t, got, before, "the notification before the outage")
-
-	// Kill the listener's backend, then raise one while it is down.
 	if _, err := pool.Exec(ctx, `
 		SELECT pg_terminate_backend(pid) FROM pg_stat_activity
 		 WHERE datname = current_database() AND query ILIKE 'LISTEN %'`); err != nil {
 		t.Fatalf("terminate the listener's backend: %v", err)
 	}
-	missed := uuid.New()
-	notify(ctx, t, pool, NotifyPayload{ConversationID: missed, Seq: 2})
 
 	select {
-	case <-gaps:
+	case g := <-gaps:
+		if g.listening == 0 {
+			t.Error("the gap was announced with nothing subscribed — a resync " +
+				"triggered by it has a window after it that is on neither path")
+		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("the listener reconnected without reporting a gap")
 	}
 
-	// It is listening again, and the one raised while it was down is gone —
-	// which is the fact the gap exists to report. The after-notification is
-	// what distinguishes "lost" from "not yet arrived".
-	waitForListeners(ctx, t, pool, 1)
+	// And it is really listening: delivery resumes.
 	after := uuid.New()
 	notify(ctx, t, pool, NotifyPayload{ConversationID: after, Seq: 3})
-	p := awaitNotify(t, got, after, "the notification after the reconnect")
-	if p.ConversationID == missed {
-		t.Error("a notification raised during the outage was delivered; the gap " +
-			"would be a false alarm and this test is testing the wrong thing")
-	}
+	awaitNotify(t, got, after, "the notification after the reconnect")
 }
 
-// waitFor reads until the wanted payload arrives, failing on anything that is
-// neither it nor a payload seen before it.
-func awaitNotify(t *testing.T, ch <-chan NotifyPayload, want uuid.UUID, what string) NotifyPayload {
+// awaitNotify reads until the wanted payload arrives. It DISCARDS anything
+// else, which is fine here and was not fine when a caller tried to conclude
+// something from what it returned — see the comment above.
+func awaitNotify(t *testing.T, ch <-chan NotifyPayload, want uuid.UUID, what string) {
 	t.Helper()
 	deadline := time.After(15 * time.Second)
 	for {
 		select {
 		case p := <-ch:
 			if p.ConversationID == want {
-				return p
+				return
 			}
 		case <-deadline:
 			t.Fatalf("%s never arrived", what)
@@ -349,6 +368,22 @@ type NotifyPayload struct {
 	} else if got == want {
 		t.Error("a planted Text field did not change the answer — the guard reads nothing")
 	}
+
+	// The second probe is the one that caught a real blind spot: an EMBEDDED
+	// struct has no field name, so a guard that only walked Names read this as
+	// unchanged while json.Marshal inlined whatever the embedded type carries.
+	embedded := `package store
+type NotifyPayload struct {
+	ConversationID uuid.UUID ` + "`json:\"conversation_id\"`" + `
+	Seq            int64     ` + "`json:\"seq\"`" + `
+	MessageBody
+}`
+	if got, err := notifyPayloadFieldsIn("embedded.go", embedded); err != nil {
+		t.Fatalf("parse the embedded source: %v", err)
+	} else if got == want {
+		t.Error("an embedded struct did not change the answer — the guard is " +
+			"blind to exactly the shape that inlines a body into the payload")
+	}
 }
 
 func notifyPayloadFields(path string) (string, error) {
@@ -375,6 +410,15 @@ func notifyPayloadFieldsIn(name, src string) (string, error) {
 			return false
 		}
 		for _, field := range st.Fields.List {
+			// AN EMBEDDED FIELD HAS NO NAME, and skipping it is how this guard
+			// would have missed the thing it exists for: embedding a struct
+			// with a Text field leaves the named fields identical while
+			// json.Marshal inlines the body straight into the payload. Recorded
+			// by its type, which is the only name it has.
+			if len(field.Names) == 0 {
+				out = append(out, types(field.Type))
+				continue
+			}
 			for _, id := range field.Names {
 				out = append(out, id.Name+" "+types(field.Type))
 			}
@@ -437,5 +481,62 @@ func waitForListeners(ctx context.Context, t *testing.T, pool *pgxpool.Pool, n i
 			t.Fatalf("only %d of %d listeners registered within the deadline", count, n)
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A SUBSCRIPTION THAT NEVER SUCCEEDS RAISES NO GAP, however many times it
+// retries.
+//
+// This is the boot case: the shared Postgres is still starting — which
+// ConnectWithRetry exists because it happens — so the first attempt fails and
+// the second is still the FIRST subscription. Announcing a gap there tells a
+// consumer that has never received anything that it has missed something, and a
+// signal that fires on every boot is one the layer above learns to ignore.
+//
+// It holds by CONSTRUCTION rather than by the `connected` flag, and that is
+// worth being precise about: OnGap is raised from inside the callback that runs
+// after LISTEN succeeds, so a failed attempt has no path to it at all. Flipping
+// `connected` to true does not make this test fail — what it protects against
+// is the earlier shape, where the gap was raised at the top of the loop and a
+// failed attempt did reach it. `connected` still carries the other half, and
+// TestAReconnectReportsAGapOnlyOnceItIsListeningAgain is what holds that one.
+//
+// Port 1 refuses immediately, so this runs several attempts inside the window
+// rather than waiting on a timeout.
+func TestAFailedFirstConnectionIsNotAGap(t *testing.T) {
+	testDSN(t) // consistent skip with the rest of the database tests
+
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	gaps := make(chan struct{}, 8)
+	l := &Listener{
+		DSN:     "postgres://postgres@127.0.0.1:1/nope?sslmode=disable&connect_timeout=1",
+		Channel: NotifyChannel, Logger: discardLogger(),
+		OnGap: func(context.Context) { gaps <- struct{}{} },
+	}
+	go func() { _ = l.Run(ctx) }()
+
+	// Long enough for the 250ms backoff to have produced several attempts.
+	time.Sleep(1500 * time.Millisecond)
+	select {
+	case <-gaps:
+		t.Error("a gap was announced while the FIRST subscription was still failing; " +
+			"nothing had been received, so nothing could have been missed")
+	default:
+	}
+}
+
+// A Listener built without a logger does not panic on its first disconnect.
+//
+// Logger is exported with no constructor to default it, so the nil is reachable
+// — and the only place it was dereferenced is the reconnect path, which is the
+// least-exercised code in this file and the worst place to find a nil pointer.
+func TestAListenerWithNoLoggerStillLogs(t *testing.T) {
+	if (&Listener{}).logger() == nil {
+		t.Error("logger() returned nil; the reconnect path dereferences it")
+	}
+	custom := discardLogger()
+	if (&Listener{Logger: custom}).logger() != custom {
+		t.Error("logger() did not return the one it was given")
 	}
 }

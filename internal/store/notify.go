@@ -134,28 +134,50 @@ type Listener struct {
 // incident — the same reasoning as ConnectWithRetry — so giving up on the first
 // disconnect would take fanout down for the whole estate's restart window.
 func (l *Listener) Run(ctx context.Context) error {
-	backoff := 250 * time.Millisecond
-	first := true
+	backoff := initialListenBackoff
+
+	// connected is "has a subscription ever succeeded", NOT "is this the first
+	// loop iteration". At boot against a Postgres that is still starting, the
+	// first attempt fails and the second is still the first subscription —
+	// counting iterations would announce a gap to a consumer that has never
+	// received anything, which is the every-boot-looks-like-an-outage case this
+	// is supposed to avoid.
+	connected := false
 
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 
-		// A reconnect means a gap, and the FIRST connection does not: there was
-		// nothing before it to have missed. Announcing a gap at startup would
-		// make every boot look like an outage and train the layer above to
-		// ignore the signal.
-		if !first && l.OnGap != nil {
-			l.OnGap(ctx)
-		}
-		first = false
-
-		err := l.listen(ctx)
+		// THE GAP IS RAISED AFTER LISTEN, NOT BEFORE IT, and the ordering is the
+		// whole correctness of this callback.
+		//
+		// The layer above answers a gap by resyncing from its cursor. Announce
+		// it before subscribing and the sequence is: resync reads to head N,
+		// THEN a message commits with nobody listening, THEN the subscription
+		// registers — and that message is on neither path, with no second gap
+		// to say so. The window is a TCP connect, TLS, auth and a round trip
+		// against a database that has just been restarting, so it is not
+		// theoretical.
+		//
+		// Subscribed first, the window is closed by construction: anything
+		// committed before the resync is in the resync, anything after it is on
+		// the channel, and the overlap is a duplicate rather than a hole.
+		err := l.listen(ctx, func() {
+			if connected && l.OnGap != nil {
+				l.OnGap(ctx)
+			}
+			connected = true
+			// Reset here rather than at the top of the loop. A process that
+			// rode out one outage hours ago should not wait the 5s cap for its
+			// next reconnect — the cap describes an outage in progress, not the
+			// health of a connection that has been up since.
+			backoff = initialListenBackoff
+		})
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		l.Logger.Warn("notify listener disconnected; reconnecting",
+		l.logger().Warn("notify listener disconnected; reconnecting",
 			"channel", l.Channel, "error", err, "backoff", backoff)
 
 		select {
@@ -163,14 +185,31 @@ func (l *Listener) Run(ctx context.Context) error {
 			return ctx.Err()
 		case <-time.After(backoff):
 		}
-		if backoff *= 2; backoff > 5*time.Second {
-			backoff = 5 * time.Second
+		if backoff *= 2; backoff > maxListenBackoff {
+			backoff = maxListenBackoff
 		}
 	}
 }
 
+const (
+	initialListenBackoff = 250 * time.Millisecond
+	maxListenBackoff     = 5 * time.Second
+)
+
+// logger is never nil. Logger is an exported field with no constructor to
+// default it, so a Listener built without one would panic on its first
+// disconnect — in the reconnect path, which is the least observed code here and
+// the worst place to discover a nil pointer. slog.Default rather than a discard
+// handler: a listener whose reconnects are silent is worse than a noisy one.
+func (l *Listener) logger() *slog.Logger {
+	if l.Logger == nil {
+		return slog.Default()
+	}
+	return l.Logger
+}
+
 // listen holds one connection for as long as it lives.
-func (l *Listener) listen(ctx context.Context) error {
+func (l *Listener) listen(ctx context.Context, ready func()) error {
 	conn, err := pgx.Connect(ctx, l.DSN)
 	if err != nil {
 		return fmt.Errorf("store: listener connect: %w", err)
@@ -190,7 +229,8 @@ func (l *Listener) listen(ctx context.Context) error {
 	if _, err := conn.Exec(ctx, "LISTEN "+pgx.Identifier{l.Channel}.Sanitize()); err != nil {
 		return fmt.Errorf("store: listen %q: %w", l.Channel, err)
 	}
-	l.Logger.Info("notify listener ready", "channel", l.Channel)
+	l.logger().Info("notify listener ready", "channel", l.Channel)
+	ready()
 
 	for {
 		n, err := conn.WaitForNotification(ctx)
@@ -201,10 +241,17 @@ func (l *Listener) listen(ctx context.Context) error {
 		if err := json.Unmarshal([]byte(n.Payload), &p); err != nil {
 			// Logged and skipped rather than fatal. Anything may NOTIFY on a
 			// channel name, and one malformed payload from somewhere else must
-			// not take this service's fanout down. The payload is ids only, so
-			// there is nothing here that D1 would keep out of a log.
-			l.Logger.Warn("notify payload did not parse",
-				"channel", n.Channel, "payload", n.Payload, "error", err)
+			// not take this service's fanout down.
+			//
+			// THE PAYLOAD ITSELF IS NOT LOGGED, and the reason is the branch:
+			// this runs only when the bytes did NOT parse as a NotifyPayload,
+			// so "it is ids only" is exactly what is not known here. Anything
+			// that can reach this channel could have written up to 8,000 bytes
+			// of arbitrary text, and logging it verbatim is a message body in
+			// the service log by another route. The length and the channel are
+			// what a reader needs to find the source.
+			l.logger().Warn("notify payload did not parse",
+				"channel", n.Channel, "bytes", len(n.Payload), "error", err)
 			continue
 		}
 		if l.OnNotify != nil {
