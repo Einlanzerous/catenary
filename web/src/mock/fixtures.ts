@@ -68,6 +68,23 @@ const ILSE_SEGMENTS = [
   { at: 38, text: 'Also the tension gauge came back from the shop, it’s in the blue case on the bench.' },
 ]
 
+/* CANT-90 — `state` on YOUR OWN message says what everyone else has done.
+ *
+ * `sent` until another member's receipt passes it, `read` after, and NEVER
+ * `delivered`: D1 declined delivery receipts, so the server stores nothing
+ * between "written" and "somebody read it" and the middle rung this corpus used
+ * to draw on m-1186 is a state no response can carry.
+ *
+ * The counts down the reader's own run are 7, 4, 2, 1 as seq climbs, and they
+ * are non-increasing BECAUSE A RECEIPT IS A HIGH-WATER MARK — a member whose
+ * mark has passed 1191 has passed 1186 too, so a later message can never be
+ * read by more people than an earlier one from the same author. The old corpus
+ * had 1187 at `sent` above 1191 at 7/7, which no page can produce. Marek and
+ * Rosa go on to send 1192 and 1194 without their marks reaching 1191, which is
+ * correct: sending does not advance the sender's own read_seq (0005).
+ *
+ * So the run demonstrates READ 7/7, two partial fractions and SENT, which is
+ * every shape StatusLabel can render for an author. */
 export const MESSAGES: Message[] = [
   // ── Kitchen Table ──────────────────────────────────────────────────────
   {
@@ -113,12 +130,12 @@ export const MESSAGES: Message[] = [
   },
   {
     id: 'm-1186', seq: 1186, conversationId: 'c-kitchen', authorId: ME,
-    at: at(0, '14:15'), state: 'delivered',
+    at: at(0, '14:15'), state: 'read', readBy: 4,
     text: 'I can be there at eight to sign for it.',
   },
   {
     id: 'm-1187', seq: 1187, conversationId: 'c-kitchen', authorId: ME,
-    at: at(0, '14:16'), state: 'sent',
+    at: at(0, '14:16'), state: 'read', readBy: 2,
     text: 'bringing coffee for whoever else shows up',
   },
   {
@@ -147,7 +164,7 @@ export const MESSAGES: Message[] = [
   },
   {
     id: 'm-1191', seq: 1191, conversationId: 'c-kitchen', authorId: ME,
-    at: at(0, '14:33'), state: 'read', readBy: 7,
+    at: at(0, '14:33'), state: 'sent', readBy: 1,
     text: 'Staging by two is fine. I’ll be at the shed from eight.',
     replyTo: { messageId: 'm-1183', authorId: 'u-ilse', kind: 'voice', durationSec: 38, preview: ILSE_TRANSCRIPT },
   },

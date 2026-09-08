@@ -28,8 +28,11 @@ import (
 //
 // State and ReadBy are consumed, never computed: they are per-reader and the
 // query behind them is CANT-26's read-state work. The send path passes
-// state "sent" with no ReadBy — nobody has read a message that was just
-// written, which is what the vector server_message_text says.
+// state "sent" with no ReadBy, which is what the vector server_message_text
+// says — nobody OTHER THAN THE AUTHOR has read a message that was just
+// written. The author themselves counts from the moment the row exists, so the
+// count behind a served message is 1 rather than 0, and CANT-90's own-message
+// ladder turns on exactly that: `read` is readBy > 1, not >= 1.
 type Viewer struct {
 	UserID uuid.UUID
 	State  wire.DeliveryState

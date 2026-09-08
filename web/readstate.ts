@@ -46,13 +46,22 @@ const check = (name: string, ok: boolean, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'}  ${name}${detail ? `  (${detail})` : ''}`)
 }
 
-/* The reader is the one member the page does NOT list a receipt for: `state` is
- * `sent` on their own messages and nothing else's, which is the property
- * CANT-20's review put there. Deriving the viewer from the page rather than
- * passing it in keeps this check honest about what the response carries. */
-const mine = page.messages.filter((m) => m.state === 'sent')
+/* The reader is whoever the page echoes a `client_id` to.
+ *
+ * IT USED TO BE `state === 'sent'`, and CANT-90 killed that. The old heuristic
+ * read the ladder backwards: under the two-rung rule an own message becomes
+ * `read` as soon as another member's receipt passes it, and in this capture
+ * five of them have — so both of the viewer's messages come back `read`, the
+ * filter finds nothing, and this script exits on its own guard.
+ *
+ * `client_id` is the honest signal and it always was: the wire echoes it TO THE
+ * AUTHOR ALONE, and wireview.Message enforces that per viewer, so a message
+ * carrying one is a message this reader wrote. Deriving the viewer from the
+ * page rather than passing it in keeps the check honest about what the response
+ * actually carries. */
+const mine = page.messages.filter((m) => m.clientId !== undefined)
 if (mine.length === 0) {
-  console.error('FAIL  the capture has no message authored by the viewer; cannot tell who is reading')
+  console.error('FAIL  the capture echoes no client_id; cannot tell who is reading')
   process.exit(1)
 }
 const me = mine[0].authorId
@@ -124,6 +133,25 @@ check(
 check(
   'every message is read by at least its own author',
   state.messages.every((m) => (m.readBy ?? 0) >= 1),
+)
+
+/* CANT-90's ladder, over the same real page rather than a hand-built map.
+ *
+ * Both halves of the derivation, end to end: the seeding gives the viewer two
+ * messages and has five of the other six members mark read past both, so
+ * readByExpr counts six — themselves by identity plus the five receipts — and
+ * the own-message branch answers `read`. The viewer's own mark is still at 1,
+ * so the last message, which somebody else wrote, is `delivered` to them at the
+ * same count of six. One page proves the word for an author and for a reader. */
+check(
+  'every message I wrote is READ, and none of them is DELIVERED',
+  mine.length > 0 && mine.every((m) => m.state === 'read' && m.readBy === 6),
+  mine.map((m) => `${m.state}/${m.readBy}`).join(' '),
+)
+check(
+  'the last message is one I have not read: DELIVERED at 6/7',
+  last.state === 'delivered' && last.readBy === 6,
+  `${last.state}/${last.readBy}`,
 )
 
 if (fail.length) {

@@ -75,16 +75,25 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 			}
 		}
 		// READ_BY IS SERVED FOR EVERY MESSAGE, ZERO INCLUDED. A sync page
-		// always knows the answer — CANT-26's aggregate ran over the whole
-		// page — so `0` means "nobody else has read it" and is a fact, where
-		// omitting the field would mean "not known" and is not one. It is
-		// taken by address per iteration because the wire field is a pointer;
-		// a shared variable would leave every message pointing at the last
-		// count computed.
+		// always knows the answer — CANT-26's count ran over the whole page —
+		// so a number here is always a fact, where omitting the field would
+		// mean "not known" and is not one. It is taken by address per
+		// iteration because the wire field is a pointer; a shared variable
+		// would leave every message pointing at the last count computed.
+		//
+		// `0` DOES NOT MEAN "NOBODY ELSE HAS READ IT", which is what this
+		// said until CANT-90. readByExpr counts the author by identity, so a
+		// message whose author is still a member is at least 1 before anyone
+		// has done anything. Zero needs the author GONE from
+		// conversation_members — having left, or deleted by CANT-33's Purser
+		// connector — and no current member's receipt to have passed it.
+		//
+		// It is also the value deliveryState reads below, which is what keeps
+		// the word and the number from being two answers to one question.
 		readBy := page.ReadBy[m.ID]
 		out.Messages = append(out.Messages, Message(m, page.Attachments[m.ID], src, Viewer{
 			UserID:   v.UserID,
-			State:    deliveryState(m, v.UserID, readSeq),
+			State:    deliveryState(m, v.UserID, readSeq, readBy),
 			ReadBy:   &readBy,
 			MediaURL: v.MediaURL,
 		}))
@@ -116,33 +125,42 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 	return src.ConversationID == m.ConversationID
 }
 
-// deliveryState is what THIS reader sees.
+// deliveryState is what THIS reader sees, and the SUBJECT of the answer
+// changes with authorship. CANT-90 settled that; the wire schema's
+// DeliveryState description states the same rule for client authors.
 //
-// YOUR OWN MESSAGE IS `sent`, AND THAT IS THE CASE THAT MATTERS. `state` asks
-// "have the OTHER members read this", and for a message the reader authored,
-// their own read_seq answers a different question entirely — yet that is the
-// only message the field is rendered on: MessageRow.vue guards the status label
-// with `v-if="mine"`. So a derivation off the reader's own read_seq was wrong
-// exactly where the UI shows it, and in a conversation where the reader is the
-// only sender it marked EVERY message they had ever sent as READ on every
-// reconnect.
+// FOR A MESSAGE THE READER WROTE, `state` describes EVERYONE ELSE: `sent`
+// until another member's receipt has passed it, `read` after, and never
+// `delivered`. Two rungs, because that is how many the server can back — D1
+// declined delivery receipts, so nothing is stored between "written" and
+// "somebody has read it", and a third rung would be this service claiming
+// something it cannot keep.
 //
-// `sent` is the honest floor and it is what this service's own send path
-// already acks — "nobody has read a message that was just written". Two answers
-// for one message, one of them backed by nothing the server stores, is the
-// Invariant 3 failure this returns to.
+// THE THRESHOLD IS `readBy > 1` AND THE OFF-BY-ONE IS THE WHOLE POINT.
+// readByExpr counts the author BY IDENTITY, so an own message sits at 1 from
+// the instant the row exists. "At least one other member" is therefore
+// readBy-1 >= 1, which is readBy > 1. `>= 1` holds for every message anyone
+// has ever written, so it would report each of them read the moment it was
+// sent — CANT-20's bug reached from the other side.
 //
-// For someone ELSE's message: `read` once this reader's read_seq has passed it,
-// `delivered` otherwise — they are receiving it in this very response, which is
-// what delivered means.
+// It reads the COUNT, never the reader's own read_seq. That is what CANT-20
+// removed and this does not put back: a reader's own mark answers "have I read
+// what I wrote", which is not a question. It never reads member_count either,
+// so a member joining or leaving moves the fraction and cannot flip the word.
 //
-// `read_by` is the other half of read state and it IS served, for every message
-// and including zero — see the comment on the loop above. It counts every
-// member who has read the message, the author included, because the fraction it
-// forms with Conversation.member_count has to count one population or it can
-// never close.
-func deliveryState(m store.MessageRow, viewer uuid.UUID, readSeq map[uuid.UUID]int64) wire.DeliveryState {
+// FOR SOMEONE ELSE'S MESSAGE, `state` describes THIS READER: `read` once their
+// read_seq has passed it, `delivered` otherwise — they are receiving it in this
+// very response, which is what delivered means.
+//
+// readBy 0 is unreachable here for an own message: store.Sync joins
+// conversation_members on the viewer, so wherever that branch runs the viewer
+// is a member and their own +1 is in the count. The comparison is total over it
+// anyway, and answers `sent`.
+func deliveryState(m store.MessageRow, viewer uuid.UUID, readSeq map[uuid.UUID]int64, readBy int64) wire.DeliveryState {
 	if m.AuthorID == viewer {
+		if readBy > 1 {
+			return wire.DeliveryStateRead
+		}
 		return wire.DeliveryStateSent
 	}
 	if seq, ok := readSeq[m.ConversationID]; ok && m.Seq <= seq {

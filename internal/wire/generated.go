@@ -197,6 +197,16 @@ func checkConversationKind(v ConversationKind, p string) error {
 // The server-authoritative half of the message lifecycle from IDEA-23, and the ONLY
 // states that ever cross the wire.
 //
+// `state` IS PER READER, AND ITS SUBJECT CHANGES WITH AUTHORSHIP. For a message you
+// did not write it describes YOU: `delivered` while it is being served to you, `read`
+// once your own receipt has passed it. For a message you wrote it describes EVERYONE
+// ELSE: `sent` until another member's receipt has passed it, `read` after — and never
+// `delivered`, because nothing between "written" and "somebody has read it" is stored.
+// D1 declined delivery receipts, so a third rung on your own message would be a claim
+// this server cannot keep. Read the count in `Message.read_by` for the fraction under
+// that word; the server derives one from the other, so a client renders both and
+// reconciles neither.
+//
 // The full ladder the UI renders is `sending → sent → delivered → read`, plus `queued`
 // and `failed`. `sending`, `queued` and `failed` are client-local: they describe a
 // message's relationship to its own outbox, the server has no opinion on them, and a
@@ -902,7 +912,14 @@ type Message struct {
 	// permanently, and the canvas's own READ 7/7 was unreachable. The author's half is a
 	// DERIVATION rather than a stored receipt, because sending does not advance the
 	// sender's read_seq — that was built and removed for swallowing their own unread
-	// backlog.
+	// backlog. BOTH HALVES COUNT TODAY'S MEMBERS: the numerator counts rows in
+	// conversation_members and `member_count` counts the same table in the same serve, so
+	// a member who read a message and then left stops counting in both, and one who joined
+	// afterwards is in the denominator before their own receipt puts them in the
+	// numerator. That is what keeps n/n reachable across a join or a departure. `0`
+	// therefore does NOT mean "nobody else has read it" — with the author counted by
+	// identity that is unreachable — it means the author is no longer a current member and
+	// no current member's receipt has passed the message.
 	ReadBy *int64 `json:"read_by,omitempty"`
 	// Echoed back to the sender only, so a client can match a broadcast message against
 	// its own outbox entry when the `ack` and the `message` frame race. Other members

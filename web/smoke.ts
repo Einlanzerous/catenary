@@ -54,8 +54,17 @@ async function main() {
     state.messages.filter(
       (m) => m.conversationId === 'c-kitchen' && m.seq >= kitchen.firstUnreadSeq!,
     ).length - mineAfterRule, `${mineAfterRule} of mine skipped`)
-  check('status words, not glyphs', main.includes('DELIVERED') && main.includes('SENT'))
+  // Deliberate call 03: status as words, not tick glyphs. The two words this
+  // thread can show are SENT and READ, and DELIVERED is deliberately not
+  // among them — CANT-90 made `state` on your OWN message a two-rung ladder,
+  // and StatusLabel is guarded `v-if="mine"`, so `delivered` is only ever the
+  // answer for somebody else's message and never reaches this screen.
+  // Asserting it, as this did, was asserting a render no real page produces.
+  check('status words, not glyphs', main.includes('SENT') && main.includes('READ'))
   check('read fraction in a room', main.includes('READ 7/7'))
+  // And a PARTIAL one. The canvas draws only n/n, so a corpus of nothing but
+  // complete fractions cannot catch a threshold that is off by one.
+  check('a partial fraction too, not only n/n', main.includes('READ 4/7'))
   check('transcript collapsed by default', main.includes('EXPAND ·'))
   check('word count is derived', /EXPAND · \d+ W/.test(main))
   check('pending transcript labelled', main.includes('TRANSCRIBING'))

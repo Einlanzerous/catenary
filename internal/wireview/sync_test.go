@@ -119,39 +119,88 @@ func TestADirectConversationIsNamedForTheOtherMember(t *testing.T) {
 	}
 }
 
-// YOUR OWN MESSAGE IS `sent`, AND IT IS THE ONLY MESSAGE THIS FIELD IS SHOWN ON.
+// THE SUBJECT OF `state` CHANGES WITH AUTHORSHIP, which is CANT-90's ruling and
+// the thing this table exists to hold still.
 //
-// MessageRow.vue guards the status label with `v-if="mine"`, so a `state`
-// derived from the reader's own read_seq was wrong in exactly the place the UI
-// renders it — and in a conversation where the reader is the only sender, every
-// message they had ever sent came back `read` on every reconnect, with nobody
-// having read anything. `sent` is what this service's own send path acks for
-// the same message, and two answers for one message is the Invariant 3 failure.
+// On a message the reader WROTE it describes everyone else — `sent` until
+// another member's receipt has passed it, `read` after, never `delivered` —
+// and the threshold is readBy > 1 because readByExpr counts the author by
+// identity, so an own message is at 1 before anyone has done anything. On
+// SOMEONE ELSE'S message it describes the reader: `read` once their own
+// read_seq has passed it, `delivered` otherwise.
 //
-// The old derivation is the second case here: it would have returned `read`,
-// because seq 1905 <= read_seq 1905.
-func TestYourOwnMessageIsSentAndNotWhateverYouHaveRead(t *testing.T) {
+// Two derivations this must keep out, both of which have shipped:
+//
+//   - The reader's own read_seq deciding their own message. It answers "have I
+//     read what I wrote", and in a conversation where the reader is the only
+//     sender it reported every message they had ever written as read on every
+//     reconnect (CANT-20). Row 2 is that case: seq 1905 <= read_seq 1905, and
+//     the answer is still `sent` because nobody else has read it.
+//   - readBy >= 1 as the threshold. True for every message that can exist, so
+//     it is the same failure from the other side. Row 1 is that case.
+func TestOwnMessageStateIsWhatOTHERSHaveRead(t *testing.T) {
 	reader := mustUUID(t, theoID)
 	other := mustUUID(t, nadiaID)
 	conv := mustUUID(t, convID)
 	readSeq := map[uuid.UUID]int64{conv: 1905}
 
+	// memberCount stands in for a seven-member room: the largest readBy a real
+	// page could carry, and the value the canvas draws as READ 7/7.
+	const memberCount = 7
+
 	for _, tc := range []struct {
 		name   string
 		author uuid.UUID
 		seq    int64
+		readBy int64
 		want   wire.DeliveryState
 	}{
-		{"mine, unread by me", reader, 1906, wire.DeliveryStateSent},
-		{"mine, behind my own read_seq", reader, 1905, wire.DeliveryStateSent},
-		{"theirs, behind my read_seq", other, 1905, wire.DeliveryStateRead},
-		{"theirs, ahead of my read_seq", other, 1906, wire.DeliveryStateDelivered},
+		// Mine. Only readBy moves the answer; seq and read_seq do not.
+		{"mine, only I have it", reader, 1906, 1, wire.DeliveryStateSent},
+		{"mine, behind my own read_seq, still only I have it", reader, 1905, 1, wire.DeliveryStateSent},
+		{"mine, one other member has read it", reader, 1906, 2, wire.DeliveryStateRead},
+		{"mine, the whole room has read it", reader, 1906, memberCount, wire.DeliveryStateRead},
+		// UNREACHABLE FROM Sync, kept because the function should be total.
+		// store.Sync joins conversation_members on the viewer, so wherever this
+		// branch runs the viewer is a member and their own +1 is in the count;
+		// 0 needs the author gone from the room, and then it is not their page.
+		// It is here so nobody reads `0` as a real own-message state.
+		{"mine, author no longer a member — not reachable from Sync", reader, 1906, 0, wire.DeliveryStateSent},
+		// Theirs. readBy does not enter this branch at all: these carry a
+		// count high enough to be `read` if it did.
+		{"theirs, behind my read_seq", other, 1905, memberCount, wire.DeliveryStateRead},
+		{"theirs, ahead of my read_seq", other, 1906, memberCount, wire.DeliveryStateDelivered},
 	} {
 		got := deliveryState(store.MessageRow{
 			ConversationID: conv, AuthorID: tc.author, Seq: tc.seq,
-		}, reader, readSeq)
+		}, reader, readSeq, tc.readBy)
 		if got != tc.want {
 			t.Errorf("%s: state = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// `delivered` IS NEVER THE ANSWER FOR YOUR OWN MESSAGE, asserted over the whole
+// range rather than at the two points the table above happens to sample.
+//
+// D1 declined delivery receipts, so there is nothing stored between "written"
+// and "somebody read it" — a `delivered` here would be the one claim Invariant
+// 3 forbids. Separate from the table because the table proves the values it
+// lists and this proves the absence of one across every count a page can carry.
+func TestYourOwnMessageIsNeverDelivered(t *testing.T) {
+	reader := mustUUID(t, theoID)
+	conv := mustUUID(t, convID)
+	readSeq := map[uuid.UUID]int64{conv: 1905}
+
+	for readBy := int64(0); readBy <= 32; readBy++ {
+		for _, seq := range []int64{1904, 1905, 1906} {
+			got := deliveryState(store.MessageRow{
+				ConversationID: conv, AuthorID: reader, Seq: seq,
+			}, reader, readSeq, readBy)
+			if got == wire.DeliveryStateDelivered {
+				t.Fatalf("readBy %d, seq %d: state = %q on my own message; "+
+					"the server stores nothing between written and read", readBy, seq, got)
+			}
 		}
 	}
 }

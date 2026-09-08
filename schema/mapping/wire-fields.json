@@ -231,7 +231,7 @@
     },
     "Message.state": {
       "kind": "derived",
-      "note": "Per-reader delivery state. Not stored: it is a function of the reader, so a column would have to be per reader per message."
+      "note": "Per-reader delivery state. Not stored: it is a function of the reader, so a column would have to be per reader per message. CANT-90: the SUBJECT changes with authorship — on someone else's message it describes the reader (`delivered` served, `read` once their read_seq passed it); on the reader's own it describes everyone else (`sent`, then `read` once Message.read_by exceeds 1, never `delivered`). Derived from the same count read_by is served from, so the word and the number cannot disagree."
     },
     "Message.read_by": {
       "kind": "derived",
