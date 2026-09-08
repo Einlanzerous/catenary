@@ -145,8 +145,16 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 //
 // It reads the COUNT, never the reader's own read_seq. That is what CANT-20
 // removed and this does not put back: a reader's own mark answers "have I read
-// what I wrote", which is not a question. It never reads member_count either,
-// so a member joining or leaving moves the fraction and cannot flip the word.
+// what I wrote", which is not a question.
+//
+// It never reads member_count, so a JOIN moves the fraction without touching
+// the word. A DEPARTURE moves both, and saying otherwise was wrong: leaving is
+// a row DELETE from conversation_members — there is no left_at, the key is
+// (conversation_id, user_id) — and readByExpr counts rows in that table, so the
+// numerator drops with the denominator. A room where exactly one other member
+// had read your message sits at 2 and serves `read`; that member leaves, the
+// count is 1, and the next page serves `sent`. Message.read_by's own schema
+// description says the same thing from the other side.
 //
 // FOR SOMEONE ELSE'S MESSAGE, `state` describes THIS READER: `read` once their
 // read_seq has passed it, `delivered` otherwise — they are receiving it in this

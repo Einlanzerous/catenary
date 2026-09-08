@@ -258,14 +258,27 @@ export function send() {
   if (!offline) advance(message)
 }
 
-/** Walks the mock message up the ladder. A real client advances on server acks. */
+/** Walks the mock message up the ladder. A real client advances on server acks.
+ *
+ * IT STOPS AT `sent`, AND THAT IS THE WHOLE LADDER FOR A MESSAGE YOU WROTE.
+ * `advance` is only ever called on your own message — `send` authors it as
+ * `state.me`, and `retry` re-runs it — and CANT-90 settled that your own
+ * message is `sent` until another member's receipt passes it and `read` after,
+ * never `delivered`. D1 declined delivery receipts, so no response can carry
+ * that rung and a client inventing it is exactly the claim Invariant 3
+ * forbids. The wire schema is explicit about which states a client may author
+ * on its own: `sending`, `queued` and `failed`. `delivered` is not among them.
+ *
+ * This used to walk `sent` → `delivered` after 1800ms, so two seconds after
+ * hitting send your own message rendered DELIVERED. It was the moving version
+ * of the still picture CANT-90 removed from `mock/fixtures.ts`.
+ *
+ * What replaces the missing rung is a receipt from somebody else, which is the
+ * server's to send: CANT-66 renders it and CANT-89 decides what delivers it. */
 function advance(message: Message) {
   setTimeout(() => {
     if (message.state === 'sending') message.state = 'sent'
   }, 600)
-  setTimeout(() => {
-    if (message.state === 'sent') message.state = 'delivered'
-  }, 1800)
 }
 
 export function retry(messageId: string) {

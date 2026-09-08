@@ -144,8 +144,11 @@ const asConversationKind = (v: unknown, p: string): ConversationKind => asOneOf(
 // `delivered`, because nothing between "written" and "somebody has read it" is stored.
 // D1 declined delivery receipts, so a third rung on your own message would be a claim
 // this server cannot keep. Read the count in `Message.read_by` for the fraction under
-// that word; the server derives one from the other, so a client renders both and
-// reconciles neither.
+// that word. ON A MESSAGE YOU WROTE the server derives the two from one count, so they
+// cannot disagree; on a message you did not write they are INDEPENDENT — `state` comes
+// from your own receipt and `read_by` from everyone's, so `delivered` with a high
+// `read_by` is ordinary and means the room has read something you have not. Either way
+// a client renders both and reconciles neither.
 //
 // The full ladder the UI renders is `sending → sent → delivered → read`, plus `queued`
 // and `failed`. `sending`, `queued` and `failed` are client-local: they describe a
