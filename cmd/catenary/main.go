@@ -17,9 +17,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/magos/catenary/internal/api"
 	"github.com/magos/catenary/internal/config"
 	"github.com/magos/catenary/internal/store"
+	"github.com/magos/catenary/internal/wire"
+	"github.com/magos/catenary/internal/wireview"
 )
 
 // version is stamped at build time with -ldflags "-X main.version=...".
@@ -108,6 +112,40 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
 `
 }
 
+// serveSync reads one page and maps it, which is the whole of GET /sync's body.
+//
+// It lives at the composition root rather than in either package because it is
+// the only place that legitimately knows about both: the store returns rows and
+// wireview turns rows into wire types, and neither should import the other's
+// transport concerns.
+//
+// MediaURL is the identity for now. CANT-47 decides whether a served url is a
+// presigned R2 GET or a Traefik route, and until it does the honest thing is to
+// hand back the storage key rather than invent a URL shape that would be wrong
+// the moment that lands.
+func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
+	page, err := st.Sync(ctx, viewer, after, limit)
+	if err != nil {
+		return wire.SyncResponse{}, err
+	}
+	readSeq := map[uuid.UUID]int64{}
+	for _, c := range page.Conversations {
+		// first_unread_seq is derived from read_seq, and the page carries the
+		// derivation rather than the column — so the per-message delivery state
+		// is read back off it here.
+		if c.FirstUnreadSeq != nil {
+			readSeq[c.ID] = *c.FirstUnreadSeq - 1
+		} else {
+			readSeq[c.ID] = c.LastSeq
+		}
+	}
+	return wireview.Sync(page, wireview.SyncViewer{
+		UserID:   viewer,
+		ReadSeq:  readSeq,
+		MediaURL: func(storageKey string) string { return storageKey },
+	}, store.ServerTime().Format("2006-01-02T15:04:05.000Z")), nil
+}
+
 // deps is what setup() produces: everything the process needs to serve, built
 // once and owned by runServe.
 type deps struct {
@@ -130,6 +168,22 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	if st != nil {
 		db = st
 	}
+	// CANT-20. Sync is wired whenever there is a store; CallerID is NOT, because
+	// nothing can answer "who is asking" yet — CANT-22's handshake and CANT-29's
+	// refresh rotation own that, both Mode C and both unbuilt.
+	//
+	// So GET /sync is not registered in a real process today. That is the
+	// deliberate outcome: the route exists, is tested end to end against an
+	// injected caller, and turns on the moment authentication does — rather
+	// than shipping now behind a header that would quietly become the auth
+	// scheme.
+	var syncFn func(context.Context, uuid.UUID, int64, int) (wire.SyncResponse, error)
+	if st != nil {
+		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
+			return serveSync(ctx, st, viewer, after, limit)
+		}
+	}
+
 	return deps{
 		cfg:    cfg,
 		logger: logger,
@@ -137,6 +191,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		router: api.NewRouter(api.Deps{
 			Logger:  logger,
 			DB:      db,
+			Sync:    syncFn,
 			Version: buildVersion(),
 			Commit:  commit,
 		}),
