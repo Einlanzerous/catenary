@@ -162,16 +162,85 @@ func attachment(a store.AttachmentRow, v Viewer) wire.Attachment {
 	return nil
 }
 
+// storedTranscript is the transcript_json document, which is deliberately NOT a
+// whole wire.Transcript: `state` lives in its own CHECKed column so it is
+// queryable, and wire-fields.json says exactly that — Transcript.state ←
+// transcript_state, everything else ← transcript_json.
+//
+// It needs its own type BECAUSE the wire type validates. CANT-25 gave
+// wire.Transcript an UnmarshalJSON that requires `state`, and decoding the
+// stored document straight into it therefore fails — which it silently did,
+// dropping text, segments, engine, language and word_count on the floor, until
+// the field-map oracle caught it. Decoding a partial document into a type that
+// demands a whole one is the bug; a type that matches what is stored is the
+// fix.
+type storedTranscript struct {
+	Text      *string         `json:"text,omitempty"`
+	WordCount *int64          `json:"word_count,omitempty"`
+	Segments  []storedSegment `json:"segments,omitempty"`
+	Engine    *string         `json:"engine,omitempty"`
+	Language  *string         `json:"language,omitempty"`
+	ETASec    *int64          `json:"eta_sec,omitempty"`
+}
+
+// storedSegment is the same decoupling ONE LEVEL DOWN, and it is not
+// decoration. wire.TranscriptSegment validates too — at_ms is a DurationMs
+// bounded >= 0 and text is required — so pointing storedTranscript at it left
+// the stored document coupled to the wire contract after all.
+//
+// The cost was worse than a rejected segment. encoding/json aborts the whole
+// object at the offending key, and the swallowed error means what survives is
+// whatever it had already reached. transcript_json is JSONB, which stores keys
+// in canonical order — length, then bytewise — so `segments` sorts before
+// `word_count`: one bad segment silently cost the word count AND truncated the
+// segment list, which are what search's JUMP TO and playback highlighting read,
+// while `state` still said `ready` from its own column.
+//
+// A stored-document type has to mirror what is stored all the way down, or the
+// decoupling is only at the root.
+type storedSegment struct {
+	AtMs int64  `json:"at_ms"`
+	Text string `json:"text"`
+}
+
+// segments lifts the stored segments onto the wire — a copy rather than a cast,
+// because the two types are deliberately separate.
+func segments(stored []storedSegment) []wire.TranscriptSegment {
+	if len(stored) == 0 {
+		return nil
+	}
+	out := make([]wire.TranscriptSegment, len(stored))
+	for i, s := range stored {
+		out[i] = wire.TranscriptSegment{AtMs: wire.DurationMs(s.AtMs), Text: s.Text}
+	}
+	return out
+}
+
+func decodeStoredTranscript(raw []byte) storedTranscript {
+	var st storedTranscript
+	if len(raw) > 0 {
+		// A malformed document yields whatever parsed rather than a panic; the
+		// state column still describes it truthfully. "Whatever parsed" is the
+		// honest description — it used to say "the zero value", which held only
+		// while storedTranscript carried no validating types. This is the one place
+		// the error is dropped, and it is dropped because the column is the
+		// authority on state and a half-read document is still servable.
+		_ = json.Unmarshal(raw, &st)
+	}
+	return st
+}
+
 // transcript takes `state` from its own column and everything else from the
-// stored JSON, which is what wire-fields.json says: transcript_state is a
-// CHECKed column so the state is queryable, and the rest is the authoritative
-// Transcript object as one document.
+// stored JSON.
 func transcript(a store.AttachmentRow) wire.Transcript {
-	var t wire.Transcript
-	if len(a.TranscriptJSON) > 0 {
-		// A malformed document yields the zero value rather than a panic; the
-		// state column below still describes it truthfully.
-		_ = json.Unmarshal(a.TranscriptJSON, &t)
+	st := decodeStoredTranscript(a.TranscriptJSON)
+	t := wire.Transcript{
+		Text:      st.Text,
+		WordCount: st.WordCount,
+		Segments:  segments(st.Segments),
+		Engine:    st.Engine,
+		Language:  st.Language,
+		ETASec:    st.ETASec,
 	}
 	if a.TranscriptState != nil {
 		t.State = wire.TranscriptState(*a.TranscriptState)
@@ -236,12 +305,9 @@ func sourceText(src store.ReplySource) string {
 		return *src.Text
 	}
 	if a := src.FirstAttachment; a != nil && a.Kind == "voice" {
-		var t wire.Transcript
-		if len(a.TranscriptJSON) > 0 {
-			_ = json.Unmarshal(a.TranscriptJSON, &t)
-		}
-		if t.Text != nil {
-			return *t.Text
+		// The stored document, not a wire.Transcript — see storedTranscript.
+		if st := decodeStoredTranscript(a.TranscriptJSON); st.Text != nil {
+			return *st.Text
 		}
 	}
 	return ""

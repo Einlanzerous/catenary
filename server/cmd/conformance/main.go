@@ -6,14 +6,28 @@
 // mean the two clients agreed with each other and neither was checked against
 // the thing they actually talk to.
 //
-// SCOPE, stated rather than implied: this runner executes the roundtrip and
-// ignore cases and SKIPS the reject cases. The generated Go decoders do not
-// enforce the schema's constraints, because encoding/json cannot distinguish
-// an absent required scalar from an explicit zero one without a generated
-// UnmarshalJSON that shadows every required field with a pointer. That is
-// mechanical to add and is the first thing P1 should do — the server is the
-// trust boundary, so it is the implementation that most needs to refuse bad
-// input. Until then the skip is counted and printed, never silent.
+// SCOPE: all three kinds — roundtrip, ignore AND reject. Nothing is skipped.
+//
+// CANT-25 closed the gap this comment used to describe. The generated decoders
+// now enforce the schema's constraints, so the ten reject cases run here rather
+// than being counted and printed as skips. The mechanism is an UnmarshalJSON
+// that decodes into a shadow whose fields are all pointers, which is what makes
+// an absent required scalar distinguishable from an explicit zero one —
+// something encoding/json cannot do on its own, and the reason a Message with
+// no seq used to decode cleanly.
+//
+// A reject case passes when the decoder REFUSES it, and NOTHING HERE CHECKS
+// WHY. `reject_seq_zero` would still pass if the minimum check were dropped and
+// some unrelated constraint broke instead.
+//
+// That is a real gap and it is stated rather than papered over. An earlier
+// version of this comment claimed store-side tests assert on the decoder's
+// message; they do not — nothing in either module asserts on a DecodeError's
+// text. Closing it properly means an expected-message field on the vectors,
+// which is a change to the contract all three runners share and wants its own
+// ticket rather than riding along here. The refusal IS printed next to each
+// case, so a reader sees which constraint fired even though no assertion pins
+// it.
 //
 // Run: go run ./cmd/conformance   (from the server/ directory)
 package main
@@ -77,7 +91,7 @@ func main() {
 		os.Exit(2)
 	}
 
-	var failed, skipped int
+	var failed int
 	check := func(name string, ok bool, detail string) {
 		if !ok {
 			failed++
@@ -94,13 +108,20 @@ func main() {
 	}
 
 	for _, c := range doc.Cases {
+		v, err := wire.DecodeNamed(c.Kind, c.JSON)
+
+		// A reject case is the one where an error is the PASS. The detail
+		// carries the decoder's own message, so a reader sees which constraint
+		// fired rather than only that one did.
 		if c.Expect == "reject" {
-			skipped++
-			fmt.Printf("skip  %s  (constraint enforcement is a documented gap in Go)\n", c.Name)
+			if err != nil {
+				check(c.Name, true, "refused: "+err.Error())
+			} else {
+				check(c.Name, false, "DECODED a frame the schema rejects")
+			}
 			continue
 		}
 
-		v, err := wire.DecodeNamed(c.Kind, c.JSON)
 		if err != nil {
 			check(c.Name, false, fmt.Sprintf("decode: %v", err))
 			continue
@@ -145,9 +166,9 @@ func main() {
 
 	total := len(doc.Cases)
 	if failed == 0 {
-		fmt.Printf("\nall green — %d run, %d skipped, %d vectors\n", total-skipped, skipped, total)
+		fmt.Printf("\nall green — %d vectors, none skipped\n", total)
 		return
 	}
-	fmt.Printf("\n%d of %d FAILED (%d skipped)\n", failed, total-skipped, skipped)
+	fmt.Printf("\n%d of %d FAILED\n", failed, total)
 	os.Exit(1)
 }
