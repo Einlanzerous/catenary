@@ -6,15 +6,22 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"time"
+
+	"github.com/google/uuid"
+
+	"github.com/magos/catenary/internal/store"
+	"github.com/magos/catenary/internal/wire"
 )
 
 // Pinger is the readiness check's only dependency. An interface rather than a
-// *pgxpool.Pool so this package does not import the store, and so a test can
+// *pgxpool.Pool so /readyz needs no store, and so a test can
 // hand it a database that fails on demand — the state /readyz exists to report
 // is the one that is hardest to arrange with a real pool.
 type Pinger interface {
@@ -48,6 +55,29 @@ type Deps struct {
 	// so a deploy can be checked against what was meant to ship.
 	Version string
 	Commit  string
+
+	// Sync serves GET /sync. Nil means the route is not registered at all.
+	//
+	// A function rather than the store, so this package still does not import
+	// it: the handler's job is query parsing, status codes and encoding, and
+	// all three are testable without a database. CANT-20 owns what is behind
+	// it.
+	Sync func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error)
+
+	// CallerID answers "who is asking" for an authenticated route. Nil means
+	// those routes are not registered.
+	//
+	// THERE IS NO IMPLEMENTATION OF THIS YET, and that is the honest state
+	// rather than an oversight. Authentication is CANT-22's handshake and
+	// CANT-29's refresh rotation, both Mode C and both unbuilt. Injecting it
+	// keeps CANT-20 from inventing an auth scheme in passing — the failure mode
+	// where a temporary header becomes permanent.
+	//
+	// SO WHILE THIS IS NIL THERE IS NO GET /sync. Not a 401, not an empty page:
+	// the route does not exist. A sync endpoint that cannot identify its caller
+	// would serve one member's log to another, and the safe absence is better
+	// than a placeholder that looks wired.
+	CallerID func(r *http.Request) (uuid.UUID, bool)
 }
 
 // NewRouter builds the HTTP handler.
@@ -91,7 +121,107 @@ func NewRouter(d Deps) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ready"})
 	})
 
+	// Registered only when BOTH are supplied. See CallerID.
+	if d.Sync != nil && d.CallerID != nil {
+		mux.HandleFunc("GET /sync", syncHandler(d))
+	}
+
 	return requestLogger(d.Logger, mux)
+}
+
+// syncHandler serves the reconnect and catch-up read.
+//
+// `after` is the client's cursor and defaults to 0, which is "I have nothing" —
+// a fresh client and one that has lost its state are the same request. `limit`
+// defaults and is bounded by the store, so a caller cannot ask for an unbounded
+// read on a shared Postgres.
+func syncHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		viewer, ok := d.CallerID(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		}
+
+		// A MALFORMED QUERY STRING IS NOT A wire ErrorCode, and this body is
+		// deliberately not a ServerError. The enum has no member for "your
+		// query string is unparseable" — the closest, `internal`, would be a
+		// lie about whose fault it is, and adding one is a wire change under
+		// CANT-74's unresolved compatibility policy. An HTTP 400 with a plain
+		// body says the true thing without touching the contract.
+		after, err := intParam(r, "after", 0)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "after must be a non-negative integer"})
+			return
+		}
+		limit, err := intParam(r, "limit", 0)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "limit must be a non-negative integer"})
+			return
+		}
+
+		page, err := d.Sync(r.Context(), viewer, after, int(limit))
+		if err != nil {
+			// The ids are what a reader needs to find the request again. No
+			// message body reaches a log line, at any level.
+			d.Logger.ErrorContext(r.Context(), "sync failed",
+				"viewer_id", viewer, "after", after, "error", err)
+			// THE CODE COMES FROM THE STORE, never from here. store.SendErrorFor
+			// is the one door the CANT-83 guard leaves open, and it caught this
+			// line writing "internal" as a literal — which is the second
+			// decision about a code that the guard exists to forbid, arriving
+			// in exactly the transport it was written for.
+			//
+			// THE BODY IS A wire.ServerError AND NOT THE store.SendError. Handing
+			// the store type to the encoder emitted its Go field names —
+			// `{"Code":"internal","Retryable":false,"RetryAfterSec":null,
+			// "Cause":{}}` — which is PascalCase, carries no `type` tag, and
+			// leaks the cause. ServerError is `additionalProperties: false`, so
+			// every generated client would refuse to decode that: the one shape
+			// the schema exists to guarantee, absent from the one response that
+			// most needs a client to understand it. Translating here is what
+			// makes SendError a store type rather than a wire type wearing the
+			// wrong name.
+			writeJSON(w, http.StatusInternalServerError, serverError(err, "sync failed"))
+			return
+		}
+		writeJSON(w, http.StatusOK, page)
+	}
+}
+
+// serverError is the 500 body: whatever the store refused with, as the frame
+// the schema promises.
+//
+// errors.As rather than a type assertion, because the store wraps. The
+// TRANSLATION ITSELF lives on store.SendError — the code is CANT-83's decision
+// and building the frame here would mean naming a fallback code in this
+// package, which is exactly the second decision the guard forbids. So this
+// reads "who refused" and the store answers "what the client is told".
+//
+// A nil se is unreachable — SendErrorFor classifies every non-nil error — and
+// Wire is nil-safe anyway rather than this relying on that.
+func serverError(err error, message string) wire.ServerError {
+	var se *store.SendError
+	_ = errors.As(store.SendErrorFor(err), &se)
+	return se.Wire(message)
+}
+
+// intParam reads a non-negative integer query parameter. Absent is the default;
+// present-but-unparseable is an ERROR rather than the default, because a client
+// sending ?after=abc has a bug and silently rewinding it to 0 would replay the
+// entire log at them.
+func intParam(r *http.Request, name string, def int64) (int64, error) {
+	raw := r.URL.Query().Get(name)
+	if raw == "" {
+		return def, nil
+	}
+	v, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || v < 0 {
+		return 0, fmt.Errorf("api: %s %q is not a non-negative integer", name, raw)
+	}
+	return v, nil
 }
 
 func writeJSON(w http.ResponseWriter, code int, body any) {

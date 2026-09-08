@@ -119,6 +119,40 @@ func (e *SendError) Unwrap() error {
 	return e.Cause
 }
 
+// Wire is the refusal as a client sees it, and it is the ONLY way a
+// wire.ServerError gets built from one.
+//
+// This method exists for the same reason Level does: a transport that
+// translated a SendError itself would have to name a code for the case where
+// there is nothing to translate, and that is a second decision about a code
+// outside this file. The guard would have caught it, and it is better designed
+// than caught.
+//
+// THE CAUSE IS DROPPED, DELIBERATELY. It is already on the log line the caller
+// wrote, next to the ids that find the request again; a 500 body goes to a
+// member's browser, and a database error string is not something to hand out
+// there. `message` is the caller's, because only the transport knows which
+// operation failed.
+//
+// A nil receiver answers `internal`, non-retryable — the same shape an
+// unclassified failure gets, rather than an empty code that would fail the
+// enum in every generated decoder.
+func (e *SendError) Wire(message string) wire.ServerError {
+	if e == nil {
+		return wire.ServerError{
+			Code:      wire.ErrorCodeInternal,
+			Message:   message,
+			Retryable: false,
+		}
+	}
+	return wire.ServerError{
+		Code:          e.Code,
+		Message:       message,
+		Retryable:     e.Retryable,
+		RetryAfterSec: e.RetryAfterSec,
+	}
+}
+
 // Level is the level a refusal logs at, and it is a per-CODE decision, so it
 // lives with the codes. `internal` is the server's fault and gets warn; every
 // other code describes the sender's own input and gets info — a non-member send

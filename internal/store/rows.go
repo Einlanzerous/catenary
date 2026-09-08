@@ -82,7 +82,14 @@ type AttachmentRow struct {
 // decides ReplyRef.kind and carries the duration and storage key a voice ref
 // needs — the wire's ReplyRef has no room for more than one.
 type ReplySource struct {
-	MessageID       uuid.UUID
+	MessageID uuid.UUID
+
+	// ConversationID is carried so the mapper can check "same thread" EXACTLY
+	// rather than by looking for the source among the page's own messages —
+	// which cannot answer for a source that is off the page, and so answered
+	// "yes" by default. See wireview.sameConversation.
+	ConversationID uuid.UUID
+
 	AuthorID        uuid.UUID
 	Text            *string
 	FirstAttachment *AttachmentRow

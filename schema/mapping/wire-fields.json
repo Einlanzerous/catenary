@@ -271,7 +271,7 @@
       "kind": "column",
       "table": "conversations",
       "column": "name",
-      "note": "NULL for a direct — the rail shows the other member, which is per reader.",
+      "note": "NULL for a direct — the rail shows the other member, which is per reader. `name` is REQUIRED on the wire, so for kind=direct the served value is RESOLVED from the other member's display_name at serve time (CANT-20). A group reads the column.",
       "nullable_because": "The wire makes name REQUIRED and the column is nullable, and both are right: a group's name is this column, and a direct has none, because the rail shows the OTHER member and that is per reader. The server derives the served name for a direct rather than storing one — storing it would freeze a display name that SyncResponse.users exists to serve live."
     },
     "Conversation.member_count": {
@@ -300,7 +300,7 @@
     },
     "SyncResponse.log_seq": {
       "kind": "derived",
-      "note": "The server's current log_counter value at the moment the page was read."
+      "note": "The caller's new HIGH-WATER MARK, which is the server's log_counter value at read time ONLY when has_more is false. With has_more true it is the last message actually returned, because nothing beyond that was scanned and claiming the head would skip whatever sits between. Both halves come from the schema: \"not the server's head, which may be further along when has_more is true\", and \"deriving this client-side by maxing over messages is wrong the moment a page contains no messages the client can see\". CANT-20 implements it; an earlier note here said only the head, which is the half that is wrong."
     },
     "SyncResponse.messages": {
       "kind": "derived",

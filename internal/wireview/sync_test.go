@@ -1,0 +1,250 @@
+package wireview
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/google/uuid"
+
+	"github.com/magos/catenary/internal/store"
+	"github.com/magos/catenary/internal/wire"
+)
+
+// The strongest form of CANT-20's "the captured response still validates":
+// round-trip OUR OWN output through the decoder, which since CANT-25 enforces
+// every constraint the schema states rather than merely parsing.
+//
+// A response that encodes but would be refused by our own clients is the exact
+// failure the three-runner conformance suite exists to prevent, reached from
+// the producing side.
+func TestAnAssembledSyncResponseValidatesAgainstTheDecoder(t *testing.T) {
+	author := mustUUID(t, nadiaID)
+	reader := mustUUID(t, theoID)
+	conv := mustUUID(t, convID)
+	at := mustTime(t, "2026-08-17T04:22:03.117Z")
+
+	page := store.SyncPage{
+		Messages: []store.MessageRow{{
+			ID:             mustUUID(t, "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f"),
+			ConversationID: conv, AuthorID: author, Seq: 1905, LogSeq: 41251, At: at,
+			Text: ptr("the wire is up"),
+		}},
+		Attachments:  map[uuid.UUID][]store.AttachmentRow{},
+		ReplySources: map[uuid.UUID]store.ReplySource{},
+		Conversations: []store.ConversationRow{{
+			ID: conv, Kind: "group", Name: ptr("Sunday Dinner"),
+			LastSeq: 1908, MemberCount: 7, FirstUnreadSeq: ptr(int64(1906)),
+		}},
+		Users: []store.UserRow{
+			{ID: author, DisplayName: "Nadia Ruiz"},
+			{ID: reader, DisplayName: "Theo"},
+		},
+		HighWater: 41254,
+		HasMore:   true,
+	}
+
+	got := Sync(page, SyncViewer{
+		UserID: reader, ReadSeq: map[uuid.UUID]int64{conv: 1905}, MediaURL: noMedia,
+	}, "2026-08-17T04:32:00.000Z")
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, err := wire.DecodeNamed("SyncResponse", raw); err != nil {
+		t.Fatalf("our own SyncResponse does not validate: %v\n%s", err, raw)
+	}
+}
+
+// The three arrays are REQUIRED on the wire, and `null` is not an empty array
+// to a decoder that validates — which all three now do. An empty page is the
+// commonest response a caught-up client gets, so it is the one most likely to
+// be shipped broken.
+func TestAnEmptyPageEncodesAsEmptyArraysAndStillValidates(t *testing.T) {
+	got := Sync(store.SyncPage{HighWater: 7}, SyncViewer{
+		UserID: mustUUID(t, theoID), MediaURL: noMedia,
+	}, "2026-08-17T04:32:00.000Z")
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	for _, field := range []string{`"messages":[]`, `"conversations":[]`, `"users":[]`} {
+		if !strings.Contains(string(raw), field) {
+			t.Errorf("empty page is missing %s: %s", field, raw)
+		}
+	}
+	if _, err := wire.DecodeNamed("SyncResponse", raw); err != nil {
+		t.Fatalf("an empty page does not validate: %v\n%s", err, raw)
+	}
+}
+
+// `initials` is server-derived so web and Flutter cannot disagree — the same
+// reason peaks are computed once. The rule is fixed by the sync_response
+// vector, which is the only place it is written down.
+func TestInitialsFollowTheVectorsRule(t *testing.T) {
+	for _, tc := range []struct{ name, want string }{
+		{"Nadia Ruiz", "NR"}, // the vector
+		{"Theo", "TH"},       // the vector: one word gives two letters
+		{"ada lovelace king", "AL"},
+		{"cher", "CH"},
+		{"J", "J"},
+		// "" IS THE DERIVATION'S ANSWER, NOT THE WIRE'S. initials() reports what
+		// it found; whether an empty result may be sent is user()'s decision,
+		// and TestAnEmptyDerivationLeavesInitialsAbsent is where that is fixed.
+		// Reading these two rows as "the wire allows empty initials" is the
+		// mistake — User.initials is minLength: 1.
+		{"", ""},
+		{"  ", ""},
+		{"!!!", ""},               // storable: display_name is TEXT NOT NULL with no CHECK
+		{"Jean-Luc Picard", "JL"}, // punctuation is a separator, not a glyph
+		{"陳 大文", "陳大"},
+	} {
+		if got := initials(tc.name); got != tc.want {
+			t.Errorf("initials(%q) = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A direct conversation has no stored name — 0002 declines to store one because
+// the rail shows the OTHER member, which is per reader. The wire requires
+// `name`, so the store resolves it and the mapper uses it.
+func TestADirectConversationIsNamedForTheOtherMember(t *testing.T) {
+	got := conversation(store.ConversationRow{
+		ID: mustUUID(t, convID), Kind: "direct", Name: nil,
+		OtherMemberName: ptr("Nadia Ruiz"), LastSeq: 3, MemberCount: 2,
+	})
+	if got.Name != "Nadia Ruiz" {
+		t.Errorf("name = %q, want the other member's — a direct has no stored name", got.Name)
+	}
+}
+
+// YOUR OWN MESSAGE IS `sent`, AND IT IS THE ONLY MESSAGE THIS FIELD IS SHOWN ON.
+//
+// MessageRow.vue guards the status label with `v-if="mine"`, so a `state`
+// derived from the reader's own read_seq was wrong in exactly the place the UI
+// renders it — and in a conversation where the reader is the only sender, every
+// message they had ever sent came back `read` on every reconnect, with nobody
+// having read anything. `sent` is what this service's own send path acks for
+// the same message, and two answers for one message is the Invariant 3 failure.
+//
+// The old derivation is the second case here: it would have returned `read`,
+// because seq 1905 <= read_seq 1905.
+func TestYourOwnMessageIsSentAndNotWhateverYouHaveRead(t *testing.T) {
+	reader := mustUUID(t, theoID)
+	other := mustUUID(t, nadiaID)
+	conv := mustUUID(t, convID)
+	v := SyncViewer{UserID: reader, ReadSeq: map[uuid.UUID]int64{conv: 1905}, MediaURL: noMedia}
+
+	for _, tc := range []struct {
+		name   string
+		author uuid.UUID
+		seq    int64
+		want   wire.DeliveryState
+	}{
+		{"mine, unread by me", reader, 1906, wire.DeliveryStateSent},
+		{"mine, behind my own read_seq", reader, 1905, wire.DeliveryStateSent},
+		{"theirs, behind my read_seq", other, 1905, wire.DeliveryStateRead},
+		{"theirs, ahead of my read_seq", other, 1906, wire.DeliveryStateDelivered},
+	} {
+		got := deliveryState(store.MessageRow{
+			ConversationID: conv, AuthorID: tc.author, Seq: tc.seq,
+		}, v)
+		if got != tc.want {
+			t.Errorf("%s: state = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A name that derives to nothing produces NO `initials` key rather than an
+// empty one. User.initials is minLength: 1, and neither generated decoder
+// enforces minLength today — so `"initials":""` would have shipped as a blank
+// avatar tile in both clients instead of being refused by either.
+//
+// The `omitempty` on a *string means absent is reachable at all; this asserts
+// the mapper actually takes it.
+func TestAnEmptyDerivationLeavesInitialsAbsent(t *testing.T) {
+	got := user(store.UserRow{ID: mustUUID(t, nadiaID), DisplayName: "!!!"})
+	if got.Initials != nil {
+		t.Fatalf("initials = %q, want absent — minLength: 1 has no empty member", *got.Initials)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if strings.Contains(string(raw), `"initials"`) {
+		t.Errorf("an empty derivation still emitted the key: %s", raw)
+	}
+	if _, err := wire.DecodeNamed("User", raw); err != nil {
+		t.Fatalf("a user with no derivable initials does not validate: %v\n%s", err, raw)
+	}
+
+	// And the ordinary case still carries it, so the guard above cannot pass by
+	// dropping initials for everyone.
+	with := user(store.UserRow{ID: mustUUID(t, theoID), DisplayName: "Nadia Ruiz"})
+	if with.Initials == nil || *with.Initials != "NR" {
+		t.Errorf("initials = %v, want NR", with.Initials)
+	}
+}
+
+// A REPLY WHOSE SOURCE IS IN ANOTHER CONVERSATION CARRIES NO REF — INCLUDING
+// WHEN THE SOURCE IS NOT ON THE PAGE.
+//
+// The off-page case is the one that was broken and the one that is normal: a
+// reply arrives on this page, the message it answers is older than the cursor,
+// so it is not among page.Messages. The old check searched the page for the
+// source and returned true when it was absent — "the store scoped it" — but the
+// store's scope is a membership guard over the page's conversations, and a
+// reader in two of them has both. So the default carried every off-page source,
+// which is nearly all of them.
+//
+// ReplySource now carries conversation_id and the check compares it, so being
+// off the page changes nothing.
+func TestACrossConversationReplyRefIsDroppedEvenWhenTheSourceIsOffThePage(t *testing.T) {
+	reader := mustUUID(t, theoID)
+	author := mustUUID(t, nadiaID)
+	here := mustUUID(t, convID)
+	elsewhere := mustUUID(t, "3a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d")
+	srcID := mustUUID(t, "9f8e7d6c-5b4a-4392-8180-7f6e5d4c3b2a")
+	at := mustTime(t, "2026-08-17T04:22:03.117Z")
+
+	page := func(srcConv uuid.UUID) store.SyncPage {
+		return store.SyncPage{
+			// One message only: the source is deliberately NOT on the page.
+			Messages: []store.MessageRow{{
+				ID:             mustUUID(t, "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f"),
+				ConversationID: here, AuthorID: author, Seq: 2, LogSeq: 9, At: at,
+				Text: ptr("a reply"), ReplyTo: &srcID,
+			}},
+			Attachments: map[uuid.UUID][]store.AttachmentRow{},
+			ReplySources: map[uuid.UUID]store.ReplySource{srcID: {
+				MessageID: srcID, ConversationID: srcConv, AuthorID: author,
+				Text: ptr("the source"),
+			}},
+			Conversations: []store.ConversationRow{{
+				ID: here, Kind: "group", Name: ptr("Sunday Dinner"),
+				LastSeq: 2, MemberCount: 7,
+			}},
+			Users:     []store.UserRow{{ID: author, DisplayName: "Nadia Ruiz"}},
+			HighWater: 9,
+		}
+	}
+	v := SyncViewer{UserID: reader, ReadSeq: map[uuid.UUID]int64{}, MediaURL: noMedia}
+
+	got := Sync(page(elsewhere), v, "2026-08-17T04:32:00.000Z")
+	if ref := got.Messages[0].ReplyTo; ref != nil {
+		t.Errorf("an off-page source in another conversation was served as a ref: %+v", ref)
+	}
+
+	// Same source, same off-page position, its own conversation: the ref stands.
+	// Without this the test would pass by dropping every reply ref.
+	got = Sync(page(here), v, "2026-08-17T04:32:00.000Z")
+	ref := got.Messages[0].ReplyTo
+	if ref == nil {
+		t.Fatalf("an in-conversation source off the page lost its ref")
+	}
+	if ref.Preview != "the source" {
+		t.Errorf("preview = %q, want the source's text", ref.Preview)
+	}
+}
