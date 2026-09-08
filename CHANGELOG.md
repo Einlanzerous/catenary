@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.0](https://github.com/Einlanzerous/catenary/compare/v0.2.0...v0.3.0) (2026-09-08)
+
+
+### Features
+
+* the Go decoders validate, and no vector is skipped in any runner ([52248b1](https://github.com/Einlanzerous/catenary/commit/52248b1e17c29b6e4796453563789b0f3bfccf2c))
+
+
+### Bug Fixes
+
+* the five nits, and a claim I got backwards ([2c47ddf](https://github.com/Einlanzerous/catenary/commit/2c47ddf1cf305396002b41c7acc678757794f519))
+
 ## [0.2.0](https://github.com/Einlanzerous/catenary/compare/v0.1.0...v0.2.0) (2026-09-07)
 
 
