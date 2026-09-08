@@ -13,7 +13,8 @@
     "gen": "node ../schema/codegen/generate.mjs",
     "gen:check": "node ../schema/codegen/generate.mjs --check",
     "conformance": "vite build --ssr conformance.ts --outDir dist-conformance --logLevel warn && node dist-conformance/conformance.js",
-    "validate": "vite build --ssr validate.ts --outDir dist-validate --logLevel warn && node dist-validate/validate.js"
+    "validate": "vite build --ssr validate.ts --outDir dist-validate --logLevel warn && node dist-validate/validate.js",
+    "readstate": "vite build --ssr readstate.ts --outDir dist-readstate --logLevel warn && node dist-readstate/readstate.js"
   },
   "dependencies": {
     "vue": "^3.5.13"

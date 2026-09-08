@@ -4,6 +4,7 @@ dist/
 dist-smoke/
 dist-conformance/
 dist-validate/
+dist-readstate/
 server/bin/
 dart/.dart_tool/
 
