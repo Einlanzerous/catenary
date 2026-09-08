@@ -136,8 +136,11 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 // `delivered` otherwise — they are receiving it in this very response, which is
 // what delivered means.
 //
-// CANT-26 owns read state proper, and `read_by` — the count of other members
-// who have read it — is its query and stays omitted rather than guessed.
+// `read_by` is the other half of read state and it IS served, for every message
+// and including zero — see the comment on the loop above. It counts every
+// member who has read the message, the author included, because the fraction it
+// forms with Conversation.member_count has to count one population or it can
+// never close.
 func deliveryState(m store.MessageRow, viewer uuid.UUID, readSeq map[uuid.UUID]int64) wire.DeliveryState {
 	if m.AuthorID == viewer {
 		return wire.DeliveryStateSent

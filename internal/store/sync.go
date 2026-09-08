@@ -30,10 +30,11 @@ type SyncPage struct {
 	Attachments  map[uuid.UUID][]AttachmentRow
 	ReplySources map[uuid.UUID]ReplySource
 
-	// ReadBy is how many members OTHER THAN THE AUTHOR have read each message
-	// — the numerator in the canvas's `READ 5/7`. Keyed by message; a message
-	// nobody else has read is absent rather than zero, and the mapper serves
-	// the zero. CANT-26 owns the query; see readstate.go.
+	// ReadBy is how many members have read each message — the numerator in the
+	// canvas's `READ 5/7`, counting the SAME POPULATION MemberCount does, the
+	// author included. Every message on the page has a key, because the author
+	// always counts. CANT-26 owns the query; see readstate.go, which is where
+	// the reasoning for the author clause lives.
 	ReadBy map[uuid.UUID]int64
 
 	Conversations []ConversationRow

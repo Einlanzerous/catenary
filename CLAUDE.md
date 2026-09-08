@@ -100,4 +100,4 @@ Everything else runs to completion and is reviewed afterwards.
 
 ## Testing
 
-`go test ./...`, `npm run smoke` in `web/`, the Dart conformance runner in `dart/`, and `./verify.sh` for the full non-hardware suite. CI builds the binary, runs all three conformance runners against the same 41 vectors, and fails when a generated file and its schema disagree — a generated artefact with no guard is a generated artefact someone hand-edits.
+`go test ./...` — `go test -p 1 ./...` when `CATENARY_TEST_DATABASE_URL` is set, because two packages now reset the one test database and Go runs packages in parallel — plus `npm run smoke` in `web/`, the Dart conformance runner in `dart/`, and `./verify.sh` for the full non-hardware suite, which passes the flag for you. CI builds the binary, runs all three conformance runners against the same 41 vectors, and fails when a generated file and its schema disagree — a generated artefact with no guard is a generated artefact someone hand-edits.
