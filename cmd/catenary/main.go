@@ -128,19 +128,14 @@ func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int
 	if err != nil {
 		return wire.SyncResponse{}, err
 	}
-	// THE COLUMN, NOT THE DERIVATION. first_unread_seq is derived FROM read_seq
-	// and the inversion back is lossy: `*c.FirstUnreadSeq - 1` is the seq before
-	// the first unread one, which is not read_seq whenever the messages in
-	// between are the viewer's own — first_unread_seq skips those by design,
-	// because you cannot have an unread message you sent. The page now carries
-	// cm.read_seq itself, so nothing has to guess.
-	readSeq := make(map[uuid.UUID]int64, len(page.Conversations))
-	for _, c := range page.Conversations {
-		readSeq[c.ID] = c.ReadSeq
-	}
+	// NO READ-STATE MAP HERE ANY MORE. This used to reconstruct read_seq from
+	// first_unread_seq and hand it to the mapper — an inversion that is lossy
+	// in exactly the case the derivation exists for, since first_unread_seq
+	// skips the reader's own messages. wireview.Sync takes it off the page's
+	// own conversation rows now, so there is nothing left for this function to
+	// get wrong. CANT-26.
 	return wireview.Sync(page, wireview.SyncViewer{
 		UserID:   viewer,
-		ReadSeq:  readSeq,
 		MediaURL: func(storageKey string) string { return storageKey },
 	}, store.ServerTime().Format(wireview.TimeLayout)), nil
 }

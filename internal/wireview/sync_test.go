@@ -34,7 +34,7 @@ func TestAnAssembledSyncResponseValidatesAgainstTheDecoder(t *testing.T) {
 		ReplySources: map[uuid.UUID]store.ReplySource{},
 		Conversations: []store.ConversationRow{{
 			ID: conv, Kind: "group", Name: ptr("Sunday Dinner"),
-			LastSeq: 1908, MemberCount: 7, FirstUnreadSeq: ptr(int64(1906)),
+			LastSeq: 1908, MemberCount: 7, ReadSeq: 1905, FirstUnreadSeq: ptr(int64(1906)),
 		}},
 		Users: []store.UserRow{
 			{ID: author, DisplayName: "Nadia Ruiz"},
@@ -44,9 +44,8 @@ func TestAnAssembledSyncResponseValidatesAgainstTheDecoder(t *testing.T) {
 		HasMore:   true,
 	}
 
-	got := Sync(page, SyncViewer{
-		UserID: reader, ReadSeq: map[uuid.UUID]int64{conv: 1905}, MediaURL: noMedia,
-	}, "2026-08-17T04:32:00.000Z")
+	got := Sync(page, SyncViewer{UserID: reader, MediaURL: noMedia},
+		"2026-08-17T04:32:00.000Z")
 
 	raw, err := json.Marshal(got)
 	if err != nil {
@@ -135,7 +134,7 @@ func TestYourOwnMessageIsSentAndNotWhateverYouHaveRead(t *testing.T) {
 	reader := mustUUID(t, theoID)
 	other := mustUUID(t, nadiaID)
 	conv := mustUUID(t, convID)
-	v := SyncViewer{UserID: reader, ReadSeq: map[uuid.UUID]int64{conv: 1905}, MediaURL: noMedia}
+	readSeq := map[uuid.UUID]int64{conv: 1905}
 
 	for _, tc := range []struct {
 		name   string
@@ -150,7 +149,7 @@ func TestYourOwnMessageIsSentAndNotWhateverYouHaveRead(t *testing.T) {
 	} {
 		got := deliveryState(store.MessageRow{
 			ConversationID: conv, AuthorID: tc.author, Seq: tc.seq,
-		}, v)
+		}, reader, readSeq)
 		if got != tc.want {
 			t.Errorf("%s: state = %q, want %q", tc.name, got, tc.want)
 		}
@@ -230,7 +229,7 @@ func TestACrossConversationReplyRefIsDroppedEvenWhenTheSourceIsOffThePage(t *tes
 			HighWater: 9,
 		}
 	}
-	v := SyncViewer{UserID: reader, ReadSeq: map[uuid.UUID]int64{}, MediaURL: noMedia}
+	v := SyncViewer{UserID: reader, MediaURL: noMedia}
 
 	got := Sync(page(elsewhere), v, "2026-08-17T04:32:00.000Z")
 	if ref := got.Messages[0].ReplyTo; ref != nil {
@@ -246,5 +245,112 @@ func TestACrossConversationReplyRefIsDroppedEvenWhenTheSourceIsOffThePage(t *tes
 	}
 	if ref.Preview != "the source" {
 		t.Errorf("preview = %q, want the source's text", ref.Preview)
+	}
+}
+
+// read_by IS SERVED FOR EVERY MESSAGE, ZERO INCLUDED — and it is `0` rather
+// than absent, because a sync page always knows the answer. CANT-26's
+// aggregate ran over the whole page, so "nobody else has read it" is a fact the
+// server holds; omitting the field would say "not known", which is a different
+// and untrue thing.
+//
+// The second half is the one a shared variable would break: each message needs
+// its own pointer, or every message ends up reporting the last count computed.
+func TestReadByIsServedPerMessageIncludingZero(t *testing.T) {
+	reader := mustUUID(t, theoID)
+	author := mustUUID(t, nadiaID)
+	conv := mustUUID(t, convID)
+	at := mustTime(t, "2026-08-17T04:22:03.117Z")
+	seen := mustUUID(t, "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f")
+	unseen := mustUUID(t, "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d")
+
+	got := Sync(store.SyncPage{
+		Messages: []store.MessageRow{
+			{ID: seen, ConversationID: conv, AuthorID: author, Seq: 1, LogSeq: 1, At: at, Text: ptr("read by five")},
+			{ID: unseen, ConversationID: conv, AuthorID: author, Seq: 2, LogSeq: 2, At: at, Text: ptr("read by nobody")},
+		},
+		ReadBy: map[uuid.UUID]int64{seen: 5},
+		Conversations: []store.ConversationRow{{
+			ID: conv, Kind: "group", Name: ptr("Sunday Dinner"), LastSeq: 2, MemberCount: 7,
+		}},
+		Users:     []store.UserRow{{ID: author, DisplayName: "Nadia Ruiz"}},
+		HighWater: 2,
+	}, SyncViewer{UserID: reader, MediaURL: noMedia}, "2026-08-17T04:32:00.000Z")
+
+	for i, want := range []int64{5, 0} {
+		rb := got.Messages[i].ReadBy
+		if rb == nil {
+			t.Errorf("message %d has no read_by; a page always knows the count", i)
+			continue
+		}
+		if *rb != want {
+			t.Errorf("message %d read_by = %d, want %d", i, *rb, want)
+		}
+	}
+	// Distinct pointers, not one variable shared across the loop.
+	if got.Messages[0].ReadBy == got.Messages[1].ReadBy {
+		t.Error("both messages point at the same read_by")
+	}
+
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if _, err := wire.DecodeNamed("SyncResponse", raw); err != nil {
+		t.Fatalf("a page carrying read_by does not validate: %v\n%s", err, raw)
+	}
+}
+
+// The read state that drives `read` vs `delivered` comes off the PAGE now, not
+// off a map the caller built. This is the seam CANT-20's review flagged as
+// redundant, deleted rather than covered: a caller can no longer supply a
+// read_seq the page does not support, which is how the lossy inversion lived at
+// the composition root.
+func TestReadStateComesOffThePagesOwnConversationRow(t *testing.T) {
+	reader := mustUUID(t, theoID)
+	author := mustUUID(t, nadiaID)
+	conv := mustUUID(t, convID)
+	at := mustTime(t, "2026-08-17T04:22:03.117Z")
+
+	page := func(readSeq int64) store.SyncPage {
+		return store.SyncPage{
+			Messages: []store.MessageRow{
+				{ID: mustUUID(t, "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f"), ConversationID: conv,
+					AuthorID: author, Seq: 1, LogSeq: 1, At: at, Text: ptr("one")},
+				{ID: mustUUID(t, "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"), ConversationID: conv,
+					AuthorID: author, Seq: 2, LogSeq: 2, At: at, Text: ptr("two")},
+			},
+			Conversations: []store.ConversationRow{{
+				ID: conv, Kind: "group", Name: ptr("Sunday Dinner"),
+				LastSeq: 2, MemberCount: 7, ReadSeq: readSeq,
+			}},
+			Users:     []store.UserRow{{ID: author, DisplayName: "Nadia Ruiz"}},
+			HighWater: 2,
+		}
+	}
+	v := SyncViewer{UserID: reader, MediaURL: noMedia}
+
+	got := Sync(page(1), v, "2026-08-17T04:32:00.000Z")
+	if got.Messages[0].State != wire.DeliveryStateRead {
+		t.Errorf("seq 1 with read_seq 1 = %q, want read", got.Messages[0].State)
+	}
+	if got.Messages[1].State != wire.DeliveryStateDelivered {
+		t.Errorf("seq 2 with read_seq 1 = %q, want delivered", got.Messages[1].State)
+	}
+
+	// And the row is what moves it — nothing else can.
+	got = Sync(page(2), v, "2026-08-17T04:32:00.000Z")
+	if got.Messages[1].State != wire.DeliveryStateRead {
+		t.Errorf("seq 2 with read_seq 2 = %q, want read", got.Messages[1].State)
+	}
+
+	// A conversation absent from the page contributes nothing, and the safe
+	// direction is `delivered`: a message is never claimed read on a page that
+	// cannot support the claim.
+	orphan := page(2)
+	orphan.Conversations = nil
+	got = Sync(orphan, v, "2026-08-17T04:32:00.000Z")
+	if got.Messages[0].State != wire.DeliveryStateDelivered {
+		t.Errorf("with no conversation row, state = %q, want delivered", got.Messages[0].State)
 	}
 }

@@ -16,15 +16,19 @@ import (
 	"github.com/magos/catenary/internal/wire"
 )
 
-// SyncViewer is the reader, plus the read state needed to say what they have
-// seen. It is separate from Viewer because a page's per-message delivery state
-// is derived here rather than supplied per message.
+// SyncViewer is the reader. It is separate from Viewer because a page's
+// per-message delivery state is derived here rather than supplied per message.
+//
+// IT NO LONGER CARRIES READ STATE, AND THAT IS THE POINT. It used to take a
+// `ReadSeq map[uuid.UUID]int64` that the caller built, which meant the
+// composition root reconstructed read_seq from first_unread_seq — a lossy
+// inversion that reported every message a lone sender had ever written as
+// read. CANT-20's review found that, and noted the map was redundant anyway:
+// Sync already receives the page, and ConversationRow carries the column. So
+// the seam is gone rather than covered, and there is no second place for the
+// next transport to build the same map differently.
 type SyncViewer struct {
-	UserID uuid.UUID
-
-	// ReadSeq is the reader's read_seq per conversation, from the same page.
-	ReadSeq map[uuid.UUID]int64
-
+	UserID   uuid.UUID
 	MediaURL func(storageKey string) string
 }
 
@@ -38,6 +42,15 @@ type SyncViewer struct {
 const TimeLayout = wireTimeLayout
 
 func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncResponse {
+	// Read state comes off the page's own conversation rows. A conversation
+	// with no row here contributes nothing, and deliveryState treats an absent
+	// entry as "nothing read" — which is the safe direction: a message shows
+	// as delivered rather than as read on a claim the page cannot support.
+	readSeq := make(map[uuid.UUID]int64, len(page.Conversations))
+	for _, c := range page.Conversations {
+		readSeq[c.ID] = c.ReadSeq
+	}
+
 	out := wire.SyncResponse{
 		LogSeq:     wire.LogSeq(page.HighWater),
 		HasMore:    page.HasMore,
@@ -61,14 +74,19 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 				}
 			}
 		}
+		// READ_BY IS SERVED FOR EVERY MESSAGE, ZERO INCLUDED. A sync page
+		// always knows the answer — CANT-26's aggregate ran over the whole
+		// page — so `0` means "nobody else has read it" and is a fact, where
+		// omitting the field would mean "not known" and is not one. It is
+		// taken by address per iteration because the wire field is a pointer;
+		// a shared variable would leave every message pointing at the last
+		// count computed.
+		readBy := page.ReadBy[m.ID]
 		out.Messages = append(out.Messages, Message(m, page.Attachments[m.ID], src, Viewer{
 			UserID:   v.UserID,
-			State:    deliveryState(m, v),
+			State:    deliveryState(m, v.UserID, readSeq),
+			ReadBy:   &readBy,
 			MediaURL: v.MediaURL,
-			// ReadBy is CANT-26's: it counts how many OTHER members have read
-			// the message, which needs a query over every member's read_seq.
-			// Optional on the wire, so omitting it is honest rather than a
-			// placeholder that would be wrong.
 		}))
 	}
 
@@ -120,11 +138,11 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 //
 // CANT-26 owns read state proper, and `read_by` — the count of other members
 // who have read it — is its query and stays omitted rather than guessed.
-func deliveryState(m store.MessageRow, v SyncViewer) wire.DeliveryState {
-	if m.AuthorID == v.UserID {
+func deliveryState(m store.MessageRow, viewer uuid.UUID, readSeq map[uuid.UUID]int64) wire.DeliveryState {
+	if m.AuthorID == viewer {
 		return wire.DeliveryStateSent
 	}
-	if seq, ok := v.ReadSeq[m.ConversationID]; ok && m.Seq <= seq {
+	if seq, ok := readSeq[m.ConversationID]; ok && m.Seq <= seq {
 		return wire.DeliveryStateRead
 	}
 	return wire.DeliveryStateDelivered
