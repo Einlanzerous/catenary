@@ -89,9 +89,19 @@ package store
 //   - CANT-63 draws log_counter when an edit bumps updated_log_seq, and takes
 //     these in this order too.
 //
-// CANT-26's receipt write takes `conversation_members` alone. Nothing in this
-// file takes that row any more, so the two cannot order against each other at
-// all — which is the point of removing it.
+//   - CANT-26's receipt write takes `conversation_members` and, since CANT-89,
+//     `log_counter` after it — the per-member marker that carries
+//     first_unread_seq and muted to that member's other devices.
+//
+// THAT LAST ONE CHANGED THE PICTURE AND THE SENTENCE HERE HAD TO CHANGE WITH
+// IT. This used to say the send path and the receipt path "cannot order against
+// each other at all", which was true while nothing in the receipt path drew
+// from the counter. It no longer is: the two now share `log_counter`. What
+// replaces it is a stronger claim than a coincidence — the send path never
+// touches `conversation_members`, so the counter is the ONLY lock they share,
+// and both take it LAST. No cycle exists in either direction, and none can
+// appear while the counter stays at the bottom of every writer's order, which
+// is what this list is for.
 //
 // The rule lives here rather than on those three tickets because this is the
 // file all of them have to edit, and a rule stated where the work happens is a

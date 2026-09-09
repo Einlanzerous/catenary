@@ -181,10 +181,10 @@ func (s *Store) Sync(ctx context.Context, viewer uuid.UUID, after int64, limit i
 	if err := s.loadReadBy(ctx, tx, &page); err != nil {
 		return SyncPage{}, err
 	}
-	if err := s.loadConversations(ctx, tx, viewer, &page); err != nil {
+	if err := s.loadConversations(ctx, tx, viewer, after, &page); err != nil {
 		return SyncPage{}, err
 	}
-	if err := s.loadUsers(ctx, tx, &page); err != nil {
+	if err := s.loadUsers(ctx, tx, viewer, after, &page); err != nil {
 		return SyncPage{}, err
 	}
 	return page, nil
@@ -310,16 +310,30 @@ func derefStr(p *string) string {
 	return *p
 }
 
-// loadConversations returns every conversation this page touches.
+// loadConversations returns every conversation this page touches, PLUS any
+// whose metadata changed above the caller's cursor — which is the whole of the
+// wire's promise rather than the half of it this used to concede (CANT-89).
 //
-// NOT YET the other half of the wire's promise: "plus any whose metadata
-// changed — head_seq, first_unread_seq, membership". That needs a
-// per-conversation change marker, no column carries one, and no ticket owns it.
-// A client learns about a conversation here the moment a message in it reaches
-// the page, which covers the case the description leads with; a conversation
-// renamed with no new message will not appear until one does. Stated rather
-// than left for a client author to discover.
-func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UUID, page *SyncPage) error {
+// TWO MARKERS, BECAUSE TWO KINDS OF CHANGE. `c.metadata_log_seq` moves when the
+// SHARED metadata does — name, kind, membership, retention — and concerns every
+// member. `cm.metadata_log_seq` moves when THIS viewer's own receipt advances,
+// carrying first_unread_seq and muted to their other devices without waking
+// anybody else's. The membership join scopes both, so a conversation the viewer
+// is not in is unreachable through either.
+//
+// BOUNDED BY THE PAGE'S HIGH WATER, NOT BY head. The transaction is READ
+// COMMITTED, so this statement takes a fresh snapshot after Sync read head and
+// can see a marker that committed in between; and when the page truncates at
+// `limit`, HighWater is the last message's log_seq rather than head — that is
+// the cursor the client will send next, and a conversation above it has not
+// been delivered to that cursor. The messages query is bounded for the same
+// reason and by the same value.
+//
+// The bound applies ONLY to the marker sources. A conversation on the page
+// because one of its messages is must always be served, whatever its marker
+// says, or a client could receive a message for a conversation it has never
+// heard of.
+func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UUID, after int64, page *SyncPage) error {
 	seen := map[uuid.UUID]bool{}
 	var ids []uuid.UUID
 	for _, m := range page.Messages {
@@ -328,9 +342,9 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 			ids = append(ids, m.ConversationID)
 		}
 	}
-	if len(ids) == 0 {
-		return nil
-	}
+	// NO EARLY RETURN ON AN EMPTY id LIST any more: a page with no messages
+	// can still carry a conversation whose metadata moved, which is exactly the
+	// case a rename with no new message produces.
 	rows, err := tx.Query(ctx, `
 		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
 		       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
@@ -343,7 +357,9 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 		  JOIN conversation_members cm
 		    ON cm.conversation_id = c.id AND cm.user_id = $2
 		 WHERE c.id = ANY($1)
-		 ORDER BY c.id`, ids, viewer)
+		    OR (c.metadata_log_seq  > $3 AND c.metadata_log_seq  <= $4)
+		    OR (cm.metadata_log_seq > $3 AND cm.metadata_log_seq <= $4)
+		 ORDER BY c.id`, ids, viewer, after, page.HighWater)
 	if err != nil {
 		return fmt.Errorf("store: sync: conversations: %w", err)
 	}
@@ -359,13 +375,28 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 	return nil
 }
 
-// loadUsers returns every user this page references: a message author, a
-// reply's author, or a member of a returned conversation.
+// loadUsers returns every user this page references — a message author, a
+// reply's author, or a member of a returned conversation — PLUS any whose name
+// changed above the caller's cursor (CANT-89).
 //
-// Without this there is no path from author_id to a display name. Messages
-// carry ids rather than embedded authors so a rename lands everywhere at once,
-// and this array is the other half of that decision.
-func (s *Store) loadUsers(ctx context.Context, tx pgx.Tx, page *SyncPage) error {
+// The second half is what makes "a rename lands everywhere at once" true.
+// Messages carry ids rather than embedded authors precisely so a rename is not
+// frozen into every message ever sent; without a path for the changed record,
+// it landed nowhere at once instead.
+//
+// REACHABILITY IS KEPT ON THE MARKER CLAUSE TOO — ruling 3. A bare
+// `metadata_log_seq > $after` would serve every renamed account to every
+// viewer, including people they share no room with, and would say when each was
+// renamed. That is a widening of what /sync reveals, and deciding it in a query
+// clause is how it would have happened. The EXISTS below is the same
+// reachability loadUsers already has through the member path, applied to the
+// new source: a rename reaches the people who can see the name.
+//
+// It also settles the corner cleanly. A user created and renamed before joining
+// anything is served to nobody, and becomes visible the moment they join —
+// because joining bumps the CONVERSATION, and the existing member path carries
+// them.
+func (s *Store) loadUsers(ctx context.Context, tx pgx.Tx, viewer uuid.UUID, after int64, page *SyncPage) error {
 	seen := map[uuid.UUID]bool{}
 	var ids []uuid.UUID
 	add := func(id uuid.UUID) {
@@ -398,11 +429,19 @@ func (s *Store) loadUsers(ctx context.Context, tx pgx.Tx, page *SyncPage) error 
 			add(id)
 		}
 	}
-	if len(ids) == 0 {
-		return nil
-	}
-	rows, err := tx.Query(ctx,
-		`SELECT id, display_name FROM users WHERE id = ANY($1) ORDER BY id`, ids)
+	// No early return: a renamed user can be the only thing on the page.
+	rows, err := tx.Query(ctx, `
+		SELECT id, display_name
+		  FROM users u
+		 WHERE u.id = ANY($1)
+		    OR (u.metadata_log_seq > $2 AND u.metadata_log_seq <= $3
+		        AND EXISTS (
+		            SELECT 1
+		              FROM conversation_members mine
+		              JOIN conversation_members theirs
+		                ON theirs.conversation_id = mine.conversation_id
+		             WHERE mine.user_id = $4 AND theirs.user_id = u.id))
+		 ORDER BY id`, ids, after, page.HighWater, viewer)
 	if err != nil {
 		return fmt.Errorf("store: sync: users: %w", err)
 	}

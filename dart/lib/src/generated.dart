@@ -174,6 +174,18 @@ enum ConversationKind {
 ///
 /// Generated clients therefore get this enum for decoding and are expected to widen it
 /// locally — see the `ClientDeliveryState` note in the generated output.
+///
+/// FRESHNESS, AND THERE ARE THREE CASES. `/sync` pages on `log_seq` and a message a
+/// client has already been served is never on a later page, so a held message's state
+/// is not refreshed by catching up. (1) On a message you wrote, `state` and `read_by`
+/// are as of the page or frame that carried it; the socket re-emits the message to you
+/// when another member's receipt moves the count, so a connected client tracks it and a
+/// client that was offline sees the old fraction until it bootstraps. (2) On a message
+/// you did NOT write, `state` is as of your own device's last page — your other
+/// devices' receipts do not refresh it, so a thread you read on your phone still reads
+/// `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the exception and
+/// is refreshed on every page that carries the conversation, which a receipt from any
+/// of your own devices now causes.
 enum DeliveryState {
   sent("sent"),
   delivered("delivered"),
