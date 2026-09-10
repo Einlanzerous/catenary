@@ -871,6 +871,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"handle", "text", false},
 			{"display_name", "text", false},
 			{"created_at", "timestamp with time zone", false},
+			{"metadata_log_seq", "bigint", false},
 			{"deactivated_at", "timestamp with time zone", true},
 		},
 		"devices": {
@@ -889,6 +890,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"last_seq", "bigint", false},
 			{"retention_days", "integer", true},
 			{"created_at", "timestamp with time zone", false},
+			{"metadata_log_seq", "bigint", false},
 		},
 		"conversation_members": {
 			{"conversation_id", "uuid", false},
@@ -896,6 +898,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"joined_at", "timestamp with time zone", false},
 			{"read_seq", "bigint", false},
 			{"muted", "boolean", false},
+			{"metadata_log_seq", "bigint", false},
 		},
 		"messages": {
 			{"id", "uuid", false},

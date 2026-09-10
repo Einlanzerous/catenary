@@ -189,6 +189,25 @@ func (s *Store) markRead(ctx context.Context, conv, user uuid.UUID, upToSeq int6
 		RETURNING cm.read_seq`, conv, user, upToSeq).Scan(&after); err != nil {
 		return ReadReceipt{}, fmt.Errorf("store: mark read: %w", err)
 	}
+	// CANT-89 RULING 1 — the member's own devices need this page back.
+	//
+	// ONLY WHEN THE MARK MOVED. `Advanced` already exists to keep a duplicate
+	// receipt from waking every device in the room to tell it nothing changed,
+	// and the same reasoning applies with more force to a counter draw: a
+	// no-op receipt would enter the deployment-wide serialised section to
+	// record that nothing happened.
+	//
+	// The member row is already locked, from the FOR UPDATE above, so this
+	// takes conversation_members before log_counter — the order messages.go
+	// states outward, counter last. The send path never touches this table, so
+	// the only lock the two paths share is the counter and both take it last:
+	// no cycle exists in either direction.
+	if after > before {
+		if _, err := newMetadataBump().member(conv, user).apply(ctx, tx); err != nil {
+			return ReadReceipt{}, err
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return ReadReceipt{}, fmt.Errorf("store: mark read: commit: %w", err)
 	}

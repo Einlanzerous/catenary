@@ -61,12 +61,23 @@ package store
 // — `devices(sender_device_id)` are locked for the FIRST time at position 11,
 // after the log_counter draw.
 //
-// No path in this service takes a conflicting lock on either today, which is
-// why this is a note and not a defect: `users.deactivated_at` and
+// No path in this service takes a conflicting lock on either, and CANT-91 is
+// the ticket that had to keep it that way rather than inherit it. The argument
+// is the same one in both places: `users.deactivated_at` and
 // `devices.revoked_at` are non-key updates, so they take FOR NO KEY UPDATE and
-// do not conflict with KEY SHARE, and the only DELETEs against those tables are
-// the RESTRICT assertions in schema_test.go. Two sends never contend, because
+// do not conflict with KEY SHARE; the only DELETEs against those tables are the
+// RESTRICT assertions in schema_test.go; and two sends never contend, because
 // KEY SHARE is shared.
+//
+// `internal/store/metadata.go` locks `users` and `conversation_members` FOR NO
+// KEY UPDATE FOR THIS REASON AND NOT BY HABIT. It has to take those rows before
+// it draws — the counter is last there too — so a FOR UPDATE would hold a user
+// row while waiting on the counter, against a send holding the counter and
+// waiting for KEY SHARE on the same user at position 11. That is a cycle no
+// ordering can remove, because the counter is genuinely before `users` for a
+// bump and after it for a send. The weaker lock is what makes the two paths
+// compose, and anything that later locks a user or member row owes the same
+// argument.
 //
 // It is written down anyway for the two tickets most likely to want a key-level
 // lock there: CANT-33 offboards accounts, and CANT-63 touches this file. A
@@ -89,9 +100,21 @@ package store
 //   - CANT-63 draws log_counter when an edit bumps updated_log_seq, and takes
 //     these in this order too.
 //
-// CANT-26's receipt write takes `conversation_members` alone. Nothing in this
-// file takes that row any more, so the two cannot order against each other at
-// all — which is the point of removing it.
+//   - CANT-26's receipt write takes `conversation_members` and, since CANT-89,
+//     `log_counter` after it — the per-member marker that carries
+//     first_unread_seq and muted to that member's other devices.
+//
+// THAT LAST ONE CHANGED THE PICTURE AND THE SENTENCE HERE HAD TO CHANGE WITH
+// IT. This used to say the send path and the receipt path "cannot order against
+// each other at all", which was true while nothing in the receipt path drew
+// from the counter. It no longer is: the two now share `log_counter`. What
+// replaces it is a stronger claim than a coincidence — the send path never
+// LOCKS `conversation_members` (it reads it, at the membership EXISTS below;
+// "touches" would be too loose, and this file qualifies that distinction
+// elsewhere), so the counter is the ONLY lock the two share, and both take it
+// LAST. No cycle exists in either direction, and none can
+// appear while the counter stays at the bottom of every writer's order, which
+// is what this list is for.
 //
 // The rule lives here rather than on those three tickets because this is the
 // file all of them have to edit, and a rule stated where the work happens is a
