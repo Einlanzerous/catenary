@@ -2,14 +2,23 @@
 
 ## [0.3.0](https://github.com/Einlanzerous/catenary/compare/v0.2.0...v0.3.0) (2026-09-08)
 
+> **Corrected by hand on 2026-09-10 (CANT-93).** The eight entries from #25–#28 below were absent when this release was cut. Those four PRs were squash-merged with a `CANT-NN:` subject, which is not a conventional-commit type, so release-please never saw them — only #23, which landed as a merge commit, reached the changelog. The work shipped in this release either way; only the record of it was missing.
 
 ### Features
 
+* GET /sync — paging, an honest has_more, and a cursor that can advance past what you cannot see ([5c0488c](https://github.com/Einlanzerous/catenary/commit/5c0488c9157b1edeab68a302f8f8696e4c07ebbf))
+* read state — the receipt write, and one derivation everything unread reads ([ac347f9](https://github.com/Einlanzerous/catenary/commit/ac347f9c6b143519285593e684f34b36ac71d77e))
+* LISTEN/NOTIFY fanout — ids only, and a cap that is a test ([96e5998](https://github.com/Einlanzerous/catenary/commit/96e5998584f9a657872df39aca248642a6c65ce3))
+* your own message says what OTHERS have read, and read_by gets a screen ([09fa7b6](https://github.com/Einlanzerous/catenary/commit/09fa7b6ac4fc36870fba8bd512e79b72615388bc))
 * the Go decoders validate, and no vector is skipped in any runner ([52248b1](https://github.com/Einlanzerous/catenary/commit/52248b1e17c29b6e4796453563789b0f3bfccf2c))
 
 
 ### Bug Fixes
 
+* your own message is `sent`, and the 500 body is a frame a client can read ([5c0488c](https://github.com/Einlanzerous/catenary/commit/5c0488c9157b1edeab68a302f8f8696e4c07ebbf))
+* read_by and member_count now count the same population, so READ n/n closes ([ac347f9](https://github.com/Einlanzerous/catenary/commit/ac347f9c6b143519285593e684f34b36ac71d77e))
+* raise the gap after LISTEN, and stop claiming a drop that cannot be asserted ([96e5998](https://github.com/Einlanzerous/catenary/commit/96e5998584f9a657872df39aca248642a6c65ce3))
+* the live ladder walked to DELIVERED too, and two claims I got backwards ([09fa7b6](https://github.com/Einlanzerous/catenary/commit/09fa7b6ac4fc36870fba8bd512e79b72615388bc))
 * the five nits, and a claim I got backwards ([2c47ddf](https://github.com/Einlanzerous/catenary/commit/2c47ddf1cf305396002b41c7acc678757794f519))
 
 ## [0.2.0](https://github.com/Einlanzerous/catenary/compare/v0.1.0...v0.2.0) (2026-09-07)
