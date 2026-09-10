@@ -53,11 +53,13 @@ func TestAChangedConversationIsOnThePageWithNoMessageOfItsOwn(t *testing.T) {
 	}
 
 	// A rename in each. The viewer is a member of one of them.
+	//
+	// ONE bump naming both rows, not two bumps. Two would hold log_counter
+	// while asking for the second conversation's row lock, which is the cycle
+	// against SendMessage that metadata.go's header describes — and this test
+	// is where that caller was first written.
 	inTx(ctx, t, pool, func(tx pgx.Tx) error {
-		if _, err := bumpConversationMetadata(ctx, tx, mine); err != nil {
-			return err
-		}
-		_, err := bumpConversationMetadata(ctx, tx, theirs)
+		_, err := newMetadataBump().conversation(mine).conversation(theirs).apply(ctx, tx)
 		return err
 	})
 
@@ -95,10 +97,7 @@ func TestARenamedUserReachesOnlyAViewerWhoSharesARoom(t *testing.T) {
 	}
 
 	inTx(ctx, t, pool, func(tx pgx.Tx) error {
-		if _, err := bumpUserMetadata(ctx, tx, roommate); err != nil {
-			return err
-		}
-		_, err := bumpUserMetadata(ctx, tx, stranger)
+		_, err := newMetadataBump().user(roommate).user(stranger).apply(ctx, tx)
 		return err
 	})
 
@@ -135,7 +134,7 @@ func TestTheMarkerClauseIsBoundedByThePagesHighWater(t *testing.T) {
 	// The rename happens AFTER those messages, so its marker is above the
 	// high-water mark of any page that truncates inside them.
 	inTx(ctx, t, pool, func(tx pgx.Tx) error {
-		_, err := bumpConversationMetadata(ctx, tx, quiet)
+		_, err := newMetadataBump().conversation(quiet).apply(ctx, tx)
 		return err
 	})
 
@@ -187,7 +186,7 @@ func TestAnEmptyConversationIsDiscoverableOnlyIfItsCreationDrew(t *testing.T) {
 	}
 
 	inTx(ctx, t, pool, func(tx pgx.Tx) error {
-		_, err := bumpConversationMetadata(ctx, tx, conv)
+		_, err := newMetadataBump().conversation(conv).apply(ctx, tx)
 		return err
 	})
 

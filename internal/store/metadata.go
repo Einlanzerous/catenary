@@ -1,145 +1,194 @@
 package store
 
-// CANT-89 — the change marker, and the ONE place it is drawn.
+// CANT-89/91 — the change marker, and the ONE place it is drawn.
 //
 // `/sync` serves a conversation or a user whose marker is above the caller's
 // cursor, which is the half of SyncResponse.conversations' and .users' promise
 // that loadConversations and loadUsers used to concede they did not keep.
 //
-// THE DRAW IS NOT IN THE SAME STATEMENT AS THE MUTATION, AND THAT IS
-// DELIBERATE. The obvious shape is a data-modifying CTE:
+// ONE ATOMIC CHANGE DRAWS ONE MARKER, AND LOCKS EVERY ROW IT TOUCHES BEFORE IT
+// DRAWS. That shape is not tidiness; it is the only shape that keeps the
+// counter last, and the first version of this file got it wrong.
 //
-//	WITH d AS (UPDATE log_counter … RETURNING value)
-//	UPDATE conversations SET name = $2, metadata_log_seq = d.value FROM d …
+// A per-row `lock → draw → write` helper is correct for ONE row and unsafe for
+// two. After the first call the transaction holds `log_counter`, so the second
+// call asks for its target's row lock WHILE HOLDING THE COUNTER — the counter is
+// no longer at the bottom of the order. Against a concurrent SendMessage, which
+// takes `conversations(X)` at position 8 and draws at position 10, that is a
+// cycle: the bump holds the counter and wants `conversations(X)`, the send holds
+// `conversations(X)` and wants the counter. Postgres resolves it by aborting
+// somebody's send. A membership change is exactly this case — it writes
+// `conversation_members` AND `conversations` — so it is the shape the first
+// caller of this file will have.
 //
-// Postgres documents that sub-statements in WITH "are executed concurrently
-// with each other and with the main query" and that "the order in which the
-// specified updates actually happen is unpredictable". So a CTE cannot promise
-// the conversation row is locked BEFORE the counter row — and messages.go's
-// lock order says the counter is taken LAST for every writer. A send holding
-// conversations(A) and waiting on log_counter, against a rename holding
-// log_counter and waiting on conversations(A), is exactly the cycle that rule
-// exists to prevent. It would also not have covered half the trigger list: a
-// membership change writes conversation_members AND conversations, so "one
-// statement" was never on offer for it.
+// So a caller names every row first and applies once:
 //
-// So each bump is: LOCK the target row, DRAW, WRITE — three statements, one
-// transaction, counter last. What matters is not the statement count but that
-// no drawn value ever crosses a commit boundary, which is Invariant 1 for this
+//	_, err := newMetadataBump().conversation(conv).member(conv, joiner).apply(ctx, tx)
+//
+// THE LOCK ORDER WITHIN A BUMP IS conversations → conversation_members → users
+// → log_counter, and ascending id within each table. Across tables it agrees
+// with messages.go, which takes `conversations` before anything else and the
+// counter last. Within a table it matters for bump-against-bump: two membership
+// changes touching {A, B} in opposite orders would deadlock on `conversations`
+// alone, before the counter is ever consulted.
+//
+// AND NO DRAWN VALUE CROSSES A COMMIT BOUNDARY. That is Invariant 1 for this
 // column: a marker drawn in one transaction and written in another is a
-// bigserial by a different route, and the message it loses is a rename that
-// commits after a page has already advanced past its number.
+// bigserial by a different route, and what it loses is a rename that commits
+// after a page has already advanced past its number. metadata_order_test.go's
+// Arm 1 convicts that shape.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"sort"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-// drawMetadataLogSeq takes the next value from the deployment-wide counter, on
-// the CALLER'S transaction.
+type memberKey struct{ conv, user uuid.UUID }
+
+// metadataBump is one atomic metadata change: the rows it touches, and the one
+// marker value all of them get.
 //
-// Private, and the only statement in the service module that draws for a
-// marker — metadata_guard_test.go fails the build on a second one. It is not
-// exported because a caller outside this file could hold the value across a
-// commit, which is the one thing this design forbids; every exported path goes
-// through a bump function below, which draws and writes together.
+// One value for one change is also the more truthful record. Two rows changed
+// together by a membership write are not two events, and giving them two
+// markers would say they were.
+type metadataBump struct {
+	convs   map[uuid.UUID]bool
+	members map[memberKey]bool
+	users   map[uuid.UUID]bool
+}
+
+func newMetadataBump() *metadataBump {
+	return &metadataBump{
+		convs:   map[uuid.UUID]bool{},
+		members: map[memberKey]bool{},
+		users:   map[uuid.UUID]bool{},
+	}
+}
+
+// conversation marks a conversation's SHARED metadata as changed: name, kind,
+// membership, retention.
+func (b *metadataBump) conversation(id uuid.UUID) *metadataBump {
+	b.convs[id] = true
+	return b
+}
+
+// member marks ONE member's per-member state as changed: first_unread_seq and
+// muted. Per member rather than per conversation, which is ruling 1's whole
+// argument — a receipt changes what one person's devices should see, and a
+// conversation-level marker would wake all seven for it.
+func (b *metadataBump) member(conv, user uuid.UUID) *metadataBump {
+	b.members[memberKey{conv, user}] = true
+	return b
+}
+
+// user marks a display name as changed. Whether it REACHES a given reader is
+// ruling 3's reachability guard, which lives in loadUsers' query — it is a fact
+// about the reader, and this type does not have one.
+func (b *metadataBump) user(id uuid.UUID) *metadataBump {
+	b.users[id] = true
+	return b
+}
+
+func sortedIDs(set map[uuid.UUID]bool) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return bytes.Compare(out[i][:], out[j][:]) < 0 })
+	return out
+}
+
+func sortedMembers(set map[memberKey]bool) []memberKey {
+	out := make([]memberKey, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if c := bytes.Compare(out[i].conv[:], out[j].conv[:]); c != 0 {
+			return c < 0
+		}
+		return bytes.Compare(out[i].user[:], out[j].user[:]) < 0
+	})
+	return out
+}
+
+// apply locks every named row, draws once, and writes the marker to all of
+// them, on the CALLER'S transaction. It returns the drawn value.
 //
-// The counter row lock is held from here to commit, which is what makes every
-// value at or below a `SELECT value FROM log_counter` already committed. That
-// property is what lets `/sync` treat the marker exactly as it treats log_seq.
-func drawMetadataLogSeq(ctx context.Context, tx pgx.Tx) (int64, error) {
+// Locking one row per statement rather than `WHERE id = ANY(...) FOR UPDATE`
+// is deliberate: Postgres does not promise the order in which a multi-row lock
+// takes its rows, and the order is the property this function exists to have.
+func (b *metadataBump) apply(ctx context.Context, tx pgx.Tx) (int64, error) {
+	convs, members, users := sortedIDs(b.convs), sortedMembers(b.members), sortedIDs(b.users)
+	if len(convs)+len(members)+len(users) == 0 {
+		return 0, fmt.Errorf("store: metadata bump names no rows")
+	}
+
+	// 1 — every target row, in the documented order. All of it before the draw.
+	for _, id := range convs {
+		var got uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT id FROM conversations WHERE id = $1 FOR UPDATE`, id).Scan(&got)
+		if err == pgx.ErrNoRows {
+			return 0, fmt.Errorf("store: metadata bump: no conversation %s: %w", id, ErrNotAMember)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("store: metadata bump: lock conversation: %w", err)
+		}
+	}
+	for _, k := range members {
+		var got uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT user_id FROM conversation_members
+			 WHERE conversation_id = $1 AND user_id = $2 FOR UPDATE`, k.conv, k.user).Scan(&got)
+		if err == pgx.ErrNoRows {
+			return 0, fmt.Errorf("store: metadata bump: not a member: %w", ErrNotAMember)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("store: metadata bump: lock member: %w", err)
+		}
+	}
+	for _, id := range users {
+		var got uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&got)
+		if err == pgx.ErrNoRows {
+			return 0, fmt.Errorf("store: metadata bump: no user %s", id)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("store: metadata bump: lock user: %w", err)
+		}
+	}
+
+	// 2 — THE COUNTER, LAST, and exactly once for the whole change.
 	var v int64
 	if err := tx.QueryRow(ctx,
 		`UPDATE log_counter SET value = value + 1 WHERE id = 1 RETURNING value`).Scan(&v); err != nil {
 		return 0, fmt.Errorf("store: draw metadata_log_seq: %w", err)
 	}
-	return v, nil
-}
 
-// bumpConversationMetadata marks a conversation's shared metadata as changed:
-// name, kind, membership, retention.
-//
-// LOCKS FIRST. The caller's own UPDATE would take the same row lock, but taking
-// it here rather than trusting the caller is what makes the order a property of
-// this function instead of a convention four call sites have to remember — and
-// a lock already held by this transaction costs nothing to take again.
-//
-// It has no production caller yet, because no rename, promotion or membership
-// change exists (CANT-75 writes the first). That is the point of the guard
-// test: the day one is written, it fails the build until it comes through here.
-func bumpConversationMetadata(ctx context.Context, tx pgx.Tx, conv uuid.UUID) (int64, error) {
-	var id uuid.UUID
-	err := tx.QueryRow(ctx, `SELECT id FROM conversations WHERE id = $1 FOR UPDATE`, conv).Scan(&id)
-	if err == pgx.ErrNoRows {
-		return 0, fmt.Errorf("store: bump conversation metadata: %w", ErrNotAMember)
+	// 3 — the writes. Every row this change touched already locked above, so
+	// nothing here can block on a row the transaction has not got.
+	if len(convs) > 0 {
+		if _, err := tx.Exec(ctx,
+			`UPDATE conversations SET metadata_log_seq = $2 WHERE id = ANY($1)`, convs, v); err != nil {
+			return 0, fmt.Errorf("store: metadata bump: write conversations: %w", err)
+		}
 	}
-	if err != nil {
-		return 0, fmt.Errorf("store: bump conversation metadata: lock: %w", err)
+	for _, k := range members {
+		if _, err := tx.Exec(ctx,
+			`UPDATE conversation_members SET metadata_log_seq = $3
+			  WHERE conversation_id = $1 AND user_id = $2`, k.conv, k.user, v); err != nil {
+			return 0, fmt.Errorf("store: metadata bump: write member: %w", err)
+		}
 	}
-	v, err := drawMetadataLogSeq(ctx, tx)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE conversations SET metadata_log_seq = $2 WHERE id = $1`, conv, v); err != nil {
-		return 0, fmt.Errorf("store: bump conversation metadata: %w", err)
-	}
-	return v, nil
-}
-
-// bumpMemberMetadata marks ONE member's per-member state as changed:
-// first_unread_seq and muted.
-//
-// Per member rather than per conversation, and that is ruling 1's whole
-// argument. A receipt changes what ONE person's devices should see; a
-// conversation-level marker would wake all seven for it.
-func bumpMemberMetadata(ctx context.Context, tx pgx.Tx, conv, user uuid.UUID) (int64, error) {
-	var got uuid.UUID
-	err := tx.QueryRow(ctx,
-		`SELECT user_id FROM conversation_members
-		  WHERE conversation_id = $1 AND user_id = $2 FOR UPDATE`, conv, user).Scan(&got)
-	if err == pgx.ErrNoRows {
-		return 0, fmt.Errorf("store: bump member metadata: %w", ErrNotAMember)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("store: bump member metadata: lock: %w", err)
-	}
-	v, err := drawMetadataLogSeq(ctx, tx)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE conversation_members SET metadata_log_seq = $3
-		  WHERE conversation_id = $1 AND user_id = $2`, conv, user, v); err != nil {
-		return 0, fmt.Errorf("store: bump member metadata: %w", err)
-	}
-	return v, nil
-}
-
-// bumpUserMetadata marks a display name as changed.
-//
-// Reaches only viewers who share a conversation with this user — ruling 3, and
-// the guard lives in loadUsers' query rather than here, because it is a fact
-// about the READER and this function does not have one.
-func bumpUserMetadata(ctx context.Context, tx pgx.Tx, user uuid.UUID) (int64, error) {
-	var id uuid.UUID
-	err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, user).Scan(&id)
-	if err == pgx.ErrNoRows {
-		return 0, fmt.Errorf("store: bump user metadata: no such user %s", user)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("store: bump user metadata: lock: %w", err)
-	}
-	v, err := drawMetadataLogSeq(ctx, tx)
-	if err != nil {
-		return 0, err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE users SET metadata_log_seq = $2 WHERE id = $1`, user, v); err != nil {
-		return 0, fmt.Errorf("store: bump user metadata: %w", err)
+	if len(users) > 0 {
+		if _, err := tx.Exec(ctx,
+			`UPDATE users SET metadata_log_seq = $2 WHERE id = ANY($1)`, users, v); err != nil {
+			return 0, fmt.Errorf("store: metadata bump: write users: %w", err)
+		}
 	}
 	return v, nil
 }

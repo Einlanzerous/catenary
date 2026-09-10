@@ -98,8 +98,10 @@ package store
 // each other at all", which was true while nothing in the receipt path drew
 // from the counter. It no longer is: the two now share `log_counter`. What
 // replaces it is a stronger claim than a coincidence — the send path never
-// touches `conversation_members`, so the counter is the ONLY lock they share,
-// and both take it LAST. No cycle exists in either direction, and none can
+// LOCKS `conversation_members` (it reads it, at the membership EXISTS below;
+// "touches" would be too loose, and this file qualifies that distinction
+// elsewhere), so the counter is the ONLY lock the two share, and both take it
+// LAST. No cycle exists in either direction, and none can
 // appear while the counter stays at the bottom of every writer's order, which
 // is what this list is for.
 //

@@ -91,7 +91,7 @@ func TestAMarkerDrawnOutsideItsTransactionIsLost(t *testing.T) {
 	// mutation's transaction, so there is no gap for the page to fall into and
 	// the rename is on the very next page.
 	inTx(ctx, t, pool, func(tx pgx.Tx) error {
-		_, err := bumpConversationMetadata(ctx, tx, conv)
+		_, err := newMetadataBump().conversation(conv).apply(ctx, tx)
 		return err
 	})
 	fixed, err := st.Sync(ctx, viewer, cursor, 50)
@@ -111,6 +111,16 @@ func TestAMarkerDrawnOutsideItsTransactionIsLost(t *testing.T) {
 // is the same reason logorder_test.go races DISTINCT conversations: a shared
 // row lock upstream would serialise them before the counter was consulted and
 // the test would pass against anything.
+//
+// THE ASSERTION IS ON WHAT THE READER SAW, AND ONLY THAT. An earlier version
+// unioned in a final catch-all `Sync` from the baseline cursor before counting,
+// which made the arm unfalsifiable: every marker is above that baseline and a
+// page with nothing to truncate on returns HighWater = head, so the catch-all
+// alone satisfied the assertion and nothing the reader observed was
+// load-bearing. Swapping the real bump for this file's own badRename/writeMarker
+// pair still reported nothing missing. The claim this arm is written to make is
+// "a client that keeps syncing never misses a rename", so the client's own
+// observations have to be the whole of the evidence.
 func TestEveryRenameReachesAClientThatKeepsSyncing(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
@@ -129,17 +139,18 @@ func TestEveryRenameReachesAClientThatKeepsSyncing(t *testing.T) {
 
 	seen := map[uuid.UUID]bool{}
 	var mu sync.Mutex
-	done := make(chan struct{})
+	renamesDone := make(chan struct{})
+	readerDone := make(chan struct{})
 
-	// The client, advancing its cursor the whole time the renames run.
+	// The client, advancing its cursor monotonically the whole time. Once the
+	// renames are finished it keeps asking until the cursor has settled — a
+	// rename can commit as a page closes, and a client that stopped there
+	// would be reporting its own timing rather than the server's property.
 	go func() {
+		defer close(readerDone)
 		cursor := base.HighWater
+		settled := 0
 		for {
-			select {
-			case <-done:
-				return
-			default:
-			}
 			page, err := st.Sync(ctx, viewer, cursor, 100)
 			if err != nil {
 				return
@@ -150,6 +161,15 @@ func TestEveryRenameReachesAClientThatKeepsSyncing(t *testing.T) {
 			}
 			mu.Unlock()
 			cursor = page.HighWater
+
+			select {
+			case <-renamesDone:
+				if settled++; settled >= 3 {
+					return
+				}
+			default:
+				settled = 0
+			}
 		}
 	}()
 
@@ -160,30 +180,25 @@ func TestEveryRenameReachesAClientThatKeepsSyncing(t *testing.T) {
 			defer wg.Done()
 			tx, err := pool.Begin(ctx)
 			if err != nil {
+				t.Errorf("begin: %v", err)
 				return
 			}
 			defer func() { _ = tx.Rollback(ctx) }()
-			if _, err := bumpConversationMetadata(ctx, tx, conv); err != nil {
+			if _, err := newMetadataBump().conversation(conv).apply(ctx, tx); err != nil {
+				t.Errorf("bump: %v", err)
 				return
 			}
-			_ = tx.Commit(ctx)
+			if err := tx.Commit(ctx); err != nil {
+				t.Errorf("commit: %v", err)
+			}
 		}(conv)
 	}
 	wg.Wait()
-	close(done)
+	close(renamesDone)
+	<-readerDone
 
-	// One final page from wherever the reader got to. Whatever the race did,
-	// every rename must be reachable by a client that is still asking.
-	final, err := st.Sync(ctx, viewer, base.HighWater, 100)
-	if err != nil {
-		t.Fatalf("final sync: %v", err)
-	}
 	mu.Lock()
-	for _, c := range final.Conversations {
-		seen[c.ID] = true
-	}
-	mu.Unlock()
-
+	defer mu.Unlock()
 	var missing int
 	for _, conv := range convs {
 		if !seen[conv] {
@@ -191,6 +206,116 @@ func TestEveryRenameReachesAClientThatKeepsSyncing(t *testing.T) {
 		}
 	}
 	if missing > 0 {
-		t.Errorf("%d of %d renames never reached the client", missing, n)
+		t.Errorf("%d of %d renames never reached a client that kept syncing throughout", missing, n)
+	}
+}
+
+// One atomic change draws ONE marker, and every row it touched carries it.
+//
+// This is the observable consequence of locking every target before drawing.
+// The shape it replaces drew per row, which meant a membership change — two
+// rows, one event — recorded itself as two events, and, worse, held the counter
+// while reaching for the second row's lock.
+func TestOneChangeDrawsOneMarkerForEveryRowItTouches(t *testing.T) {
+	ctx, pool := freshDB(t)
+
+	viewer := mkUser(ctx, t, pool, "viewer")
+	joiner := mkUser(ctx, t, pool, "joiner")
+	a := mkGroup(ctx, t, pool, "A", viewer, joiner)
+	b := mkGroup(ctx, t, pool, "B", viewer)
+
+	before := head(ctx, t, pool)
+	var drawn int64
+	inTx(ctx, t, pool, func(tx pgx.Tx) error {
+		var err error
+		drawn, err = newMetadataBump().
+			conversation(a).conversation(b).
+			member(a, joiner).
+			user(joiner).
+			apply(ctx, tx)
+		return err
+	})
+
+	if got := head(ctx, t, pool); got != before+1 {
+		t.Errorf("counter moved %d → %d for one change touching four rows; want a single draw",
+			before, got)
+	}
+
+	for _, q := range []struct {
+		what string
+		sql  string
+		args []any
+	}{
+		{"conversations A", `SELECT metadata_log_seq FROM conversations WHERE id = $1`, []any{a}},
+		{"conversations B", `SELECT metadata_log_seq FROM conversations WHERE id = $1`, []any{b}},
+		{"the member row", `SELECT metadata_log_seq FROM conversation_members
+			WHERE conversation_id = $1 AND user_id = $2`, []any{a, joiner}},
+		{"the user row", `SELECT metadata_log_seq FROM users WHERE id = $1`, []any{joiner}},
+	} {
+		var got int64
+		mustScan(t, pool.QueryRow(ctx, q.sql, q.args...), &got)
+		if got != drawn {
+			t.Errorf("%s carries marker %d, want the change's own %d", q.what, got, drawn)
+		}
+	}
+}
+
+// A multi-row bump racing the send path must not deadlock.
+//
+// The shape this replaces did: after its first row a per-row helper held
+// log_counter and then asked for the second row's lock, while SendMessage holds
+// `conversations(X)` at position 8 and draws the counter at position 10. Holder
+// of the counter wanting a conversation, against holder of that conversation
+// wanting the counter, is a cycle, and Postgres resolves it by aborting
+// somebody's send — which is what messages.go's lock-order note exists to
+// prevent and what it now describes accurately.
+//
+// A deadlock surfaces as 40P01 rather than as a wrong answer, so "no error over
+// a run of races" is a real assertion rather than a hopeful one.
+func TestAMultiRowBumpDoesNotDeadlockAgainstTheSendPath(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+
+	author := mkUser(ctx, t, pool, "author")
+	first := mkGroup(ctx, t, pool, "First", author)
+	second := mkGroup(ctx, t, pool, "Second", author)
+
+	const rounds = 24
+	errs := make(chan error, rounds*2)
+	var wg sync.WaitGroup
+	for i := 0; i < rounds; i++ {
+		wg.Add(2)
+		// The bump names both conversations, so it wants two row locks and the
+		// counter — the case a per-row helper got wrong.
+		go func() {
+			defer wg.Done()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := newMetadataBump().conversation(first).conversation(second).apply(ctx, tx); err != nil {
+				errs <- err
+				return
+			}
+			if err := tx.Commit(ctx); err != nil {
+				errs <- err
+			}
+		}()
+		// The send takes conversations(second) and then draws.
+		go func() {
+			defer wg.Done()
+			if _, err := st.SendMessage(ctx, NewMessage{
+				ClientID: uuid.New(), ConversationID: second, AuthorID: author, Text: ptr("racing"),
+			}); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("a bump racing the send path failed — a deadlock here is 40P01: %v", err)
 	}
 }

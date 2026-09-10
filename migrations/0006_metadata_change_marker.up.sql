@@ -76,7 +76,7 @@ END $$;
 -- speculative, and a speculative index is a thing nobody later dares remove.
 
 COMMENT ON COLUMN conversations.metadata_log_seq IS
-    'CANT-89. Drawn from log_counter when shared metadata changes — name, kind, membership, retention. /sync serves the conversation when this is above the caller''s cursor, which is the other half of SyncResponse.conversations'' promise. DEFAULT 0 means "never changed and never created through the draw helper": a row left at 0 is invisible to every cursor, which is why creating a conversation must draw and why a guard test bans writing these columns outside internal/store/metadata.go.';
+    'CANT-89. Drawn from log_counter when shared metadata changes — name, kind, membership, retention. /sync serves the conversation when this is above the caller''s cursor, which is the other half of SyncResponse.conversations'' promise. DEFAULT 0 means "never changed and never created through the draw helper": a row left at 0 is invisible to every cursor, which is why creating a conversation must draw. A guard test bans the writes that must move a marker — UPDATE and INSERT ... DO UPDATE against the watched columns, INSERT INTO conversations, and conversation_members insert/delete — outside internal/store/metadata.go.';
 COMMENT ON COLUMN conversation_members.metadata_log_seq IS
     'CANT-89, ruling 1. Drawn when THIS member''s read_seq advances, so their own other devices get first_unread_seq and muted on their next page and no other member is woken. Not drawn when a receipt does not advance the mark — MarkRead.Advanced already carries that distinction.';
 COMMENT ON COLUMN users.metadata_log_seq IS

@@ -54,30 +54,61 @@ var metadataColumns = map[string][]string{
 }
 
 var (
-	reUpdate    = regexp.MustCompile(`(?is)\bUPDATE\s+(\w+)\b(.*?)\bSET\b(.*?)(?:\bFROM\b|\bWHERE\b|\bRETURNING\b|$)`)
-	reInsertCM  = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+conversation_members\b`)
-	reDeleteCM  = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+conversation_members\b`)
-	reWordBreak = regexp.MustCompile(`\w+`)
+	// Both UPDATE forms, because `INSERT … ON CONFLICT DO UPDATE SET` is the
+	// house's own find-or-create idiom (schema_test.go:569) and the plain
+	// `UPDATE <table> … SET` pattern does not see it at all: the (\w+) binds
+	// to SET and then wants a second SET that is not there.
+	reUpdate     = regexp.MustCompile(`(?is)\bUPDATE\s+(\w+)\b(.*?)\bSET\b(.*?)(?:\bFROM\b|\bWHERE\b|\bRETURNING\b|$)`)
+	reDoUpdate   = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+(\w+)\b.*?\bON\s+CONFLICT\b.*?\bDO\s+UPDATE\s+SET\b(.*?)(?:\bWHERE\b|\bRETURNING\b|$)`)
+	reInsertConv = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+conversations\b`)
+	reInsertCM   = regexp.MustCompile(`(?is)\bINSERT\s+INTO\s+conversation_members\b`)
+	reDeleteCM   = regexp.MustCompile(`(?is)\bDELETE\s+FROM\s+conversation_members\b`)
+	reWordBreak  = regexp.MustCompile(`\w+`)
 )
+
+// columnsTouched reports which watched columns a SET clause names.
+func columnsTouched(table, set string) []string {
+	cols, watched := metadataColumns[strings.ToLower(table)]
+	if !watched {
+		return nil
+	}
+	words := map[string]bool{}
+	for _, w := range reWordBreak.FindAllString(strings.ToLower(set), -1) {
+		words[w] = true
+	}
+	var out []string
+	for _, c := range cols {
+		if words[c] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
 
 // offencesIn returns one description per banned write found in the SQL literal.
 func offencesIn(sql string) []string {
 	var out []string
 	for _, m := range reUpdate.FindAllStringSubmatch(sql, -1) {
-		table, set := strings.ToLower(m[1]), strings.ToLower(m[3])
-		cols, watched := metadataColumns[table]
-		if !watched {
-			continue
+		for _, c := range columnsTouched(m[1], m[3]) {
+			out = append(out, "UPDATE "+strings.ToLower(m[1])+" … SET "+c)
 		}
-		words := map[string]bool{}
-		for _, w := range reWordBreak.FindAllString(set, -1) {
-			words[w] = true
+	}
+	for _, m := range reDoUpdate.FindAllStringSubmatch(sql, -1) {
+		for _, c := range columnsTouched(m[1], m[2]) {
+			out = append(out, "INSERT INTO "+strings.ToLower(m[1])+" … DO UPDATE SET "+c)
 		}
-		for _, c := range cols {
-			if words[c] {
-				out = append(out, "UPDATE "+table+" … SET "+c)
-			}
-		}
+	}
+	// CREATING a conversation is a change too, and the one with no second
+	// chance: a row inserted without a draw sits at the DEFAULT 0, which is
+	// below every cursor there is, so it is invisible to every client forever.
+	// That is what TestAnEmptyConversationIsDiscoverableOnlyIfItsCreationDrew
+	// demonstrates, and this is the statement it demonstrates it about.
+	//
+	// `users` is NOT here: a user becomes visible by joining a conversation,
+	// which bumps that conversation, so creation needs no draw and DEFAULT 0
+	// is correct for it.
+	if reInsertConv.MatchString(sql) {
+		out = append(out, "INSERT INTO conversations")
 	}
 	// Membership itself is the change, so the whole statement is the offence
 	// rather than a column within it.
@@ -204,6 +235,24 @@ func TestTheMetadataGuardBites(t *testing.T) {
 			sql:    `DELETE FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`,
 			want:   1,
 			reason: "and CANT-90's read_by counts rows in this table, so a departure moves a fraction too",
+		},
+		{
+			name:   "a find-or-create that renames on conflict",
+			sql:    `INSERT INTO conversations (id, kind, name, direct_key) VALUES ($1,'direct',$2,$3) ON CONFLICT (direct_key) DO UPDATE SET name = EXCLUDED.name RETURNING id`,
+			want:   2,
+			reason: "the plain UPDATE pattern cannot see this at all, and it is the house's own find-or-create idiom — the INSERT and the DO UPDATE SET are both offences",
+		},
+		{
+			name:   "creating a conversation without drawing",
+			sql:    `INSERT INTO conversations (id, kind, name) VALUES ($1, 'group', $2)`,
+			want:   1,
+			reason: "a row left at the DEFAULT 0 is below every cursor there is, so it is invisible to every client forever",
+		},
+		{
+			name:   "creating a user is NOT an offence",
+			sql:    `INSERT INTO users (id, handle, display_name) VALUES ($1, $2, $3)`,
+			want:   0,
+			reason: "a user becomes visible by joining a conversation, which bumps that conversation; DEFAULT 0 is correct for users",
 		},
 		{
 			name:   "a display-name change",

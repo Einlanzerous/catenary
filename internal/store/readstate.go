@@ -203,7 +203,7 @@ func (s *Store) markRead(ctx context.Context, conv, user uuid.UUID, upToSeq int6
 	// the only lock the two paths share is the counter and both take it last:
 	// no cycle exists in either direction.
 	if after > before {
-		if _, err := bumpMemberMetadata(ctx, tx, conv, user); err != nil {
+		if _, err := newMetadataBump().member(conv, user).apply(ctx, tx); err != nil {
 			return ReadReceipt{}, err
 		}
 	}
