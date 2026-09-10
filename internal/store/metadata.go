@@ -54,9 +54,17 @@ package store
 // needs. messages.go's own note relies on the same property for
 // `users.deactivated_at`, and that note names this file now.
 //
-// The same reasoning is why `conversation_members` is locked the same way: a
-// membership insert takes KEY SHARE on `users(joiner)` and would otherwise
-// deadlock against a concurrent rename of that user.
+// `conversation_members` IS LOCKED THE SAME WAY FOR A WEAKER REASON, AND THE
+// DIFFERENCE IS WORTH KEEPING STRAIGHT. Nothing in `migrations/` references
+// that table, so no foreign key ever takes KEY SHARE on a member row and
+// FOR UPDATE there would have been equally safe — markRead still uses it. NKU
+// is chosen for consistency within this function, so that "every lock here is
+// the weakest one that orders" is a rule with no exception to remember, and
+// so that it stays true if something later does reference the table.
+//
+// (The KEY SHARE a membership insert takes is on `users(joiner)`, not on the
+// member row. That is an argument for the `users` lock above, and an earlier
+// draft of this comment filed it here.)
 //
 // AND NO DRAWN VALUE CROSSES A COMMIT BOUNDARY. That is Invariant 1 for this
 // column: a marker drawn in one transaction and written in another is a
