@@ -319,3 +319,61 @@ func TestAMultiRowBumpDoesNotDeadlockAgainstTheSendPath(t *testing.T) {
 		t.Fatalf("a bump racing the send path failed — a deadlock here is 40P01: %v", err)
 	}
 }
+
+// A rename of a user racing that user's own sends must not deadlock, and this
+// is the cycle NO ordering could have removed.
+//
+// SendMessage never locks a user row until position 11, when the insert takes
+// KEY SHARE via `messages.author_id → users(id)` — AFTER the counter draw at
+// position 10. A bump has to take its rows BEFORE its draw. So the counter is
+// genuinely before `users` for one writer and after it for the other, and the
+// only thing that makes them compose is the strength of the lock: FOR NO KEY
+// UPDATE passes straight through KEY SHARE, while FOR UPDATE does not.
+//
+// TestAMultiRowBumpDoesNotDeadlockAgainstTheSendPath does not cover this — its
+// bump names conversations only, and `conversations` IS ordered consistently
+// with the send path. Against FOR UPDATE on the users row this fails with
+// 40P01.
+func TestAUserBumpDoesNotDeadlockAgainstThatUsersSends(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+
+	author := mkUser(ctx, t, pool, "author")
+	conv := mkGroup(ctx, t, pool, "Kitchen Table", author)
+
+	const rounds = 24
+	errs := make(chan error, rounds*2)
+	var wg sync.WaitGroup
+	for i := 0; i < rounds; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			tx, err := pool.Begin(ctx)
+			if err != nil {
+				errs <- err
+				return
+			}
+			defer func() { _ = tx.Rollback(ctx) }()
+			if _, err := newMetadataBump().user(author).apply(ctx, tx); err != nil {
+				errs <- err
+				return
+			}
+			if err := tx.Commit(ctx); err != nil {
+				errs <- err
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			if _, err := st.SendMessage(ctx, NewMessage{
+				ClientID: uuid.New(), ConversationID: conv, AuthorID: author, Text: ptr("racing"),
+			}); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("a user bump racing that user's sends failed — a deadlock here is 40P01: %v", err)
+	}
+}

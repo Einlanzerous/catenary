@@ -26,11 +26,37 @@ package store
 //	_, err := newMetadataBump().conversation(conv).member(conv, joiner).apply(ctx, tx)
 //
 // THE LOCK ORDER WITHIN A BUMP IS conversations → conversation_members → users
-// → log_counter, and ascending id within each table. Across tables it agrees
-// with messages.go, which takes `conversations` before anything else and the
-// counter last. Within a table it matters for bump-against-bump: two membership
-// changes touching {A, B} in opposite orders would deadlock on `conversations`
-// alone, before the counter is ever consulted.
+// → log_counter, and ascending id within each table. Within a table the id
+// order matters for bump-against-bump: two membership changes touching {A, B}
+// in opposite orders would deadlock on `conversations` alone, before the
+// counter is ever consulted.
+//
+// EVERY LOCK HERE IS `FOR NO KEY UPDATE`, AND THAT IS THE SECOND HALF OF THE
+// SAFETY ARGUMENT — the first version used FOR UPDATE and was wrong about
+// `users` in a way that is worth spelling out, because the ordering argument
+// above does NOT cover it.
+//
+// `conversations` is genuinely ordered: SendMessage takes it at position 8,
+// before the counter at position 10, so a bump taking it first agrees. `users`
+// is the inversion. SendMessage never locks a user row until position 11, when
+// the insert takes KEY SHARE via `messages.author_id → users(id)` — AFTER the
+// counter. So a rename bump holding `users(U)` FOR UPDATE and waiting on the
+// counter, against a send holding the counter and waiting for KEY SHARE on
+// `users(U)`, is a cycle, and there is no order this file could choose that
+// removes it: the counter is genuinely before users for one writer and after
+// for the other.
+//
+// FOR NO KEY UPDATE closes it instead of reordering around it. It does not
+// conflict with KEY SHARE, so the FK's lock passes straight through; it still
+// conflicts with itself, so two bumps of one row still serialise; and it is
+// exactly the lock the marker write takes anyway, `metadata_log_seq` being a
+// non-key column — so FOR UPDATE was strictly stronger than anything here
+// needs. messages.go's own note relies on the same property for
+// `users.deactivated_at`, and that note names this file now.
+//
+// The same reasoning is why `conversation_members` is locked the same way: a
+// membership insert takes KEY SHARE on `users(joiner)` and would otherwise
+// deadlock against a concurrent rename of that user.
 //
 // AND NO DRAWN VALUE CROSSES A COMMIT BOUNDARY. That is Invariant 1 for this
 // column: a marker drawn in one transaction and written in another is a
@@ -132,7 +158,7 @@ func (b *metadataBump) apply(ctx context.Context, tx pgx.Tx) (int64, error) {
 	// 1 — every target row, in the documented order. All of it before the draw.
 	for _, id := range convs {
 		var got uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT id FROM conversations WHERE id = $1 FOR UPDATE`, id).Scan(&got)
+		err := tx.QueryRow(ctx, `SELECT id FROM conversations WHERE id = $1 FOR NO KEY UPDATE`, id).Scan(&got)
 		if err == pgx.ErrNoRows {
 			return 0, fmt.Errorf("store: metadata bump: no conversation %s: %w", id, ErrNotAMember)
 		}
@@ -143,7 +169,7 @@ func (b *metadataBump) apply(ctx context.Context, tx pgx.Tx) (int64, error) {
 	for _, k := range members {
 		var got uuid.UUID
 		err := tx.QueryRow(ctx, `SELECT user_id FROM conversation_members
-			 WHERE conversation_id = $1 AND user_id = $2 FOR UPDATE`, k.conv, k.user).Scan(&got)
+			 WHERE conversation_id = $1 AND user_id = $2 FOR NO KEY UPDATE`, k.conv, k.user).Scan(&got)
 		if err == pgx.ErrNoRows {
 			return 0, fmt.Errorf("store: metadata bump: not a member: %w", ErrNotAMember)
 		}
@@ -153,7 +179,7 @@ func (b *metadataBump) apply(ctx context.Context, tx pgx.Tx) (int64, error) {
 	}
 	for _, id := range users {
 		var got uuid.UUID
-		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, id).Scan(&got)
+		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR NO KEY UPDATE`, id).Scan(&got)
 		if err == pgx.ErrNoRows {
 			return 0, fmt.Errorf("store: metadata bump: no user %s", id)
 		}

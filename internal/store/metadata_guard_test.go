@@ -200,8 +200,15 @@ func TestOnlyOneFileMovesAMetadataMarker(t *testing.T) {
 Anything that changes what /sync serves for a conversation, a member or a user
 has to draw a new metadata_log_seq in the same transaction, or the change is
 invisible to every client whose cursor is already past it — which is the whole
-of CANT-89. Route the write through bumpConversationMetadata,
-bumpMemberMetadata or bumpUserMetadata in %s.
+of CANT-89. Name every row the change touches in ONE bump and apply it on your own
+transaction, in %s:
+
+    _, err := newMetadataBump().conversation(conv).member(conv, joiner).apply(ctx, tx)
+
+One bump rather than several, because a bump holds log_counter from its draw to
+your commit: a second apply() in the same transaction would reach for its target
+row while holding the counter, which is the cycle against SendMessage that the
+header of that file describes.
 
 If you are adding a column whose change does NOT need to reach a client, add it
 to neither this guard nor the marker; if it does, add it to metadataColumns
