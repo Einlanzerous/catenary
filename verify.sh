@@ -9,8 +9,9 @@
 # FOUR STEPS HERE SKIP rather than fail when what they need is absent, and a
 # skip is not a pass:
 #
-#   Dart            both the analyze and the conformance runner, when `dart` is
-#                   not on PATH or at $DART.
+#   Dart            both the analyze and the conformance runner — and the
+#                   dependency step below, on the same condition — when `dart`
+#                   is not on PATH or at $DART.
 #   the database    the store's schema tests, when CATENARY_TEST_DATABASE_URL is
 #                   unset. `go test` still runs; those tests call t.Skip.
 #   the served page CANT-26's client-rule check, on the same condition — its
@@ -23,6 +24,12 @@
 # can never pass there is a red light everyone learns to ignore. CI forces the
 # first two present — `setup-dart` and the Postgres service — so only R6
 # actually skips there.
+#
+# THE FIRST STEP RESOLVES DEPENDENCIES, and only when they are missing. Without
+# it this script was green on its SECOND run in a fresh worktree and red on its
+# first, for reasons having nothing to do with the change under test — which is
+# the same "red light everyone learns to ignore" the paragraph above is about,
+# arriving from the other direction. See CANT-94.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,6 +87,90 @@ result() {
     fails=$((fails + 1))
   fi
 }
+
+# DEPENDENCIES FIRST, BECAUSE ONE COMMAND HAS TO MEAN ONE COMMAND.
+#
+# CANT-94. This file's own header promises a spike's evidence is reproducible
+# without a tour, and it was not: `ci.yml` runs `npm ci` and `dart pub get`
+# BEFORE calling this script, so CI and a local run were never making the same
+# claim. A cold worktree failed SIX steps — vue-tsc, the TypeScript conformance
+# runner, dart analyze, the web smoke test, the captured-response validator and
+# the read-state check — none of them about the change under test. The dart one
+# was the only one usually seen, because anyone who had run this before had
+# already typed `npm ci` out of habit.
+#
+# GUARDED ON FRESHNESS, NOT ON PRESENCE, and the difference is the whole point.
+#
+# `[ -d node_modules ]` answers "has an install ever happened here", which is not
+# the question this step's name asks. A PR that bumps web/package-lock.json in a
+# warm worktree would skip the install, run vue-tsc and the conformance runner
+# against the PREVIOUS dependency tree, and go green — while CI's unconditional
+# `npm ci` installs the new one and can go red. That is the same local-vs-CI
+# divergence this step exists to close, arriving from the other side.
+#
+# It also covers the interrupted install. `npm ci` DELETES node_modules and then
+# repopulates it, so a ^C leaves a partial tree; npm writes
+# node_modules/.package-lock.json on a completed install, so its absence marks
+# the partial one and its mtime answers the freshness question. `dart pub get`
+# writes .dart_tool/package_config.json, which marks a completed resolve there.
+#
+# DART NEEDS A STAMP OF OUR OWN and npm does not, which is worth one sentence
+# because the asymmetry looks arbitrary. `npm ci` rewrites
+# node_modules/.package-lock.json on every completed install, so its mtime
+# answers "is this tree current" by itself. `dart pub get` is a NO-OP when the
+# lock is already satisfied — it does not touch package_config.json — so
+# comparing against that file alone never clears: pubspec.yaml stays newer
+# forever and every warm run pays a resolve. Measured, not assumed. So we stamp
+# a file we own, inside the gitignored .dart_tool, after a resolve succeeds.
+#
+# Still guarded rather than unconditional: a warm, current tree pays nothing,
+# which is what keeps the habit of running this before every handover cheap.
+#
+# It does not abort on failure. This file deliberately runs without `set -e` and
+# reports every step; a failed install shows up here AND as the steps that
+# depend on it, which is more informative than stopping at the first one.
+#
+# "ALREADY CURRENT" IS REPORTED AS A PASS, NOT A SKIP. The header above teaches
+# that a skip is not a pass, and here the prerequisite IS satisfied — reusing
+# SKIP for the good case would give one word two opposite meanings in one run's
+# output. SKIP stays for the genuine absence: no Dart SDK.
+web_deps_stale() {
+  [ -d "$ROOT/web/node_modules" ] || return 0
+  [ -f "$ROOT/web/node_modules/.package-lock.json" ] || return 0
+  [ "$ROOT/web/package-lock.json" -nt "$ROOT/web/node_modules/.package-lock.json" ] && return 0
+  return 1
+}
+DART_STAMP="$ROOT/dart/.dart_tool/.verify-resolved"
+dart_deps_stale() {
+  [ -f "$ROOT/dart/.dart_tool/package_config.json" ] || return 0
+  [ -f "$DART_STAMP" ] || return 0
+  [ "$ROOT/dart/pubspec.yaml" -nt "$DART_STAMP" ] && return 0
+  [ "$ROOT/dart/pubspec.lock" -nt "$DART_STAMP" ] && return 0
+  return 1
+}
+
+step "dependencies — resolved here so CI and a local run make the same claim"
+if web_deps_stale; then
+  (cd "$ROOT/web" && npm ci) >"$LOGDIR/v-npm-ci.log" 2>&1
+  result $? "npm ci — web dependencies were absent or behind package-lock.json"
+else
+  result 0 "web dependencies are current"
+fi
+# Inside the same `command -v dart` guard the Dart step uses, so a machine with
+# no SDK skips here for the same reason and on the same condition it skips
+# there — one absence lane, named twice, not a fifth one.
+if command -v dart >/dev/null; then
+  if dart_deps_stale; then
+    (cd "$ROOT/dart" && dart pub get) >"$LOGDIR/v-dart-pub-get.log" 2>&1
+    rc=$?
+    [ $rc -eq 0 ] && touch "$DART_STAMP"
+    result $rc "dart pub get — dart dependencies were absent or behind pubspec"
+  else
+    result 0 "dart dependencies are current"
+  fi
+else
+  printf '   \033[33mSKIP\033[0m dart not on PATH — nothing to resolve\n'
+fi
 
 step "R4 · codegen is current (the generated files match the schema)"
 (cd "$ROOT/web" && npm run --silent gen:check) >"$LOGDIR/v-gen-check.log" 2>&1
