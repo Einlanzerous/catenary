@@ -205,8 +205,14 @@ func TestTheBackfillDrawsRatherThanReadingTheCounter(t *testing.T) {
 	ctx, pool := freshDB(t)
 
 	// Roll 0006 back, so rows exist as they would have before the migration.
-	if err := MigrateDown(ctx, pool, 1); err != nil {
-		t.Fatalf("roll back 0006: %v", err)
+	//
+	// COUNTED RATHER THAN LITERAL. MigrateDown's argument is a number of STEPS,
+	// so `1` meant "roll back 0006" only while 0006 was the newest migration —
+	// CANT-28's 0007 made the same call roll back the wrong one, and the test
+	// failed reporting a marker of 0 as though the backfill were broken. What
+	// this test wants is everything from 0006 up, whatever that is today.
+	if err := MigrateDown(ctx, pool, appliedAtOrAbove(ctx, t, pool, "0006")); err != nil {
+		t.Fatalf("roll back to 0005: %v", err)
 	}
 	viewer := mkUser(ctx, t, pool, "viewer")
 	conv := mkGroup(ctx, t, pool, "Existing", viewer)
@@ -288,4 +294,25 @@ func TestAReceiptBringsTheConversationBackForThatMembersOtherDevices(t *testing.
 		t.Errorf("a duplicate receipt drew from the counter (%d → %d); Advanced is supposed to gate it",
 			before, after)
 	}
+}
+
+// appliedAtOrAbove counts the applied migrations at or above version v, which
+// is the number of MigrateDown steps that removes exactly those. Versions are
+// zero-padded strings, so a string compare is the right compare.
+func appliedAtOrAbove(ctx context.Context, t *testing.T, pool *pgxpool.Pool, v string) int {
+	t.Helper()
+	applied, err := AppliedVersions(ctx, pool)
+	if err != nil {
+		t.Fatalf("applied versions: %v", err)
+	}
+	n := 0
+	for _, a := range applied {
+		if a >= v {
+			n++
+		}
+	}
+	if n == 0 {
+		t.Fatalf("no migration at or above %s is applied; this test needs %s to roll back", v, v)
+	}
+	return n
 }

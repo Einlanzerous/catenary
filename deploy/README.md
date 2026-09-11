@@ -56,8 +56,9 @@ Docker's default stop timeout is 10s), or a redeploy kills the process while it
 is still draining in-flight sends.
 
 **No `ports:` mapping.** Catenary is reached through Traefik. Publishing a port
-would put a listener on the host that bypasses the edge — and until CANT-22 and
-CANT-28 land there is no in-process authentication behind that listener at all.
+would put a listener on the host that bypasses the edge — and until the three
+tickets named below land, what is behind that listener is not something to put
+on the open internet.
 
 ## The routing split, and why it is not symmetric
 
@@ -70,11 +71,11 @@ Host match.** A public router matching on Host alone serves `/admin` from the
 public host too, which is precisely what CANT-16's `Done when` forbids.
 Chronicle's routers file records hitting exactly this.
 
-**There should be no public router at all until CANT-22 and CANT-28 land.** The
-bar for the `public` entrypoint on this estate is that the endpoint
-authenticates with something Access cannot express. Catenary does not
-authenticate at all yet, so a public router today would put a service that will
-hold everyone's messages, unauthenticated, on the open 443.
+**There should be no public router at all until CANT-22, CANT-28 and CANT-29 land.** The bar for the `public` entrypoint on this estate is that the endpoint authenticates with something Access cannot express.
+
+**This used to name two tickets, and CANT-28 found that it is short by one.** CANT-28 lands the credential model and turns `GET /sync` on, so after it the service does authenticate — but a rotating refresh token whose replay is merely refused, rather than invalidating the whole family, leaves an attacker who rotated first holding live credentials while the real device's refusal looks like an ordinary bug. That is the case CANT-29 exists for and the one it calls *"the one that hands over the whole archive"*, and no ruling on CANT-28 could close it: the plan worked the bar through every branch of where the refresh handler lands and the answer came out the same each time. So the third name is not a nicety.
+
+Until all three, a public router would put a service that holds everyone's messages on the open 443 either unauthenticated or with an undetectable credential replay.
 
 **Every router on the `internal` entrypoint carries `cf-access-jwt`** (SERV-106),
 and adding one requires a matching `CF_ACCESS_AUD_MAP` entry on the guard —

@@ -126,8 +126,8 @@ func TestMigrateIsIdempotent(t *testing.T) {
 func TestMigrateUpDownUpRoundTrip(t *testing.T) {
 	ctx, pool := freshDB(t)
 
-	if n := publicTableCount(ctx, t, pool); n != 7 {
-		t.Fatalf("after up: %d tables, want 7 (6 + log_counter)", n)
+	if n := publicTableCount(ctx, t, pool); n != plannedTableCount {
+		t.Fatalf("after up: %d tables, want %d", n, plannedTableCount)
 	}
 	if err := MigrateDown(ctx, pool, 0); err != nil {
 		t.Fatalf("down: %v", err)
@@ -141,8 +141,8 @@ func TestMigrateUpDownUpRoundTrip(t *testing.T) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("up again: %v", err)
 	}
-	if n := publicTableCount(ctx, t, pool); n != 7 {
-		t.Fatalf("after up again: %d tables, want 7", n)
+	if n := publicTableCount(ctx, t, pool); n != plannedTableCount {
+		t.Fatalf("after up again: %d tables, want %d", n, plannedTableCount)
 	}
 
 	// The counter is seeded by the migration, not by the first insert. A

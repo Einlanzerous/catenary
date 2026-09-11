@@ -1,5 +1,5 @@
 {
-  "note": "Golden conformance vectors for the Catenary wire protocol (IDEA-27 / R4).\n\nThese are the actual anti-drift mechanism. Generating types from one schema makes the two clients agree about SHAPE; it does not make them agree about BEHAVIOUR — whether an absent optional is omitted or emitted as null, whether an unknown attachment kind drops the attachment or the whole message, whether a timestamp survives a decode/encode round trip unchanged. Every one of those is a place two hand-written implementations diverge, and none of them is a type error.\n\nSo: every runner (TypeScript, Dart, Go) reads THIS file, and each case must produce the same answer in every language.\n\nExpectations:\n  roundtrip — decode succeeds, and re-encoding yields `encoded` if present, otherwise `json` itself, compared as canonical JSON (keys sorted recursively, so key order is not asserted and everything else is).\n  ignore    — decode returns the language's null/nil. Only meaningful for the union types, where an unrecognised tag must be skipped rather than raised.\n  reject    — decode fails. The schema's constraints are only real if violating them is an error.\n\nThe Go runner skips `reject` cases; see the DOCUMENTED GAP note in generated.go.",
+  "note": "Golden conformance vectors for the Catenary wire protocol (IDEA-27 / R4).\n\nThese are the actual anti-drift mechanism. Generating types from one schema makes the two clients agree about SHAPE; it does not make them agree about BEHAVIOUR — whether an absent optional is omitted or emitted as null, whether an unknown attachment kind drops the attachment or the whole message, whether a timestamp survives a decode/encode round trip unchanged. Every one of those is a place two hand-written implementations diverge, and none of them is a type error.\n\nSo: every runner (TypeScript, Dart, Go) reads THIS file, and each case must produce the same answer in every language.\n\nExpectations:\n  roundtrip — decode succeeds, and re-encoding yields `encoded` if present, otherwise `json` itself, compared as canonical JSON (keys sorted recursively, so key order is not asserted and everything else is).\n  ignore    — decode returns the language's null/nil. Only meaningful for the union types, where an unrecognised tag must be skipped rather than raised.\n  reject    — decode fails. The schema's constraints are only real if violating them is an error.\n\nAll three runners run all three kinds; nothing is skipped anywhere. The Go runner skipped `reject` until\nCANT-25 gave the generated types an UnmarshalJSON that enforces the schema's constraints.\n\nCREDENTIAL FIXTURES ARE DELIBERATELY LOW-ENTROPY AND SELF-DESCRIBING. A `Token` is 43 characters of base64url, which is exactly the shape a secret scanner is built to flag — and 32 random-looking bytes in a checked-in file trips one on every pull request that touches this file. An alarm that always fires is an alarm nobody reads. These strings satisfy the pattern, say what they are, and match nothing: the server stores hashes and looks them up, so a fixture token is not a credential anywhere.",
   "cases": [
     {
       "name": "client_hello_full",
@@ -708,6 +708,84 @@
         "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
         "at": "2026-08-17T04:46:00.000Z",
         "state": "sent"
+      }
+    },
+    {
+      "name": "enrol_request",
+      "kind": "EnrolRequest",
+      "expect": "roundtrip",
+      "why": "The only unauthenticated request this protocol has. Both fields required, so there is no optional to omit — the case exists to pin the token encoding and the device name surviving a round trip unchanged.",
+      "json": {
+        "enrolment_token": "enrolment_token_FIXTURE_not_a_real_secret__",
+        "device_name": "Pixel 8 Pro"
+      }
+    },
+    {
+      "name": "enrol_response",
+      "kind": "EnrolResponse",
+      "expect": "roundtrip",
+      "why": "The whole bootstrap in one body: who you are, what this install is called on the wire, and both credentials with both expiries. Every field is required, because a client that received five of the six would be stuck in a way it could not report.",
+      "json": {
+        "user_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "device_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "access_token": "access_token_FIXTURE_not_a_real_secret_____",
+        "access_expires_at": "2026-08-17T04:37:00.000Z",
+        "refresh_token": "refresh_token_FIXTURE_not_a_real_secret____",
+        "refresh_expires_at": "2026-10-16T04:22:00.000Z"
+      }
+    },
+    {
+      "name": "refresh_request",
+      "kind": "RefreshRequest",
+      "expect": "roundtrip",
+      "why": "One field, and the device is identified BY it rather than alongside it. A request naming its own device id could disagree with the credential that proves it.",
+      "json": {
+        "refresh_token": "refresh_token_FIXTURE_not_a_real_secret____"
+      }
+    },
+    {
+      "name": "refresh_response",
+      "kind": "RefreshResponse",
+      "expect": "roundtrip",
+      "why": "The rotated pair. The refresh token here is NOT the one in refresh_request — that is the whole property, and a client that re-sent the old string would be refused on its next call.",
+      "json": {
+        "access_token": "access_token_FIXTURE_after_rotation________",
+        "access_expires_at": "2026-08-17T04:52:00.000Z",
+        "refresh_token": "refresh_token_FIXTURE_after_rotation_______",
+        "refresh_expires_at": "2026-10-16T04:37:00.000Z"
+      }
+    },
+    {
+      "name": "reject_token_with_padding",
+      "kind": "EnrolRequest",
+      "expect": "reject",
+      "why": "base64 standard encoding of the same 32 bytes: 44 characters ending in `=`. `=` is not a legal RFC 7230 token character, so a padded credential cannot ride `Sec-WebSocket-Protocol` — and an intermediary is entitled to mangle it rather than refuse it, which is the failure that would be debugged from a browser console. One identifier apart from the right answer in every language, so it is pinned here.",
+      "json": {
+        "enrolment_token": "padded_std_encoding_FIXTURE_not_a_secret___=",
+        "device_name": "Pixel 8 Pro"
+      }
+    },
+    {
+      "name": "reject_token_with_std_alphabet",
+      "kind": "EnrolRequest",
+      "expect": "reject",
+      "why": "base64 raw standard encoding: the right LENGTH and the wrong alphabet. This fixture carries `+` and no `/` on purpose, because `+` is the subtle half — it IS a legal RFC 7230 token character, so a check written as \"must be a valid subprotocol name\" passes this while the encoding is still wrong, and a check written as \"reject the base64 specials\" is simply wrong about it. A `/` would be caught by either. The constraint is the base64url alphabet itself, which is narrower than the grammar and is what all three decoders enforce.",
+      "json": {
+        "enrolment_token": "std+alphabet+FIXTURE+not+a+real+secret_____",
+        "device_name": "Pixel 8 Pro"
+      }
+    },
+    {
+      "name": "reject_enrol_response_without_refresh_token",
+      "kind": "EnrolResponse",
+      "expect": "reject",
+      "why": "An enrolment that hands back an access token and no refresh token leaves the device working for fifteen minutes and then permanently stuck, with nothing in the protocol able to say so. A missing required field must be a decode failure and not a null.",
+      "json": {
+        "user_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "device_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
+        "access_token": "access_token_FIXTURE_not_a_real_secret_____",
+        "access_expires_at": "2026-08-17T04:37:00.000Z",
+        "refresh_expires_at": "2026-10-16T04:22:00.000Z"
       }
     }
   ]

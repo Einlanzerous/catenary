@@ -130,6 +130,36 @@ String _asTimestamp(Object? v, String p) {
   return x;
 }
 
+/// A credential, in the one encoding this service uses for all four of them —
+/// enrolment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
+/// WITHOUT padding, which is exactly 43 characters.
+///
+/// THE ENCODING IS NORMATIVE, AND THE REASON IS THE TRANSPORT. CANT-28 ruling 1 puts
+/// the access token on `Sec-WebSocket-Protocol`, because that is the only request
+/// header `new WebSocket(url, protocols)` lets a browser set. That header carries RFC
+/// 6455 subprotocol names, and each of those is an RFC 7230 `token`: `/` and `=` are
+/// NOT legal characters in one, and an intermediary is entitled to reject or mangle a
+/// value that contains them. (`+` is legal, which is why this is stated as an alphabet
+/// rather than as a list of characters to avoid — a rule of thumb that got `+` wrong
+/// would pass a token carrying `/`.) Standard base64 produces `+` and `/`, and padded
+/// output adds `=`; base64url's `-` and `_` sidestep the question, so a single encoding
+/// serves every shape and the socket needs no second form of the same secret.
+///
+/// ONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential
+/// a string is to anyone who saw one, and it would give the enrolment token — the only
+/// one a person ever handles — its own quiet pressure to be shortened.
+///
+/// Enforced rather than advisory, for the same reason `Uuid`'s pattern is: a client
+/// that padded or truncated a token is refused here, in every generated decoder, rather
+/// than at the far end of a handshake in a browser console.
+typedef Token = String;
+final RegExp _TokenPattern = RegExp(r'^[A-Za-z0-9_-]{43}$');
+String _asToken(Object? v, String p) {
+  final x = _str(v, p);
+  if (!_TokenPattern.hasMatch(x)) _bad(p, 'Token must match ^[A-Za-z0-9_-]{43}\$, got "$x"');
+  return x;
+}
+
 /// D4: everything is a conversation. `direct` is two members, `group` is any number;
 /// neither is a distinct entity. Adding a third member to a direct conversation
 /// promotes it to `group` and is a row insert plus this field changing, never a
@@ -1459,6 +1489,209 @@ final class SyncResponse {
   });
 }
 
+/// `POST /enrol` — a new install redeeming its enrolment token. The only
+/// unauthenticated credential-minting request this service has.
+///
+/// CANT-28. Every refusal of it answers identically — unknown token, expired, already
+/// redeemed, deactivated account — so that a prober learns nothing from the response
+/// about which of those it hit. The log distinguishes all four.
+final class EnrolRequest {
+  const EnrolRequest({
+    required this.enrolmentToken,
+    required this.deviceName,
+  });
+
+  /// The bootstrap credential, issued by Purser's Provision and redeemable exactly once.
+  /// R6: at provisioning time the person has zero devices, so this is the only credential
+  /// that can exist — and it is one string, which is what lets Purser stay out of the
+  /// device model entirely.
+  final Token enrolmentToken;
+
+  /// What this install should be called in the device list. A revocation list is unusable
+  /// if the rows do not say which phone they are, which is why `devices.name` is NOT NULL
+  /// and why this is required rather than defaulted server-side to something like
+  /// "unknown device".
+  ///
+  /// Not length-bounded here: the bound is a server refusal with a test behind it,
+  /// because this schema's generators enforce `pattern`, `minimum` and `maximum` and
+  /// would silently ignore a `minLength` — a constraint no decoder checks is worse than
+  /// none, since it reads as protection.
+  final String deviceName;
+
+  factory EnrolRequest.fromJson(Object? v, [String p = "EnrolRequest"]) {
+    final o = _obj(v, p);
+    return EnrolRequest(
+      enrolmentToken: o["enrolment_token"] == null ? _bad('${p}.enrolment_token', 'required field is missing') : _asToken(o["enrolment_token"], '${p}.enrolment_token'),
+      deviceName: o["device_name"] == null ? _bad('${p}.device_name', 'required field is missing') : _str(o["device_name"], '${p}.device_name'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "enrolment_token": enrolmentToken,
+    "device_name": deviceName,
+  });
+}
+
+/// `POST /enrol` — the first credential pair, returned exactly once. The plaintext
+/// tokens are in this response and nowhere else: the server keeps only hashes, so a
+/// client that loses this body enrols again rather than recovering it.
+final class EnrolResponse {
+  const EnrolResponse({
+    required this.userId,
+    required this.deviceId,
+    required this.accessToken,
+    required this.accessExpiresAt,
+    required this.refreshToken,
+    required this.refreshExpiresAt,
+  });
+
+  /// Who this device now speaks as. The client needs it before its first `/sync` page,
+  /// because `Message.author_id` is the only thing that distinguishes a message you wrote
+  /// from one you did not — and every read-state rule in the protocol turns on that
+  /// distinction.
+  final Uuid userId;
+
+  /// This install's identity, minted here and stable for its life. It is what
+  /// `ClientHello.device_id` carries and what a revocation names, so the enrolment
+  /// response is the one place a client learns it.
+  final Uuid deviceId;
+
+  /// Presented on every authenticated request, and on the socket upgrade as the second
+  /// `Sec-WebSocket-Protocol` value. Opaque: the server stores a hash and looks it up
+  /// (ruling 0), so revocation takes effect on the next request rather than at the next
+  /// expiry.
+  final Token accessToken;
+
+  /// When the access token stops being accepted. Served rather than left for the client
+  /// to compute from a lifetime it hard-codes, which is how the two drift apart when the
+  /// lifetime changes.
+  ///
+  /// Under ruling 2 this does NOT bound a live socket: a session authorized at accept
+  /// outlives the credential that opened it, and is ended by revocation rather than by
+  /// expiry.
+  final Timestamp accessExpiresAt;
+
+  /// Exchanged for the next access token, one per device. Single-use: presenting it
+  /// yields a new pair and marks this one replaced, so a second presentation of the same
+  /// string is refused. CANT-29 owns what happens next — a replay invalidates the family
+  /// rather than just the request.
+  final Token refreshToken;
+
+  /// When the refresh token stops being exchangeable, after which the device enrols
+  /// again. Long enough that a phone in normal use never re-authenticates; short enough
+  /// that a device forgotten in a drawer falls out of the account on its own.
+  final Timestamp refreshExpiresAt;
+
+  factory EnrolResponse.fromJson(Object? v, [String p = "EnrolResponse"]) {
+    final o = _obj(v, p);
+    return EnrolResponse(
+      userId: o["user_id"] == null ? _bad('${p}.user_id', 'required field is missing') : _asUuid(o["user_id"], '${p}.user_id'),
+      deviceId: o["device_id"] == null ? _bad('${p}.device_id', 'required field is missing') : _asUuid(o["device_id"], '${p}.device_id'),
+      accessToken: o["access_token"] == null ? _bad('${p}.access_token', 'required field is missing') : _asToken(o["access_token"], '${p}.access_token'),
+      accessExpiresAt: o["access_expires_at"] == null ? _bad('${p}.access_expires_at', 'required field is missing') : _asTimestamp(o["access_expires_at"], '${p}.access_expires_at'),
+      refreshToken: o["refresh_token"] == null ? _bad('${p}.refresh_token', 'required field is missing') : _asToken(o["refresh_token"], '${p}.refresh_token'),
+      refreshExpiresAt: o["refresh_expires_at"] == null ? _bad('${p}.refresh_expires_at', 'required field is missing') : _asTimestamp(o["refresh_expires_at"], '${p}.refresh_expires_at'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "user_id": userId,
+    "device_id": deviceId,
+    "access_token": accessToken,
+    "access_expires_at": accessExpiresAt,
+    "refresh_token": refreshToken,
+    "refresh_expires_at": refreshExpiresAt,
+  });
+}
+
+/// `POST /refresh` — exchange a refresh token for the next pair. The device is
+/// identified BY the token rather than alongside it: a request that named its own
+/// device id would be asserting something the credential already proves, and the two
+/// could disagree.
+///
+/// THE TYPE IS HERE AND THE HANDLER IS NOT. CANT-28 ruling 5 puts the handler in a
+/// sub-task of CANT-29 filed `review_mode: full`, so that rotation gets the same
+/// line-by-line read as the reuse detection built over it. The model is written in one
+/// place — this file — and only the handler moved.
+final class RefreshRequest {
+  const RefreshRequest({
+    required this.refreshToken,
+  });
+
+  /// The refresh token this device last received. Presenting one that has already been
+  /// exchanged is a replay, and CANT-29 answers it by invalidating the family rather than
+  /// the request.
+  final Token refreshToken;
+
+  factory RefreshRequest.fromJson(Object? v, [String p = "RefreshRequest"]) {
+    final o = _obj(v, p);
+    return RefreshRequest(
+      refreshToken: o["refresh_token"] == null ? _bad('${p}.refresh_token', 'required field is missing') : _asToken(o["refresh_token"], '${p}.refresh_token'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "refresh_token": refreshToken,
+  });
+}
+
+/// `POST /refresh` — the next pair. THE REFRESH TOKEN IS ALWAYS NEW: this exchange
+/// rotates, so a client that keeps presenting the one it started with is refused on its
+/// second call. A response that returned the same refresh token would be a non-rotating
+/// credential wearing a rotating one's name, which is the shape CANT-28 exists to rule
+/// out.
+final class RefreshResponse {
+  const RefreshResponse({
+    required this.accessToken,
+    required this.accessExpiresAt,
+    required this.refreshToken,
+    required this.refreshExpiresAt,
+  });
+
+  /// Presented on every authenticated request, and on the socket upgrade as the second
+  /// `Sec-WebSocket-Protocol` value. Opaque: the server stores a hash and looks it up
+  /// (ruling 0), so revocation takes effect on the next request rather than at the next
+  /// expiry.
+  final Token accessToken;
+
+  /// When the access token stops being accepted. Served rather than left for the client
+  /// to compute from a lifetime it hard-codes, which is how the two drift apart when the
+  /// lifetime changes.
+  ///
+  /// Under ruling 2 this does NOT bound a live socket: a session authorized at accept
+  /// outlives the credential that opened it, and is ended by revocation rather than by
+  /// expiry.
+  final Timestamp accessExpiresAt;
+
+  /// Exchanged for the next access token, one per device. Single-use: presenting it
+  /// yields a new pair and marks this one replaced, so a second presentation of the same
+  /// string is refused. CANT-29 owns what happens next — a replay invalidates the family
+  /// rather than just the request.
+  final Token refreshToken;
+
+  /// When the refresh token stops being exchangeable, after which the device enrols
+  /// again. Long enough that a phone in normal use never re-authenticates; short enough
+  /// that a device forgotten in a drawer falls out of the account on its own.
+  final Timestamp refreshExpiresAt;
+
+  factory RefreshResponse.fromJson(Object? v, [String p = "RefreshResponse"]) {
+    final o = _obj(v, p);
+    return RefreshResponse(
+      accessToken: o["access_token"] == null ? _bad('${p}.access_token', 'required field is missing') : _asToken(o["access_token"], '${p}.access_token'),
+      accessExpiresAt: o["access_expires_at"] == null ? _bad('${p}.access_expires_at', 'required field is missing') : _asTimestamp(o["access_expires_at"], '${p}.access_expires_at'),
+      refreshToken: o["refresh_token"] == null ? _bad('${p}.refresh_token', 'required field is missing') : _asToken(o["refresh_token"], '${p}.refresh_token'),
+      refreshExpiresAt: o["refresh_expires_at"] == null ? _bad('${p}.refresh_expires_at', 'required field is missing') : _asTimestamp(o["refresh_expires_at"], '${p}.refresh_expires_at'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "access_token": accessToken,
+    "access_expires_at": accessExpiresAt,
+    "refresh_token": refreshToken,
+    "refresh_expires_at": refreshExpiresAt,
+  });
+}
+
 /// A decode/encode pair for one named wire type.
 class WireCodec {
   const WireCodec(this.decode, this.encode);
@@ -1493,6 +1726,10 @@ const Map<String, WireCodec> codecs = {
   "ClientFrame": WireCodec(ClientFrame.fromJson, _encClientFrame),
   "ServerFrame": WireCodec(ServerFrame.fromJson, _encServerFrame),
   "SyncResponse": WireCodec(SyncResponse.fromJson, _encSyncResponse),
+  "EnrolRequest": WireCodec(EnrolRequest.fromJson, _encEnrolRequest),
+  "EnrolResponse": WireCodec(EnrolResponse.fromJson, _encEnrolResponse),
+  "RefreshRequest": WireCodec(RefreshRequest.fromJson, _encRefreshRequest),
+  "RefreshResponse": WireCodec(RefreshResponse.fromJson, _encRefreshResponse),
 };
 
 Map<String, dynamic> _encUser(Object v) => (v as User).toJson();
@@ -1521,4 +1758,8 @@ Map<String, dynamic> _encServerResyncRequired(Object v) => (v as ServerResyncReq
 Map<String, dynamic> _encClientFrame(Object v) => (v as ClientFrame).toJson();
 Map<String, dynamic> _encServerFrame(Object v) => (v as ServerFrame).toJson();
 Map<String, dynamic> _encSyncResponse(Object v) => (v as SyncResponse).toJson();
+Map<String, dynamic> _encEnrolRequest(Object v) => (v as EnrolRequest).toJson();
+Map<String, dynamic> _encEnrolResponse(Object v) => (v as EnrolResponse).toJson();
+Map<String, dynamic> _encRefreshRequest(Object v) => (v as RefreshRequest).toJson();
+Map<String, dynamic> _encRefreshResponse(Object v) => (v as RefreshResponse).toJson();
 
