@@ -23,6 +23,12 @@
 # can never pass there is a red light everyone learns to ignore. CI forces the
 # first two present — `setup-dart` and the Postgres service — so only R6
 # actually skips there.
+#
+# THE FIRST STEP RESOLVES DEPENDENCIES, and only when they are missing. Without
+# it this script was green on its SECOND run in a fresh worktree and red on its
+# first, for reasons having nothing to do with the change under test — which is
+# the same "red light everyone learns to ignore" the paragraph above is about,
+# arriving from the other direction. See CANT-94.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -80,6 +86,45 @@ result() {
     fails=$((fails + 1))
   fi
 }
+
+# DEPENDENCIES FIRST, BECAUSE ONE COMMAND HAS TO MEAN ONE COMMAND.
+#
+# CANT-94. This file's own header promises a spike's evidence is reproducible
+# without a tour, and it was not: `ci.yml` runs `npm ci` and `dart pub get`
+# BEFORE calling this script, so CI and a local run were never making the same
+# claim. A cold worktree failed SIX steps — vue-tsc, the TypeScript conformance
+# runner, dart analyze, the web smoke test, the captured-response validator and
+# the read-state check — none of them about the change under test. The dart one
+# was the only one usually seen, because anyone who had run this before had
+# already typed `npm ci` out of habit.
+#
+# GUARDED, so a warm run costs nothing. `npm ci` is not idempotent in the way
+# that matters here: it DELETES node_modules before installing, so running it
+# unconditionally would add a minute to every verification on a tree that was
+# already fine.
+#
+# It does not abort on failure. This file deliberately runs without `set -e` and
+# reports every step; a failed install shows up here AND as the steps that
+# depend on it, which is more informative than stopping at the first one.
+step "dependencies — resolved here so CI and a local run make the same claim"
+if [ -d "$ROOT/web/node_modules" ]; then
+  printf '   \033[33mSKIP\033[0m web/node_modules present — nothing to install\n'
+else
+  (cd "$ROOT/web" && npm ci) >"$LOGDIR/v-npm-ci.log" 2>&1
+  result $? "npm ci — web/node_modules was absent"
+fi
+# Inside the same `command -v dart` guard the Dart step uses, so the skip lane
+# still skips rather than failing on a machine with no SDK.
+if command -v dart >/dev/null; then
+  if [ -f "$ROOT/dart/.dart_tool/package_config.json" ]; then
+    printf '   \033[33mSKIP\033[0m dart/.dart_tool present — nothing to resolve\n'
+  else
+    (cd "$ROOT/dart" && dart pub get) >"$LOGDIR/v-dart-pub-get.log" 2>&1
+    result $? "dart pub get — dart/.dart_tool was absent"
+  fi
+else
+  printf '   \033[33mSKIP\033[0m dart not on PATH — nothing to resolve\n'
+fi
 
 step "R4 · codegen is current (the generated files match the schema)"
 (cd "$ROOT/web" && npm run --silent gen:check) >"$LOGDIR/v-gen-check.log" 2>&1
