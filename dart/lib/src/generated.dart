@@ -386,7 +386,14 @@ sealed class ClientFrame {
   }
 }
 
-/// Anything the server may send over the socket.
+/// Anything the server may send over the socket. ORDERING, AND IT IS NORMATIVE: every
+/// `message` frame that is the FIRST delivery of a message to this session arrives in
+/// ascending `log_seq`. A `message` frame for an id the client already holds is a
+/// re-emission — a changed `read_by` (CANT-92) — and the later record is authoritative.
+/// THE DEDUPE KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the
+/// message's original `log_seq`, so a client that discarded frames at or below a
+/// `log_seq` it had seen would discard the refresh. No frame in this union moves the
+/// client's cursor (CANT-24 ruling 5).
 sealed class ServerFrame {
   /// The wire tag for this frame.
   String get type;
@@ -702,6 +709,9 @@ final class Message {
 
   final Seq seq;
 
+  /// Where the message sits in the server-global log. Not a dedupe key — that is `id` —
+  /// and not a cursor a client moves on receipt; see `ServerFrame` and `SyncResponse`
+  /// (CANT-24).
   final LogSeq logSeq;
 
   final Uuid conversationId;
@@ -851,7 +861,11 @@ final class Conversation {
 }
 
 /// First frame the client sends after the socket opens. The server answers with `ready`
-/// or `error`.
+/// or `error`. FRAMES SENT BEFORE `ready` IS RECEIVED ARE ACCEPTED AND ANSWERED — a
+/// `send` is acked, a `read` is applied; only the server's heartbeat clock waits for
+/// `ready`, because that is where the interval is announced. A client may issue its
+/// first `/sync` before the socket is up: in wire version 1 the socket does not resume,
+/// `/sync` does (CANT-24).
 final class ClientHello implements ClientFrame {
   const ClientHello({
     required this.wireVersion,
@@ -872,9 +886,13 @@ final class ClientHello implements ClientFrame {
   /// it is the unit here too.
   final Uuid deviceId;
 
-  /// The client's cursor. Absent means "do not stream backlog, I will call /sync myself"
-  /// — which is the correct choice for a client with a large gap, since a backlog burst
-  /// over the socket has no progress indication.
+  /// The client's cursor as it holds it — the `log_seq` of the last `/sync` page it fully
+  /// received, and nothing else moves it. THE SERVER STREAMS NOTHING IN WIRE VERSION 1
+  /// (CANT-24 ruling 0): it records this against head, which is the only measurement of
+  /// reconnect gaps the deployment has, and answers `ready{resumed: false}`. The client
+  /// catches up over `/sync` from this value whatever `ready` says. Absent means the
+  /// client holds no cursor and its `/sync` starts at 0. A client that sends a cursor
+  /// must be prepared for `resumed: false` as the ordinary case — it is not a failure.
   final LogSeq? resumeFromLogSeq;
 
   /// Free-form build identifier for logs, e.g. `catenary-web/0.3.1`. Never parsed.
@@ -930,12 +948,20 @@ final class ServerReady implements ServerFrame {
   /// exists to prevent.
   final int missedPongLimit;
 
-  /// The server's current head. A client that asked to resume can compare this against
-  /// its own cursor to decide between streaming and a `/sync` call.
+  /// The head this session attached at — what the client's `/sync` catch-up is counting
+  /// towards. A value BELOW the client's own cursor means the server's log is behind the
+  /// client's — a restore, or the wrong server — and the client discards messages,
+  /// conversations, users and the cursor, then bootstraps from 0 (CANT-24 client
+  /// obligation 4). Not a signal to stream: the client never decides that from this
+  /// number, and after `resumed: false` this value does not move the cursor.
   final LogSeq logSeq;
 
-  /// True when the server accepted `resume_from_log_seq` and will stream the gap. False
-  /// means the client must catch up over `/sync` before trusting anything it renders.
+  /// True only when every visible message above the client's cursor preceded this frame
+  /// in ascending `log_seq`, so that `log_seq` is now the cursor to hold. THE SERVER DOES
+  /// NOT SET IT IN WIRE VERSION 1 (CANT-24 ruling 0): the socket does not resume, `/sync`
+  /// does, and a client that treats `true` as `false` is always correct. False means:
+  /// catch up over `/sync` from your cursor before trusting anything you render, and do
+  /// not move the cursor on socket frames — only a `/sync` page moves it (ruling 5).
   final bool resumed;
 
   factory ServerReady.fromJson(Object? v, [String p = "ServerReady"]) {
@@ -1383,10 +1409,15 @@ final class ServerError implements ServerFrame {
   });
 }
 
-/// The server cannot stream the requested gap and the client must catch up over `/sync`
-/// instead. Naming this as its own frame rather than letting the client infer it from a
-/// short stream is deliberate: silent partial resume is how a client ends up
-/// confidently missing messages.
+/// The gap since what this session last delivered could not be streamed exactly — it
+/// exceeded the bound, or a conversation, member or user changed inside it — and the
+/// client must catch up over `/sync` from its cursor. NEVER SENT IN ANSWER TO A HELLO:
+/// a hello is answered by `ready` alone (CANT-24). Naming this as its own frame rather
+/// than letting the client infer it from a short stream is deliberate: silent partial
+/// resume is how a client ends up confidently missing messages. Catch-up is re-entrant:
+/// it ends at the first `/sync` page reporting `has_more: false` whose request was
+/// issued AFTER this frame arrived, because a page requested before it may be bounded
+/// by a head below this frame's `log_seq` (CANT-24 client obligation 3).
 final class ServerResyncRequired implements ServerFrame {
   const ServerResyncRequired({
     required this.reason,
@@ -1396,6 +1427,10 @@ final class ServerResyncRequired implements ServerFrame {
   @override
   String get type => "resync_required";
 
+  /// `cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener
+  /// reconnected and Postgres queues nothing for a disconnected listener, so the instance
+  /// cannot say how many. `membership_changed` and `retention_purge` have no producer
+  /// yet; see CANT-75 and CANT-67.
   final String reason;
 
   /// The server's current head, so the client knows what it is syncing towards.
@@ -1421,7 +1456,15 @@ final class ServerResyncRequired implements ServerFrame {
 /// not the steady state — steady state is a `message` frame over the socket. Applying a
 /// page is idempotent: every message carries its own seq and id, so replaying an
 /// overlapping page cannot duplicate anything, which is what makes reconnection a query
-/// rather than a guess.
+/// rather than a guess. THE CURSOR MOVES ONLY ON A PAGE OF THIS RESPONSE (CANT-24
+/// ruling 5): a `message` frame over the socket never moves it, because the socket
+/// cannot carry what this response carries, and a cursor is a promise that everything
+/// below it was received. CONVERSATION AND USER CHANGES ARE NOT DELIVERED OVER THE
+/// SOCKET IN WIRE VERSION 1 — a rename, a membership change, `muted`, or a receipt from
+/// another of the viewer's devices reaches a client on its next `/sync`, and because
+/// the cursor moves only here, the next `/sync` always covers them. `/sync` is the
+/// general path and the only one that carries conversations and users; in wire version
+/// 1 it is also the resume.
 final class SyncResponse {
   const SyncResponse({
     required this.logSeq,
