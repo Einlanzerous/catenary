@@ -28,7 +28,7 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 9. *(empty — the author's `read_seq` advance was removed; see below.)*
 10. Draw `log_seq` from `log_counter`.
 11. Insert the message, then its attachments (`CANT-85`).
-12. `pg_notify` (`CANT-86`), then commit.
+12. `pg_notify`, inside the transaction and last before commit (`CANT-86`). The payload is CANT-21's `(conversation_id, seq)`.
 
 **A replay wins over every refusal that depends on server state** — membership, existence, `reply_to`, upload resolution — because position 4 sits above all of them.
 
@@ -50,19 +50,22 @@ The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when
 
 - **CANT-67's** sweep advances a floor on `conversations` and then deletes from `messages` — the same direction as this file.
 - **CANT-63** draws `log_counter` for an edit and takes these in this order.
-- **CANT-26's** receipt write takes `conversation_members` alone. Nothing here takes that row, so the two cannot order against each other.
+- **CANT-26's** receipt write takes `conversation_members` and, since `CANT-89`, `log_counter` after it. The send path never locks a member row, so the counter is the only lock the two share, and both take it last: no cycle in either direction.
+
+**The commit takes one more lock, and it is instance-wide.** `pg_notify` at position 12 locks nothing when it runs; at commit `PreCommit_Notify` takes an `AccessExclusiveLock` on "database 0", shared by every notifying committer on the Postgres instance, other services' databases included. It is acquired inside commit after every row lock and nothing waits on a row lock after it, so it is last in every notifier's order and cannot join a cycle. `RevokeDevice` is the other transaction in this service that takes it.
 
 ## What the operation guarantees
 
 - Every refusal leaves the store as a `*SendError` carrying `wire.ErrorCode`, `retryable` and `retry_after_sec`. No transport decides a code.
 - **Exactly one file decides a code** — `internal/store/senderror.go` — enforced by a guard test that bans the type, the six send-code constants and the six code *values* as string literals, anywhere else in the service module. `unauthorized` and `wire_version_unsupported` are exempt by name for CANT-22 and CANT-29.
-- `internal` splits on transience: FATAL/PANIC severity, `40001`, `40P01`, class `08`, `53` or `57`, `pgconn.SafeToRetry`, a closed pool, a context error, or a connection-shaped error with no `PgError`. Everything else is permanent.
+- `internal` splits on transience: FATAL/PANIC severity, `40001`, `40P01`, `54000` (the notify queue full at commit — the one failure position 12 adds, and the code rather than class 54), class `08`, `53` or `57`, `pgconn.SafeToRetry`, a closed pool, a context error, or a connection-shaped error with no `PgError`. Everything else is permanent. `isTransient` in `senderror.go` is the list of record; this line follows it.
 - A refusal **consumes no ordinals** — neither the conversation's dense `seq` nor the deployment-wide counter.
 - **`Sent.ConversationID` is the conversation the row is in**, which is not always the one the caller asked about: dedup is `(author_id, client_id)`, not per conversation. Transports build the ack from `Sent`, never from the request.
 - **A send does not touch `read_seq`.** `first_unread_seq` is derived as the first `seq` above `read_seq` the viewer did not author — an index scan over `UNIQUE (conversation_id, seq)`, not a table scan. `0005_read_seq_derivation` carries the correction into the column comment; CANT-26 owns the query.
 - A `reply_to` that is missing or in another conversation is stored NULL and logged at `info` with both ids. The send succeeds, and the source is held `FOR KEY SHARE` so a concurrent delete cannot turn a valid ref into a failed send.
 - **A membership revoked between position 5 and commit is not caught**, and that is accepted: one more message lands from someone who was a member when asked. Closing it means locking the member row at position 5, which takes it *before* `conversations` and inverts against CANT-67's sweep.
 - An **empty send** — no `text`, no attachments — is stored.
+- **A committed send raises exactly one notification, ids only, at commit.** A refusal, a replay, a race loser and a rolled-back send raise none. The call is inside the insert's transaction, on the same connection, last before commit; an over-cap payload (`ErrNotifyTooLarge`, unreachable with two fixed-width fields) fails the send as `internal`, not retryable.
 - Every refusal **logs once**: `warn` for `internal`, `info` for the rest, with `conversation_id`, `author_id`, `client_id`, `code` and `retryable`; **every** `internal` also logs its SQLSTATE and constraint name, retryable or not, because the permanent ones are the ones that need diagnosing. **The body is never logged, at any level** — `pgErr.Detail` is excluded by name, because on a CHECK violation it renders as `Failing row contains (…)` and that row is the message.
 
 ## Rejected

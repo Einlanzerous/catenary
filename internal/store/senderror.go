@@ -263,6 +263,13 @@ var sendErrorTable = []sendErrorRow{
 	// sender's and the plan declined to lie about it. Not retryable: the
 	// identical frame is missing the identical key.
 	{cause: ErrNoClientID, code: wire.ErrorCodeInternal, retryable: false},
+
+	// Same standing as the row above: `internal`, stated, and unreachable
+	// today. NotifyPayload is two fixed-width fields and cannot approach the
+	// 8,000-byte cap, so this fires only after somebody widens the struct —
+	// which is OUR bug and not the sender's, exactly as a missing client_id
+	// is. Not retryable: the identical frame encodes the identical payload.
+	{cause: ErrNotifyTooLarge, code: wire.ErrorCodeInternal, retryable: false},
 }
 
 // SendErrorFor is the single decision. Everything the store refuses goes
@@ -393,6 +400,22 @@ func isTransient(err error) bool {
 		// writers taking the row locks in opposite orders deadlock, and
 		// Postgres resolves that by aborting somebody's send.
 		if pgErr.Code == "40001" || pgErr.Code == "40P01" {
+			return true
+		}
+
+		// 54000 program limit exceeded — the one failure position 12's notify
+		// ADDS to this path. PreCommit_Notify raises it at commit, "too many
+		// notifications in the NOTIFY queue", when the instance-wide queue is
+		// full: a listener alive and not reading, in ANY database on the
+		// shared Postgres, which this repository cannot see coming. That is a
+		// not-now condition, and reporting it permanent would park a real
+		// message at `failed` because of somebody else's wedged process. The
+		// same code covers genuinely permanent limits — an index row over
+		// size — and that is the wasted retry the asymmetry above accepts.
+		// The CODE rather than class 54: 54001 (statement too complex) and
+		// 54023 (too many arguments) are decisions about the statement, and
+		// re-sending it changes nothing.
+		if pgErr.Code == "54000" {
 			return true
 		}
 

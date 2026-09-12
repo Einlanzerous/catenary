@@ -34,6 +34,7 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 		{ErrUploadNotFound, wire.ErrorCodeUploadNotFound, false},
 		{ErrRateLimited, wire.ErrorCodeRateLimited, true},
 		{ErrNoClientID, wire.ErrorCodeInternal, false},
+		{ErrNotifyTooLarge, wire.ErrorCodeInternal, false},
 	}
 
 	// A row added without a line here, or removed with one left behind, is the
@@ -133,6 +134,10 @@ func TestInternalSplitsOnTransience(t *testing.T) {
 			"this file's lock order exists because deadlock is real, and Postgres resolves it by aborting a send"},
 		{"serialization failure 40001", &pgconn.PgError{Code: "40001"}, true, "same shape as a deadlock"},
 		{"connection exception class 08", &pgconn.PgError{Code: "08006"}, true, "the class the wire never sees twice"},
+		{"notify queue full 54000 at ERROR", &pgconn.PgError{Code: "54000", Severity: "ERROR"}, true,
+			"a listener not reading, anywhere on the instance — position 12's own commit-time failure"},
+		{"statement too complex 54001", &pgconn.PgError{Code: "54001", Severity: "ERROR"}, false,
+			"the same class, and a decision about the statement rather than a queue"},
 		{"unique violation 23505", &pgconn.PgError{Code: "23505"}, false,
 			"the server considered the statement and refused it; the identical statement fails identically"},
 		{"check violation 23514", &pgconn.PgError{Code: "23514"}, false, "a decision, not a hiccup"},
