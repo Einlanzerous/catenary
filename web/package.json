@@ -12,6 +12,7 @@
     "smoke": "npm run gen:check && vite build --ssr smoke.ts --outDir dist-smoke --logLevel warn && node dist-smoke/smoke.js && npm run conformance",
     "gen": "node ../schema/codegen/generate.mjs",
     "gen:check": "node ../schema/codegen/generate.mjs --check",
+    "gen:test": "node --test ../schema/codegen/generate.test.mjs",
     "conformance": "vite build --ssr conformance.ts --outDir dist-conformance --logLevel warn && node dist-conformance/conformance.js",
     "validate": "vite build --ssr validate.ts --outDir dist-validate --logLevel warn && node dist-validate/validate.js",
     "readstate": "vite build --ssr readstate.ts --outDir dist-readstate --logLevel warn && node dist-readstate/readstate.js"

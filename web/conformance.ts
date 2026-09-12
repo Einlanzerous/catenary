@@ -105,6 +105,24 @@ for (const c of cases) {
   check(c.name, want === got, want === got ? '' : `\n    want ${want}\n    got  ${got}`)
 }
 
+/* CANT-74 criterion 11: the unknown-value report fires ONCE per (enum, raw) per
+ * process. Measured with a value no vector uses, so the vector loop above has
+ * not already spent it, and the same frame decoded twice yields one line. */
+{
+  const seen: string[] = []
+  const orig = console.warn
+  console.warn = (...args: unknown[]) => { seen.push(args.map(String).join(' ')) }
+  try {
+    const frame = { type: 'resync_required', reason: 'warn_once_probe', log_seq: 1 }
+    codecs.ServerFrame.decode(frame)
+    codecs.ServerFrame.decode(frame)
+  } finally {
+    console.warn = orig
+  }
+  const ok = seen.length === 1 && /ResyncReason: unknown value "warn_once_probe"/.test(seen[0])
+  check('unknown_value_is_reported_once_per_enum_and_value', ok, ok ? seen[0] : `${seen.length} report(s): ${seen.join(' | ')}`)
+}
+
 console.log(
   fail.length
     ? `\n${fail.length} of ${cases.length} FAILED`

@@ -7,6 +7,8 @@
 
 // ignore_for_file: unnecessary_this, prefer_const_constructors, lines_longer_than_80_chars
 
+import 'dart:developer' as developer;
+
 const int wireVersion = 1;
 
 /// Thrown when a frame does not match the schema. Carries the JSON path so a
@@ -39,6 +41,21 @@ String _oneOf(Object? v, List<String> allowed, String p) {
   final s = _str(v, p);
   return allowed.contains(s) ? s : _bad(p, 'expected one of ${allowed.join('|')}, got "$s"');
 }
+
+/// CANT-74: an enum a client can RECEIVE is open on the clients. A value this schema
+/// version does not know decodes to the sentinel `unknown` and is reported ONCE per
+/// (enum, raw) per process — a busy thread would otherwise print it hundreds of times.
+/// Set on `ready` so the report can say how far apart the two ends are.
+int? serverWireVersion;
+/// Where the report goes. Defaults to dart:developer's log; an app or a test may replace it.
+void Function(String message) onUnknownWireValue = (m) => developer.log(m, name: 'wire');
+final Set<String> _warned = <String>{};
+void _warnUnknown(String enumName, String raw) {
+  if (!_warned.add('$enumName\u0000$raw')) return;
+  final server = serverWireVersion == null ? '' : ', server wire_version $serverWireVersion';
+  onUnknownWireValue('wire: $enumName: unknown value "$raw" decoded as unknown (client wire_version $wireVersion$server)');
+}
+
 /// Drops null entries so an absent optional is omitted rather than encoded as null.
 Map<String, dynamic> _compact(Map<String, dynamic> m) {
   m.removeWhere((_, v) => v == null);
@@ -164,9 +181,15 @@ String _asToken(Object? v, String p) {
 /// neither is a distinct entity. Adding a third member to a direct conversation
 /// promotes it to `group` and is a row insert plus this field changing, never a
 /// migration.
+/// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+/// Conversation > ConversationKind. A value this schema version does not know decodes
+/// to the sentinel `unknown` and is reported once; the server refuses it. Every switch
+/// over this type needs an arm for `unknown`.
 enum ConversationKind {
   direct("direct"),
   group("group"),
+  /// The sentinel: a value this schema version does not define. Never authored by a client.
+  unknown("unknown"),
   ;
 
   const ConversationKind(this.wire);
@@ -175,8 +198,10 @@ enum ConversationKind {
   final String wire;
 
   static ConversationKind fromWire(Object? v, String p) {
-    for (final e in ConversationKind.values) { if (e.wire == v) return e; }
-    return _bad(p, 'not a valid ConversationKind: "$v"');
+    final s = _str(v, p);
+    for (final e in ConversationKind.values) { if (e != ConversationKind.unknown && e.wire == s) return e; }
+    _warnUnknown("ConversationKind", s);
+    return ConversationKind.unknown;
   }
 }
 
@@ -216,10 +241,16 @@ enum ConversationKind {
 /// `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the exception and
 /// is refreshed on every page that carries the conversation, which a receipt from any
 /// of your own devices now causes.
+/// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+/// Message > DeliveryState. A value this schema version does not know decodes to the
+/// sentinel `unknown` and is reported once; the server refuses it. Every switch over
+/// this type needs an arm for `unknown`.
 enum DeliveryState {
   sent("sent"),
   delivered("delivered"),
   read("read"),
+  /// The sentinel: a value this schema version does not define. Never authored by a client.
+  unknown("unknown"),
   ;
 
   const DeliveryState(this.wire);
@@ -228,8 +259,10 @@ enum DeliveryState {
   final String wire;
 
   static DeliveryState fromWire(Object? v, String p) {
-    for (final e in DeliveryState.values) { if (e.wire == v) return e; }
-    return _bad(p, 'not a valid DeliveryState: "$v"');
+    final s = _str(v, p);
+    for (final e in DeliveryState.values) { if (e != DeliveryState.unknown && e.wire == s) return e; }
+    _warnUnknown("DeliveryState", s);
+    return DeliveryState.unknown;
   }
 }
 
@@ -246,10 +279,16 @@ enum DeliveryState {
 /// field lives: the authoritative copy is per attachment, and the server keeps a
 /// denormalised copy of the text on the message row for CANT-59's single full-text
 /// index, which nothing reads to serve a message.
+/// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+/// Message > Attachment > VoiceAttachment > Transcript > TranscriptState. A value this
+/// schema version does not know decodes to the sentinel `unknown` and is reported once;
+/// the server refuses it. Every switch over this type needs an arm for `unknown`.
 enum TranscriptState {
   pending("pending"),
   ready("ready"),
   failed("failed"),
+  /// The sentinel: a value this schema version does not define. Never authored by a client.
+  unknown("unknown"),
   ;
 
   const TranscriptState(this.wire);
@@ -258,8 +297,10 @@ enum TranscriptState {
   final String wire;
 
   static TranscriptState fromWire(Object? v, String p) {
-    for (final e in TranscriptState.values) { if (e.wire == v) return e; }
-    return _bad(p, 'not a valid TranscriptState: "$v"');
+    final s = _str(v, p);
+    for (final e in TranscriptState.values) { if (e != TranscriptState.unknown && e.wire == s) return e; }
+    _warnUnknown("TranscriptState", s);
+    return TranscriptState.unknown;
   }
 }
 
@@ -285,11 +326,17 @@ int _asDurationMs(Object? v, String p) {
 }
 
 /// The four source types the canvas's replies section renders.
+/// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+/// Message > ReplyRef > ReplyRefKind. A value this schema version does not know decodes
+/// to the sentinel `unknown` and is reported once; the server refuses it. Every switch
+/// over this type needs an arm for `unknown`.
 enum ReplyRefKind {
   text("text"),
   voice("voice"),
   image("image"),
   link("link"),
+  /// The sentinel: a value this schema version does not define. Never authored by a client.
+  unknown("unknown"),
   ;
 
   const ReplyRefKind(this.wire);
@@ -298,11 +345,16 @@ enum ReplyRefKind {
   final String wire;
 
   static ReplyRefKind fromWire(Object? v, String p) {
-    for (final e in ReplyRefKind.values) { if (e.wire == v) return e; }
-    return _bad(p, 'not a valid ReplyRefKind: "$v"');
+    final s = _str(v, p);
+    for (final e in ReplyRefKind.values) { if (e != ReplyRefKind.unknown && e.wire == s) return e; }
+    _warnUnknown("ReplyRefKind", s);
+    return ReplyRefKind.unknown;
   }
 }
 
+/// CLOSED EVERYWHERE (CANT-74): reachable only from client root ClientFrame via
+/// ClientFrame > ClientTyping > TypingState. A client authors it and never decodes a
+/// value newer than itself, so an unrecognised value is refused on every side.
 enum TypingState {
   start("start"),
   stop("stop"),
@@ -319,6 +371,10 @@ enum TypingState {
   }
 }
 
+/// CLIENT-OPEN (CANT-74): reachable from server root ServerFrame via ServerFrame >
+/// ServerError > ErrorCode. A value this schema version does not know decodes to the
+/// sentinel `unknown` and is reported once; the server refuses it. Every switch over
+/// this type needs an arm for `unknown`.
 enum ErrorCode {
   unauthorized("unauthorized"),
   wireVersionUnsupported("wire_version_unsupported"),
@@ -328,6 +384,8 @@ enum ErrorCode {
   messageTooLarge("message_too_large"),
   uploadNotFound("upload_not_found"),
   internal("internal"),
+  /// The sentinel: a value this schema version does not define. Never authored by a client.
+  unknown("unknown"),
   ;
 
   const ErrorCode(this.wire);
@@ -336,8 +394,41 @@ enum ErrorCode {
   final String wire;
 
   static ErrorCode fromWire(Object? v, String p) {
-    for (final e in ErrorCode.values) { if (e.wire == v) return e; }
-    return _bad(p, 'not a valid ErrorCode: "$v"');
+    final s = _str(v, p);
+    for (final e in ErrorCode.values) { if (e != ErrorCode.unknown && e.wire == s) return e; }
+    _warnUnknown("ErrorCode", s);
+    return ErrorCode.unknown;
+  }
+}
+
+/// Why a session must catch up over `/sync`. `cursor_too_old`: this session missed
+/// deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing
+/// for a disconnected listener, so the instance cannot say how many.
+/// `membership_changed` and `retention_purge` have no producer yet; see CANT-75 and
+/// CANT-67. Promoted from an inline enum by CANT-74 so that every client-open enum is a
+/// named type in all three languages.
+/// CLIENT-OPEN (CANT-74): reachable from server root ServerFrame via ServerFrame >
+/// ServerResyncRequired > ResyncReason. A value this schema version does not know
+/// decodes to the sentinel `unknown` and is reported once; the server refuses it. Every
+/// switch over this type needs an arm for `unknown`.
+enum ResyncReason {
+  cursorTooOld("cursor_too_old"),
+  membershipChanged("membership_changed"),
+  retentionPurge("retention_purge"),
+  /// The sentinel: a value this schema version does not define. Never authored by a client.
+  unknown("unknown"),
+  ;
+
+  const ResyncReason(this.wire);
+  /// The exact string this value has on the wire. Never derive it from the
+  /// Dart identifier — the two differ wherever the wire uses snake_case.
+  final String wire;
+
+  static ResyncReason fromWire(Object? v, String p) {
+    final s = _str(v, p);
+    for (final e in ResyncReason.values) { if (e != ResyncReason.unknown && e.wire == s) return e; }
+    _warnUnknown("ResyncReason", s);
+    return ResyncReason.unknown;
   }
 }
 
@@ -921,6 +1012,7 @@ final class ClientHello implements ClientFrame {
 final class ServerReady implements ServerFrame {
   const ServerReady({
     required this.sessionId,
+    this.wireVersion,
     required this.serverTime,
     required this.heartbeatIntervalSec,
     required this.missedPongLimit,
@@ -932,6 +1024,12 @@ final class ServerReady implements ServerFrame {
   String get type => "ready";
 
   final Uuid sessionId;
+
+  /// The version of THIS schema the server was generated from. Optional and additive
+  /// (CANT-74): a client that logs an unknown enum value can say how far apart the two
+  /// ends are instead of only that a value was unknown. Never a signal to change
+  /// behaviour — the compatibility policy is what the client already does.
+  final int? wireVersion;
 
   /// Lets a client with a skewed clock render correct relative timestamps by offset
   /// rather than trusting its own clock.
@@ -968,6 +1066,7 @@ final class ServerReady implements ServerFrame {
     final o = _obj(v, p);
     return ServerReady(
       sessionId: o["session_id"] == null ? _bad('${p}.session_id', 'required field is missing') : _asUuid(o["session_id"], '${p}.session_id'),
+      wireVersion: o["wire_version"] == null ? null : _int(o["wire_version"], '${p}.wire_version'),
       serverTime: o["server_time"] == null ? _bad('${p}.server_time', 'required field is missing') : _asTimestamp(o["server_time"], '${p}.server_time'),
       heartbeatIntervalSec: o["heartbeat_interval_sec"] == null ? _bad('${p}.heartbeat_interval_sec', 'required field is missing') : _int(o["heartbeat_interval_sec"], '${p}.heartbeat_interval_sec'),
       missedPongLimit: o["missed_pong_limit"] == null ? _bad('${p}.missed_pong_limit', 'required field is missing') : _int(o["missed_pong_limit"], '${p}.missed_pong_limit'),
@@ -980,6 +1079,7 @@ final class ServerReady implements ServerFrame {
   Map<String, dynamic> toJson() => _compact({
     "type": "ready",
     "session_id": sessionId,
+    "wire_version": wireVersion == null ? null : wireVersion!,
     "server_time": serverTime,
     "heartbeat_interval_sec": heartbeatIntervalSec,
     "missed_pong_limit": missedPongLimit,
@@ -1427,11 +1527,7 @@ final class ServerResyncRequired implements ServerFrame {
   @override
   String get type => "resync_required";
 
-  /// `cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener
-  /// reconnected and Postgres queues nothing for a disconnected listener, so the instance
-  /// cannot say how many. `membership_changed` and `retention_purge` have no producer
-  /// yet; see CANT-75 and CANT-67.
-  final String reason;
+  final ResyncReason reason;
 
   /// The server's current head, so the client knows what it is syncing towards.
   final LogSeq logSeq;
@@ -1439,7 +1535,7 @@ final class ServerResyncRequired implements ServerFrame {
   factory ServerResyncRequired.fromJson(Object? v, [String p = "ServerResyncRequired"]) {
     final o = _obj(v, p);
     return ServerResyncRequired(
-      reason: o["reason"] == null ? _bad('${p}.reason', 'required field is missing') : _oneOf(o["reason"], const ["cursor_too_old", "membership_changed", "retention_purge"], '${p}.reason'),
+      reason: o["reason"] == null ? _bad('${p}.reason', 'required field is missing') : ResyncReason.fromWire(o["reason"], '${p}.reason'),
       logSeq: o["log_seq"] == null ? _bad('${p}.log_seq', 'required field is missing') : _asLogSeq(o["log_seq"], '${p}.log_seq'),
     );
   }
@@ -1447,7 +1543,7 @@ final class ServerResyncRequired implements ServerFrame {
   @override
   Map<String, dynamic> toJson() => _compact({
     "type": "resync_required",
-    "reason": reason,
+    "reason": reason.wire,
     "log_seq": logSeq,
   });
 }

@@ -434,6 +434,37 @@ func checkErrorCode(v ErrorCode, p string) error {
 	return nil
 }
 
+// Why a session must catch up over `/sync`. `cursor_too_old`: this session missed
+// deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing
+// for a disconnected listener, so the instance cannot say how many.
+// `membership_changed` and `retention_purge` have no producer yet; see CANT-75 and
+// CANT-67. Promoted from an inline enum by CANT-74 so that every client-open enum is a
+// named type in all three languages.
+type ResyncReason string
+
+const (
+	ResyncReasonCursorTooOld      ResyncReason = "cursor_too_old"
+	ResyncReasonMembershipChanged ResyncReason = "membership_changed"
+	ResyncReasonRetentionPurge    ResyncReason = "retention_purge"
+)
+
+// Valid reports whether v is a value this schema version defines.
+func (v ResyncReason) Valid() bool {
+	switch v {
+	case ResyncReasonCursorTooOld, ResyncReasonMembershipChanged, ResyncReasonRetentionPurge:
+		return true
+	}
+	return false
+}
+
+// checkResyncReason rejects a value this schema version does not define.
+func checkResyncReason(v ResyncReason, p string) error {
+	if !v.Valid() {
+		return badf(p, "expected one of %s, got %q", "cursor_too_old|membership_changed|retention_purge", string(v))
+	}
+	return nil
+}
+
 // Tagged union on `kind`. Decoders MUST ignore an attachment whose `kind` they do not
 // know rather than failing the whole message — a client that hard-errors on an unknown
 // attachment type cannot be shipped ahead of a server that adds one.
@@ -1287,6 +1318,11 @@ func (ClientHello) isClientFrame() {}
 
 type ServerReady struct {
 	SessionID Uuid `json:"session_id"`
+	// The version of THIS schema the server was generated from. Optional and additive
+	// (CANT-74): a client that logs an unknown enum value can say how far apart the two
+	// ends are instead of only that a value was unknown. Never a signal to change
+	// behaviour — the compatibility policy is what the client already does.
+	WireVersion *int64 `json:"wire_version,omitempty"`
 	// Lets a client with a skewed clock render correct relative timestamps by offset
 	// rather than trusting its own clock.
 	ServerTime Timestamp `json:"server_time"`
@@ -1326,6 +1362,7 @@ func (v *ServerReady) UnmarshalJSON(b []byte) error {
 func (v *ServerReady) decode(b []byte, p string) error {
 	var s struct {
 		SessionID            *Uuid      `json:"session_id"`
+		WireVersion          *int64     `json:"wire_version"`
 		ServerTime           *Timestamp `json:"server_time"`
 		HeartbeatIntervalSec *int64     `json:"heartbeat_interval_sec"`
 		MissedPongLimit      *int64     `json:"missed_pong_limit"`
@@ -1340,6 +1377,9 @@ func (v *ServerReady) decode(b []byte, p string) error {
 		return badf(p+".session_id", "required field is missing")
 	}
 	out.SessionID = *s.SessionID
+	if s.WireVersion != nil {
+		out.WireVersion = s.WireVersion
+	}
 	if s.ServerTime == nil {
 		return badf(p+".server_time", "required field is missing")
 	}
@@ -2126,11 +2166,7 @@ func (ServerError) isServerFrame() {}
 // issued AFTER this frame arrived, because a page requested before it may be bounded
 // by a head below this frame's `log_seq` (CANT-24 client obligation 3).
 type ServerResyncRequired struct {
-	// `cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener
-	// reconnected and Postgres queues nothing for a disconnected listener, so the instance
-	// cannot say how many. `membership_changed` and `retention_purge` have no producer
-	// yet; see CANT-75 and CANT-67.
-	Reason string `json:"reason"`
+	Reason ResyncReason `json:"reason"`
 	// The server's current head, so the client knows what it is syncing towards.
 	LogSeq LogSeq `json:"log_seq"`
 }
@@ -2145,8 +2181,8 @@ func (v *ServerResyncRequired) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *ServerResyncRequired) decode(b []byte, p string) error {
 	var s struct {
-		Reason *string `json:"reason"`
-		LogSeq *LogSeq `json:"log_seq"`
+		Reason *ResyncReason `json:"reason"`
+		LogSeq *LogSeq       `json:"log_seq"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return decodeErr(p, err)
@@ -2160,8 +2196,8 @@ func (v *ServerResyncRequired) decode(b []byte, p string) error {
 		return badf(p+".log_seq", "required field is missing")
 	}
 	out.LogSeq = *s.LogSeq
-	if !oneOf(out.Reason, []string{"cursor_too_old", "membership_changed", "retention_purge"}) {
-		return badf(p+".reason", "expected one of %s, got %q", "cursor_too_old|membership_changed|retention_purge", out.Reason)
+	if err := checkResyncReason(out.Reason, p+".reason"); err != nil {
+		return err
 	}
 	if err := checkLogSeq(out.LogSeq, p+".log_seq"); err != nil {
 		return err

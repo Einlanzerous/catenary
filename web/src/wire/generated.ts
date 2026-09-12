@@ -35,6 +35,25 @@ const asOneOf = <T extends string>(v: unknown, allowed: readonly T[], p: string)
   const s = asStr(v, p)
   return (allowed as readonly string[]).includes(s) ? s as T : bad(p, `expected one of ${allowed.join('|')}, got ${JSON.stringify(s)}`)
 }
+
+/* CANT-74: an enum a client can RECEIVE is open on the clients. A value this schema
+ * version does not know decodes to the sentinel "unknown" and is reported ONCE per
+ * (enum, raw) per process — a busy thread would otherwise print it hundreds of times. */
+let serverWireVersion: number | undefined
+/** Call on `ready` so the report can say how far apart the two ends are. */
+export function setServerWireVersion(v: number | undefined): void { serverWireVersion = v }
+const warned = new Set<string>()
+function warnUnknown(enumName: string, raw: string): void {
+  const key = `${enumName}\u0000${raw}`
+  if (warned.has(key)) return
+  warned.add(key)
+  const server = serverWireVersion === undefined ? '' : `, server wire_version ${serverWireVersion}`
+  console.warn(`wire: ${enumName}: unknown value ${JSON.stringify(raw)} decoded as unknown (client wire_version ${WIRE_VERSION}${server})`)
+}
+/** Exhaustiveness. `default: assertNever(v)` makes the compiler demand an arm for every
+ *  member of a client-open enum, the sentinel included. */
+export function assertNever(v: never): never { throw new Error(`unreachable: ${JSON.stringify(v)}`) }
+
 /** Drops undefined so an absent optional is omitted rather than emitted as null. */
 const compact = <T extends Record<string, unknown>>(o: T): T => {
   for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k]
@@ -160,9 +179,19 @@ const asToken = (v: unknown, p: string): Token => {
 // neither is a distinct entity. Adding a third member to a direct conversation
 // promotes it to `group` and is a row insert plus this field changing, never a
 // migration.
-export type ConversationKind = "direct" | "group"
+// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+// Conversation > ConversationKind. A value this schema version does not know decodes
+// to the sentinel `unknown` and is reported once; the server refuses it. Every switch
+// over this type needs an arm for `unknown`.
+export type ConversationKind = "direct" | "group" | "unknown"
+/** The wire set — the values this schema version defines. Never the sentinel. */
 export const ConversationKindValues = ["direct", "group"] as const
-const asConversationKind = (v: unknown, p: string): ConversationKind => asOneOf(v, ConversationKindValues, p)
+const asConversationKind = (v: unknown, p: string): ConversationKind => {
+  const s = asStr(v, p)
+  if ((ConversationKindValues as readonly string[]).includes(s)) return s as ConversationKind
+  warnUnknown("ConversationKind", s)
+  return "unknown"
+}
 
 // The server-authoritative half of the message lifecycle from IDEA-23, and the ONLY
 // states that ever cross the wire.
@@ -200,9 +229,19 @@ const asConversationKind = (v: unknown, p: string): ConversationKind => asOneOf(
 // `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the exception and
 // is refreshed on every page that carries the conversation, which a receipt from any
 // of your own devices now causes.
-export type DeliveryState = "sent" | "delivered" | "read"
+// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+// Message > DeliveryState. A value this schema version does not know decodes to the
+// sentinel `unknown` and is reported once; the server refuses it. Every switch over
+// this type needs an arm for `unknown`.
+export type DeliveryState = "sent" | "delivered" | "read" | "unknown"
+/** The wire set — the values this schema version defines. Never the sentinel. */
 export const DeliveryStateValues = ["sent", "delivered", "read"] as const
-const asDeliveryState = (v: unknown, p: string): DeliveryState => asOneOf(v, DeliveryStateValues, p)
+const asDeliveryState = (v: unknown, p: string): DeliveryState => {
+  const s = asStr(v, p)
+  if ((DeliveryStateValues as readonly string[]).includes(s)) return s as DeliveryState
+  warnUnknown("DeliveryState", s)
+  return "unknown"
+}
 
 // Lifecycle of the async Whisper job (R3/IDEA-26) that writes the finished transcript
 // back onto the ATTACHMENT it belongs to.
@@ -217,9 +256,19 @@ const asDeliveryState = (v: unknown, p: string): DeliveryState => asOneOf(v, Del
 // field lives: the authoritative copy is per attachment, and the server keeps a
 // denormalised copy of the text on the message row for CANT-59's single full-text
 // index, which nothing reads to serve a message.
-export type TranscriptState = "pending" | "ready" | "failed"
+// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+// Message > Attachment > VoiceAttachment > Transcript > TranscriptState. A value this
+// schema version does not know decodes to the sentinel `unknown` and is reported once;
+// the server refuses it. Every switch over this type needs an arm for `unknown`.
+export type TranscriptState = "pending" | "ready" | "failed" | "unknown"
+/** The wire set — the values this schema version defines. Never the sentinel. */
 export const TranscriptStateValues = ["pending", "ready", "failed"] as const
-const asTranscriptState = (v: unknown, p: string): TranscriptState => asOneOf(v, TranscriptStateValues, p)
+const asTranscriptState = (v: unknown, p: string): TranscriptState => {
+  const s = asStr(v, p)
+  if ((TranscriptStateValues as readonly string[]).includes(s)) return s as TranscriptState
+  warnUnknown("TranscriptState", s)
+  return "unknown"
+}
 
 // A duration or offset in whole milliseconds.
 //
@@ -243,17 +292,60 @@ const asDurationMs = (v: unknown, p: string): DurationMs => {
 }
 
 // The four source types the canvas's replies section renders.
-export type ReplyRefKind = "text" | "voice" | "image" | "link"
+// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
+// Message > ReplyRef > ReplyRefKind. A value this schema version does not know decodes
+// to the sentinel `unknown` and is reported once; the server refuses it. Every switch
+// over this type needs an arm for `unknown`.
+export type ReplyRefKind = "text" | "voice" | "image" | "link" | "unknown"
+/** The wire set — the values this schema version defines. Never the sentinel. */
 export const ReplyRefKindValues = ["text", "voice", "image", "link"] as const
-const asReplyRefKind = (v: unknown, p: string): ReplyRefKind => asOneOf(v, ReplyRefKindValues, p)
+const asReplyRefKind = (v: unknown, p: string): ReplyRefKind => {
+  const s = asStr(v, p)
+  if ((ReplyRefKindValues as readonly string[]).includes(s)) return s as ReplyRefKind
+  warnUnknown("ReplyRefKind", s)
+  return "unknown"
+}
 
+// CLOSED EVERYWHERE (CANT-74): reachable only from client root ClientFrame via
+// ClientFrame > ClientTyping > TypingState. A client authors it and never decodes a
+// value newer than itself, so an unrecognised value is refused on every side.
 export type TypingState = "start" | "stop"
 export const TypingStateValues = ["start", "stop"] as const
 const asTypingState = (v: unknown, p: string): TypingState => asOneOf(v, TypingStateValues, p)
 
-export type ErrorCode = "unauthorized" | "wire_version_unsupported" | "rate_limited" | "not_a_member" | "conversation_not_found" | "message_too_large" | "upload_not_found" | "internal"
+// CLIENT-OPEN (CANT-74): reachable from server root ServerFrame via ServerFrame >
+// ServerError > ErrorCode. A value this schema version does not know decodes to the
+// sentinel `unknown` and is reported once; the server refuses it. Every switch over
+// this type needs an arm for `unknown`.
+export type ErrorCode = "unauthorized" | "wire_version_unsupported" | "rate_limited" | "not_a_member" | "conversation_not_found" | "message_too_large" | "upload_not_found" | "internal" | "unknown"
+/** The wire set — the values this schema version defines. Never the sentinel. */
 export const ErrorCodeValues = ["unauthorized", "wire_version_unsupported", "rate_limited", "not_a_member", "conversation_not_found", "message_too_large", "upload_not_found", "internal"] as const
-const asErrorCode = (v: unknown, p: string): ErrorCode => asOneOf(v, ErrorCodeValues, p)
+const asErrorCode = (v: unknown, p: string): ErrorCode => {
+  const s = asStr(v, p)
+  if ((ErrorCodeValues as readonly string[]).includes(s)) return s as ErrorCode
+  warnUnknown("ErrorCode", s)
+  return "unknown"
+}
+
+// Why a session must catch up over `/sync`. `cursor_too_old`: this session missed
+// deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing
+// for a disconnected listener, so the instance cannot say how many.
+// `membership_changed` and `retention_purge` have no producer yet; see CANT-75 and
+// CANT-67. Promoted from an inline enum by CANT-74 so that every client-open enum is a
+// named type in all three languages.
+// CLIENT-OPEN (CANT-74): reachable from server root ServerFrame via ServerFrame >
+// ServerResyncRequired > ResyncReason. A value this schema version does not know
+// decodes to the sentinel `unknown` and is reported once; the server refuses it. Every
+// switch over this type needs an arm for `unknown`.
+export type ResyncReason = "cursor_too_old" | "membership_changed" | "retention_purge" | "unknown"
+/** The wire set — the values this schema version defines. Never the sentinel. */
+export const ResyncReasonValues = ["cursor_too_old", "membership_changed", "retention_purge"] as const
+const asResyncReason = (v: unknown, p: string): ResyncReason => {
+  const s = asStr(v, p)
+  if ((ResyncReasonValues as readonly string[]).includes(s)) return s as ResyncReason
+  warnUnknown("ResyncReason", s)
+  return "unknown"
+}
 
 export interface User {
   id: Uuid
@@ -643,6 +735,11 @@ export function encodeClientHello(v: ClientHello): Record<string, unknown> {
 export interface ServerReady {
   readonly type: "ready"
   sessionId: Uuid
+  // The version of THIS schema the server was generated from. Optional and additive
+  // (CANT-74): a client that logs an unknown enum value can say how far apart the two
+  // ends are instead of only that a value was unknown. Never a signal to change
+  // behaviour — the compatibility policy is what the client already does.
+  wireVersion?: number
   // Lets a client with a skewed clock render correct relative timestamps by offset
   // rather than trusting its own clock.
   serverTime: Timestamp
@@ -676,6 +773,7 @@ export function decodeServerReady(v: unknown, p = "ServerReady"): ServerReady {
   return {
     type: "ready",
     sessionId: o["session_id"] === undefined || o["session_id"] === null ? bad(`${p}.session_id`, 'required field is missing') : asUuid(o["session_id"], `${p}.session_id`),
+    wireVersion: o["wire_version"] === undefined || o["wire_version"] === null ? undefined : asInt(o["wire_version"], `${p}.wire_version`),
     serverTime: o["server_time"] === undefined || o["server_time"] === null ? bad(`${p}.server_time`, 'required field is missing') : asTimestamp(o["server_time"], `${p}.server_time`),
     heartbeatIntervalSec: o["heartbeat_interval_sec"] === undefined || o["heartbeat_interval_sec"] === null ? bad(`${p}.heartbeat_interval_sec`, 'required field is missing') : asInt(o["heartbeat_interval_sec"], `${p}.heartbeat_interval_sec`),
     missedPongLimit: o["missed_pong_limit"] === undefined || o["missed_pong_limit"] === null ? bad(`${p}.missed_pong_limit`, 'required field is missing') : asInt(o["missed_pong_limit"], `${p}.missed_pong_limit`),
@@ -688,6 +786,7 @@ export function encodeServerReady(v: ServerReady): Record<string, unknown> {
   return compact({
     "type": "ready",
     "session_id": v.sessionId,
+    "wire_version": v.wireVersion === undefined ? undefined : v.wireVersion,
     "server_time": v.serverTime,
     "heartbeat_interval_sec": v.heartbeatIntervalSec,
     "missed_pong_limit": v.missedPongLimit,
@@ -1042,11 +1141,7 @@ export function encodeServerError(v: ServerError): Record<string, unknown> {
 // by a head below this frame's `log_seq` (CANT-24 client obligation 3).
 export interface ServerResyncRequired {
   readonly type: "resync_required"
-  // `cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener
-  // reconnected and Postgres queues nothing for a disconnected listener, so the instance
-  // cannot say how many. `membership_changed` and `retention_purge` have no producer
-  // yet; see CANT-75 and CANT-67.
-  reason: "cursor_too_old" | "membership_changed" | "retention_purge"
+  reason: ResyncReason
   // The server's current head, so the client knows what it is syncing towards.
   logSeq: LogSeq
 }
@@ -1055,7 +1150,7 @@ export function decodeServerResyncRequired(v: unknown, p = "ServerResyncRequired
   const o = asObj(v, p)
   return {
     type: "resync_required",
-    reason: o["reason"] === undefined || o["reason"] === null ? bad(`${p}.reason`, 'required field is missing') : asOneOf(o["reason"], ["cursor_too_old","membership_changed","retention_purge"], `${p}.reason`),
+    reason: o["reason"] === undefined || o["reason"] === null ? bad(`${p}.reason`, 'required field is missing') : asResyncReason(o["reason"], `${p}.reason`),
     logSeq: o["log_seq"] === undefined || o["log_seq"] === null ? bad(`${p}.log_seq`, 'required field is missing') : asLogSeq(o["log_seq"], `${p}.log_seq`),
   }
 }

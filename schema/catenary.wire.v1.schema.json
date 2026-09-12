@@ -437,6 +437,11 @@
         "session_id": {
           "$ref": "#/$defs/Uuid"
         },
+        "wire_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The version of THIS schema the server was generated from. Optional and additive (CANT-74): a client that logs an unknown enum value can say how far apart the two ends are instead of only that a value was unknown. Never a signal to change behaviour — the compatibility policy is what the client already does."
+        },
         "server_time": {
           "$ref": "#/$defs/Timestamp",
           "description": "Lets a client with a skewed clock render correct relative timestamps by offset rather than trusting its own clock."
@@ -763,6 +768,15 @@
         }
       }
     },
+    "ResyncReason": {
+      "type": "string",
+      "enum": [
+        "cursor_too_old",
+        "membership_changed",
+        "retention_purge"
+      ],
+      "description": "Why a session must catch up over `/sync`. `cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing for a disconnected listener, so the instance cannot say how many. `membership_changed` and `retention_purge` have no producer yet; see CANT-75 and CANT-67. Promoted from an inline enum by CANT-74 so that every client-open enum is a named type in all three languages."
+    },
     "ServerResyncRequired": {
       "type": "object",
       "additionalProperties": false,
@@ -776,13 +790,7 @@
           "const": "resync_required"
         },
         "reason": {
-          "type": "string",
-          "enum": [
-            "cursor_too_old",
-            "membership_changed",
-            "retention_purge"
-          ],
-          "description": "`cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing for a disconnected listener, so the instance cannot say how many. `membership_changed` and `retention_purge` have no producer yet; see CANT-75 and CANT-67."
+          "$ref": "#/$defs/ResyncReason"
         },
         "log_seq": {
           "$ref": "#/$defs/LogSeq",

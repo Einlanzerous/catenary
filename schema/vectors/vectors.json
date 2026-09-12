@@ -139,6 +139,22 @@
       }
     },
     {
+      "name": "server_ready_with_wire_version",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-74 Ruling 3. The server says which schema version it was generated from, so a client that logs an unknown enum value can say how far apart the two ends are. Optional and additive: a client generated before this field existed ignores it under the unknown-fields rule, and nothing changes behaviour on it.",
+      "json": {
+        "type": "ready",
+        "session_id": "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d",
+        "wire_version": 1,
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 35,
+        "missed_pong_limit": 2,
+        "log_seq": 41250,
+        "resumed": false
+      }
+    },
+    {
       "name": "server_ack",
       "kind": "ServerFrame",
       "expect": "roundtrip",
