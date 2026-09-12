@@ -8,6 +8,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"math"
 	"testing"
 
 	"github.com/google/uuid"
@@ -134,5 +136,31 @@ func TestHelloZeroCursorIsBehindByHead(t *testing.T) {
 	}
 	if res.Outcome != HelloBehind || res.Delta != h {
 		t.Fatalf("cursor 0: outcome=%s delta=%d, want behind by %d", res.Outcome, res.Delta, h)
+	}
+}
+
+// A negative cursor is an error, not an outcome — the store is the trust
+// boundary. -1 would otherwise read as `behind` and poison the delta
+// histogram; math.MinInt64 would overflow into a `cursor_ahead` WARN, the one
+// line an operator reads as a restore. Both are refused before head is read,
+// with one WARN line naming the reason and never an outcome.
+func TestHelloRefusesANegativeCursor(t *testing.T) {
+	ctx, pool := freshDB(t)
+	logger, buf := captureLogger()
+	st := New(pool, DefaultLimits(), logger)
+	for _, c := range []int64{-1, math.MinInt64} {
+		buf.Reset()
+		cur := c
+		res, err := st.Hello(ctx, HelloRequest{DeviceID: uuid.New(), SessionID: uuid.New(), Cursor: &cur})
+		if !errors.Is(err, ErrNegativeCursor) {
+			t.Fatalf("cursor %d: err = %v, want ErrNegativeCursor (got outcome %q)", c, err, res.Outcome)
+		}
+		lines := logLines(t, buf)
+		if len(lines) != 1 || lines[0]["level"] != "WARN" || lines[0]["reason"] != "negative_cursor" {
+			t.Fatalf("cursor %d: want one WARN line with reason=negative_cursor, got %v", c, lines)
+		}
+		if _, hasOutcome := lines[0]["outcome"]; hasOutcome {
+			t.Fatalf("cursor %d: a refusal must not log an outcome: %v", c, lines[0])
+		}
 	}
 }

@@ -35,6 +35,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -68,8 +69,22 @@ type HelloRequest struct {
 	DeviceID  uuid.UUID
 	SessionID uuid.UUID
 	// Cursor is the client's `resume_from_log_seq`, nil when absent.
+	//
+	// A NEGATIVE CURSOR IS REFUSED HERE, not classified. The wire says LogSeq
+	// is `minimum: 0` and the generated decoders enforce it, but the store is
+	// the trust boundary and does not assume its callers decoded anything:
+	// classified, a -1 would log `behind` with delta = head + 1 and poison the
+	// one histogram ruling 0 would be reopened on, and math.MinInt64 would
+	// overflow the subtraction into a `cursor_ahead` WARN — the line an
+	// operator reads as a restore. So it is an error, logged as one, and the
+	// hello it came from is refused upstream.
 	Cursor *int64
 }
+
+// ErrNegativeCursor is returned by Hello for a cursor below zero. It is not a
+// wire error code — CANT-83's guard keeps those in one file — so the socket
+// edge answers it as it answers any malformed hello.
+var ErrNegativeCursor = errors.New("store: hello: cursor must not be negative")
 
 // HelloResult is the comparison, and it is what goes on the wire as
 // `ready.log_seq` (Head) and — in wire version 1, always — `resumed: false`.
@@ -100,6 +115,12 @@ type HelloResult struct {
 // somebody eventually sets from the wrong place. CANT-102 writes the literal
 // where it builds the `ready` frame, beside the sentence that says why.
 func (s *Store) Hello(ctx context.Context, req HelloRequest) (HelloResult, error) {
+	if req.Cursor != nil && *req.Cursor < 0 {
+		s.logger.WarnContext(ctx, "hello refused",
+			"device_id", req.DeviceID, "session_id", req.SessionID,
+			"cursor", *req.Cursor, "reason", "negative_cursor")
+		return HelloResult{}, ErrNegativeCursor
+	}
 	var head int64
 	if err := s.pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&head); err != nil {
 		return HelloResult{}, fmt.Errorf("store: hello: read head: %w", err)
