@@ -95,15 +95,19 @@ stands on it. **It did not measure the deployed path.** Its own findings say so:
 
 Traefik and the split entrypoint are exactly what this deployment adds, and the
 internal router runs the upgrade through `cf-access-jwt` besides. **The
-re-test R1 asked for has not been run**, and is carried on CANT-22, which is the
-ticket that first has a socket to run it with.
+re-test R1 asked for has not been run.** CANT-22 landed the socket it needs
+(`GET /ws`, authenticated on `Sec-WebSocket-Protocol`, R1's 35 s / 2 dial
+announced in `ready`), so there is now something to run it with; the run itself
+needs the deployed path, which does not exist until CANT-78 publishes an image.
+It stays carried on the CANT-22 thread until a ticket that has that path takes
+it.
 
 ## Blocked on
 
 | clause of CANT-16's `Done when` | blocker |
 |---|---|
 | reachable through the tunnel | **CANT-78** — nothing publishes `ghcr.io/einlanzerous/catenary`; no Dockerfile, no release workflow |
-| the WebSocket upgrade survives it | **CANT-22** — there is no socket. The service serves `/healthz` and `/readyz` |
+| the WebSocket upgrade survives it | **CANT-78** — the socket exists (`GET /ws`, CANT-22) and holds in-process; whether it survives the tunnel and Traefik is the R1 re-test above, which needs a deployed image to run against |
 | `/admin` behind Access, `/sync` and the socket not | **CANT-69** (`/admin`) and **CANT-18** (`/sync`) — neither route exists |
 
 Catenary's block should not be added to `construct-server` before CANT-78
