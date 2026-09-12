@@ -403,6 +403,22 @@ func isTransient(err error) bool {
 			return true
 		}
 
+		// 54000 program limit exceeded — the one failure position 12's notify
+		// ADDS to this path. PreCommit_Notify raises it at commit, "too many
+		// notifications in the NOTIFY queue", when the instance-wide queue is
+		// full: a listener alive and not reading, in ANY database on the
+		// shared Postgres, which this repository cannot see coming. That is a
+		// not-now condition, and reporting it permanent would park a real
+		// message at `failed` because of somebody else's wedged process. The
+		// same code covers genuinely permanent limits — an index row over
+		// size — and that is the wasted retry the asymmetry above accepts.
+		// The CODE rather than class 54: 54001 (statement too complex) and
+		// 54023 (too many arguments) are decisions about the statement, and
+		// re-sending it changes nothing.
+		if pgErr.Code == "54000" {
+			return true
+		}
+
 		// Three classes, all of them "not now" rather than "not ever":
 		//
 		//   08  connection exception.

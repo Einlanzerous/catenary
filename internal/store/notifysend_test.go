@@ -118,14 +118,17 @@ func TestARolledBackSendDeliversNoNotification(t *testing.T) {
 
 	// OR REPLACE and IF EXISTS throughout: freshDB drops the table, which
 	// takes the trigger with it, but not a function it did not create — so a
-	// crashed run must not be able to fail the next one.
+	// crashed run must not be able to fail the next one. CASCADE on the
+	// cleanup, because a t.Fatalf before the DROP TRIGGER below leaves the
+	// trigger depending on the function, and a plain DROP FUNCTION would then
+	// fail — silently, behind the discarded error — and do nothing.
 	if _, err := pool.Exec(ctx, `
 		CREATE OR REPLACE FUNCTION cant86_abort_at_commit() RETURNS trigger
 		LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'cant86: abort at commit'; END $$`); err != nil {
 		t.Fatalf("create function: %v", err)
 	}
 	t.Cleanup(func() {
-		_, _ = pool.Exec(context.WithoutCancel(ctx), `DROP FUNCTION IF EXISTS cant86_abort_at_commit()`)
+		_, _ = pool.Exec(context.WithoutCancel(ctx), `DROP FUNCTION IF EXISTS cant86_abort_at_commit() CASCADE`)
 	})
 	if _, err := pool.Exec(ctx, `
 		CREATE CONSTRAINT TRIGGER cant86_abort_at_commit AFTER INSERT ON messages

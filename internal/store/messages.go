@@ -89,7 +89,7 @@ package store
 // takes an AccessExclusiveLock on "database 0" (async.c: "Serialize writers by
 // acquiring a special lock that we hold till after commit") so queue entries
 // land in commit order. That lock is INSTANCE-WIDE, not per database: every
-// notifying committer on the shared Postgres serialises through it, other
+// notifying committer on the shared Postgres serializes through it, other
 // services' databases included, and RevokeDevice in tokens.go is the other
 // transaction in this service that takes it. It cannot join a cycle: it is
 // acquired inside commit, after every row lock above, and no transaction
@@ -560,9 +560,11 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// is the idempotency order): Postgres delivers a notification at commit,
 	// so raised here it fires exactly when the message becomes visible and
 	// never when it does not. Raised anywhere else it is a second write that
-	// can succeed without the message, or the reverse — and only the second
-	// of those is something a test can see, which is why this line is read
-	// rather than only tested.
+	// can succeed without the message, or the reverse — and only the FIRST
+	// of those is something a test can see (the rollback test went red on a
+	// pool.Exec here). A message without its notify — the after-commit
+	// placement — has no observer, which is why this line is read rather
+	// than only tested.
 	//
 	// The payload is CANT-21's, built from the values THIS transaction wrote
 	// and never re-read: (conversation_id, seq) is UNIQUE on messages, so a

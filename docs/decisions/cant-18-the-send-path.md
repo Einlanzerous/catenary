@@ -50,7 +50,7 @@ The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when
 
 - **CANT-67's** sweep advances a floor on `conversations` and then deletes from `messages` — the same direction as this file.
 - **CANT-63** draws `log_counter` for an edit and takes these in this order.
-- **CANT-26's** receipt write takes `conversation_members` alone. Nothing here takes that row, so the two cannot order against each other.
+- **CANT-26's** receipt write takes `conversation_members` and, since `CANT-89`, `log_counter` after it. The send path never locks a member row, so the counter is the only lock the two share, and both take it last: no cycle in either direction.
 
 **The commit takes one more lock, and it is instance-wide.** `pg_notify` at position 12 locks nothing when it runs; at commit `PreCommit_Notify` takes an `AccessExclusiveLock` on "database 0", shared by every notifying committer on the Postgres instance, other services' databases included. It is acquired inside commit after every row lock and nothing waits on a row lock after it, so it is last in every notifier's order and cannot join a cycle. `RevokeDevice` is the other transaction in this service that takes it.
 
