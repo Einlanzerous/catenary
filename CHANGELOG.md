@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/Einlanzerous/catenary/compare/v0.4.0...v0.5.0) (2026-09-12)
+
+
+### Features
+
+* CANT-101 — the hello outcome, the schema descriptions, and the CANT-24 decision record ([#37](https://github.com/Einlanzerous/catenary/issues/37)) ([011f315](https://github.com/Einlanzerous/catenary/commit/011f31501e3c2f04f7a5562a7bdbe5aa27d91a57))
+
 ## [0.4.0](https://github.com/Einlanzerous/catenary/compare/v0.3.0...v0.4.0) (2026-09-12)
 
 
