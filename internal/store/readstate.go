@@ -96,11 +96,31 @@ type ReadReceipt struct {
 // highest seq this member has read" with no second author to reason about —
 // which is what 0005 settled and what makes the derivation above trustworthy.
 //
-// IT TAKES ONE ROW LOCK AND IT IS conversation_members. SendMessage locks
-// conversations → messages → log_counter and, since CANT-83 dropped the
-// author's read_seq advance, never touches this table. The two paths share no
-// lock, so they cannot order against each other in either direction and the
-// obligation messages.go used to state outward is gone.
+// IT TAKES TWO ROW LOCKS, IN THIS ORDER: conversation_members (the FOR UPDATE
+// below) and then, only when the mark advances, log_counter through the
+// metadata bump at the bottom of this function (CANT-91). This note used to
+// claim a single lock and a disjoint lock set from the send path, and both
+// clauses stopped being true when that bump landed — a comment that no
+// longer matches the code is worse than none, because the next author plans
+// against it.
+//
+// SendMessage locks conversations → messages → log_counter and, since CANT-83
+// dropped the author's read_seq advance, never LOCKS this table: it reads it,
+// at its membership EXISTS, and a read takes no row lock. So log_counter is
+// the ONLY lock the two paths share, and both take it LAST. That is what rules
+// out a cycle in either direction — a stronger reason than the disjoint lock
+// sets this note used to claim, and it is the same sentence messages.go
+// states outward. It holds for as long as the counter stays at the bottom of
+// every writer's order, which is the rule that file exists to keep.
+//
+// "LAST" IS EXACT HERE AND ONLY "LAST AMONG SHARED LOCKS" THERE. This path
+// locks nothing new after the draw: the bump writes the member row it already
+// holds and commits. The send path is not so tidy — its insert takes KEY SHARE
+// on `users` and `devices` AFTER the counter, and messages.go says so forty
+// lines above the sentence it states outward. That is why every lock in
+// metadata.go is FOR NO KEY UPDATE, which KEY SHARE passes through; anyone
+// adding a lock to this path after the draw has to make the same argument, or
+// take it before.
 //
 // Three rules, and the second is the one with teeth:
 //
