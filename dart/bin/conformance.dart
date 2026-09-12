@@ -126,8 +126,11 @@ void main(List<String> args) {
         ok ? seen.first : '${seen.length} report(s): ${seen.join(' | ')}');
   }
 
+  // The probe above is one check beyond the vector file, so the total says
+  // so: a failing probe must not read as a failing vector.
+  const runnerChecks = 1;
   stdout.writeln(failures.isEmpty
-      ? '\nall green — ${cases.length} vectors'
-      : '\n${failures.length} of ${cases.length} FAILED');
+      ? '\nall green — ${cases.length} vectors + $runnerChecks runner check'
+      : '\n${failures.length} of ${cases.length + runnerChecks} FAILED');
   exit(failures.isEmpty ? 0 : 1);
 }

@@ -182,7 +182,7 @@ result $? "gen:check"
 # "closed on the server" is a test rather than a promise.
 step "CANT-74 · the generator classifies, lints, and leaves the Go enums alone"
 (cd "$ROOT/web" && npm run --silent gen:test) >"$LOGDIR/v-gen-test.log" 2>&1
-result $? "gen:test ($(grep -oE '^ℹ pass [0-9]+' "$LOGDIR/v-gen-test.log" | head -1))"
+result $? "gen:test ($(grep -oE '^ℹ (pass|skipped) [0-9]+' "$LOGDIR/v-gen-test.log" | grep -v 'skipped 0' | tr '\n' ',' | sed 's/ℹ //g; s/,$//; s/,/, /g'))"
 
 step "R4 · TypeScript"
 (cd "$ROOT/web" && npx --no-install vue-tsc --noEmit) >"$LOGDIR/v-tsc.log" 2>&1

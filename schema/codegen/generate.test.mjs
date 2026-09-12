@@ -161,16 +161,29 @@ function goInlineGuards(src) {
   return out
 }
 
+/** origin/main's generated.go, or null when no remote can be reached — a
+ *  shallow checkout is fetched, a clone with no origin or no network is not. */
 function mainGo() {
-  const show = () => execFileSync('git', ['show', `origin/main:${GO}`], { cwd: ROOT, encoding: 'utf8' })
+  const show = () => execFileSync('git', ['show', `origin/main:${GO}`], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
   try { return show() } catch { /* shallow checkout — fetch just main */ }
-  execFileSync('git', ['fetch', '--depth=1', 'origin', 'main'], { cwd: ROOT, stdio: 'ignore' })
-  return show()
+  try {
+    execFileSync('git', ['fetch', '--depth=1', 'origin', 'main'], { cwd: ROOT, stdio: 'ignore' })
+    return show()
+  } catch {
+    return null
+  }
 }
 
-test('Go enum blocks and inline oneOf guards are byte-identical to origin/main, except the CANT-74 delta', () => {
+test('Go enum blocks and inline oneOf guards are byte-identical to origin/main, except the CANT-74 delta', (t) => {
   const head = readFileSync(join(ROOT, GO), 'utf8')
   const base = mainGo()
+  if (base === null) {
+    // A skip is not a pass. verify.sh treats an absent world the same way
+    // (no Dart SDK, no database): say so loudly rather than go red on a
+    // clone with no origin, and let CI — which always has one — make the claim.
+    t.skip('SKIPPED, NOT PROVED: origin/main is unreachable, so "the Go enum blocks are unchanged" was not checked here')
+    return
+  }
   const hb = goEnumBlocks(head)
   const bb = goEnumBlocks(base)
   assert.ok(hb.size >= 6, `found only ${hb.size} enum blocks at HEAD`)

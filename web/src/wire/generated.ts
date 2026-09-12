@@ -42,13 +42,16 @@ const asOneOf = <T extends string>(v: unknown, allowed: readonly T[], p: string)
 let serverWireVersion: number | undefined
 /** Call on `ready` so the report can say how far apart the two ends are. */
 export function setServerWireVersion(v: number | undefined): void { serverWireVersion = v }
+let onUnknownWireValue: (message: string) => void = (m) => console.warn(m)
+/** Where the report goes. Defaults to console.warn; an app or a test may replace it. */
+export function setOnUnknownWireValue(fn: (message: string) => void): void { onUnknownWireValue = fn }
 const warned = new Set<string>()
 function warnUnknown(enumName: string, raw: string): void {
   const key = `${enumName}\u0000${raw}`
   if (warned.has(key)) return
   warned.add(key)
   const server = serverWireVersion === undefined ? '' : `, server wire_version ${serverWireVersion}`
-  console.warn(`wire: ${enumName}: unknown value ${JSON.stringify(raw)} decoded as unknown (client wire_version ${WIRE_VERSION}${server})`)
+  onUnknownWireValue(`wire: ${enumName}: unknown value ${JSON.stringify(raw)} decoded as unknown (client wire_version ${WIRE_VERSION}${server})`)
 }
 /** Exhaustiveness. `default: assertNever(v)` makes the compiler demand an arm for every
  *  member of a client-open enum, the sentinel included. */
