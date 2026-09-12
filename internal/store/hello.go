@@ -112,8 +112,9 @@ type HelloResult struct {
 //
 // Resumed is not a field on the result on purpose. In wire version 1 it is
 // false for every hello, and a struct field that is always false is a field
-// somebody eventually sets from the wrong place. CANT-102 writes the literal
-// where it builds the `ready` frame, beside the sentence that says why.
+// somebody eventually sets from the wrong place. CANT-22's door writes the
+// literal where it builds the `ready` frame (internal/api/socket.go), beside
+// the sentence that says why.
 func (s *Store) Hello(ctx context.Context, req HelloRequest) (HelloResult, error) {
 	if req.Cursor != nil && *req.Cursor < 0 {
 		s.logger.WarnContext(ctx, "hello refused",
