@@ -567,44 +567,44 @@
       "kind": "derived",
       "note": "The cursor the client should sync from instead."
     },
-    "EnrolRequest.enrolment_token": {
+    "EnrollRequest.enrollment_token": {
       "kind": "derived",
-      "note": "PRESENTED OR RETURNED, NEVER STORED. enrolment_tokens.token_hash holds this string's SHA-256 and nothing anywhere holds the string: it exists in the one message that carried it and is unrecoverable afterwards. Mapping it to a column would be a claim that the database keeps a working credential, which is exactly what hashing it is for."
+      "note": "PRESENTED OR RETURNED, NEVER STORED. enrollment_tokens.token_hash holds this string's SHA-256 and nothing anywhere holds the string: it exists in the one message that carried it and is unrecoverable afterwards. Mapping it to a column would be a claim that the database keeps a working credential, which is exactly what hashing it is for."
     },
-    "EnrolRequest.device_name": {
+    "EnrollRequest.device_name": {
       "kind": "column",
       "table": "devices",
       "column": "name",
       "note": "What the device list calls this install. Required rather than defaulted, because a revocation list is unusable if the rows do not say which phone they are."
     },
-    "EnrolResponse.user_id": {
+    "EnrollResponse.user_id": {
       "kind": "column",
       "table": "users",
       "column": "id",
       "note": "Learned here because a client needs it before its first page: author_id is the only thing separating a message you wrote from one you did not, and every read-state rule turns on that."
     },
-    "EnrolResponse.device_id": {
+    "EnrollResponse.device_id": {
       "kind": "column",
       "table": "devices",
       "column": "id",
       "note": "Minted by the redemption. It is what ClientHello.device_id carries and what a revocation names."
     },
-    "EnrolResponse.access_token": {
+    "EnrollResponse.access_token": {
       "kind": "derived",
       "note": "PRESENTED OR RETURNED, NEVER STORED. access_tokens.token_hash holds this string's SHA-256 and nothing anywhere holds the string: it exists in the one message that carried it and is unrecoverable afterwards. Mapping it to a column would be a claim that the database keeps a working credential, which is exactly what hashing it is for."
     },
-    "EnrolResponse.access_expires_at": {
+    "EnrollResponse.access_expires_at": {
       "kind": "column",
       "table": "access_tokens",
       "column": "expires_at",
       "note": "Served so a client never hard-codes the lifetime — the way the two drift apart the first time it changes.",
-      "nullable_because": "NULL in the column means NEVER EXPIRES, and 0007's CHECK ties that to a NULL device_id, so only a bot's token can hold one. A bot has no enrolment and no refresh, so it never reaches this response: every row this field is served from has a device and therefore an expiry."
+      "nullable_because": "NULL in the column means NEVER EXPIRES, and 0007's CHECK ties that to a NULL device_id, so only a bot's token can hold one. A bot has no enrollment and no refresh, so it never reaches this response: every row this field is served from has a device and therefore an expiry."
     },
-    "EnrolResponse.refresh_token": {
+    "EnrollResponse.refresh_token": {
       "kind": "derived",
       "note": "PRESENTED OR RETURNED, NEVER STORED. refresh_tokens.token_hash holds this string's SHA-256 and nothing anywhere holds the string: it exists in the one message that carried it and is unrecoverable afterwards. Mapping it to a column would be a claim that the database keeps a working credential, which is exactly what hashing it is for."
     },
-    "EnrolResponse.refresh_expires_at": {
+    "EnrollResponse.refresh_expires_at": {
       "kind": "column",
       "table": "refresh_tokens",
       "column": "expires_at",
@@ -623,7 +623,7 @@
       "table": "access_tokens",
       "column": "expires_at",
       "note": "Served so a client never hard-codes the lifetime — the way the two drift apart the first time it changes.",
-      "nullable_because": "NULL in the column means NEVER EXPIRES, and 0007's CHECK ties that to a NULL device_id, so only a bot's token can hold one. A bot has no enrolment and no refresh, so it never reaches this response: every row this field is served from has a device and therefore an expiry."
+      "nullable_because": "NULL in the column means NEVER EXPIRES, and 0007's CHECK ties that to a NULL device_id, so only a bot's token can hold one. A bot has no enrollment and no refresh, so it never reaches this response: every row this field is served from has a device and therefore an expiry."
     },
     "RefreshResponse.refresh_token": {
       "kind": "derived",

@@ -4,7 +4,7 @@ package store
 // "who is asking".
 //
 // THE MODEL IS FOUR SHAPES AND NOT TWO. The ticket names short-lived access
-// and per-device rotating refresh; R6 settled the bootstrap ENROLMENT token
+// and per-device rotating refresh; R6 settled the bootstrap ENROLLMENT token
 // before this ticket existed, and a recorded ruling settled the BOT token. All
 // four are minted here, in one encoding, and verified through one seam.
 //
@@ -32,7 +32,7 @@ import (
 // ErrUnauthorized is every authentication failure, and there is deliberately
 // only one of it.
 //
-// ONE REFUSAL SHAPE, GRANULAR ONLY IN THE LOG. `/enrol` is unauthenticated and
+// ONE REFUSAL SHAPE, GRANULAR ONLY IN THE LOG. `/enroll` is unauthenticated and
 // has no rate limiter in front of it by decision, so a response that told an
 // unknown token from an already-redeemed one would tell a prober which of its
 // guesses was once real, and a distinct answer for a deactivated account would
@@ -72,18 +72,18 @@ const (
 	// revocation exists for and the one people forget to perform.
 	RefreshTokenLifetime = 60 * 24 * time.Hour
 
-	// EnrolmentTokenLifetime is the asymmetric one. Re-issue is free and R6
+	// EnrollmentTokenLifetime is the asymmetric one. Re-issue is free and R6
 	// classes it as a rotation Provision may perform, so a too-short lifetime
 	// costs one command and a too-long one leaves a standing key to an account
 	// sitting in an old chat log. A week survives a weekend.
-	EnrolmentTokenLifetime = 7 * 24 * time.Hour
+	EnrollmentTokenLifetime = 7 * 24 * time.Hour
 )
 
 // TokenBytes is the entropy behind every credential this service issues.
 //
 // ONE LENGTH FOR ALL FOUR SHAPES. A shape-specific length would leak which
 // kind of credential a string is to anyone who saw one, and it would give the
-// enrolment token — the only one a person ever handles — its own quiet
+// enrollment token — the only one a person ever handles — its own quiet
 // pressure to be shortened.
 const TokenBytes = 32
 
@@ -161,8 +161,8 @@ type IssuedToken struct {
 	ExpiresAt time.Time
 }
 
-// Enrolment is everything a new install learns at redemption.
-type Enrolment struct {
+// Enrollment is everything a new install learns at redemption.
+type Enrollment struct {
 	UserID   uuid.UUID
 	DeviceID uuid.UUID
 	Access   IssuedToken
@@ -187,7 +187,7 @@ const MaxDeviceNameBytes = 128
 //
 // THE DEACTIVATED-USER CHECK IS NOT AN EXTRA. R6 chose disable-then-revoke for
 // Purser's offboard over the reverse ordering, and the whole argument rests on
-// one sentence: "a disabled account cannot refresh a token or enrol a device".
+// one sentence: "a disabled account cannot refresh a token or enroll a device".
 // That is a claim about this function. If only devices.revoked_at were checked,
 // R6's deliberately-accepted half-done state — a disabled account with some
 // devices still un-revoked — would keep authenticating, and the offboard would
@@ -277,20 +277,20 @@ func (s *Store) Authenticate(ctx context.Context, presented string) (Caller, err
 	return c, nil
 }
 
-// IssueEnrolmentToken mints the bootstrap credential for one person, and is
+// IssueEnrollmentToken mints the bootstrap credential for one person, and is
 // what Purser's Provision calls — on a first invite and on a re-invite alike.
 //
 // R6'S RE-INVITE CASE, WHICH LYCEUM'S CONNECTOR GETS WRONG. Provision must be
 // able to re-issue, and re-issuing must leave exactly ONE redeemable token. The
 // supersede below is half of that; the other half is the partial unique index
 // in 0007, which turns forgetting it into a constraint violation rather than
-// into a second live invitation nobody notices until two devices enrol.
-func (s *Store) IssueEnrolmentToken(ctx context.Context, userID uuid.UUID) (IssuedToken, error) {
+// into a second live invitation nobody notices until two devices enroll.
+func (s *Store) IssueEnrollmentToken(ctx context.Context, userID uuid.UUID) (IssuedToken, error) {
 	plaintext, hash, err := MintToken()
 	if err != nil {
 		return IssuedToken{}, err
 	}
-	expires := ServerTime().Add(EnrolmentTokenLifetime)
+	expires := ServerTime().Add(EnrollmentTokenLifetime)
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -302,15 +302,15 @@ func (s *Store) IssueEnrolmentToken(ctx context.Context, userID uuid.UUID) (Issu
 	// "what became of that invitation?" is a question somebody asks precisely
 	// when something has gone wrong, and a deleted row cannot answer it.
 	if _, err := tx.Exec(ctx, `
-		UPDATE enrolment_tokens SET superseded_at = now()
+		UPDATE enrollment_tokens SET superseded_at = now()
 		 WHERE user_id = $1 AND redeemed_at IS NULL AND superseded_at IS NULL`, userID); err != nil {
-		return IssuedToken{}, fmt.Errorf("store: supersede enrolment token: %w", err)
+		return IssuedToken{}, fmt.Errorf("store: supersede enrollment token: %w", err)
 	}
 
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO enrolment_tokens (id, user_id, token_hash, expires_at)
+		INSERT INTO enrollment_tokens (id, user_id, token_hash, expires_at)
 		VALUES ($1, $2, $3, $4)`, uuid.New(), userID, hash, expires); err != nil {
-		return IssuedToken{}, fmt.Errorf("store: issue enrolment token: %w", err)
+		return IssuedToken{}, fmt.Errorf("store: issue enrollment token: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -319,12 +319,12 @@ func (s *Store) IssueEnrolmentToken(ctx context.Context, userID uuid.UUID) (Issu
 	return IssuedToken{Plaintext: plaintext, ExpiresAt: expires}, nil
 }
 
-// RedeemEnrolment turns a bootstrap token into a device and its first pair.
+// RedeemEnrollment turns a bootstrap token into a device and its first pair.
 //
 // THE LOCKS THIS TAKES, in the form internal/store/messages.go asks for —
 // "anything that later locks a user or member row owes the same argument":
 //
-//   - enrolment_tokens, FOR UPDATE, on the one row being redeemed. Nothing else
+//   - enrollment_tokens, FOR UPDATE, on the one row being redeemed. Nothing else
 //     in this service touches that table, so it orders against nothing.
 //   - users is NOT LOCKED. deactivated_at is read with no lock at all; the
 //     devices insert then takes KEY SHARE on users(id) through its foreign key,
@@ -343,24 +343,24 @@ func (s *Store) IssueEnrolmentToken(ctx context.Context, userID uuid.UUID) (Issu
 // device is then refused on every request by Authenticate. What is left behind
 // is a stray row and no access — R6's explicitly-accepted half-done state,
 // arriving from the other direction.
-func (s *Store) RedeemEnrolment(ctx context.Context, presented, deviceName string) (Enrolment, error) {
+func (s *Store) RedeemEnrollment(ctx context.Context, presented, deviceName string) (Enrollment, error) {
 	// Before the pool is touched, on the SendMessage pattern: a malformed
 	// request should not cost a connection.
 	if deviceName == "" || utf8.RuneCountInString(deviceName) == 0 {
-		return Enrolment{}, ErrDeviceNameRequired
+		return Enrollment{}, ErrDeviceNameRequired
 	}
 	if len(deviceName) > MaxDeviceNameBytes {
-		return Enrolment{}, fmt.Errorf("store: device_name is %d bytes, limit is %d: %w",
+		return Enrollment{}, fmt.Errorf("store: device_name is %d bytes, limit is %d: %w",
 			len(deviceName), MaxDeviceNameBytes, ErrDeviceNameRequired)
 	}
 	if presented == "" {
-		s.logger.WarnContext(ctx, "enrolment refused", "reason", "empty credential")
-		return Enrolment{}, ErrUnauthorized
+		s.logger.WarnContext(ctx, "enrollment refused", "reason", "empty credential")
+		return Enrollment{}, ErrUnauthorized
 	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return Enrolment{}, fmt.Errorf("store: begin: %w", err)
+		return Enrollment{}, fmt.Errorf("store: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
@@ -376,27 +376,27 @@ func (s *Store) RedeemEnrolment(ctx context.Context, presented, deviceName strin
 	// waits; the loser then reads redeemed_at set and is refused.
 	err = tx.QueryRow(ctx, `
 		SELECT id, user_id, expires_at, redeemed_at, superseded_at
-		  FROM enrolment_tokens WHERE token_hash = $1 FOR UPDATE`,
+		  FROM enrollment_tokens WHERE token_hash = $1 FOR UPDATE`,
 		HashToken(presented)).Scan(&tokenID, &userID, &expiresAt, &redeemedAt, &supersededAt)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		s.logger.WarnContext(ctx, "enrolment refused", "reason", "unknown token")
-		return Enrolment{}, ErrUnauthorized
+		s.logger.WarnContext(ctx, "enrollment refused", "reason", "unknown token")
+		return Enrollment{}, ErrUnauthorized
 	case err != nil:
-		return Enrolment{}, fmt.Errorf("store: redeem: %w", err)
+		return Enrollment{}, fmt.Errorf("store: redeem: %w", err)
 	}
 
 	now := ServerTime()
 	switch {
 	case redeemedAt != nil:
-		s.logger.WarnContext(ctx, "enrolment refused", "reason", "already redeemed", "token_id", tokenID)
-		return Enrolment{}, ErrUnauthorized
+		s.logger.WarnContext(ctx, "enrollment refused", "reason", "already redeemed", "token_id", tokenID)
+		return Enrollment{}, ErrUnauthorized
 	case supersededAt != nil:
-		s.logger.WarnContext(ctx, "enrolment refused", "reason", "superseded", "token_id", tokenID)
-		return Enrolment{}, ErrUnauthorized
+		s.logger.WarnContext(ctx, "enrollment refused", "reason", "superseded", "token_id", tokenID)
+		return Enrollment{}, ErrUnauthorized
 	case !expiresAt.After(now):
-		s.logger.WarnContext(ctx, "enrolment refused", "reason", "expired", "token_id", tokenID)
-		return Enrolment{}, ErrUnauthorized
+		s.logger.WarnContext(ctx, "enrollment refused", "reason", "expired", "token_id", tokenID)
+		return Enrollment{}, ErrUnauthorized
 	}
 
 	// Read, not locked. See the lock note above.
@@ -405,51 +405,51 @@ func (s *Store) RedeemEnrolment(ctx context.Context, presented, deviceName strin
 	if err := tx.QueryRow(ctx,
 		`SELECT deactivated_at, kind FROM users WHERE id = $1`, userID).
 		Scan(&deactivated, &kind); err != nil {
-		return Enrolment{}, fmt.Errorf("store: redeem: load user: %w", err)
+		return Enrollment{}, fmt.Errorf("store: redeem: load user: %w", err)
 	}
 	switch {
 	case deactivated != nil:
-		s.logger.WarnContext(ctx, "enrolment refused", "reason", "account deactivated",
+		s.logger.WarnContext(ctx, "enrollment refused", "reason", "account deactivated",
 			"token_id", tokenID, "user_id", userID)
-		return Enrolment{}, ErrUnauthorized
+		return Enrollment{}, ErrUnauthorized
 	case kind != "person":
 		// A bot has no device and must not acquire one. Purser never issues a
-		// bot an enrolment token, so reaching this means something else did.
-		s.logger.WarnContext(ctx, "enrolment refused", "reason", "not a person",
+		// bot an enrollment token, so reaching this means something else did.
+		s.logger.WarnContext(ctx, "enrollment refused", "reason", "not a person",
 			"token_id", tokenID, "user_id", userID)
-		return Enrolment{}, ErrUnauthorized
+		return Enrollment{}, ErrUnauthorized
 	}
 
 	deviceID := uuid.New()
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO devices (id, user_id, name) VALUES ($1, $2, $3)`,
 		deviceID, userID, deviceName); err != nil {
-		return Enrolment{}, fmt.Errorf("store: redeem: insert device: %w", err)
+		return Enrollment{}, fmt.Errorf("store: redeem: insert device: %w", err)
 	}
 
 	refresh, err := issueRefresh(ctx, tx, deviceID, now)
 	if err != nil {
-		return Enrolment{}, err
+		return Enrollment{}, err
 	}
 	access, err := issueAccess(ctx, tx, userID, &deviceID, now)
 	if err != nil {
-		return Enrolment{}, err
+		return Enrollment{}, err
 	}
 
 	// redeemed_by_device is set here and not left NULL: 0007 CHECKs that it
 	// travels with redeemed_at, so a redemption always says what redeemed it.
 	if _, err := tx.Exec(ctx, `
-		UPDATE enrolment_tokens SET redeemed_at = now(), redeemed_by_device = $2
+		UPDATE enrollment_tokens SET redeemed_at = now(), redeemed_by_device = $2
 		 WHERE id = $1`, tokenID, deviceID); err != nil {
-		return Enrolment{}, fmt.Errorf("store: redeem: mark redeemed: %w", err)
+		return Enrollment{}, fmt.Errorf("store: redeem: mark redeemed: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return Enrolment{}, fmt.Errorf("store: commit: %w", err)
+		return Enrollment{}, fmt.Errorf("store: commit: %w", err)
 	}
 	s.logger.InfoContext(ctx, "device enrolled",
 		"token_id", tokenID, "user_id", userID, "device_id", deviceID)
-	return Enrolment{UserID: userID, DeviceID: deviceID, Access: access, Refresh: refresh}, nil
+	return Enrollment{UserID: userID, DeviceID: deviceID, Access: access, Refresh: refresh}, nil
 }
 
 // issueRefresh writes the first token of a family.

@@ -946,7 +946,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"id", "integer", false},
 			{"value", "bigint", false},
 		},
-		"enrolment_tokens": {
+		"enrollment_tokens": {
 			{"id", "uuid", false},
 			{"user_id", "uuid", false},
 			{"token_hash", "bytea", false},
@@ -1088,12 +1088,12 @@ func TestEveryForeignKeyNamesItsOnDelete(t *testing.T) {
 		// points INTO its own table, and RESTRICT is what keeps a rotation
 		// chain from being broken in the middle, which is precisely the
 		// evidence CANT-29's reuse detection reads.
-		"enrolment_tokens.user_id -> users":              "RESTRICT",
-		"enrolment_tokens.redeemed_by_device -> devices": "RESTRICT",
-		"refresh_tokens.device_id -> devices":            "RESTRICT",
-		"refresh_tokens.replaced_by -> refresh_tokens":   "RESTRICT",
-		"access_tokens.user_id -> users":                 "RESTRICT",
-		"access_tokens.device_id -> devices":             "RESTRICT",
+		"enrollment_tokens.user_id -> users":              "RESTRICT",
+		"enrollment_tokens.redeemed_by_device -> devices": "RESTRICT",
+		"refresh_tokens.device_id -> devices":             "RESTRICT",
+		"refresh_tokens.replaced_by -> refresh_tokens":    "RESTRICT",
+		"access_tokens.user_id -> users":                  "RESTRICT",
+		"access_tokens.device_id -> devices":              "RESTRICT",
 	}
 
 	rows, err := pool.Query(ctx, `

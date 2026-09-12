@@ -131,7 +131,7 @@ String _asTimestamp(Object? v, String p) {
 }
 
 /// A credential, in the one encoding this service uses for all four of them —
-/// enrolment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
+/// enrollment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
 /// WITHOUT padding, which is exactly 43 characters.
 ///
 /// THE ENCODING IS NORMATIVE, AND THE REASON IS THE TRANSPORT. CANT-28 ruling 1 puts
@@ -146,7 +146,7 @@ String _asTimestamp(Object? v, String p) {
 /// serves every shape and the socket needs no second form of the same secret.
 ///
 /// ONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential
-/// a string is to anyone who saw one, and it would give the enrolment token — the only
+/// a string is to anyone who saw one, and it would give the enrollment token — the only
 /// one a person ever handles — its own quiet pressure to be shortened.
 ///
 /// Enforced rather than advisory, for the same reason `Uuid`'s pattern is: a client
@@ -1489,15 +1489,15 @@ final class SyncResponse {
   });
 }
 
-/// `POST /enrol` — a new install redeeming its enrolment token. The only
+/// `POST /enroll` — a new install redeeming its enrollment token. The only
 /// unauthenticated credential-minting request this service has.
 ///
 /// CANT-28. Every refusal of it answers identically — unknown token, expired, already
 /// redeemed, deactivated account — so that a prober learns nothing from the response
 /// about which of those it hit. The log distinguishes all four.
-final class EnrolRequest {
-  const EnrolRequest({
-    required this.enrolmentToken,
+final class EnrollRequest {
+  const EnrollRequest({
+    required this.enrollmentToken,
     required this.deviceName,
   });
 
@@ -1505,7 +1505,7 @@ final class EnrolRequest {
   /// R6: at provisioning time the person has zero devices, so this is the only credential
   /// that can exist — and it is one string, which is what lets Purser stay out of the
   /// device model entirely.
-  final Token enrolmentToken;
+  final Token enrollmentToken;
 
   /// What this install should be called in the device list. A revocation list is unusable
   /// if the rows do not say which phone they are, which is why `devices.name` is NOT NULL
@@ -1518,25 +1518,25 @@ final class EnrolRequest {
   /// none, since it reads as protection.
   final String deviceName;
 
-  factory EnrolRequest.fromJson(Object? v, [String p = "EnrolRequest"]) {
+  factory EnrollRequest.fromJson(Object? v, [String p = "EnrollRequest"]) {
     final o = _obj(v, p);
-    return EnrolRequest(
-      enrolmentToken: o["enrolment_token"] == null ? _bad('${p}.enrolment_token', 'required field is missing') : _asToken(o["enrolment_token"], '${p}.enrolment_token'),
+    return EnrollRequest(
+      enrollmentToken: o["enrollment_token"] == null ? _bad('${p}.enrollment_token', 'required field is missing') : _asToken(o["enrollment_token"], '${p}.enrollment_token'),
       deviceName: o["device_name"] == null ? _bad('${p}.device_name', 'required field is missing') : _str(o["device_name"], '${p}.device_name'),
     );
   }
 
   Map<String, dynamic> toJson() => _compact({
-    "enrolment_token": enrolmentToken,
+    "enrollment_token": enrollmentToken,
     "device_name": deviceName,
   });
 }
 
-/// `POST /enrol` — the first credential pair, returned exactly once. The plaintext
+/// `POST /enroll` — the first credential pair, returned exactly once. The plaintext
 /// tokens are in this response and nowhere else: the server keeps only hashes, so a
-/// client that loses this body enrols again rather than recovering it.
-final class EnrolResponse {
-  const EnrolResponse({
+/// client that loses this body enrolls again rather than recovering it.
+final class EnrollResponse {
+  const EnrollResponse({
     required this.userId,
     required this.deviceId,
     required this.accessToken,
@@ -1552,7 +1552,7 @@ final class EnrolResponse {
   final Uuid userId;
 
   /// This install's identity, minted here and stable for its life. It is what
-  /// `ClientHello.device_id` carries and what a revocation names, so the enrolment
+  /// `ClientHello.device_id` carries and what a revocation names, so the enrollment
   /// response is the one place a client learns it.
   final Uuid deviceId;
 
@@ -1577,14 +1577,14 @@ final class EnrolResponse {
   /// rather than just the request.
   final Token refreshToken;
 
-  /// When the refresh token stops being exchangeable, after which the device enrols
+  /// When the refresh token stops being exchangeable, after which the device enrolls
   /// again. Long enough that a phone in normal use never re-authenticates; short enough
   /// that a device forgotten in a drawer falls out of the account on its own.
   final Timestamp refreshExpiresAt;
 
-  factory EnrolResponse.fromJson(Object? v, [String p = "EnrolResponse"]) {
+  factory EnrollResponse.fromJson(Object? v, [String p = "EnrollResponse"]) {
     final o = _obj(v, p);
-    return EnrolResponse(
+    return EnrollResponse(
       userId: o["user_id"] == null ? _bad('${p}.user_id', 'required field is missing') : _asUuid(o["user_id"], '${p}.user_id'),
       deviceId: o["device_id"] == null ? _bad('${p}.device_id', 'required field is missing') : _asUuid(o["device_id"], '${p}.device_id'),
       accessToken: o["access_token"] == null ? _bad('${p}.access_token', 'required field is missing') : _asToken(o["access_token"], '${p}.access_token'),
@@ -1669,7 +1669,7 @@ final class RefreshResponse {
   /// rather than just the request.
   final Token refreshToken;
 
-  /// When the refresh token stops being exchangeable, after which the device enrols
+  /// When the refresh token stops being exchangeable, after which the device enrolls
   /// again. Long enough that a phone in normal use never re-authenticates; short enough
   /// that a device forgotten in a drawer falls out of the account on its own.
   final Timestamp refreshExpiresAt;
@@ -1726,8 +1726,8 @@ const Map<String, WireCodec> codecs = {
   "ClientFrame": WireCodec(ClientFrame.fromJson, _encClientFrame),
   "ServerFrame": WireCodec(ServerFrame.fromJson, _encServerFrame),
   "SyncResponse": WireCodec(SyncResponse.fromJson, _encSyncResponse),
-  "EnrolRequest": WireCodec(EnrolRequest.fromJson, _encEnrolRequest),
-  "EnrolResponse": WireCodec(EnrolResponse.fromJson, _encEnrolResponse),
+  "EnrollRequest": WireCodec(EnrollRequest.fromJson, _encEnrollRequest),
+  "EnrollResponse": WireCodec(EnrollResponse.fromJson, _encEnrollResponse),
   "RefreshRequest": WireCodec(RefreshRequest.fromJson, _encRefreshRequest),
   "RefreshResponse": WireCodec(RefreshResponse.fromJson, _encRefreshResponse),
 };
@@ -1758,8 +1758,8 @@ Map<String, dynamic> _encServerResyncRequired(Object v) => (v as ServerResyncReq
 Map<String, dynamic> _encClientFrame(Object v) => (v as ClientFrame).toJson();
 Map<String, dynamic> _encServerFrame(Object v) => (v as ServerFrame).toJson();
 Map<String, dynamic> _encSyncResponse(Object v) => (v as SyncResponse).toJson();
-Map<String, dynamic> _encEnrolRequest(Object v) => (v as EnrolRequest).toJson();
-Map<String, dynamic> _encEnrolResponse(Object v) => (v as EnrolResponse).toJson();
+Map<String, dynamic> _encEnrollRequest(Object v) => (v as EnrollRequest).toJson();
+Map<String, dynamic> _encEnrollResponse(Object v) => (v as EnrollResponse).toJson();
 Map<String, dynamic> _encRefreshRequest(Object v) => (v as RefreshRequest).toJson();
 Map<String, dynamic> _encRefreshResponse(Object v) => (v as RefreshResponse).toJson();
 

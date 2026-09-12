@@ -68,13 +68,13 @@ func do(t *testing.T, h http.Handler, req *http.Request) (int, []byte) {
 	return rec.Code, body
 }
 
-func enrolRequest(t *testing.T, token, name string) *http.Request {
+func enrollRequest(t *testing.T, token, name string) *http.Request {
 	t.Helper()
-	body, err := json.Marshal(map[string]string{"enrolment_token": token, "device_name": name})
+	body, err := json.Marshal(map[string]string{"enrollment_token": token, "device_name": name})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return httptest.NewRequest(http.MethodPost, "/enrol", bytes.NewReader(body))
+	return httptest.NewRequest(http.MethodPost, "/enroll", bytes.NewReader(body))
 }
 
 // Criterion 12 — the route exists in a real process, and says no.
@@ -111,18 +111,18 @@ func TestSyncIsRegisteredAndRefusesAnUnauthenticatedRequest(t *testing.T) {
 
 // The whole path, once: Purser issues, a device redeems, the credential works,
 // revocation ends it.
-func TestADeviceEnrolsAuthenticatesAndIsRevoked(t *testing.T) {
+func TestADeviceEnrollsAuthenticatesAndIsRevoked(t *testing.T) {
 	ctx, pool, st, h := authFixture(t)
 	user := mkUser(ctx, t, pool, "ada", "Ada Lovelace")
 
-	issued, err := st.IssueEnrolmentToken(ctx, user)
+	issued, err := st.IssueEnrollmentToken(ctx, user)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 
-	code, body := do(t, h, enrolRequest(t, issued.Plaintext, "Pixel 8 Pro"))
+	code, body := do(t, h, enrollRequest(t, issued.Plaintext, "Pixel 8 Pro"))
 	if code != http.StatusOK {
-		t.Fatalf("POST /enrol = %d: %s", code, body)
+		t.Fatalf("POST /enroll = %d: %s", code, body)
 	}
 	var resp struct {
 		UserID           string `json:"user_id"`
@@ -133,7 +133,7 @@ func TestADeviceEnrolsAuthenticatesAndIsRevoked(t *testing.T) {
 		RefreshExpiresAt string `json:"refresh_expires_at"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
-		t.Fatalf("enrol response is not JSON: %q", body)
+		t.Fatalf("enroll response is not JSON: %q", body)
 	}
 	if resp.UserID != user.String() {
 		t.Errorf("user_id = %s, want %s", resp.UserID, user)
@@ -172,13 +172,13 @@ func TestADeviceEnrolsAuthenticatesAndIsRevoked(t *testing.T) {
 // Criterion 11 — one refusal shape, byte for byte, for four different causes.
 //
 // THIS IS THE HALF THAT CANNOT BE TESTED IN THE HANDLER ALONE. A handler with
-// an injected Enrol that returns one error will trivially produce one body.
+// an injected Enroll that returns one error will trivially produce one body.
 // What matters is that four genuinely different states in the database
-// converge on that error before the handler ever sees them — because /enrol is
+// converge on that error before the handler ever sees them — because /enroll is
 // unauthenticated, has no rate limiter in front of it by decision, and a
 // response that told them apart would tell a prober which of its guesses was
 // once a real token, and whether an account exists.
-func TestEveryEnrolmentRefusalIsByteForByteIdentical(t *testing.T) {
+func TestEveryEnrollmentRefusalIsByteForByteIdentical(t *testing.T) {
 	ctx, pool, st, h := authFixture(t)
 
 	tokenFor := map[string]string{}
@@ -192,12 +192,12 @@ func TestEveryEnrolmentRefusalIsByteForByteIdentical(t *testing.T) {
 
 	// 2. Expired.
 	expiredUser := mkUser(ctx, t, pool, "expired", "Expired")
-	expired, err := st.IssueEnrolmentToken(ctx, expiredUser)
+	expired, err := st.IssueEnrollmentToken(ctx, expiredUser)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx,
-		`UPDATE enrolment_tokens SET expires_at = now() - interval '1 second' WHERE user_id = $1`,
+		`UPDATE enrollment_tokens SET expires_at = now() - interval '1 second' WHERE user_id = $1`,
 		expiredUser); err != nil {
 		t.Fatal(err)
 	}
@@ -205,18 +205,18 @@ func TestEveryEnrolmentRefusalIsByteForByteIdentical(t *testing.T) {
 
 	// 3. Already redeemed.
 	redeemedUser := mkUser(ctx, t, pool, "redeemed", "Redeemed")
-	redeemed, err := st.IssueEnrolmentToken(ctx, redeemedUser)
+	redeemed, err := st.IssueEnrollmentToken(ctx, redeemedUser)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code, body := do(t, h, enrolRequest(t, redeemed.Plaintext, "first")); code != http.StatusOK {
+	if code, body := do(t, h, enrollRequest(t, redeemed.Plaintext, "first")); code != http.StatusOK {
 		t.Fatalf("the first redemption should have worked: %d %s", code, body)
 	}
 	tokenFor["already redeemed"] = redeemed.Plaintext
 
 	// 4. Deactivated, with a live unredeemed token.
 	goneUser := mkUser(ctx, t, pool, "gone", "Gone")
-	gone, err := st.IssueEnrolmentToken(ctx, goneUser)
+	gone, err := st.IssueEnrollmentToken(ctx, goneUser)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,10 +231,10 @@ func TestEveryEnrolmentRefusalIsByteForByteIdentical(t *testing.T) {
 	}
 	answers := map[string]answer{}
 	for cause, token := range tokenFor {
-		code, body := do(t, h, enrolRequest(t, token, "Pixel 8 Pro"))
+		code, body := do(t, h, enrollRequest(t, token, "Pixel 8 Pro"))
 		answers[cause] = answer{code, string(body)}
 		if code != http.StatusUnauthorized {
-			t.Errorf("%s: POST /enrol = %d, want 401: %s", cause, code, body)
+			t.Errorf("%s: POST /enroll = %d, want 401: %s", cause, code, body)
 		}
 	}
 
@@ -258,7 +258,7 @@ func TestEveryEnrolmentRefusalIsByteForByteIdentical(t *testing.T) {
 	// this service to refuse a credential.
 	syncCode, syncBody := do(t, h, httptest.NewRequest(http.MethodGet, "/sync?after=0", nil))
 	if syncCode != first.code || string(syncBody) != first.body {
-		t.Errorf("GET /sync refuses with %d %s and POST /enrol with %d %s; one service, one refusal",
+		t.Errorf("GET /sync refuses with %d %s and POST /enroll with %d %s; one service, one refusal",
 			syncCode, syncBody, first.code, first.body)
 	}
 }
@@ -266,7 +266,7 @@ func TestEveryEnrolmentRefusalIsByteForByteIdentical(t *testing.T) {
 // A malformed request is NOT part of that rule, and the distinction is worth a
 // test: it says nothing about whether a credential exists, and collapsing it
 // into the 401 would tell a client with a typo that its token was rejected.
-func TestAMalformedEnrolmentRequestIsABadRequest(t *testing.T) {
+func TestAMalformedEnrollmentRequestIsABadRequest(t *testing.T) {
 	_, _, _, h := authFixture(t)
 
 	for _, tc := range []struct {
@@ -274,14 +274,14 @@ func TestAMalformedEnrolmentRequestIsABadRequest(t *testing.T) {
 		body string
 	}{
 		{"not JSON", `{`},
-		{"missing device_name", `{"enrolment_token":"enrolment_token_FIXTURE_not_a_real_secret__"}`},
-		{"padded token", `{"enrolment_token":"padded_std_encoding_FIXTURE_not_a_secret___=","device_name":"x"}`},
-		{"empty device_name", `{"enrolment_token":"enrolment_token_FIXTURE_not_a_real_secret__","device_name":""}`},
+		{"missing device_name", `{"enrollment_token":"enrollment_token_FIXTURE_not_a_real_secret_"}`},
+		{"padded token", `{"enrollment_token":"padded_std_encoding_FIXTURE_not_a_secret___=","device_name":"x"}`},
+		{"empty device_name", `{"enrollment_token":"enrollment_token_FIXTURE_not_a_real_secret_","device_name":""}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, "/enrol", bytes.NewReader([]byte(tc.body)))
+			req := httptest.NewRequest(http.MethodPost, "/enroll", bytes.NewReader([]byte(tc.body)))
 			if code, body := do(t, h, req); code != http.StatusBadRequest {
-				t.Errorf("POST /enrol = %d, want 400: %s", code, body)
+				t.Errorf("POST /enroll = %d, want 400: %s", code, body)
 			}
 		})
 	}

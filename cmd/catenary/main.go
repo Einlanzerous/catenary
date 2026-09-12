@@ -174,7 +174,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	// deactivated account are all refused.
 	var syncFn func(context.Context, uuid.UUID, int64, int) (wire.SyncResponse, error)
 	var callerID func(*http.Request) (uuid.UUID, bool)
-	var enrolFn func(context.Context, string, string) (store.Enrolment, error)
+	var enrollFn func(context.Context, string, string) (store.Enrollment, error)
 	if st != nil {
 		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 			return serveSync(ctx, st, viewer, after, limit)
@@ -186,7 +186,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			}
 			return caller.UserID, true
 		}
-		enrolFn = st.RedeemEnrolment
+		enrollFn = st.RedeemEnrollment
 	}
 
 	return deps{
@@ -198,7 +198,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			DB:       db,
 			Sync:     syncFn,
 			CallerID: callerID,
-			Enrol:    enrolFn,
+			Enroll:   enrollFn,
 			Version:  buildVersion(),
 			Commit:   commit,
 		}),

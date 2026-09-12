@@ -80,13 +80,13 @@ type Deps struct {
 	// absence is better than a placeholder that looks wired.
 	CallerID func(r *http.Request) (uuid.UUID, bool)
 
-	// Enrol serves POST /enrol. Nil means the route is not registered.
+	// Enroll serves POST /enroll. Nil means the route is not registered.
 	//
 	// THE ONE UNAUTHENTICATED CREDENTIAL-MINTING ROUTE THIS SERVICE HAS, which
 	// is why it is separated from CallerID rather than riding on it: nothing
 	// can identify the caller here, because the caller is a fresh install whose
 	// only claim is the string it was given.
-	Enrol func(ctx context.Context, token, deviceName string) (store.Enrolment, error)
+	Enroll func(ctx context.Context, token, deviceName string) (store.Enrollment, error)
 }
 
 // NewRouter builds the HTTP handler.
@@ -135,8 +135,8 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("GET /sync", syncHandler(d))
 	}
 
-	if d.Enrol != nil {
-		mux.HandleFunc("POST /enrol", enrolHandler(d))
+	if d.Enroll != nil {
+		mux.HandleFunc("POST /enroll", enrollHandler(d))
 	}
 
 	return requestLogger(d.Logger, mux)
@@ -204,15 +204,15 @@ func syncHandler(d Deps) http.HandlerFunc {
 	}
 }
 
-// maxEnrolBody bounds what an unauthenticated caller may post.
+// maxEnrollBody bounds what an unauthenticated caller may post.
 //
 // The body is two short strings. Without a bound, the one route that anybody
 // on the internet can reach would read as much as it was sent before deciding
 // it did not like it — and this endpoint has no rate limiter in front of it by
 // decision, so the cheap protection is the one worth having.
-const maxEnrolBody = 4 << 10
+const maxEnrollBody = 4 << 10
 
-// enrolHandler serves POST /enrol: an install redeeming its enrolment token
+// enrollHandler serves POST /enroll: an install redeeming its enrollment token
 // for a device id and its first credential pair.
 //
 // ONE REFUSAL SHAPE FOR EVERY CREDENTIAL FAILURE. Unknown token, expired,
@@ -228,19 +228,19 @@ const maxEnrolBody = 4 << 10
 // token that is not shaped like a token, a missing device name — none of them
 // says anything about whether a credential exists, and all of them are facts
 // about the request the sender just wrote.
-func enrolHandler(d Deps) http.HandlerFunc {
+func enrollHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req wire.EnrolRequest
+		var req wire.EnrollRequest
 		// The GENERATED decoder, not a hand-rolled one: it enforces the
 		// schema's constraints, so the token's encoding is checked here by the
 		// same rule the TypeScript and Dart clients check it by.
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEnrolBody)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEnrollBody)).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{
-				"error": "enrol request is not a valid EnrolRequest"})
+				"error": "enroll request is not a valid EnrollRequest"})
 			return
 		}
 
-		enrolment, err := d.Enrol(r.Context(), string(req.EnrolmentToken), req.DeviceName)
+		enrollment, err := d.Enroll(r.Context(), string(req.EnrollmentToken), req.DeviceName)
 		switch {
 		case errors.Is(err, store.ErrDeviceNameRequired):
 			writeJSON(w, http.StatusBadRequest, map[string]string{
@@ -254,18 +254,18 @@ func enrolHandler(d Deps) http.HandlerFunc {
 		case err != nil:
 			// No ids to log: there is no caller yet, and naming the token would
 			// put a live credential in the service log.
-			d.Logger.ErrorContext(r.Context(), "enrolment failed", "error", err)
-			writeJSON(w, http.StatusInternalServerError, serverError(err, "enrolment failed"))
+			d.Logger.ErrorContext(r.Context(), "enrollment failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, serverError(err, "enrollment failed"))
 			return
 		}
 
-		writeJSON(w, http.StatusOK, wire.EnrolResponse{
-			UserID:           wire.Uuid(enrolment.UserID.String()),
-			DeviceID:         wire.Uuid(enrolment.DeviceID.String()),
-			AccessToken:      wire.Token(enrolment.Access.Plaintext),
-			AccessExpiresAt:  wire.Timestamp(enrolment.Access.ExpiresAt.UTC().Format(wireview.TimeLayout)),
-			RefreshToken:     wire.Token(enrolment.Refresh.Plaintext),
-			RefreshExpiresAt: wire.Timestamp(enrolment.Refresh.ExpiresAt.UTC().Format(wireview.TimeLayout)),
+		writeJSON(w, http.StatusOK, wire.EnrollResponse{
+			UserID:           wire.Uuid(enrollment.UserID.String()),
+			DeviceID:         wire.Uuid(enrollment.DeviceID.String()),
+			AccessToken:      wire.Token(enrollment.Access.Plaintext),
+			AccessExpiresAt:  wire.Timestamp(enrollment.Access.ExpiresAt.UTC().Format(wireview.TimeLayout)),
+			RefreshToken:     wire.Token(enrollment.Refresh.Plaintext),
+			RefreshExpiresAt: wire.Timestamp(enrollment.Refresh.ExpiresAt.UTC().Format(wireview.TimeLayout)),
 		})
 	}
 }

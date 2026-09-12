@@ -25,12 +25,12 @@ ALTER TABLE users ADD COLUMN kind TEXT NOT NULL DEFAULT 'person'
     CHECK (kind IN ('person', 'bot'));
 
 COMMENT ON COLUMN users.kind IS
-    'CANT-28 ruling 4 / CANT-73. `person` or `bot`. A bot authenticates with a long-lived non-rotating access token and cannot enrol a device or refresh; it is scoped by membership alone, and grants append-as-self only — no edit and no delete, including of its own messages, which is what keeps CANT-73 off the Mode C list. Purser never creates one: R6 settled that Purser provisions people.';
+    'CANT-28 ruling 4 / CANT-73. `person` or `bot`. A bot authenticates with a long-lived non-rotating access token and cannot enroll a device or refresh; it is scoped by membership alone, and grants append-as-self only — no edit and no delete, including of its own messages, which is what keeps CANT-73 off the Mode C list. Purser never creates one: R6 settled that Purser provisions people.';
 
 -- The bootstrap credential. R6: at provisioning time the person has zero
 -- devices, so the only credential that can exist is one string, and per-device
 -- refresh tokens are minted here long after Purser is out of the picture.
-CREATE TABLE enrolment_tokens (
+CREATE TABLE enrollment_tokens (
     id                 UUID PRIMARY KEY,
     user_id            UUID        NOT NULL REFERENCES users (id) ON DELETE RESTRICT,
     token_hash         BYTEA       NOT NULL UNIQUE,
@@ -63,15 +63,15 @@ CREATE TABLE enrolment_tokens (
 -- EXACTLY ONE REDEEMABLE TOKEN PER PERSON, ENFORCED HERE RATHER THAN IN THE
 -- RE-ISSUE QUERY. R6's re-invite case is the one Lyceum's connector gets wrong,
 -- and it gets it wrong by leaving the old token live — a mistake that is
--- invisible until two enrolments succeed. A partial unique index turns
+-- invisible until two enrollments succeed. A partial unique index turns
 -- forgetting to supersede into a constraint violation at the moment it happens.
 --
 -- Expiry is NOT in the predicate. An expired unredeemed token still holds the
 -- slot, so a re-issue must supersede it like any other; folding expiry in here
 -- would let a second live row appear the instant the first one lapsed, which is
 -- a second redeemable token by another name.
-CREATE UNIQUE INDEX enrolment_tokens_one_live_per_user_idx
-    ON enrolment_tokens (user_id)
+CREATE UNIQUE INDEX enrollment_tokens_one_live_per_user_idx
+    ON enrollment_tokens (user_id)
     WHERE redeemed_at IS NULL AND superseded_at IS NULL;
 
 -- One per device, rotating. CANT-29 owns what happens when one is replayed.
@@ -87,7 +87,7 @@ CREATE TABLE refresh_tokens (
     -- CANT-63, and the reason this ticket lands the columns for a ticket that
     -- has not started.
     --
-    -- A family is the chain from one enrolment: the first token's family_id is
+    -- A family is the chain from one enrollment: the first token's family_id is
     -- its own id, and every rotation carries it forward. So "invalidate the
     -- family" is one predicate over one indexed column rather than a walk.
     family_id   UUID        NOT NULL,
@@ -136,7 +136,7 @@ CREATE TABLE access_tokens (
 
 COMMENT ON TABLE access_tokens IS
     'CANT-28 ruling 0. Opaque random tokens, stored as a SHA-256 hash and verified by an indexed point-read on token_hash. Two shapes share the table: a person''s device-scoped token with an expiry, and a bot''s device-less token without one. Revocation is immediate because verification touches the row on every request.';
-COMMENT ON TABLE enrolment_tokens IS
+COMMENT ON TABLE enrollment_tokens IS
     'CANT-28. The bootstrap credential Purser issues, redeemable exactly once. Rows are never deleted: redeemed_at and superseded_at record what became of one, and the partial unique index keeps at most one redeemable per person — R6''s re-invite case.';
 COMMENT ON TABLE refresh_tokens IS
     'CANT-28. One rotating credential per device. family_id and replaced_by are written by the rotation path and read by CANT-29''s reuse detection; they are present from this migration so that adding them later does not rewrite a table of live credentials.';

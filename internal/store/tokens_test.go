@@ -142,7 +142,7 @@ func TestNoTokenColumnHoldsPlaintext(t *testing.T) {
 	for _, planted := range []struct{ table, column, dataType string }{
 		{"access_tokens", "token", "text"},
 		{"refresh_tokens", "secret", "text"},
-		{"enrolment_tokens", "token_hash", "text"},
+		{"enrollment_tokens", "token_hash", "text"},
 	} {
 		if plaintextCredentialOffence(planted.table, planted.column, planted.dataType) == "" {
 			t.Errorf("a planted %s.%s %s did not trip the guard — it reads nothing",
@@ -182,12 +182,12 @@ func TestRedemptionMintsOneDeviceAndOnePairAndIsAuditableAfter(t *testing.T) {
 	st := New(pool, DefaultLimits(), discardLogger())
 	user := mkUser(ctx, t, pool, "ada")
 
-	issued, err := st.IssueEnrolmentToken(ctx, user)
+	issued, err := st.IssueEnrollmentToken(ctx, user)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
 
-	got, err := st.RedeemEnrolment(ctx, issued.Plaintext, "Pixel 8 Pro")
+	got, err := st.RedeemEnrollment(ctx, issued.Plaintext, "Pixel 8 Pro")
 	if err != nil {
 		t.Fatalf("redeem: %v", err)
 	}
@@ -215,9 +215,9 @@ func TestRedemptionMintsOneDeviceAndOnePairAndIsAuditableAfter(t *testing.T) {
 	var redeemedAt *time.Time
 	var redeemedBy *uuid.UUID
 	if err := pool.QueryRow(ctx,
-		`SELECT redeemed_at, redeemed_by_device FROM enrolment_tokens WHERE user_id = $1`, user).
+		`SELECT redeemed_at, redeemed_by_device FROM enrollment_tokens WHERE user_id = $1`, user).
 		Scan(&redeemedAt, &redeemedBy); err != nil {
-		t.Fatalf("the enrolment token row is gone — a redemption that leaves no row cannot be audited: %v", err)
+		t.Fatalf("the enrollment token row is gone — a redemption that leaves no row cannot be audited: %v", err)
 	}
 	if redeemedAt == nil {
 		t.Error("redeemed_at is NULL on a redeemed token")
@@ -248,7 +248,7 @@ func TestTwoSimultaneousRedemptionsOfOneTokenProduceExactlyOneDevice(t *testing.
 	st := New(pool, DefaultLimits(), discardLogger())
 	user := mkUser(ctx, t, pool, "ada")
 
-	issued, err := st.IssueEnrolmentToken(ctx, user)
+	issued, err := st.IssueEnrollmentToken(ctx, user)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -258,13 +258,13 @@ func TestTwoSimultaneousRedemptionsOfOneTokenProduceExactlyOneDevice(t *testing.
 	start.Add(1)
 	var done sync.WaitGroup
 	results := make([]error, racers)
-	enrolments := make([]Enrolment, racers)
+	enrollments := make([]Enrollment, racers)
 	for i := range racers {
 		done.Add(1)
 		go func() {
 			defer done.Done()
 			start.Wait()
-			enrolments[i], results[i] = st.RedeemEnrolment(ctx, issued.Plaintext, "racer")
+			enrollments[i], results[i] = st.RedeemEnrollment(ctx, issued.Plaintext, "racer")
 		}()
 	}
 	start.Done()
@@ -275,7 +275,7 @@ func TestTwoSimultaneousRedemptionsOfOneTokenProduceExactlyOneDevice(t *testing.
 		switch {
 		case err == nil:
 			winners++
-			if enrolments[i].DeviceID == uuid.Nil {
+			if enrollments[i].DeviceID == uuid.Nil {
 				t.Error("a winning redemption returned no device")
 			}
 		case errors.Is(err, ErrUnauthorized):
@@ -286,7 +286,7 @@ func TestTwoSimultaneousRedemptionsOfOneTokenProduceExactlyOneDevice(t *testing.
 	}
 	if winners != 1 {
 		t.Errorf("%d of %d concurrent redemptions succeeded, want exactly 1 — "+
-			"a second device on one enrolment token is an enrolment nobody authorised",
+			"a second device on one enrollment token is an enrollment nobody authorised",
 			winners, racers)
 	}
 	if refusals != racers-1 {
@@ -299,13 +299,13 @@ func TestTwoSimultaneousRedemptionsOfOneTokenProduceExactlyOneDevice(t *testing.
 
 // ---------------------------------------------------------------------------
 // Criterion 5 — redemption takes no lock on users, and the race closes at
-// authentication rather than at enrolment
+// authentication rather than at enrollment
 
 func TestRedemptionDoesNotLockUsersAndTheRaceClosesAtAuthentication(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
 	user := mkUser(ctx, t, pool, "ada")
-	issued, err := st.IssueEnrolmentToken(ctx, user)
+	issued, err := st.IssueEnrollmentToken(ctx, user)
 	if err != nil {
 		t.Fatalf("issue: %v", err)
 	}
@@ -327,12 +327,12 @@ func TestRedemptionDoesNotLockUsersAndTheRaceClosesAtAuthentication(t *testing.T
 	// users — the lock messages.go's note says nothing here may take — it would
 	// block until the deactivation committed, and this would time out.
 	type result struct {
-		e   Enrolment
+		e   Enrollment
 		err error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		e, err := st.RedeemEnrolment(ctx, issued.Plaintext, "Pixel 8 Pro")
+		e, err := st.RedeemEnrollment(ctx, issued.Plaintext, "Pixel 8 Pro")
 		ch <- result{e, err}
 	}()
 
@@ -363,7 +363,7 @@ func TestRedemptionDoesNotLockUsersAndTheRaceClosesAtAuthentication(t *testing.T
 	}
 	if _, err := st.Authenticate(ctx, got.e.Access.Plaintext); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("a device enrolled into a now-deactivated account authenticated: err = %v. "+
-			"The race is closed at authentication, not at enrolment — that is R6's own argument "+
+			"The race is closed at authentication, not at enrollment — that is R6's own argument "+
 			"and it only holds if this refuses", err)
 	}
 }
@@ -376,28 +376,28 @@ func TestAnExpiredCredentialIsRefused(t *testing.T) {
 	st := New(pool, DefaultLimits(), discardLogger())
 	user := mkUser(ctx, t, pool, "ada")
 
-	t.Run("enrolment token", func(t *testing.T) {
-		issued, err := st.IssueEnrolmentToken(ctx, user)
+	t.Run("enrollment token", func(t *testing.T) {
+		issued, err := st.IssueEnrollmentToken(ctx, user)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := pool.Exec(ctx,
-			`UPDATE enrolment_tokens SET expires_at = now() - interval '1 second' WHERE user_id = $1`,
+			`UPDATE enrollment_tokens SET expires_at = now() - interval '1 second' WHERE user_id = $1`,
 			user); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := st.RedeemEnrolment(ctx, issued.Plaintext, "Pixel"); !errors.Is(err, ErrUnauthorized) {
-			t.Errorf("an expired enrolment token was redeemed: err = %v. expires_at is in the "+
+		if _, err := st.RedeemEnrollment(ctx, issued.Plaintext, "Pixel"); !errors.Is(err, ErrUnauthorized) {
+			t.Errorf("an expired enrollment token was redeemed: err = %v. expires_at is in the "+
 				"migration, and a column nothing checks reads as protection it does not provide", err)
 		}
 	})
 
 	t.Run("access token", func(t *testing.T) {
-		issued, err := st.IssueEnrolmentToken(ctx, user)
+		issued, err := st.IssueEnrollmentToken(ctx, user)
 		if err != nil {
 			t.Fatal(err)
 		}
-		e, err := st.RedeemEnrolment(ctx, issued.Plaintext, "Pixel")
+		e, err := st.RedeemEnrollment(ctx, issued.Plaintext, "Pixel")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -431,11 +431,11 @@ func TestADeactivatedUserIsRefusedWithEverythingElseInOrder(t *testing.T) {
 
 	t.Run("their access token stops working", func(t *testing.T) {
 		user := mkUser(ctx, t, pool, "grace")
-		issued, err := st.IssueEnrolmentToken(ctx, user)
+		issued, err := st.IssueEnrollmentToken(ctx, user)
 		if err != nil {
 			t.Fatal(err)
 		}
-		e, err := st.RedeemEnrolment(ctx, issued.Plaintext, "Pixel")
+		e, err := st.RedeemEnrollment(ctx, issued.Plaintext, "Pixel")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -454,9 +454,9 @@ func TestADeactivatedUserIsRefusedWithEverythingElseInOrder(t *testing.T) {
 		}
 	})
 
-	t.Run("their enrolment token cannot be redeemed", func(t *testing.T) {
+	t.Run("their enrollment token cannot be redeemed", func(t *testing.T) {
 		user := mkUser(ctx, t, pool, "hopper")
-		issued, err := st.IssueEnrolmentToken(ctx, user)
+		issued, err := st.IssueEnrollmentToken(ctx, user)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -467,18 +467,18 @@ func TestADeactivatedUserIsRefusedWithEverythingElseInOrder(t *testing.T) {
 		var redeemed, superseded *time.Time
 		var expires time.Time
 		if err := pool.QueryRow(ctx,
-			`SELECT redeemed_at, superseded_at, expires_at FROM enrolment_tokens WHERE user_id = $1`, user).
+			`SELECT redeemed_at, superseded_at, expires_at FROM enrollment_tokens WHERE user_id = $1`, user).
 			Scan(&redeemed, &superseded, &expires); err != nil {
 			t.Fatal(err)
 		}
 		if redeemed != nil || superseded != nil || !expires.After(ServerTime()) {
-			t.Fatal("precondition: the enrolment token must be live, or this proves nothing")
+			t.Fatal("precondition: the enrollment token must be live, or this proves nothing")
 		}
 
-		if _, err := st.RedeemEnrolment(ctx, issued.Plaintext, "Pixel"); !errors.Is(err, ErrUnauthorized) {
+		if _, err := st.RedeemEnrollment(ctx, issued.Plaintext, "Pixel"); !errors.Is(err, ErrUnauthorized) {
 			t.Errorf("a deactivated account enrolled a device: err = %v.\n"+
 				"R6 chose disable-then-revoke on the strength of this exact sentence — "+
-				"\"a disabled account cannot refresh a token or enrol a device\" — so the "+
+				"\"a disabled account cannot refresh a token or enroll a device\" — so the "+
 				"offboard fails open without it", err)
 		}
 		if n := countRows(ctx, t, pool, `SELECT count(*) FROM devices WHERE user_id = $1`, user); n != 0 {
@@ -489,7 +489,7 @@ func TestADeactivatedUserIsRefusedWithEverythingElseInOrder(t *testing.T) {
 
 // assertLive fails unless every reason to refuse EXCEPT the one under test is
 // absent. Without it a passing test proves only that something said no.
-func assertLive(ctx context.Context, t *testing.T, pool *pgxpool.Pool, e Enrolment) {
+func assertLive(ctx context.Context, t *testing.T, pool *pgxpool.Pool, e Enrollment) {
 	t.Helper()
 	var tokenRevoked, deviceRevoked *time.Time
 	var expires *time.Time
@@ -517,37 +517,37 @@ func TestReIssuingSupersedesAndLeavesExactlyOneRedeemable(t *testing.T) {
 	st := New(pool, DefaultLimits(), discardLogger())
 	user := mkUser(ctx, t, pool, "ada")
 
-	first, err := st.IssueEnrolmentToken(ctx, user)
+	first, err := st.IssueEnrollmentToken(ctx, user)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := st.IssueEnrolmentToken(ctx, user)
+	second, err := st.IssueEnrollmentToken(ctx, user)
 	if err != nil {
 		t.Fatalf("re-issue: %v — Provision must be able to re-invite, which R6 classes "+
 			"as a rotation Provision may perform", err)
 	}
 
 	if n := countRows(ctx, t, pool, `
-		SELECT count(*) FROM enrolment_tokens
+		SELECT count(*) FROM enrollment_tokens
 		 WHERE user_id = $1 AND redeemed_at IS NULL AND superseded_at IS NULL`, user); n != 1 {
 		t.Errorf("%d redeemable tokens after a re-invite, want exactly 1 — "+
 			"this is the case Lyceum's connector gets wrong, and it gets it wrong by "+
 			"leaving the old one live", n)
 	}
-	if n := countRows(ctx, t, pool, `SELECT count(*) FROM enrolment_tokens WHERE user_id = $1`, user); n != 2 {
+	if n := countRows(ctx, t, pool, `SELECT count(*) FROM enrollment_tokens WHERE user_id = $1`, user); n != 2 {
 		t.Errorf("%d rows total, want 2 — the superseded token stays for the audit trail", n)
 	}
 
-	if _, err := st.RedeemEnrolment(ctx, first.Plaintext, "old"); !errors.Is(err, ErrUnauthorized) {
+	if _, err := st.RedeemEnrollment(ctx, first.Plaintext, "old"); !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("the superseded token still redeems: err = %v", err)
 	}
-	if _, err := st.RedeemEnrolment(ctx, second.Plaintext, "new"); err != nil {
+	if _, err := st.RedeemEnrollment(ctx, second.Plaintext, "new"); err != nil {
 		t.Errorf("the current token does not redeem: %v", err)
 	}
 }
 
 // TestThePartialIndexRefusesASecondLiveToken proves the belt as well as the
-// braces: IssueEnrolmentToken supersedes, and the database would refuse it if
+// braces: IssueEnrollmentToken supersedes, and the database would refuse it if
 // a future caller forgot to.
 func TestThePartialIndexRefusesASecondLiveToken(t *testing.T) {
 	ctx, pool := freshDB(t)
@@ -559,7 +559,7 @@ func TestThePartialIndexRefusesASecondLiveToken(t *testing.T) {
 			return err
 		}
 		_, err = pool.Exec(ctx, `
-			INSERT INTO enrolment_tokens (id, user_id, token_hash, expires_at)
+			INSERT INTO enrollment_tokens (id, user_id, token_hash, expires_at)
 			VALUES ($1, $2, $3, now() + interval '7 days')`, uuid.New(), user, hash)
 		return err
 	}
@@ -567,7 +567,7 @@ func TestThePartialIndexRefusesASecondLiveToken(t *testing.T) {
 		t.Fatalf("first insert: %v", err)
 	}
 	if err := insert(); err == nil {
-		t.Error("a second live enrolment token was accepted — the partial unique index is not " +
+		t.Error("a second live enrollment token was accepted — the partial unique index is not " +
 			"doing its job, and forgetting to supersede would be invisible until two devices enrolled")
 	}
 }
@@ -600,40 +600,40 @@ func TestEveryRedemptionRefusalLogsItsReasonAndNeverTheCredential(t *testing.T) 
 			return plaintext
 		}},
 		{"expired", "expired", func(t *testing.T, st *Store) string {
-			issued, err := st.IssueEnrolmentToken(ctx, user)
+			issued, err := st.IssueEnrollmentToken(ctx, user)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := pool.Exec(ctx,
-				`UPDATE enrolment_tokens SET expires_at = now() - interval '1 second'
+				`UPDATE enrollment_tokens SET expires_at = now() - interval '1 second'
 				  WHERE user_id = $1 AND redeemed_at IS NULL AND superseded_at IS NULL`, user); err != nil {
 				t.Fatal(err)
 			}
 			return issued.Plaintext
 		}},
 		{"already redeemed", "already redeemed", func(t *testing.T, st *Store) string {
-			issued, err := st.IssueEnrolmentToken(ctx, user)
+			issued, err := st.IssueEnrollmentToken(ctx, user)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := st.RedeemEnrolment(ctx, issued.Plaintext, "first"); err != nil {
+			if _, err := st.RedeemEnrollment(ctx, issued.Plaintext, "first"); err != nil {
 				t.Fatal(err)
 			}
 			return issued.Plaintext
 		}},
 		{"superseded", "superseded", func(t *testing.T, st *Store) string {
-			issued, err := st.IssueEnrolmentToken(ctx, user)
+			issued, err := st.IssueEnrollmentToken(ctx, user)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := st.IssueEnrolmentToken(ctx, user); err != nil {
+			if _, err := st.IssueEnrollmentToken(ctx, user); err != nil {
 				t.Fatal(err)
 			}
 			return issued.Plaintext
 		}},
 		{"deactivated", "account deactivated", func(t *testing.T, st *Store) string {
 			victim := mkUser(ctx, t, pool, "victim-"+uuid.NewString()[:8])
-			issued, err := st.IssueEnrolmentToken(ctx, victim)
+			issued, err := st.IssueEnrollmentToken(ctx, victim)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -654,7 +654,7 @@ func TestEveryRedemptionRefusalLogsItsReasonAndNeverTheCredential(t *testing.T) 
 			// so take a mark.
 			before := len(lines())
 
-			if _, err := st.RedeemEnrolment(ctx, token, "Pixel"); !errors.Is(err, ErrUnauthorized) {
+			if _, err := st.RedeemEnrollment(ctx, token, "Pixel"); !errors.Is(err, ErrUnauthorized) {
 				t.Fatalf("refusal = %v, want ErrUnauthorized", err)
 			}
 
@@ -688,11 +688,11 @@ func TestARevokedDeviceIsRefusedOnItsNextRequest(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
 	user := mkUser(ctx, t, pool, "ada")
-	issued, err := st.IssueEnrolmentToken(ctx, user)
+	issued, err := st.IssueEnrollmentToken(ctx, user)
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, err := st.RedeemEnrolment(ctx, issued.Plaintext, "Pixel")
+	e, err := st.RedeemEnrollment(ctx, issued.Plaintext, "Pixel")
 	if err != nil {
 		t.Fatal(err)
 	}
