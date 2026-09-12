@@ -263,6 +263,13 @@ var sendErrorTable = []sendErrorRow{
 	// sender's and the plan declined to lie about it. Not retryable: the
 	// identical frame is missing the identical key.
 	{cause: ErrNoClientID, code: wire.ErrorCodeInternal, retryable: false},
+
+	// Same standing as the row above: `internal`, stated, and unreachable
+	// today. NotifyPayload is two fixed-width fields and cannot approach the
+	// 8,000-byte cap, so this fires only after somebody widens the struct —
+	// which is OUR bug and not the sender's, exactly as a missing client_id
+	// is. Not retryable: the identical frame encodes the identical payload.
+	{cause: ErrNotifyTooLarge, code: wire.ErrorCodeInternal, retryable: false},
 }
 
 // SendErrorFor is the single decision. Everything the store refuses goes

@@ -15,7 +15,11 @@ package store
 //
 // CANT-18's ruling 2 puts the pg_notify call inside SendMessage's own
 // transaction, so a notification cannot exist without its message or the
-// reverse. That call site is CANT-86. Everything below the call is here.
+// reverse. That is the MESSAGE call site: attemptSend, position 12, in
+// messages.go. The REVOCATION call site is RevokeDevice in tokens.go, and the
+// two are byte-identical in shape. They are also the two transactions in this
+// service whose commit takes Postgres's instance-wide notify lock; messages.go's
+// lock-order note names it. Everything below the call is here.
 
 import (
 	"context"
@@ -143,8 +147,9 @@ func withinNotifyCap(raw []byte) error {
 	return nil
 }
 
-// ErrNotifyTooLarge is the refusal above, exported so CANT-86's call site can
-// tell it from a database error and fail loudly rather than silently widening.
+// ErrNotifyTooLarge is the refusal above, exported so the message call site in
+// messages.go can tell it from a database error and fail loudly rather than
+// silently widening. senderror.go carries its row: `internal`, not retryable.
 var ErrNotifyTooLarge = errors.New("store: notify payload exceeds the limit")
 
 // Listener runs LISTEN on its own connection and calls OnNotify for each

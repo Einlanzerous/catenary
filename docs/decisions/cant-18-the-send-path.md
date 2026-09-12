@@ -28,7 +28,7 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 9. *(empty — the author's `read_seq` advance was removed; see below.)*
 10. Draw `log_seq` from `log_counter`.
 11. Insert the message, then its attachments (`CANT-85`).
-12. `pg_notify` (`CANT-86`), then commit.
+12. `pg_notify`, inside the transaction and last before commit (`CANT-86`). The payload is CANT-21's `(conversation_id, seq)`.
 
 **A replay wins over every refusal that depends on server state** — membership, existence, `reply_to`, upload resolution — because position 4 sits above all of them.
 
@@ -52,6 +52,8 @@ The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when
 - **CANT-63** draws `log_counter` for an edit and takes these in this order.
 - **CANT-26's** receipt write takes `conversation_members` alone. Nothing here takes that row, so the two cannot order against each other.
 
+**The commit takes one more lock, and it is instance-wide.** `pg_notify` at position 12 locks nothing when it runs; at commit `PreCommit_Notify` takes an `AccessExclusiveLock` on "database 0", shared by every notifying committer on the Postgres instance, other services' databases included. It is acquired inside commit after every row lock and nothing waits on a row lock after it, so it is last in every notifier's order and cannot join a cycle. `RevokeDevice` is the other transaction in this service that takes it.
+
 ## What the operation guarantees
 
 - Every refusal leaves the store as a `*SendError` carrying `wire.ErrorCode`, `retryable` and `retry_after_sec`. No transport decides a code.
@@ -63,6 +65,7 @@ The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when
 - A `reply_to` that is missing or in another conversation is stored NULL and logged at `info` with both ids. The send succeeds, and the source is held `FOR KEY SHARE` so a concurrent delete cannot turn a valid ref into a failed send.
 - **A membership revoked between position 5 and commit is not caught**, and that is accepted: one more message lands from someone who was a member when asked. Closing it means locking the member row at position 5, which takes it *before* `conversations` and inverts against CANT-67's sweep.
 - An **empty send** — no `text`, no attachments — is stored.
+- **A committed send raises exactly one notification, ids only, at commit.** A refusal, a replay, a race loser and a rolled-back send raise none. The call is inside the insert's transaction, on the same connection, last before commit; an over-cap payload (`ErrNotifyTooLarge`, unreachable with two fixed-width fields) fails the send as `internal`, not retryable.
 - Every refusal **logs once**: `warn` for `internal`, `info` for the rest, with `conversation_id`, `author_id`, `client_id`, `code` and `retryable`; **every** `internal` also logs its SQLSTATE and constraint name, retryable or not, because the permanent ones are the ones that need diagnosing. **The body is never logged, at any level** — `pgErr.Detail` is excluded by name, because on a CHECK violation it renders as `Failing row contains (…)` and that row is the message.
 
 ## Rejected

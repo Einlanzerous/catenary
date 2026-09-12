@@ -83,8 +83,26 @@ package store
 // lock there: CANT-33 offboards accounts, and CANT-63 touches this file. A
 // reader is entitled to treat this list as exhaustive, so it has to be.
 //
+// POSITION 12 TAKES NO LOCK WHEN IT RUNS, AND ITS COMMIT TAKES ONE THIS LIST
+// WOULD OTHERWISE MISS. pg_notify appends to a backend-local pending list;
+// nothing is locked until CommitTransaction reaches PreCommit_Notify, which
+// takes an AccessExclusiveLock on "database 0" (async.c: "Serialize writers by
+// acquiring a special lock that we hold till after commit") so queue entries
+// land in commit order. That lock is INSTANCE-WIDE, not per database: every
+// notifying committer on the shared Postgres serialises through it, other
+// services' databases included, and RevokeDevice in tokens.go is the other
+// transaction in this service that takes it. It cannot join a cycle: it is
+// acquired inside commit, after every row lock above, and no transaction
+// waits on a row lock after acquiring it, so it is last in every notifier's
+// order by construction. What it costs is a second serial point nested inside
+// the log_counter one — the deployment-wide section is draw, insert, notify,
+// then a commit that queues under an instance-wide lock — and it is paid
+// whether or not anyone is listening, because PreCommit_Notify returns early
+// only when nothing is pending. Negligible at this scale, and named because an
+// unnamed lock is one nobody can reason about.
+//
 // Taking log_counter LAST keeps the deployment-wide serialised section down to
-// draw-insert-commit rather than the whole transaction. The larger reason for
+// draw-insert-notify-commit rather than the whole transaction. The larger reason for
 // fixing any order at all is that two writers taking the same locks in
 // opposite orders DEADLOCK, and Postgres resolves a deadlock by aborting
 // somebody's send.
@@ -536,6 +554,36 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 		// through errors.As.
 		return Sent{}, fmt.Errorf("store: insert message: %w", err)
 	}
+
+	// 12 — notify, INSIDE the transaction, on the same connection, LAST
+	// before commit. CANT-18 ruling 2 (not CANT-14's ruling 2 above, which
+	// is the idempotency order): Postgres delivers a notification at commit,
+	// so raised here it fires exactly when the message becomes visible and
+	// never when it does not. Raised anywhere else it is a second write that
+	// can succeed without the message, or the reverse — and only the second
+	// of those is something a test can see, which is why this line is read
+	// rather than only tested.
+	//
+	// The payload is CANT-21's, built from the values THIS transaction wrote
+	// and never re-read: (conversation_id, seq) is UNIQUE on messages, so a
+	// listening instance fetches exactly the row that committed. Encode
+	// enforces the 8,000-byte cap, which is a send-path property here rather
+	// than a fanout one — pg_notify raises on the connection that called it,
+	// so an over-cap payload would fail the send, not drop a notification.
+	// Loud rather than silent on both errors, on the same reasoning as
+	// RevokeDevice in tokens.go, which is this block's twin and stays
+	// byte-identical in shape.
+	//
+	// CANT-85 lands the attachments insert ABOVE this, at 11. The notify is
+	// the last statement before Commit, and it stays last.
+	payload, err := NotifyPayload{ConversationID: m.ConversationID, Seq: out.Seq}.Encode()
+	if err != nil {
+		return Sent{}, fmt.Errorf("store: notify: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, NotifyChannel, payload); err != nil {
+		return Sent{}, fmt.Errorf("store: notify: %w", err)
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return Sent{}, fmt.Errorf("store: commit: %w", err)
 	}

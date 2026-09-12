@@ -34,6 +34,7 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 		{ErrUploadNotFound, wire.ErrorCodeUploadNotFound, false},
 		{ErrRateLimited, wire.ErrorCodeRateLimited, true},
 		{ErrNoClientID, wire.ErrorCodeInternal, false},
+		{ErrNotifyTooLarge, wire.ErrorCodeInternal, false},
 	}
 
 	// A row added without a line here, or removed with one left behind, is the
