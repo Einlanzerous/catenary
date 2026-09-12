@@ -18,7 +18,7 @@
 // vector file stays one word per case.
 //
 // CANT-25 closed the gap this comment used to describe. The generated decoders
-// now enforce the schema's constraints, so the ten reject cases run here rather
+// now enforce the schema's constraints, so the reject cases run here rather
 // than being counted and printed as skips. The mechanism is an UnmarshalJSON
 // that decodes into a shadow whose fields are all pointers, which is what makes
 // an absent required scalar distinguishable from an explicit zero one —

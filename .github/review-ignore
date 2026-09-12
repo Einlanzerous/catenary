@@ -47,7 +47,7 @@
 #   schema/codegen/generate.mjs
 #                   — the generator. Not generated.
 #   schema/vectors/vectors.json
-#                   — the 41 golden vectors. Hand-written, and they ARE the
+#                   — the golden vectors. Hand-written, and they ARE the
 #                     oracle: a weakened vector is how a conformance suite goes
 #                     quietly green. Exactly what the reviewer should read.
 #   schema/mapping/wire-fields.json
