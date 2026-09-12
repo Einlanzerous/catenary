@@ -2,7 +2,7 @@
 
 > **The Switchyard plan is the decision of record.** It is versioned, its criteria carry verdicts and its rulings carry picks, and it gates the ticket: **Switchyard `CANT-28`, plan rev 3, approved** (Switchyard is estate-internal, so there is no link that resolves from a clone of this public repository). This file is a derived stub. It carries **outcomes and no reasoning**, because reasoning is what drifts — two documents making the same argument is the CHRN-79 shape, and the second copy is the one that goes stale.
 
-One migration, `0007_tokens`. One store file, `internal/store/tokens.go`. One new route, `POST /enrol`. `GET /sync` is registered in a real process for the first time.
+One migration, `0007_tokens`. One store file, `internal/store/tokens.go`. One new route, `POST /enroll`. `GET /sync` is registered in a real process for the first time.
 
 ## Rulings, as settled
 
@@ -11,7 +11,7 @@ One migration, `0007_tokens`. One store file, `internal/store/tokens.go`. One ne
 | **0 · what an access token is** | **Opaque random, stored hashed, looked up per request.** No signing key, nothing for Signet to hold, and revocation takes effect on the next request rather than at the next expiry. Costs an `access_tokens` table and one indexed point-read per authenticated call. |
 | **1 · where the credential rides on the upgrade** | **`Sec-WebSocket-Protocol`**, the one request header a browser can set on a WebSocket. Two values offered, one echoed — see below. |
 | **2 · socket authorization** | **Once at accept.** The session outlives the access token that opened it; a revocation severs it through the fanout. An access token expiring under a live socket is not an event. |
-| **3 · lifetimes** | **Access 15 minutes · refresh 60 days · enrolment 7 days.** |
+| **3 · lifetimes** | **Access 15 minutes · refresh 60 days · enrollment 7 days.** |
 | **4 · bot token scope** | **Membership alone**, enforced by `not_a_member`, which already exists. |
 | **5 · where the `/refresh` handler lands** | **A sub-task of CANT-29, filed `review_mode: full`** — `CANT-97`. Its payload types are in the wire schema from this ticket; only the handler moved. |
 | **6 · where the credential payload types live** | **The wire schema**, as `$defs` with conformance vectors. The count moved 41 → 48. |
@@ -22,9 +22,9 @@ One migration, `0007_tokens`. One store file, `internal/store/tokens.go`. One ne
 
 | shape | table | rotates | expires | minted by |
 |---|---|---|---|---|
-| **enrolment** | `enrolment_tokens` | no — re-issued, superseding | 7 days | `IssueEnrolmentToken`, called by Purser's Provision |
-| **refresh** | `refresh_tokens` | yes, single-use | 60 days | `RedeemEnrolment` here; rotated by `CANT-97` |
-| **access** | `access_tokens` | n/a | 15 minutes | `RedeemEnrolment` here; re-issued by `CANT-97` |
+| **enrollment** | `enrollment_tokens` | no — re-issued, superseding | 7 days | `IssueEnrollmentToken`, called by Purser's Provision |
+| **refresh** | `refresh_tokens` | yes, single-use | 60 days | `RedeemEnrollment` here; rotated by `CANT-97` |
+| **access** | `access_tokens` | n/a | 15 minutes | `RedeemEnrollment` here; re-issued by `CANT-97` |
 | **bot** | `access_tokens`, `device_id IS NULL` | no | never | `IssueBotToken`, from CANT-69 or a CLI subcommand — never Purser |
 
 A bot has no device. `access_tokens` CHECKs `(device_id IS NULL) = (expires_at IS NULL)`, so a person's fifteen minutes cannot become forever by one bad INSERT; the other half of the shape — that a device-less token's user is `kind = 'bot'` — is a store invariant, because a CHECK reads one table.
@@ -45,13 +45,13 @@ A **bot token grants append-as-self only**: no edit, no delete, including of its
 
 `store.Authenticate` is the only thing in this service that resolves a credential, and it refuses on four conditions: the token does not resolve, is expired, or is revoked; the **device** is revoked; the **account** is deactivated; or a bot attempted a device-only operation. `CallerID` on the router is an adapter over it and CANT-22's upgrade calls the same function. A guard test fails the build if anything outside `internal/store` names a credential table.
 
-**A deactivated user can neither redeem an enrolment token, nor authenticate, nor — from `CANT-97` — exchange a refresh token.** R6 chose disable-then-revoke for Purser's offboard over the reverse ordering on exactly that sentence, so its correctness argument depends on this being true here rather than assumed. Before this ticket no query in this service read `users.deactivated_at`.
+**A deactivated user can neither redeem an enrollment token, nor authenticate, nor — from `CANT-97` — exchange a refresh token.** R6 chose disable-then-revoke for Purser's offboard over the reverse ordering on exactly that sentence, so its correctness argument depends on this being true here rather than assumed. Before this ticket no query in this service read `users.deactivated_at`.
 
 REST carries the access token as `Authorization: Bearer`. Never a query parameter: Traefik and Cloudflare log request lines.
 
 ## One refusal
 
-`POST /enrol` is the only unauthenticated credential-minting route this service has, and it has **no rate limiter** — declined with reasons in the plan, not overlooked. So **every credential failure returns the same 401 with the same body**, byte for byte: unknown token, expired, already redeemed, superseded, deactivated account. It is the same body `GET /sync` writes. The log distinguishes all five, with the token id where one resolves and never the token itself; visibility is what stands in for the limiter, and it has to be one-directional.
+`POST /enroll` is the only unauthenticated credential-minting route this service has, and it has **no rate limiter** — declined with reasons in the plan, not overlooked. So **every credential failure returns the same 401 with the same body**, byte for byte: unknown token, expired, already redeemed, superseded, deactivated account. It is the same body `GET /sync` writes. The log distinguishes all five, with the token id where one resolves and never the token itself; visibility is what stands in for the limiter, and it has to be one-directional.
 
 A malformed request — unparseable JSON, a token that is not shaped like one, a missing device name — is a 400 and is not part of that rule. None of them says anything about whether a credential exists.
 
@@ -71,9 +71,9 @@ No index on `family_id`: the column has to exist now because adding it later rew
 
 ## Locks
 
-Redemption takes `FOR UPDATE` on the one `enrolment_tokens` row and **no lock on `users`** — `deactivated_at` is read unlocked, and the `devices` insert takes `KEY SHARE` through its FK, which `internal/store/messages.go:66` already argues is safe against a `FOR NO KEY UPDATE` deactivation. `log_counter` is never drawn.
+Redemption takes `FOR UPDATE` on the one `enrollment_tokens` row and **no lock on `users`** — `deactivated_at` is read unlocked, and the `devices` insert takes `KEY SHARE` through its FK, which `internal/store/messages.go:66` already argues is safe against a `FOR NO KEY UPDATE` deactivation. `log_counter` is never drawn.
 
-**The race that leaves open is closed at authentication, not at enrolment.** A deactivation committing between the read and the insert lets a device row be created for a now-disabled account; every request from it is then refused. A stray row and no access — R6's explicitly-accepted half-done state, from the other direction.
+**The race that leaves open is closed at authentication, not at enrollment.** A deactivation committing between the read and the insert lets a device row be created for a now-disabled account; every request from it is then refused. A stray row and no access — R6's explicitly-accepted half-done state, from the other direction.
 
 `RevokeDevice` is a non-key `UPDATE`, so `FOR NO KEY UPDATE`, which the same note anticipated. It is idempotent by its `revoked_at IS NULL` guard, because R6 requires Deprovision to be safe to retry.
 

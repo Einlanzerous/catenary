@@ -711,18 +711,18 @@
       }
     },
     {
-      "name": "enrol_request",
-      "kind": "EnrolRequest",
+      "name": "enroll_request",
+      "kind": "EnrollRequest",
       "expect": "roundtrip",
       "why": "The only unauthenticated request this protocol has. Both fields required, so there is no optional to omit — the case exists to pin the token encoding and the device name surviving a round trip unchanged.",
       "json": {
-        "enrolment_token": "enrolment_token_FIXTURE_not_a_real_secret__",
+        "enrollment_token": "enrollment_token_FIXTURE_not_a_real_secret_",
         "device_name": "Pixel 8 Pro"
       }
     },
     {
-      "name": "enrol_response",
-      "kind": "EnrolResponse",
+      "name": "enroll_response",
+      "kind": "EnrollResponse",
       "expect": "roundtrip",
       "why": "The whole bootstrap in one body: who you are, what this install is called on the wire, and both credentials with both expiries. Every field is required, because a client that received five of the six would be stuck in a way it could not report.",
       "json": {
@@ -757,29 +757,29 @@
     },
     {
       "name": "reject_token_with_padding",
-      "kind": "EnrolRequest",
+      "kind": "EnrollRequest",
       "expect": "reject",
       "why": "base64 standard encoding of the same 32 bytes: 44 characters ending in `=`. `=` is not a legal RFC 7230 token character, so a padded credential cannot ride `Sec-WebSocket-Protocol` — and an intermediary is entitled to mangle it rather than refuse it, which is the failure that would be debugged from a browser console. One identifier apart from the right answer in every language, so it is pinned here.",
       "json": {
-        "enrolment_token": "padded_std_encoding_FIXTURE_not_a_secret___=",
+        "enrollment_token": "padded_std_encoding_FIXTURE_not_a_secret___=",
         "device_name": "Pixel 8 Pro"
       }
     },
     {
       "name": "reject_token_with_std_alphabet",
-      "kind": "EnrolRequest",
+      "kind": "EnrollRequest",
       "expect": "reject",
       "why": "base64 raw standard encoding: the right LENGTH and the wrong alphabet. This fixture carries `+` and no `/` on purpose, because `+` is the subtle half — it IS a legal RFC 7230 token character, so a check written as \"must be a valid subprotocol name\" passes this while the encoding is still wrong, and a check written as \"reject the base64 specials\" is simply wrong about it. A `/` would be caught by either. The constraint is the base64url alphabet itself, which is narrower than the grammar and is what all three decoders enforce.",
       "json": {
-        "enrolment_token": "std+alphabet+FIXTURE+not+a+real+secret_____",
+        "enrollment_token": "std+alphabet+FIXTURE+not+a+real+secret_____",
         "device_name": "Pixel 8 Pro"
       }
     },
     {
-      "name": "reject_enrol_response_without_refresh_token",
-      "kind": "EnrolResponse",
+      "name": "reject_enroll_response_without_refresh_token",
+      "kind": "EnrollResponse",
       "expect": "reject",
-      "why": "An enrolment that hands back an access token and no refresh token leaves the device working for fifteen minutes and then permanently stuck, with nothing in the protocol able to say so. A missing required field must be a decode failure and not a null.",
+      "why": "An enrollment that hands back an access token and no refresh token leaves the device working for fifteen minutes and then permanently stuck, with nothing in the protocol able to say so. A missing required field must be a decode failure and not a null.",
       "json": {
         "user_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
         "device_id": "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",

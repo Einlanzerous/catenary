@@ -167,7 +167,7 @@ func checkTimestamp(v string, p string) error {
 }
 
 // A credential, in the one encoding this service uses for all four of them —
-// enrolment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
+// enrollment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
 // WITHOUT padding, which is exactly 43 characters.
 //
 // THE ENCODING IS NORMATIVE, AND THE REASON IS THE TRANSPORT. CANT-28 ruling 1 puts
@@ -182,7 +182,7 @@ func checkTimestamp(v string, p string) error {
 // serves every shape and the socket needs no second form of the same secret.
 //
 // ONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential
-// a string is to anyone who saw one, and it would give the enrolment token — the only
+// a string is to anyone who saw one, and it would give the enrollment token — the only
 // one a person ever handles — its own quiet pressure to be shortened.
 //
 // Enforced rather than advisory, for the same reason `Uuid`'s pattern is: a client
@@ -2257,18 +2257,18 @@ func (v *SyncResponse) decode(b []byte, p string) error {
 	return nil
 }
 
-// `POST /enrol` — a new install redeeming its enrolment token. The only
+// `POST /enroll` — a new install redeeming its enrollment token. The only
 // unauthenticated credential-minting request this service has.
 //
 // CANT-28. Every refusal of it answers identically — unknown token, expired, already
 // redeemed, deactivated account — so that a prober learns nothing from the response
 // about which of those it hit. The log distinguishes all four.
-type EnrolRequest struct {
+type EnrollRequest struct {
 	// The bootstrap credential, issued by Purser's Provision and redeemable exactly once.
 	// R6: at provisioning time the person has zero devices, so this is the only credential
 	// that can exist — and it is one string, which is what lets Purser stay out of the
 	// device model entirely.
-	EnrolmentToken Token `json:"enrolment_token"`
+	EnrollmentToken Token `json:"enrollment_token"`
 	// What this install should be called in the device list. A revocation list is unusable
 	// if the rows do not say which phone they are, which is why `devices.name` is NOT NULL
 	// and why this is required rather than defaulted server-side to something like
@@ -2281,49 +2281,49 @@ type EnrolRequest struct {
 	DeviceName string `json:"device_name"`
 }
 
-// UnmarshalJSON decodes and VALIDATES a EnrolRequest: required fields must be
+// UnmarshalJSON decodes and VALIDATES a EnrollRequest: required fields must be
 // present, and every constrained value is checked against the schema.
-func (v *EnrolRequest) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "EnrolRequest")
+func (v *EnrollRequest) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "EnrollRequest")
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
 // from rather than the outermost type.
-func (v *EnrolRequest) decode(b []byte, p string) error {
+func (v *EnrollRequest) decode(b []byte, p string) error {
 	var s struct {
-		EnrolmentToken *Token  `json:"enrolment_token"`
-		DeviceName     *string `json:"device_name"`
+		EnrollmentToken *Token  `json:"enrollment_token"`
+		DeviceName      *string `json:"device_name"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return decodeErr(p, err)
 	}
-	var out EnrolRequest
-	if s.EnrolmentToken == nil {
-		return badf(p+".enrolment_token", "required field is missing")
+	var out EnrollRequest
+	if s.EnrollmentToken == nil {
+		return badf(p+".enrollment_token", "required field is missing")
 	}
-	out.EnrolmentToken = *s.EnrolmentToken
+	out.EnrollmentToken = *s.EnrollmentToken
 	if s.DeviceName == nil {
 		return badf(p+".device_name", "required field is missing")
 	}
 	out.DeviceName = *s.DeviceName
-	if err := checkToken(out.EnrolmentToken, p+".enrolment_token"); err != nil {
+	if err := checkToken(out.EnrollmentToken, p+".enrollment_token"); err != nil {
 		return err
 	}
 	*v = out
 	return nil
 }
 
-// `POST /enrol` — the first credential pair, returned exactly once. The plaintext
+// `POST /enroll` — the first credential pair, returned exactly once. The plaintext
 // tokens are in this response and nowhere else: the server keeps only hashes, so a
-// client that loses this body enrols again rather than recovering it.
-type EnrolResponse struct {
+// client that loses this body enrolls again rather than recovering it.
+type EnrollResponse struct {
 	// Who this device now speaks as. The client needs it before its first `/sync` page,
 	// because `Message.author_id` is the only thing that distinguishes a message you wrote
 	// from one you did not — and every read-state rule in the protocol turns on that
 	// distinction.
 	UserID Uuid `json:"user_id"`
 	// This install's identity, minted here and stable for its life. It is what
-	// `ClientHello.device_id` carries and what a revocation names, so the enrolment
+	// `ClientHello.device_id` carries and what a revocation names, so the enrollment
 	// response is the one place a client learns it.
 	DeviceID Uuid `json:"device_id"`
 	// Presented on every authenticated request, and on the socket upgrade as the second
@@ -2344,21 +2344,21 @@ type EnrolResponse struct {
 	// string is refused. CANT-29 owns what happens next — a replay invalidates the family
 	// rather than just the request.
 	RefreshToken Token `json:"refresh_token"`
-	// When the refresh token stops being exchangeable, after which the device enrols
+	// When the refresh token stops being exchangeable, after which the device enrolls
 	// again. Long enough that a phone in normal use never re-authenticates; short enough
 	// that a device forgotten in a drawer falls out of the account on its own.
 	RefreshExpiresAt Timestamp `json:"refresh_expires_at"`
 }
 
-// UnmarshalJSON decodes and VALIDATES a EnrolResponse: required fields must be
+// UnmarshalJSON decodes and VALIDATES a EnrollResponse: required fields must be
 // present, and every constrained value is checked against the schema.
-func (v *EnrolResponse) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "EnrolResponse")
+func (v *EnrollResponse) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "EnrollResponse")
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
 // from rather than the outermost type.
-func (v *EnrolResponse) decode(b []byte, p string) error {
+func (v *EnrollResponse) decode(b []byte, p string) error {
 	var s struct {
 		UserID           *Uuid      `json:"user_id"`
 		DeviceID         *Uuid      `json:"device_id"`
@@ -2370,7 +2370,7 @@ func (v *EnrolResponse) decode(b []byte, p string) error {
 	if err := json.Unmarshal(b, &s); err != nil {
 		return decodeErr(p, err)
 	}
-	var out EnrolResponse
+	var out EnrollResponse
 	if s.UserID == nil {
 		return badf(p+".user_id", "required field is missing")
 	}
@@ -2484,7 +2484,7 @@ type RefreshResponse struct {
 	// string is refused. CANT-29 owns what happens next — a replay invalidates the family
 	// rather than just the request.
 	RefreshToken Token `json:"refresh_token"`
-	// When the refresh token stops being exchangeable, after which the device enrols
+	// When the refresh token stops being exchangeable, after which the device enrolls
 	// again. Long enough that a phone in normal use never re-authenticates; short enough
 	// that a device forgotten in a drawer falls out of the account on its own.
 	RefreshExpiresAt Timestamp `json:"refresh_expires_at"`
@@ -2872,15 +2872,15 @@ func DecodeNamed(name string, b []byte) (any, error) {
 			return nil, err
 		}
 		return v, nil
-	case "EnrolRequest":
-		var v EnrolRequest
-		if err := v.decode(b, "EnrolRequest"); err != nil {
+	case "EnrollRequest":
+		var v EnrollRequest
+		if err := v.decode(b, "EnrollRequest"); err != nil {
 			return nil, err
 		}
 		return v, nil
-	case "EnrolResponse":
-		var v EnrolResponse
-		if err := v.decode(b, "EnrolResponse"); err != nil {
+	case "EnrollResponse":
+		var v EnrollResponse
+		if err := v.decode(b, "EnrollResponse"); err != nil {
 			return nil, err
 		}
 		return v, nil

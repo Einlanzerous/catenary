@@ -64,11 +64,11 @@ components:
       type: "string"
       pattern: "^[A-Za-z0-9_-]{43}$"
       description: |2-
-        A credential, in the one encoding this service uses for all four of them — enrolment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url WITHOUT padding, which is exactly 43 characters.
+        A credential, in the one encoding this service uses for all four of them — enrollment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url WITHOUT padding, which is exactly 43 characters.
 
         THE ENCODING IS NORMATIVE, AND THE REASON IS THE TRANSPORT. CANT-28 ruling 1 puts the access token on `Sec-WebSocket-Protocol`, because that is the only request header `new WebSocket(url, protocols)` lets a browser set. That header carries RFC 6455 subprotocol names, and each of those is an RFC 7230 `token`: `/` and `=` are NOT legal characters in one, and an intermediary is entitled to reject or mangle a value that contains them. (`+` is legal, which is why this is stated as an alphabet rather than as a list of characters to avoid — a rule of thumb that got `+` wrong would pass a token carrying `/`.) Standard base64 produces `+` and `/`, and padded output adds `=`; base64url's `-` and `_` sidestep the question, so a single encoding serves every shape and the socket needs no second form of the same secret.
 
-        ONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential a string is to anyone who saw one, and it would give the enrolment token — the only one a person ever handles — its own quiet pressure to be shortened.
+        ONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential a string is to anyone who saw one, and it would give the enrollment token — the only one a person ever handles — its own quiet pressure to be shortened.
 
         Enforced rather than advisory, for the same reason `Uuid`'s pattern is: a client that padded or truncated a token is refused here, in every generated decoder, rather than at the far end of a handshake in a browser console.
     ConversationKind:
@@ -741,14 +741,14 @@ components:
         server_time:
           "$ref": "#/components/schemas/Timestamp"
       description: "Response to `GET /sync?after=<log_seq>&limit=<n>`. The RECONNECT AND CATCH-UP path, not the steady state — steady state is a `message` frame over the socket. Applying a page is idempotent: every message carries its own seq and id, so replaying an overlapping page cannot duplicate anything, which is what makes reconnection a query rather than a guess."
-    EnrolRequest:
+    EnrollRequest:
       type: "object"
       additionalProperties: false
       required:
-        - "enrolment_token"
+        - "enrollment_token"
         - "device_name"
       properties:
-        enrolment_token:
+        enrollment_token:
           "$ref": "#/components/schemas/Token"
         device_name:
           type: "string"
@@ -757,10 +757,10 @@ components:
 
             Not length-bounded here: the bound is a server refusal with a test behind it, because this schema's generators enforce `pattern`, `minimum` and `maximum` and would silently ignore a `minLength` — a constraint no decoder checks is worse than none, since it reads as protection.
       description: |2-
-        `POST /enrol` — a new install redeeming its enrolment token. The only unauthenticated credential-minting request this service has.
+        `POST /enroll` — a new install redeeming its enrollment token. The only unauthenticated credential-minting request this service has.
 
         CANT-28. Every refusal of it answers identically — unknown token, expired, already redeemed, deactivated account — so that a prober learns nothing from the response about which of those it hit. The log distinguishes all four.
-    EnrolResponse:
+    EnrollResponse:
       type: "object"
       additionalProperties: false
       required:
@@ -783,7 +783,7 @@ components:
           "$ref": "#/components/schemas/Token"
         refresh_expires_at:
           "$ref": "#/components/schemas/Timestamp"
-      description: "`POST /enrol` — the first credential pair, returned exactly once. The plaintext tokens are in this response and nowhere else: the server keeps only hashes, so a client that loses this body enrols again rather than recovering it."
+      description: "`POST /enroll` — the first credential pair, returned exactly once. The plaintext tokens are in this response and nowhere else: the server keeps only hashes, so a client that loses this body enrolls again rather than recovering it."
     RefreshRequest:
       type: "object"
       additionalProperties: false

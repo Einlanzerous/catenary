@@ -127,7 +127,7 @@ const asTimestamp = (v: unknown, p: string): Timestamp => {
 }
 
 // A credential, in the one encoding this service uses for all four of them —
-// enrolment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
+// enrollment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
 // WITHOUT padding, which is exactly 43 characters.
 //
 // THE ENCODING IS NORMATIVE, AND THE REASON IS THE TRANSPORT. CANT-28 ruling 1 puts
@@ -142,7 +142,7 @@ const asTimestamp = (v: unknown, p: string): Timestamp => {
 // serves every shape and the socket needs no second form of the same secret.
 //
 // ONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential
-// a string is to anyone who saw one, and it would give the enrolment token — the only
+// a string is to anyone who saw one, and it would give the enrollment token — the only
 // one a person ever handles — its own quiet pressure to be shortened.
 //
 // Enforced rather than advisory, for the same reason `Uuid`'s pattern is: a client
@@ -1100,18 +1100,18 @@ export function encodeSyncResponse(v: SyncResponse): Record<string, unknown> {
   })
 }
 
-// `POST /enrol` — a new install redeeming its enrolment token. The only
+// `POST /enroll` — a new install redeeming its enrollment token. The only
 // unauthenticated credential-minting request this service has.
 //
 // CANT-28. Every refusal of it answers identically — unknown token, expired, already
 // redeemed, deactivated account — so that a prober learns nothing from the response
 // about which of those it hit. The log distinguishes all four.
-export interface EnrolRequest {
+export interface EnrollRequest {
   // The bootstrap credential, issued by Purser's Provision and redeemable exactly once.
   // R6: at provisioning time the person has zero devices, so this is the only credential
   // that can exist — and it is one string, which is what lets Purser stay out of the
   // device model entirely.
-  enrolmentToken: Token
+  enrollmentToken: Token
   // What this install should be called in the device list. A revocation list is unusable
   // if the rows do not say which phone they are, which is why `devices.name` is NOT NULL
   // and why this is required rather than defaulted server-side to something like
@@ -1124,32 +1124,32 @@ export interface EnrolRequest {
   deviceName: string
 }
 
-export function decodeEnrolRequest(v: unknown, p = "EnrolRequest"): EnrolRequest {
+export function decodeEnrollRequest(v: unknown, p = "EnrollRequest"): EnrollRequest {
   const o = asObj(v, p)
   return {
-    enrolmentToken: o["enrolment_token"] === undefined || o["enrolment_token"] === null ? bad(`${p}.enrolment_token`, 'required field is missing') : asToken(o["enrolment_token"], `${p}.enrolment_token`),
+    enrollmentToken: o["enrollment_token"] === undefined || o["enrollment_token"] === null ? bad(`${p}.enrollment_token`, 'required field is missing') : asToken(o["enrollment_token"], `${p}.enrollment_token`),
     deviceName: o["device_name"] === undefined || o["device_name"] === null ? bad(`${p}.device_name`, 'required field is missing') : asStr(o["device_name"], `${p}.device_name`),
   }
 }
 
-export function encodeEnrolRequest(v: EnrolRequest): Record<string, unknown> {
+export function encodeEnrollRequest(v: EnrollRequest): Record<string, unknown> {
   return compact({
-    "enrolment_token": v.enrolmentToken,
+    "enrollment_token": v.enrollmentToken,
     "device_name": v.deviceName,
   })
 }
 
-// `POST /enrol` — the first credential pair, returned exactly once. The plaintext
+// `POST /enroll` — the first credential pair, returned exactly once. The plaintext
 // tokens are in this response and nowhere else: the server keeps only hashes, so a
-// client that loses this body enrols again rather than recovering it.
-export interface EnrolResponse {
+// client that loses this body enrolls again rather than recovering it.
+export interface EnrollResponse {
   // Who this device now speaks as. The client needs it before its first `/sync` page,
   // because `Message.author_id` is the only thing that distinguishes a message you wrote
   // from one you did not — and every read-state rule in the protocol turns on that
   // distinction.
   userId: Uuid
   // This install's identity, minted here and stable for its life. It is what
-  // `ClientHello.device_id` carries and what a revocation names, so the enrolment
+  // `ClientHello.device_id` carries and what a revocation names, so the enrollment
   // response is the one place a client learns it.
   deviceId: Uuid
   // Presented on every authenticated request, and on the socket upgrade as the second
@@ -1170,13 +1170,13 @@ export interface EnrolResponse {
   // string is refused. CANT-29 owns what happens next — a replay invalidates the family
   // rather than just the request.
   refreshToken: Token
-  // When the refresh token stops being exchangeable, after which the device enrols
+  // When the refresh token stops being exchangeable, after which the device enrolls
   // again. Long enough that a phone in normal use never re-authenticates; short enough
   // that a device forgotten in a drawer falls out of the account on its own.
   refreshExpiresAt: Timestamp
 }
 
-export function decodeEnrolResponse(v: unknown, p = "EnrolResponse"): EnrolResponse {
+export function decodeEnrollResponse(v: unknown, p = "EnrollResponse"): EnrollResponse {
   const o = asObj(v, p)
   return {
     userId: o["user_id"] === undefined || o["user_id"] === null ? bad(`${p}.user_id`, 'required field is missing') : asUuid(o["user_id"], `${p}.user_id`),
@@ -1188,7 +1188,7 @@ export function decodeEnrolResponse(v: unknown, p = "EnrolResponse"): EnrolRespo
   }
 }
 
-export function encodeEnrolResponse(v: EnrolResponse): Record<string, unknown> {
+export function encodeEnrollResponse(v: EnrollResponse): Record<string, unknown> {
   return compact({
     "user_id": v.userId,
     "device_id": v.deviceId,
@@ -1252,7 +1252,7 @@ export interface RefreshResponse {
   // string is refused. CANT-29 owns what happens next — a replay invalidates the family
   // rather than just the request.
   refreshToken: Token
-  // When the refresh token stops being exchangeable, after which the device enrols
+  // When the refresh token stops being exchangeable, after which the device enrolls
   // again. Long enough that a phone in normal use never re-authenticates; short enough
   // that a device forgotten in a drawer falls out of the account on its own.
   refreshExpiresAt: Timestamp
@@ -1400,8 +1400,8 @@ export const codecs: Record<string, WireCodec> = {
   ClientFrame: { decode: (v) => decodeClientFrame(v), encode: (v) => encodeClientFrame(v as ClientFrame) },
   ServerFrame: { decode: (v) => decodeServerFrame(v), encode: (v) => encodeServerFrame(v as ServerFrame) },
   SyncResponse: { decode: (v) => decodeSyncResponse(v), encode: (v) => encodeSyncResponse(v as SyncResponse) },
-  EnrolRequest: { decode: (v) => decodeEnrolRequest(v), encode: (v) => encodeEnrolRequest(v as EnrolRequest) },
-  EnrolResponse: { decode: (v) => decodeEnrolResponse(v), encode: (v) => encodeEnrolResponse(v as EnrolResponse) },
+  EnrollRequest: { decode: (v) => decodeEnrollRequest(v), encode: (v) => encodeEnrollRequest(v as EnrollRequest) },
+  EnrollResponse: { decode: (v) => decodeEnrollResponse(v), encode: (v) => encodeEnrollResponse(v as EnrollResponse) },
   RefreshRequest: { decode: (v) => decodeRefreshRequest(v), encode: (v) => encodeRefreshRequest(v as RefreshRequest) },
   RefreshResponse: { decode: (v) => decodeRefreshResponse(v), encode: (v) => encodeRefreshResponse(v as RefreshResponse) },
 }

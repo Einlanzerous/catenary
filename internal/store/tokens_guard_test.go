@@ -25,7 +25,7 @@ import (
 // The three tables that hold credentials. devices and users are deliberately
 // absent: plenty of code legitimately reads those, and it is the token tables
 // that carry the refusal logic.
-var credentialTables = []string{"access_tokens", "refresh_tokens", "enrolment_tokens"}
+var credentialTables = []string{"access_tokens", "refresh_tokens", "enrollment_tokens"}
 
 func TestOnlyTheStorePackageReadsACredentialTable(t *testing.T) {
 	root := storeModuleRoot(t)
