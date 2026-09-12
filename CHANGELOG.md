@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.0](https://github.com/Einlanzerous/catenary/compare/v0.3.0...v0.4.0) (2026-09-12)
+
+
+### Features
+
+* CANT-28 — the token model: four credential shapes, one authenticate seam ([#33](https://github.com/Einlanzerous/catenary/issues/33)) ([5339457](https://github.com/Einlanzerous/catenary/commit/533945713310cd3e5b0af0f58ff64949a18f2d5d))
+
+
+### Bug Fixes
+
+* CANT-94 — resolve dependencies in verify.sh so CI and a local run make one claim ([#31](https://github.com/Einlanzerous/catenary/issues/31)) ([964ad33](https://github.com/Einlanzerous/catenary/commit/964ad33c415c5a149ad4c73dab8a05dc151fbb87))
+* CANT-98 — rename enrol to US enroll on the wire, in migration 0007 and on the route ([#35](https://github.com/Einlanzerous/catenary/issues/35)) ([3e50f16](https://github.com/Einlanzerous/catenary/commit/3e50f1650c41abd233300c3292dd35893e02af94))
+
 ## [0.3.0](https://github.com/Einlanzerous/catenary/compare/v0.2.0...v0.3.0) (2026-09-08)
 
 > **Corrected by hand on 2026-09-10 (CANT-93).** The eight entries from #25–#28 below were absent when this release was cut. Those four PRs were squash-merged with a `CANT-NN:` subject, which is not a conventional-commit type, so release-please never saw them — only #23, which landed as a merge commit, reached the changelog. The work shipped in this release either way; only the record of it was missing.
