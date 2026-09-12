@@ -6,7 +6,16 @@
 // mean the two clients agreed with each other and neither was checked against
 // the thing they actually talk to.
 //
-// SCOPE: all three kinds — roundtrip, ignore AND reject. Nothing is skipped.
+// SCOPE: all four kinds — roundtrip, ignore, reject AND tolerate. Nothing is
+// skipped.
+//
+// THIS IS THE SERVER-SIDE RUNNER (CANT-74). `tolerate` is the one expectation
+// whose answer differs by side: the two client runners decode an enum value
+// this schema version does not know to the sentinel `unknown`, and this runner
+// REFUSES it, exactly as `reject`. The server is the trust boundary and is
+// closed on every enum; a client sending a value it does not define is a
+// protocol error. Which side a runner is on is stated here, once, and the
+// vector file stays one word per case.
 //
 // CANT-25 closed the gap this comment used to describe. The generated decoders
 // now enforce the schema's constraints, so the ten reject cases run here rather
@@ -112,8 +121,9 @@ func main() {
 
 		// A reject case is the one where an error is the PASS. The detail
 		// carries the decoder's own message, so a reader sees which constraint
-		// fired rather than only that one did.
-		if c.Expect == "reject" {
+		// fired rather than only that one did. On this side `tolerate` is the
+		// same case: the server refuses what a client would carry.
+		if c.Expect == "reject" || c.Expect == "tolerate" {
 			if err != nil {
 				check(c.Name, true, "refused: "+err.Error())
 			} else {

@@ -10,11 +10,18 @@
  * nulled, whether an unknown attachment drops the attachment or the message,
  * whether a constraint is enforced or merely documented. None of those is a
  * type error, so none of them is caught by codegen alone.
+ *
+ * THIS IS A CLIENT-SIDE RUNNER (CANT-74). `tolerate` is the one expectation
+ * whose answer differs by side: an enum value this schema version does not
+ * know decodes here to the sentinel `unknown` and round-trips as `encoded`,
+ * exactly as `roundtrip` does. The Go runner is the server side and treats the
+ * same case as `reject`. Which side a runner is on is stated here, once, and
+ * the vector file stays one word per case.
  */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { codecs } from '@/wire/generated'
+import { codecs, setOnUnknownWireValue } from '@/wire/generated'
 
 /* Resolved from the package directory rather than import.meta.url: this file is
  * bundled into dist-conformance/ before it runs, so a path relative to the
@@ -25,7 +32,7 @@ const VECTORS = resolve(process.cwd(), '..', 'schema', 'vectors', 'vectors.json'
 interface Case {
   name: string
   kind: string
-  expect: 'roundtrip' | 'ignore' | 'reject'
+  expect: 'roundtrip' | 'ignore' | 'reject' | 'tolerate'
   why?: string
   json: unknown
   encoded?: unknown
@@ -92,14 +99,31 @@ for (const c of cases) {
     continue
   }
 
+  // `roundtrip` and, on this side, `tolerate`: decode, re-encode, compare.
   const want = canonical(c.encoded ?? c.json)
   const got = canonical(codec.encode(decoded))
   check(c.name, want === got, want === got ? '' : `\n    want ${want}\n    got  ${got}`)
 }
 
+/* CANT-74 criterion 11: the unknown-value report fires ONCE per (enum, raw) per
+ * process. Measured with a value no vector uses, so the vector loop above has
+ * not already spent it, and the same frame decoded twice yields one line. */
+{
+  const seen: string[] = []
+  setOnUnknownWireValue((m) => { seen.push(m) })
+  const frame = { type: 'resync_required', reason: 'warn_once_probe', log_seq: 1 }
+  codecs.ServerFrame.decode(frame)
+  codecs.ServerFrame.decode(frame)
+  const ok = seen.length === 1 && /ResyncReason: unknown value "warn_once_probe"/.test(seen[0])
+  check('unknown_value_is_reported_once_per_enum_and_value', ok, ok ? seen[0] : `${seen.length} report(s): ${seen.join(' | ')}`)
+}
+
+/* The probe above is one check beyond the vector file, so the total says so:
+ * a failing probe must not read as a failing vector. */
+const RUNNER_CHECKS = 1
 console.log(
   fail.length
-    ? `\n${fail.length} of ${cases.length} FAILED`
-    : `\nall green — ${cases.length} vectors`
+    ? `\n${fail.length} of ${cases.length + RUNNER_CHECKS} FAILED`
+    : `\nall green — ${cases.length} vectors + ${RUNNER_CHECKS} runner check`
 )
 process.exit(fail.length ? 1 : 0)

@@ -12,6 +12,13 @@
 /// as ghost messages and disagreeing unread counts, and not one of them is a
 /// compile error in either language.
 ///
+/// THIS IS A CLIENT-SIDE RUNNER (CANT-74). `tolerate` is the one expectation
+/// whose answer differs by side: an enum value this schema version does not
+/// know decodes here to the sentinel `unknown` and round-trips as `encoded`,
+/// exactly as `roundtrip` does. The Go runner is the server side and treats
+/// the same case as `reject`. Which side a runner is on is stated here, once,
+/// and the vector file stays one word per case.
+///
 /// Run: dart run bin/conformance.dart   (from the dart/ directory)
 library;
 
@@ -99,13 +106,31 @@ void main(List<String> args) {
       continue;
     }
 
+    // `roundtrip` and, on this side, `tolerate`: decode, re-encode, compare.
     final want = canonical(c.containsKey('encoded') ? c['encoded'] : input);
     final got = canonical(codec.encode(decoded));
     check(name, want == got, want == got ? '' : '\n    want $want\n    got  $got');
   }
 
+  // CANT-74 criterion 11: the unknown-value report fires ONCE per (enum, raw)
+  // per process. Measured with a value no vector uses, so the loop above has
+  // not already spent it, and the same frame decoded twice yields one line.
+  {
+    final seen = <String>[];
+    onUnknownWireValue = seen.add;
+    final frame = {'type': 'resync_required', 'reason': 'warn_once_probe', 'log_seq': 1};
+    codecs['ServerFrame']!.decode(frame);
+    codecs['ServerFrame']!.decode(frame);
+    final ok = seen.length == 1 && seen.first.contains('ResyncReason: unknown value "warn_once_probe"');
+    check('unknown_value_is_reported_once_per_enum_and_value', ok,
+        ok ? seen.first : '${seen.length} report(s): ${seen.join(' | ')}');
+  }
+
+  // The probe above is one check beyond the vector file, so the total says
+  // so: a failing probe must not read as a failing vector.
+  const runnerChecks = 1;
   stdout.writeln(failures.isEmpty
-      ? '\nall green — ${cases.length} vectors'
-      : '\n${failures.length} of ${cases.length} FAILED');
+      ? '\nall green — ${cases.length} vectors + $runnerChecks runner check'
+      : '\n${failures.length} of ${cases.length + runnerChecks} FAILED');
   exit(failures.isEmpty ? 0 : 1);
 }

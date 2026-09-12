@@ -176,6 +176,14 @@ step "R4 · codegen is current (the generated files match the schema)"
 (cd "$ROOT/web" && npm run --silent gen:check) >"$LOGDIR/v-gen-check.log" 2>&1
 result $? "gen:check"
 
+# CANT-74: the generator's own tests. Direction is computed from named roots
+# and four lints fail the build; each is watched firing on a mutated copy of
+# the real schema, and the Go enum blocks are diffed against origin/main so
+# "closed on the server" is a test rather than a promise.
+step "CANT-74 · the generator classifies, lints, and leaves the Go enums alone"
+(cd "$ROOT/web" && npm run --silent gen:test) >"$LOGDIR/v-gen-test.log" 2>&1
+result $? "gen:test ($(grep -oE '^ℹ (pass|skipped) [0-9]+' "$LOGDIR/v-gen-test.log" | grep -v 'skipped 0' | tr '\n' ',' | sed 's/ℹ //g; s/,$//; s/,/, /g'))"
+
 step "R4 · TypeScript"
 (cd "$ROOT/web" && npx --no-install vue-tsc --noEmit) >"$LOGDIR/v-tsc.log" 2>&1
 result $? "vue-tsc --noEmit"

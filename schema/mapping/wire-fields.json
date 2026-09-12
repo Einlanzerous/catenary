@@ -376,7 +376,7 @@
     },
     "ClientHello.wire_version": {
       "kind": "derived",
-      "note": "Compared against the server's wire_version at handshake; CANT-74 owns the policy. Not stored."
+      "note": "Compared against the server's WireVersion at handshake. CANT-74 policy: the server accepts a version it can speak — today exactly 1 — and otherwise answers `wire_version_unsupported` and closes; the version bumps only for a breaking change, and additive changes (new optional fields, new enum values on client-open enums, new frame types) never bump it. Not stored."
     },
     "ClientHello.device_id": {
       "kind": "derived",
@@ -393,6 +393,10 @@
     "ServerReady.session_id": {
       "kind": "derived",
       "note": "Per-connection identity, generated at accept."
+    },
+    "ServerReady.wire_version": {
+      "kind": "derived",
+      "note": "wire.WireVersion, the constant the server was generated with. Optional on the wire; CANT-74 Ruling 3."
     },
     "ServerReady.server_time": {
       "kind": "derived",

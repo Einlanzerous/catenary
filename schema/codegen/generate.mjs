@@ -33,7 +33,13 @@ import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = resolve(HERE, '..', '..')
-const SCHEMA = resolve(HERE, '..', 'catenary.wire.v1.schema.json')
+/* `--schema=<path>` points the whole walk at another schema. It exists for the
+ * generator's own tests, which mutate the real schema in memory, write it to a
+ * temp file and assert that a lint fires — never for producing the tree. */
+const argSchema = process.argv.find((a) => a.startsWith('--schema='))
+const SCHEMA = argSchema
+  ? resolve(argSchema.slice('--schema='.length))
+  : resolve(HERE, '..', 'catenary.wire.v1.schema.json')
 
 const schema = JSON.parse(readFileSync(SCHEMA, 'utf8'))
 const defs = schema.$defs
@@ -67,6 +73,136 @@ function classify(name, node) {
 
 const model = Object.entries(defs).map(([name, node]) => classify(name, node))
 const byName = new Map(model.map((d) => [d.name, d]))
+
+/* ------------------------------------------------------------------ *
+ * Direction — CANT-74.
+ *
+ * Every enum is either CLIENT-OPEN or CLOSED EVERYWHERE, and which is decided
+ * by where it can be reached from, not by a hand-kept list. An enum reachable
+ * from a server root is something a client can RECEIVE, so a value this schema
+ * version does not know must not cost the client the frame: TypeScript and
+ * Dart decode it to the sentinel `unknown`. An enum reachable only from client
+ * roots is something a client AUTHORS and never has to decode ahead of itself,
+ * so it stays closed on every side — which is also what stops a client from
+ * typing `unknown` into an outbound frame and having it typecheck. Go is
+ * closed on everything: the server is the trust boundary.
+ *
+ * Two rules keep the root lists honest. A `$defs` entry referenced by nothing
+ * must be in exactly one of them, so a new REST body is classified by the
+ * person adding it. An enum reachable from BOTH sides fails the build, so the
+ * first one is split by a person rather than decided by whichever walk ran
+ * last. Non-enum types shared by both sides — Uuid, Timestamp, the ordinals,
+ * Token, Ping, Pong — are normal and neither rule touches them.
+ * ------------------------------------------------------------------ */
+const SERVER_ROOTS = ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse']
+const CLIENT_ROOTS = ['ClientFrame', 'EnrollRequest', 'RefreshRequest']
+
+/** Every $defs name a node references, at any depth. */
+function refsIn(node, out = new Set()) {
+  if (Array.isArray(node)) { for (const x of node) refsIn(x, out); return out }
+  if (node && typeof node === 'object') {
+    for (const [k, v] of Object.entries(node)) {
+      if (k === '$ref' && typeof v === 'string') out.add(refName(v))
+      else refsIn(v, out)
+    }
+  }
+  return out
+}
+
+/** Reachability from a root list: name -> the path that reached it, root first. */
+function reach(roots) {
+  const paths = new Map()
+  const queue = []
+  for (const r of roots) {
+    if (!defs[r]) fail(`root ${r} is not a $defs entry`)
+    paths.set(r, [r])
+    queue.push(r)
+  }
+  while (queue.length) {
+    const n = queue.shift()
+    for (const m of refsIn(defs[n])) {
+      if (paths.has(m)) continue
+      paths.set(m, [...paths.get(n), m])
+      queue.push(m)
+    }
+  }
+  return paths
+}
+
+const referenced = new Set()
+for (const node of Object.values(defs)) for (const r of refsIn(node)) referenced.add(r)
+for (const name of Object.keys(defs)) {
+  const s = SERVER_ROOTS.includes(name)
+  const c = CLIENT_ROOTS.includes(name)
+  if (s && c) fail(`$defs.${name} is listed as both a server root and a client root`)
+  if (!referenced.has(name) && !s && !c) {
+    fail(`$defs.${name} is referenced by nothing and is in neither root list — say which side it is on: ` +
+      'SERVER_ROOTS if the server emits it, CLIENT_ROOTS if a client authors it (CANT-74)')
+  }
+}
+const serverReach = reach(SERVER_ROOTS)
+const clientReach = reach(CLIENT_ROOTS)
+
+/** Names of the enums a client can receive. Everything else is closed everywhere. */
+const clientOpen = new Set()
+for (const d of model) {
+  if (d.kind !== 'enum') continue
+  if (d.node.enum.includes('unknown')) {
+    fail(`$defs.${d.name}: "unknown" is a reserved spelling — it is the sentinel a client decodes an ` +
+      'unrecognised value to, so no enum may define it as a real value (CANT-74)')
+  }
+  const s = serverReach.get(d.name)
+  const c = clientReach.get(d.name)
+  if (s && c) {
+    fail(`$defs.${d.name}: an enum reachable from both sides — from server root ${s[0]} via ` +
+      `${s.join(' > ')}, and from client root ${c[0]} via ${c.join(' > ')}. One enum cannot be open on ` +
+      'decode and closed on encode; split it into a receive-side type and an author-side type (CANT-74)')
+  }
+  if (s) clientOpen.add(d.name)
+}
+/* An inline enum has no name to hang a sentinel on: it would be a literal
+ * union in TypeScript and a bare String in Dart, and the two clients would
+ * give different answers on the same vector. So on anything a client can
+ * receive, an enum is a named $defs entry or it is a build failure. */
+for (const [name, node] of Object.entries(defs)) {
+  if (!serverReach.has(name)) continue
+  for (const [wire, prop] of Object.entries(node.properties || {})) {
+    const inline = (prop.enum && prop.const === undefined) || (prop.items && prop.items.enum)
+    if (inline) {
+      fail(`${name}.${wire}: an inline enum on a server-emitted type (reachable via ` +
+        `${serverReach.get(name).join(' > ')}). Name it in $defs so all three languages carry the same ` +
+        'open type (CANT-74)')
+    }
+  }
+}
+
+/** The classification, as a comment for the generated file that carries it. */
+function openness(name) {
+  if (clientOpen.has(name)) {
+    const s = serverReach.get(name)
+    return `CLIENT-OPEN (CANT-74): reachable from server root ${s[0]} via ${s.join(' > ')}. A value this ` +
+      'schema version does not know decodes to the sentinel `unknown` and is reported once; the server ' +
+      'refuses it. Every switch over this type needs an arm for `unknown`.'
+  }
+  const c = clientReach.get(name)
+  return `CLOSED EVERYWHERE (CANT-74): reachable only from client root ${c ? c[0] : '(none)'}` +
+    `${c ? ' via ' + c.join(' > ') : ''}. A client authors it and never decodes a value newer than ` +
+    'itself, so an unrecognised value is refused on every side.'
+}
+
+if (process.argv.includes('--classify')) {
+  const enums = model.filter((d) => d.kind === 'enum').map((d) => d.name)
+  const both = Object.keys(defs).filter((n) => serverReach.has(n) && clientReach.has(n))
+  console.log(JSON.stringify({
+    serverRoots: SERVER_ROOTS,
+    clientRoots: CLIENT_ROOTS,
+    unreferenced: Object.keys(defs).filter((n) => !referenced.has(n)),
+    clientOpen: enums.filter((n) => clientOpen.has(n)),
+    closedEverywhere: enums.filter((n) => !clientOpen.has(n)),
+    bothSides: both,
+  }, null, 2))
+  process.exit(0)
+}
 
 /** Resolve a property schema to a type reference. */
 function typeRef(prop, ctx) {
@@ -254,6 +390,28 @@ function emitTS() {
     '  const s = asStr(v, p)',
     '  return (allowed as readonly string[]).includes(s) ? s as T : bad(p, `expected one of ${allowed.join(\'|\')}, got ${JSON.stringify(s)}`)',
     '}',
+    '',
+    '/* CANT-74: an enum a client can RECEIVE is open on the clients. A value this schema',
+    ' * version does not know decodes to the sentinel "unknown" and is reported ONCE per',
+    ' * (enum, raw) per process — a busy thread would otherwise print it hundreds of times. */',
+    'let serverWireVersion: number | undefined',
+    '/** Call on `ready` so the report can say how far apart the two ends are. */',
+    'export function setServerWireVersion(v: number | undefined): void { serverWireVersion = v }',
+    'let onUnknownWireValue: (message: string) => void = (m) => console.warn(m)',
+    '/** Where the report goes. Defaults to console.warn; an app or a test may replace it. */',
+    'export function setOnUnknownWireValue(fn: (message: string) => void): void { onUnknownWireValue = fn }',
+    'const warned = new Set<string>()',
+    'function warnUnknown(enumName: string, raw: string): void {',
+    '  const key = `${enumName}\\u0000${raw}`',
+    '  if (warned.has(key)) return',
+    '  warned.add(key)',
+    "  const server = serverWireVersion === undefined ? '' : `, server wire_version ${serverWireVersion}`",
+    '  onUnknownWireValue(`wire: ${enumName}: unknown value ${JSON.stringify(raw)} decoded as unknown (client wire_version ${WIRE_VERSION}${server})`)',
+    '}',
+    '/** Exhaustiveness. `default: assertNever(v)` makes the compiler demand an arm for every',
+    ' *  member of a client-open enum, the sentinel included. */',
+    'export function assertNever(v: never): never { throw new Error(`unreachable: ${JSON.stringify(v)}`) }',
+    '',
     '/** Drops undefined so an absent optional is omitted rather than emitted as null. */',
     'const compact = <T extends Record<string, unknown>>(o: T): T => {',
     '  for (const k of Object.keys(o)) if (o[k] === undefined) delete o[k]',
@@ -282,9 +440,23 @@ function emitTS() {
       L.push(`const as${d.name} = (v: unknown, p: string): ${d.name} => {`, ...body, '}', '')
     } else if (d.kind === 'enum') {
       L.push(...doc(d.node.description, '//'))
-      L.push(`export type ${d.name} = ${d.node.enum.map((v) => JSON.stringify(v)).join(' | ')}`)
-      L.push(`export const ${d.name}Values = [${d.node.enum.map((v) => JSON.stringify(v)).join(', ')}] as const`)
-      L.push(`const as${d.name} = (v: unknown, p: string): ${d.name} => asOneOf(v, ${d.name}Values, p)`, '')
+      L.push(...doc(openness(d.name), '//'))
+      const vals = d.node.enum.map((v) => JSON.stringify(v))
+      if (clientOpen.has(d.name)) {
+        L.push(`export type ${d.name} = ${[...vals, '"unknown"'].join(' | ')}`)
+        L.push('/** The wire set — the values this schema version defines. Never the sentinel. */')
+        L.push(`export const ${d.name}Values = [${vals.join(', ')}] as const`)
+        L.push(`const as${d.name} = (v: unknown, p: string): ${d.name} => {`)
+        L.push('  const s = asStr(v, p)')
+        L.push(`  if ((${d.name}Values as readonly string[]).includes(s)) return s as ${d.name}`)
+        L.push(`  warnUnknown(${JSON.stringify(d.name)}, s)`)
+        L.push('  return "unknown"')
+        L.push('}', '')
+      } else {
+        L.push(`export type ${d.name} = ${vals.join(' | ')}`)
+        L.push(`export const ${d.name}Values = [${vals.join(', ')}] as const`)
+        L.push(`const as${d.name} = (v: unknown, p: string): ${d.name} => asOneOf(v, ${d.name}Values, p)`, '')
+      }
     }
   }
 
@@ -458,6 +630,7 @@ function emitDart() {
   const L = []
   L.push(BANNER, '')
   L.push('// ignore_for_file: unnecessary_this, prefer_const_constructors, lines_longer_than_80_chars', '')
+  L.push("import 'dart:developer' as developer;", '')
   L.push(`const int wireVersion = ${WIRE_VERSION};`, '')
   L.push(
     '/// Thrown when a frame does not match the schema. Carries the JSON path so a',
@@ -500,6 +673,21 @@ function emitDart() {
     '  final s = _str(v, p);',
     "  return allowed.contains(s) ? s : _bad(p, 'expected one of \${allowed.join('|')}, got \"\$s\"');",
     '}',
+    '',
+    '/// CANT-74: an enum a client can RECEIVE is open on the clients. A value this schema',
+    '/// version does not know decodes to the sentinel `unknown` and is reported ONCE per',
+    '/// (enum, raw) per process — a busy thread would otherwise print it hundreds of times.',
+    '/// Set on `ready` so the report can say how far apart the two ends are.',
+    'int? serverWireVersion;',
+    "/// Where the report goes. Defaults to dart:developer's log; an app or a test may replace it.",
+    "void Function(String message) onUnknownWireValue = (m) => developer.log(m, name: 'wire');",
+    'final Set<String> _warned = <String>{};',
+    'void _warnUnknown(String enumName, String raw) {',
+    "  if (!_warned.add('$enumName\\u0000$raw')) return;",
+    "  final server = serverWireVersion == null ? '' : ', server wire_version $serverWireVersion';",
+    "  onUnknownWireValue('wire: $enumName: unknown value \"$raw\" decoded as unknown (client wire_version $wireVersion$server)');",
+    '}',
+    '',
     '/// Drops null entries so an absent optional is omitted rather than encoded as null.',
     'Map<String, dynamic> _compact(Map<String, dynamic> m) {',
     '  m.removeWhere((_, v) => v == null);',
@@ -535,9 +723,15 @@ function emitDart() {
       L.push('  return x;', '}', '')
     } else if (d.kind === 'enum') {
       L.push(...doc(d.node.description, '///'))
+      L.push(...doc(openness(d.name), '///'))
+      const open = clientOpen.has(d.name)
       L.push(`enum ${d.name} {`)
       for (const v of d.node.enum) {
         L.push(`  ${camel(v)}(${JSON.stringify(v)}),`)
+      }
+      if (open) {
+        L.push('  /// The sentinel: a value this schema version does not define. Never authored by a client.')
+        L.push('  unknown("unknown"),')
       }
       L.push('  ;', '')
       L.push(`  const ${d.name}(this.wire);`)
@@ -545,8 +739,15 @@ function emitDart() {
       L.push('  /// Dart identifier — the two differ wherever the wire uses snake_case.')
       L.push('  final String wire;', '')
       L.push(`  static ${d.name} fromWire(Object? v, String p) {`)
-      L.push(`    for (final e in ${d.name}.values) { if (e.wire == v) return e; }`)
-      L.push(`    return _bad(p, 'not a valid ${d.name}: "\$v"');`)
+      if (open) {
+        L.push('    final s = _str(v, p);')
+        L.push(`    for (final e in ${d.name}.values) { if (e != ${d.name}.unknown && e.wire == s) return e; }`)
+        L.push(`    _warnUnknown(${JSON.stringify(d.name)}, s);`)
+        L.push(`    return ${d.name}.unknown;`)
+      } else {
+        L.push(`    for (final e in ${d.name}.values) { if (e.wire == v) return e; }`)
+        L.push(`    return _bad(p, 'not a valid ${d.name}: "\$v"');`)
+      }
       L.push('  }')
       L.push('}', '')
     }
@@ -1342,6 +1543,10 @@ function emitOpenAPI() {
   const schemas = {}
   for (const [name, node] of Object.entries(defs)) {
     schemas[name] = toOpenAPISchema(node, name)
+    /* CANT-74. OpenAPI 3.0 has no open-enum keyword, so the policy rides as a
+     * specification extension: any house generator wired over this spec must
+     * pass the `tolerate` vectors for every enum carrying it, or be wrapped. */
+    if (clientOpen.has(name)) schemas[name]['x-catenary-client-open'] = true
   }
 
   const doc = {
@@ -1381,6 +1586,13 @@ const targets = [
   [join(ROOT, 'internal', 'wire', 'generated.go'), gofmt(emitGo())],
   [join(ROOT, 'schema', 'openapi.yaml'), emitOpenAPI()],
 ]
+
+/* `--dry-run` runs every lint and every emitter and writes nothing; it is how
+ * the generator's tests ask "does this schema pass" without touching the tree. */
+if (process.argv.includes('--dry-run')) {
+  console.log(`ok — schema lints and all ${targets.length} emitters pass`)
+  process.exit(0)
+}
 
 const check = process.argv.includes('--check')
 let stale = 0

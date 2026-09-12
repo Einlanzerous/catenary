@@ -3,7 +3,7 @@
   "$id": "https://catenary.invalid/schema/wire/v1.json",
   "title": "Catenary wire protocol",
   "x-wire-version": 1,
-  "description": "The single definition of everything that crosses the wire between a Catenary client and the Catenary server. Vue/TypeScript, Flutter/Dart and the Go server all generate their types from this file; none of them hand-writes them. See IDEA-27 (R4).\n\nCONVENTIONS, pinned here so no client has to guess:\n  * Field names on the wire are snake_case. Generated field names are idiomatic per language (camelCase in TS and Dart, PascalCase exported in Go); the generator owns the mapping so it cannot be applied twice or inconsistently.\n  * Timestamps are RFC 3339 in UTC with exactly milliseconds precision and a literal Z: 2026-08-17T04:22:01.193Z. Not local time, not a bare offset, not variable precision. String compare therefore sorts chronologically.\n  * Absent and null mean the same thing: not present. Encoders omit rather than emit null, decoders accept either.\n  * Unknown fields are ignored by decoders, never rejected. Unknown envelope `type` values are ignored with a log line. This is what lets the server ship a new frame before every client understands it.",
+  "description": "The single definition of everything that crosses the wire between a Catenary client and the Catenary server. Vue/TypeScript, Flutter/Dart and the Go server all generate their types from this file; none of them hand-writes them. See IDEA-27 (R4).\n\nCONVENTIONS, pinned here so no client has to guess:\n  * Field names on the wire are snake_case. Generated field names are idiomatic per language (camelCase in TS and Dart, PascalCase exported in Go); the generator owns the mapping so it cannot be applied twice or inconsistently.\n  * Timestamps are RFC 3339 in UTC with exactly milliseconds precision and a literal Z: 2026-08-17T04:22:01.193Z. Not local time, not a bare offset, not variable precision. String compare therefore sorts chronologically.\n  * Absent and null mean the same thing: not present. Encoders omit rather than emit null, decoders accept either.\n  * Unknown fields are ignored by decoders, never rejected. Unknown envelope `type` values are ignored with a log line. This is what lets the server ship a new frame before every client understands it.\n  * Enum values are OPEN ON THE CLIENTS AND CLOSED ON THE SERVER, and direction decides which (CANT-74). An enum reachable from a type the server emits — the roots are `ServerFrame`, `SyncResponse` and the credential responses — is one a client can receive, so a value this schema version does not define decodes in TypeScript and Dart to the sentinel `unknown`, is reported once per (enum, value) per process, and never costs the client the frame or the `/sync` page. An enum reachable only from what a client authors (`ClientFrame`, the credential requests) is closed everywhere. Go refuses any value it does not define, on every enum: the server is the trust boundary. The generator computes this, marks it in `openapi.yaml` as `x-catenary-client-open`, and fails the build on an enum reachable from both sides, on an inline enum on a server-emitted type, or on any enum defining the reserved spelling `unknown`. What a client renders for `unknown` is the known value whose rendering claims least: `sent`, `pending`, `text`, `group`, `internal` (honouring `retryable` as sent), `cursor_too_old`.\n  * `x-wire-version` BUMPS ONLY FOR A BREAKING CHANGE. Additive and no bump: a new optional field anywhere; a new value on a client-open enum; a new frame `type`; a new `Attachment.kind`; a new member of any union; loosening a constraint on server-emitted data; a new value on a closed-everywhere enum. Breaking and a bump: removing or renaming a field or a value; making an optional field required on a client-authored type; tightening a constraint on client-authored data; changing the meaning of an existing value; changing a type. NEW FIELDS ARE OPTIONAL-ONLY — a required field on a server-emitted type is a breaking change by this rule, because the generated required-field checks would make an old client refuse the frame.\n  * The server accepts a `ClientHello.wire_version` it can speak — today exactly 1 — and otherwise answers `error{wire_version_unsupported, retryable: false}` and closes. REST negotiates no version and needs none under this policy until a breaking bump; when one comes, the same change gives REST a version header.",
   "$defs": {
     "Seq": {
       "type": "integer",
@@ -437,6 +437,11 @@
         "session_id": {
           "$ref": "#/$defs/Uuid"
         },
+        "wire_version": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "The version of THIS schema the server was generated from. Optional and additive (CANT-74): a client that logs an unknown enum value can say how far apart the two ends are instead of only that a value was unknown. Never a signal to change behaviour — the compatibility policy is what the client already does."
+        },
         "server_time": {
           "$ref": "#/$defs/Timestamp",
           "description": "Lets a client with a skewed clock render correct relative timestamps by offset rather than trusting its own clock."
@@ -763,6 +768,15 @@
         }
       }
     },
+    "ResyncReason": {
+      "type": "string",
+      "enum": [
+        "cursor_too_old",
+        "membership_changed",
+        "retention_purge"
+      ],
+      "description": "Why a session must catch up over `/sync`. `cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing for a disconnected listener, so the instance cannot say how many. `membership_changed` and `retention_purge` have no producer yet; see CANT-75 and CANT-67. Promoted from an inline enum by CANT-74 so that every client-open enum is a named type in all three languages."
+    },
     "ServerResyncRequired": {
       "type": "object",
       "additionalProperties": false,
@@ -776,13 +790,7 @@
           "const": "resync_required"
         },
         "reason": {
-          "type": "string",
-          "enum": [
-            "cursor_too_old",
-            "membership_changed",
-            "retention_purge"
-          ],
-          "description": "`cursor_too_old`: this session missed deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing for a disconnected listener, so the instance cannot say how many. `membership_changed` and `retention_purge` have no producer yet; see CANT-75 and CANT-67."
+          "$ref": "#/$defs/ResyncReason"
         },
         "log_seq": {
           "$ref": "#/$defs/LogSeq",
