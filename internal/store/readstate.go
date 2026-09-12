@@ -113,6 +113,15 @@ type ReadReceipt struct {
 // states outward. It holds for as long as the counter stays at the bottom of
 // every writer's order, which is the rule that file exists to keep.
 //
+// "LAST" IS EXACT HERE AND ONLY "LAST AMONG SHARED LOCKS" THERE. This path
+// locks nothing new after the draw: the bump writes the member row it already
+// holds and commits. The send path is not so tidy — its insert takes KEY SHARE
+// on `users` and `devices` AFTER the counter, and messages.go says so forty
+// lines above the sentence it states outward. That is why every lock in
+// metadata.go is FOR NO KEY UPDATE, which KEY SHARE passes through; anyone
+// adding a lock to this path after the draw has to make the same argument, or
+// take it before.
+//
 // Three rules, and the second is the one with teeth:
 //
 //   - MONOTONIC. A mark below the one held is discarded, which is what the wire
