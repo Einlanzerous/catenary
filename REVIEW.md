@@ -29,10 +29,10 @@ already checks:
 - the generated TypeScript, Dart, Go and `openapi.yaml` match the schema, and
   the staleness guard is proved to fail **once per file**;
 - all three conformance runners execute all 48 vectors. The generated Go
-  decoders enforce the schema's constraints via validation functions — `checkLogSeq`,
-  `checkSeq`, the `Token` pattern check and the rest — a gap closed by `CANT-25`.
-  **Go is the trust boundary**, so a new `reject` vector is exactly the thing CI
-  proves about the server's enforcer;
+  decoders enforce the schema's constraints via validation functions like
+  `checkLogSeq`, `checkSeq`, and the `Token` pattern check — a gap closed by
+  `CANT-25`. **Go is the trust boundary**, so a new `reject` vector asserts that
+  the decoder refused, not which constraint fired;
 - `gofmt`, `go vet`, `go test ./...` for both modules, with a real Postgres 16;
 - no document repeats the known-wrong "account-global" phrasing for `log_seq`,
   proved against a planted line every run.
