@@ -53,10 +53,12 @@ func TestAReplayAdvancesNothing(t *testing.T) {
 	}
 }
 
-// Criterion 8. Everything fallible happens before the log_counter draw, so a
-// refusal consumes NO ordinals — neither the conversation's dense seq nor the
-// deployment-wide counter. A hole in either is a message a client believes it
-// is missing.
+// Criterion 8. Everything REFUSABLE happens before the log_counter draw, and
+// anything fallible below it — the insert, and since CANT-86 the notify at
+// position 12 — rolls back and un-draws both ordinals, because they come from
+// rows rather than from a sequence (Invariant 1). So a refusal consumes NO
+// ordinals — neither the conversation's dense seq nor the deployment-wide
+// counter. A hole in either is a message a client believes it is missing.
 func TestARefusalConsumesNoOrdinals(t *testing.T) {
 	ctx, pool := freshDB(t)
 	author := mkUser(ctx, t, pool, "author")
