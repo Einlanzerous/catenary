@@ -7,7 +7,7 @@ Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-
 ## Layout
 
 - `cmd/catenary/` — entrypoint + subcommands (`serve`, `migrate`, `version`). Composition root: `setup()` wires store + services + router.
-- `schema/` — **the wire contract.** One schema, the generator over it, and 41 conformance vectors that TypeScript, Dart and Go all have to agree on, with a staleness guard that fails the build on a hand edit. Everything else here is downstream of this directory, and nothing in it is edited by hand.
+- `schema/` — **the wire contract.** One schema, the generator over it, and 48 conformance vectors that TypeScript, Dart and Go all have to agree on, with a staleness guard that fails the build on a hand edit. Everything else here is downstream of this directory, and nothing in it is edited by hand.
 - `internal/config/` — env-only config, `CATENARY_`-prefixed.
 - `internal/store/` — pgx pool, embedded migrator, repo queries, and the domain types themselves. Types sit beside the queries that return them rather than in a separate `internal/model/`.
 - `internal/api/` — the HTTP and WebSocket surface.
@@ -44,7 +44,7 @@ So both ordinals come from a single-row counter inside the same transaction as t
 
 D3 splits the client in two, which means the sync protocol gets implemented twice in two languages. Divergence between them shows up as ghost messages, duplicate sends, and unread counts that disagree across devices — the exact failure class this project exists to avoid.
 
-The wire schema is the source of truth and the only place a message type is defined. TypeScript, Dart and Go are generated from it, 41 golden vectors are the contract between them, and a staleness guard fails the build the moment a generated file is hand-edited. Retrofitting this after two clients have drifted is far worse than paying for it up front, which is why R4 was a gate rather than a P1 task.
+The wire schema is the source of truth and the only place a message type is defined. TypeScript, Dart and Go are generated from it, 48 golden vectors are the contract between them, and a staleness guard fails the build the moment a generated file is hand-edited. Retrofitting this after two clients have drifted is far worse than paying for it up front, which is why R4 was a gate rather than a P1 task.
 
 The one deliberate exception is the **frame union**, where the Dart generator's handling is bad enough that a bespoke generator may earn its keep. `CANT-12` settles exactly where that line sits; until it does, assume the house OpenAPI pipeline owns the REST surface.
 
@@ -100,4 +100,4 @@ Everything else runs to completion and is reviewed afterwards.
 
 ## Testing
 
-`go test ./...` — `go test -p 1 ./...` when `CATENARY_TEST_DATABASE_URL` is set, because two packages now reset the one test database and Go runs packages in parallel — plus `npm run smoke` in `web/`, the Dart conformance runner in `dart/`, and `./verify.sh` for the full non-hardware suite, which passes the flag for you. CI builds the binary, runs all three conformance runners against the same 41 vectors, and fails when a generated file and its schema disagree — a generated artefact with no guard is a generated artefact someone hand-edits.
+`go test ./...` — `go test -p 1 ./...` when `CATENARY_TEST_DATABASE_URL` is set, because two packages now reset the one test database and Go runs packages in parallel — plus `npm run smoke` in `web/`, the Dart conformance runner in `dart/`, and `./verify.sh` for the full non-hardware suite, which passes the flag for you. CI builds the binary, runs all three conformance runners against the same 48 vectors, and fails when a generated file and its schema disagree — a generated artefact with no guard is a generated artefact someone hand-edits.

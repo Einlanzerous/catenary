@@ -61,8 +61,8 @@ func TestConcurrentMigrateIsSafe(t *testing.T) {
 			t.Errorf("migrator %d failed under concurrency: %v", i, err)
 		}
 	}
-	if n := publicTableCount(ctx, t, pool); n != 7 {
-		t.Errorf("%d tables after %d concurrent migrators, want 7", n, 6)
+	if n := publicTableCount(ctx, t, pool); n != plannedTableCount {
+		t.Errorf("%d tables after %d concurrent migrators, want %d", n, 6, plannedTableCount)
 	}
 	// Derived rather than a literal: this assertion is about DUPLICATES, not
 	// about how many migrations exist, and a literal makes every future

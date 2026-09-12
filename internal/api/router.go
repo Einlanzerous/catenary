@@ -18,6 +18,7 @@ import (
 
 	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/wire"
+	"github.com/magos/catenary/internal/wireview"
 )
 
 // Pinger is the readiness check's only dependency. An interface rather than a
@@ -67,17 +68,25 @@ type Deps struct {
 	// CallerID answers "who is asking" for an authenticated route. Nil means
 	// those routes are not registered.
 	//
-	// THERE IS NO IMPLEMENTATION OF THIS YET, and that is the honest state
-	// rather than an oversight. Authentication is CANT-22's handshake and
-	// CANT-29's refresh rotation, both Mode C and both unbuilt. Injecting it
-	// keeps CANT-20 from inventing an auth scheme in passing — the failure mode
-	// where a temporary header becomes permanent.
+	// CANT-28 SUPPLIED THE IMPLEMENTATION, and it is one line over
+	// store.Authenticate — the single seam where an unresolvable credential, an
+	// expired one, a revoked device and a deactivated account are all refused.
+	// A second answer to "who is asking", written in a handler, is the failure
+	// this indirection exists to prevent.
 	//
-	// SO WHILE THIS IS NIL THERE IS NO GET /sync. Not a 401, not an empty page:
-	// the route does not exist. A sync endpoint that cannot identify its caller
-	// would serve one member's log to another, and the safe absence is better
-	// than a placeholder that looks wired.
+	// IT STAYS A FUNCTION AND STAYS OPTIONAL. While it is nil there is no GET
+	// /sync at all — not a 401, not an empty page. A sync endpoint that cannot
+	// identify its caller would serve one member's log to another, and the safe
+	// absence is better than a placeholder that looks wired.
 	CallerID func(r *http.Request) (uuid.UUID, bool)
+
+	// Enrol serves POST /enrol. Nil means the route is not registered.
+	//
+	// THE ONE UNAUTHENTICATED CREDENTIAL-MINTING ROUTE THIS SERVICE HAS, which
+	// is why it is separated from CallerID rather than riding on it: nothing
+	// can identify the caller here, because the caller is a fresh install whose
+	// only claim is the string it was given.
+	Enrol func(ctx context.Context, token, deviceName string) (store.Enrolment, error)
 }
 
 // NewRouter builds the HTTP handler.
@@ -124,6 +133,10 @@ func NewRouter(d Deps) http.Handler {
 	// Registered only when BOTH are supplied. See CallerID.
 	if d.Sync != nil && d.CallerID != nil {
 		mux.HandleFunc("GET /sync", syncHandler(d))
+	}
+
+	if d.Enrol != nil {
+		mux.HandleFunc("POST /enrol", enrolHandler(d))
 	}
 
 	return requestLogger(d.Logger, mux)
@@ -188,6 +201,72 @@ func syncHandler(d Deps) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, page)
+	}
+}
+
+// maxEnrolBody bounds what an unauthenticated caller may post.
+//
+// The body is two short strings. Without a bound, the one route that anybody
+// on the internet can reach would read as much as it was sent before deciding
+// it did not like it — and this endpoint has no rate limiter in front of it by
+// decision, so the cheap protection is the one worth having.
+const maxEnrolBody = 4 << 10
+
+// enrolHandler serves POST /enrol: an install redeeming its enrolment token
+// for a device id and its first credential pair.
+//
+// ONE REFUSAL SHAPE FOR EVERY CREDENTIAL FAILURE. Unknown token, expired,
+// already redeemed, superseded, deactivated account — all of them are this
+// same 401 with this same body. The alternative tells a prober which of its
+// guesses was once a real token, and a distinct answer for a deactivated
+// account confirms that the account exists. The store logs all five
+// separately, which is the direction the information is allowed to travel:
+// the plan declines a rate limiter here and names visibility as what stands in
+// for it, and visibility has to be one-directional to be worth anything.
+//
+// A MALFORMED REQUEST IS A 400 AND NOT PART OF THAT RULE. Unparseable JSON, a
+// token that is not shaped like a token, a missing device name — none of them
+// says anything about whether a credential exists, and all of them are facts
+// about the request the sender just wrote.
+func enrolHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req wire.EnrolRequest
+		// The GENERATED decoder, not a hand-rolled one: it enforces the
+		// schema's constraints, so the token's encoding is checked here by the
+		// same rule the TypeScript and Dart clients check it by.
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxEnrolBody)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "enrol request is not a valid EnrolRequest"})
+			return
+		}
+
+		enrolment, err := d.Enrol(r.Context(), string(req.EnrolmentToken), req.DeviceName)
+		switch {
+		case errors.Is(err, store.ErrDeviceNameRequired):
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "device_name must be 1 to 128 bytes"})
+			return
+		case errors.Is(err, store.ErrUnauthorized):
+			// THE SAME BODY GET /sync WRITES, deliberately identical. There is
+			// one way for this service to say "no" to a credential.
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		case err != nil:
+			// No ids to log: there is no caller yet, and naming the token would
+			// put a live credential in the service log.
+			d.Logger.ErrorContext(r.Context(), "enrolment failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, serverError(err, "enrolment failed"))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, wire.EnrolResponse{
+			UserID:           wire.Uuid(enrolment.UserID.String()),
+			DeviceID:         wire.Uuid(enrolment.DeviceID.String()),
+			AccessToken:      wire.Token(enrolment.Access.Plaintext),
+			AccessExpiresAt:  wire.Timestamp(enrolment.Access.ExpiresAt.UTC().Format(wireview.TimeLayout)),
+			RefreshToken:     wire.Token(enrolment.Refresh.Plaintext),
+			RefreshExpiresAt: wire.Timestamp(enrolment.Refresh.ExpiresAt.UTC().Format(wireview.TimeLayout)),
+		})
 	}
 }
 

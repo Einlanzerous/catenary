@@ -29,8 +29,25 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// NotifyChannel is the one channel this service uses.
+// NotifyChannel carries message notifications and nothing else.
 const NotifyChannel = "catenary_message"
+
+// RevocationChannel carries "this credential is no longer live, sever it".
+//
+// A SECOND CHANNEL RATHER THAN A SECOND SHAPE ON THE FIRST — CANT-28 ruling 7,
+// and the reason is that the alternative fails SILENTLY. The listener below
+// decodes with a plain json.Unmarshal: Go ignores unknown fields and zeroes
+// absent ones, so a revocation sent down catenary_message would not reach the
+// "did not parse" branch at all. It would decode to a NotifyPayload{uuid.Nil,
+// 0} and be delivered as a message notification for the nil conversation at
+// seq 0 — which is worse than an error, because nothing anywhere would say so.
+//
+// It also leaves two things alone that were not this ticket's to settle. The
+// AST guard over NotifyPayload's field list stands untouched, so the ids-only
+// guarantee is not renegotiated in passing. And CANT-92 still has to decide,
+// for its receipt fan-out, whether to widen that struct or add a payload type —
+// this sets a precedent it may follow and settles nothing on its behalf.
+const RevocationChannel = "catenary_device_revoked"
 
 // NotifyPayloadMax is Postgres's own limit on a NOTIFY payload.
 //
@@ -59,6 +76,41 @@ const NotifyPayloadMax = 8000
 type NotifyPayload struct {
 	ConversationID uuid.UUID `json:"conversation_id"`
 	Seq            int64     `json:"seq"`
+}
+
+// RevocationPayload says which credentials stopped being live. IDS ONLY, on
+// exactly the same terms as NotifyPayload, and guarded the same way.
+//
+// THE SUBJECT IS A DEVICE OR A USER, AND BOTH ARE HERE FROM THE START.
+// CANT-30's `Done when` covers a revoked device. It does not cover a
+// DEACTIVATED ACCOUNT — and under CANT-28 ruling 2 a socket is authorized once
+// at accept, so a disabled person's session keeps streaming until it happens to
+// drop. R6's sentence about a disabled account does not claim otherwise: it
+// speaks about refreshing and enrolling, which are request paths.
+//
+// So the shape carries both today and the user half has no publisher yet: the
+// write that sets users.deactivated_at is CANT-33's connector surface over an
+// admin API that does not exist. Carrying the field now costs one nullable id
+// and saves migrating a payload type across a running deployment later — the
+// same argument refresh_tokens.family_id gets in 0007.
+type RevocationPayload struct {
+	DeviceID *uuid.UUID `json:"device_id,omitempty"`
+	UserID   *uuid.UUID `json:"user_id,omitempty"`
+}
+
+// Encode renders a revocation and refuses one over the cap, on the same terms
+// as NotifyPayload.Encode and for the same reason: the call is inside the
+// transaction that performs the revocation, so an oversized payload would fail
+// the revocation itself.
+func (p RevocationPayload) Encode() (string, error) {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return "", fmt.Errorf("store: revocation payload: %w", err)
+	}
+	if err := withinNotifyCap(raw); err != nil {
+		return "", err
+	}
+	return string(raw), nil
 }
 
 // Encode renders the payload and refuses one that would exceed the cap.
@@ -103,7 +155,7 @@ var ErrNotifyTooLarge = errors.New("store: notify payload exceeds the limit")
 // listener on the pool works until the first idle moment and then silently
 // stops. Holding a pooled connection forever instead would work and would take
 // a connection out of the pool for the life of the process without saying so.
-type Listener struct {
+type Listener[P any] struct {
 	// DSN is the same one the pool uses. A separate connection rather than a
 	// separate database.
 	DSN     string
@@ -113,7 +165,15 @@ type Listener struct {
 	// OnNotify receives each notification, in arrival order, on the Run
 	// goroutine. A slow handler blocks the next notification rather than
 	// buffering an unbounded queue — the caller owns its own fan-out.
-	OnNotify func(context.Context, NotifyPayload)
+	//
+	// GENERIC OVER THE PAYLOAD because this service now has two channels
+	// carrying two shapes (CANT-28 ruling 7), and a listener bound to one of
+	// them would have meant either a second copy of the reconnect-and-gap logic
+	// below or a discriminator on a struct whose field list is deliberately
+	// frozen. The type parameter costs nothing and changes no behaviour: at the
+	// time it was added nothing outside this file and its test constructed a
+	// Listener at all.
+	OnNotify func(context.Context, P)
 
 	// OnGap says "you may have missed some", and it is not optional detail.
 	//
@@ -145,7 +205,7 @@ type Listener struct {
 // The shared Postgres restarting is an ordinary event here rather than an
 // incident — the same reasoning as ConnectWithRetry — so giving up on the first
 // disconnect would take fanout down for the whole estate's restart window.
-func (l *Listener) Run(ctx context.Context) error {
+func (l *Listener[P]) Run(ctx context.Context) error {
 	backoff := initialListenBackoff
 
 	// connected is "has a subscription ever succeeded", NOT "is this the first
@@ -213,7 +273,7 @@ const (
 // disconnect — in the reconnect path, which is the least observed code here and
 // the worst place to discover a nil pointer. slog.Default rather than a discard
 // handler: a listener whose reconnects are silent is worse than a noisy one.
-func (l *Listener) logger() *slog.Logger {
+func (l *Listener[P]) logger() *slog.Logger {
 	if l.Logger == nil {
 		return slog.Default()
 	}
@@ -221,7 +281,7 @@ func (l *Listener) logger() *slog.Logger {
 }
 
 // listen holds one connection for as long as it lives.
-func (l *Listener) listen(ctx context.Context, ready func()) error {
+func (l *Listener[P]) listen(ctx context.Context, ready func()) error {
 	conn, err := pgx.Connect(ctx, l.DSN)
 	if err != nil {
 		return fmt.Errorf("store: listener connect: %w", err)
@@ -249,7 +309,7 @@ func (l *Listener) listen(ctx context.Context, ready func()) error {
 		if err != nil {
 			return fmt.Errorf("store: wait for notification: %w", err)
 		}
-		var p NotifyPayload
+		var p P
 		if err := json.Unmarshal([]byte(n.Payload), &p); err != nil {
 			// Logged and skipped rather than fatal. Anything may NOTIFY on a
 			// channel name, and one malformed payload from somewhere else must

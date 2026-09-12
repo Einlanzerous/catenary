@@ -862,6 +862,15 @@ type col struct {
 	nullable bool
 }
 
+// plannedTableCount is how many tables the plan has, in ONE place.
+//
+// Three tests assert on it — the column-for-column plan below, the up-down-up
+// round trip, and the concurrent migrator — and before CANT-28 each carried
+// its own literal. A migration that adds a table then reads as three unrelated
+// failures, one of which (the concurrency one) looks like a regression in
+// something it has nothing to do with.
+const plannedTableCount = 10
+
 func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 	ctx, pool := freshDB(t)
 
@@ -873,6 +882,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"created_at", "timestamp with time zone", false},
 			{"metadata_log_seq", "bigint", false},
 			{"deactivated_at", "timestamp with time zone", true},
+			{"kind", "text", false},
 		},
 		"devices": {
 			{"id", "uuid", false},
@@ -936,6 +946,45 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"id", "integer", false},
 			{"value", "bigint", false},
 		},
+		"enrolment_tokens": {
+			{"id", "uuid", false},
+			{"user_id", "uuid", false},
+			{"token_hash", "bytea", false},
+			{"issued_at", "timestamp with time zone", false},
+			{"expires_at", "timestamp with time zone", false},
+			{"redeemed_at", "timestamp with time zone", true},
+			{"redeemed_by_device", "uuid", true},
+			{"superseded_at", "timestamp with time zone", true},
+		},
+		"refresh_tokens": {
+			{"id", "uuid", false},
+			{"device_id", "uuid", false},
+			{"token_hash", "bytea", false},
+			{"family_id", "uuid", false},
+			{"replaced_by", "uuid", true},
+			{"issued_at", "timestamp with time zone", false},
+			{"expires_at", "timestamp with time zone", false},
+			{"revoked_at", "timestamp with time zone", true},
+		},
+		"access_tokens": {
+			{"id", "uuid", false},
+			{"token_hash", "bytea", false},
+			{"user_id", "uuid", false},
+			{"device_id", "uuid", true},
+			{"issued_at", "timestamp with time zone", false},
+			// NULLABLE, AND ONLY FOR A BOT. 0007's CHECK ties it to device_id:
+			// no device, no expiry. A person's access token can never acquire a
+			// NULL here, which is what keeps "15 minutes" from being one bad
+			// INSERT away from "forever".
+			{"expires_at", "timestamp with time zone", true},
+			{"revoked_at", "timestamp with time zone", true},
+		},
+	}
+
+	// The constant and the plan cannot drift: everything else counts tables,
+	// and this is the map that says what they are.
+	if len(want) != plannedTableCount {
+		t.Fatalf("the plan has %d tables and plannedTableCount says %d", len(want), plannedTableCount)
 	}
 
 	for table, cols := range want {
@@ -963,7 +1012,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 		}
 	}
 
-	// And nothing outside the plan's seven.
+	// And nothing outside the plan.
 	rows, err := pool.Query(ctx, `
 		SELECT table_name FROM information_schema.tables
 		WHERE table_schema = 'public' AND table_name <> 'schema_migrations'`)
@@ -1031,6 +1080,20 @@ func TestEveryForeignKeyNamesItsOnDelete(t *testing.T) {
 		"conversation_members.user_id -> users":                 "RESTRICT",
 		"messages.conversation_id -> conversations":             "RESTRICT",
 		"messages.sender_device_id -> devices":                  "RESTRICT",
+
+		// CANT-28's six. RESTRICT throughout, and for a reason this table
+		// already carries: a users or devices row that anything has authored
+		// from cannot go away, so a credential pointing at one must not be the
+		// thing that lets it. refresh_tokens.replaced_by is the odd one — it
+		// points INTO its own table, and RESTRICT is what keeps a rotation
+		// chain from being broken in the middle, which is precisely the
+		// evidence CANT-29's reuse detection reads.
+		"enrolment_tokens.user_id -> users":              "RESTRICT",
+		"enrolment_tokens.redeemed_by_device -> devices": "RESTRICT",
+		"refresh_tokens.device_id -> devices":            "RESTRICT",
+		"refresh_tokens.replaced_by -> refresh_tokens":   "RESTRICT",
+		"access_tokens.user_id -> users":                 "RESTRICT",
+		"access_tokens.device_id -> devices":             "RESTRICT",
 	}
 
 	rows, err := pool.Query(ctx, `

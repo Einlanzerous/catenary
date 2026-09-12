@@ -166,6 +166,40 @@ func checkTimestamp(v string, p string) error {
 	return nil
 }
 
+// A credential, in the one encoding this service uses for all four of them —
+// enrolment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url
+// WITHOUT padding, which is exactly 43 characters.
+//
+// THE ENCODING IS NORMATIVE, AND THE REASON IS THE TRANSPORT. CANT-28 ruling 1 puts
+// the access token on `Sec-WebSocket-Protocol`, because that is the only request
+// header `new WebSocket(url, protocols)` lets a browser set. That header carries RFC
+// 6455 subprotocol names, and each of those is an RFC 7230 `token`: `/` and `=` are
+// NOT legal characters in one, and an intermediary is entitled to reject or mangle a
+// value that contains them. (`+` is legal, which is why this is stated as an alphabet
+// rather than as a list of characters to avoid — a rule of thumb that got `+` wrong
+// would pass a token carrying `/`.) Standard base64 produces `+` and `/`, and padded
+// output adds `=`; base64url's `-` and `_` sidestep the question, so a single encoding
+// serves every shape and the socket needs no second form of the same secret.
+//
+// ONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential
+// a string is to anyone who saw one, and it would give the enrolment token — the only
+// one a person ever handles — its own quiet pressure to be shortened.
+//
+// Enforced rather than advisory, for the same reason `Uuid`'s pattern is: a client
+// that padded or truncated a token is refused here, in every generated decoder, rather
+// than at the far end of a handshake in a browser console.
+type Token = string
+
+var TokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
+
+// checkToken enforces the schema's constraints on a Token.
+func checkToken(v string, p string) error {
+	if !TokenPattern.MatchString(v) {
+		return badf(p, "Token must match %s, got %q", `^[A-Za-z0-9_-]{43}$`, v)
+	}
+	return nil
+}
+
 // D4: everything is a conversation. `direct` is two members, `group` is any number;
 // neither is a distinct entity. Adding a third member to a direct conversation
 // promotes it to `group` and is a row insert plus this field changing, never a
@@ -2223,6 +2257,290 @@ func (v *SyncResponse) decode(b []byte, p string) error {
 	return nil
 }
 
+// `POST /enrol` — a new install redeeming its enrolment token. The only
+// unauthenticated credential-minting request this service has.
+//
+// CANT-28. Every refusal of it answers identically — unknown token, expired, already
+// redeemed, deactivated account — so that a prober learns nothing from the response
+// about which of those it hit. The log distinguishes all four.
+type EnrolRequest struct {
+	// The bootstrap credential, issued by Purser's Provision and redeemable exactly once.
+	// R6: at provisioning time the person has zero devices, so this is the only credential
+	// that can exist — and it is one string, which is what lets Purser stay out of the
+	// device model entirely.
+	EnrolmentToken Token `json:"enrolment_token"`
+	// What this install should be called in the device list. A revocation list is unusable
+	// if the rows do not say which phone they are, which is why `devices.name` is NOT NULL
+	// and why this is required rather than defaulted server-side to something like
+	// "unknown device".
+	//
+	// Not length-bounded here: the bound is a server refusal with a test behind it,
+	// because this schema's generators enforce `pattern`, `minimum` and `maximum` and
+	// would silently ignore a `minLength` — a constraint no decoder checks is worse than
+	// none, since it reads as protection.
+	DeviceName string `json:"device_name"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a EnrolRequest: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *EnrolRequest) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "EnrolRequest")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *EnrolRequest) decode(b []byte, p string) error {
+	var s struct {
+		EnrolmentToken *Token  `json:"enrolment_token"`
+		DeviceName     *string `json:"device_name"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out EnrolRequest
+	if s.EnrolmentToken == nil {
+		return badf(p+".enrolment_token", "required field is missing")
+	}
+	out.EnrolmentToken = *s.EnrolmentToken
+	if s.DeviceName == nil {
+		return badf(p+".device_name", "required field is missing")
+	}
+	out.DeviceName = *s.DeviceName
+	if err := checkToken(out.EnrolmentToken, p+".enrolment_token"); err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
+// `POST /enrol` — the first credential pair, returned exactly once. The plaintext
+// tokens are in this response and nowhere else: the server keeps only hashes, so a
+// client that loses this body enrols again rather than recovering it.
+type EnrolResponse struct {
+	// Who this device now speaks as. The client needs it before its first `/sync` page,
+	// because `Message.author_id` is the only thing that distinguishes a message you wrote
+	// from one you did not — and every read-state rule in the protocol turns on that
+	// distinction.
+	UserID Uuid `json:"user_id"`
+	// This install's identity, minted here and stable for its life. It is what
+	// `ClientHello.device_id` carries and what a revocation names, so the enrolment
+	// response is the one place a client learns it.
+	DeviceID Uuid `json:"device_id"`
+	// Presented on every authenticated request, and on the socket upgrade as the second
+	// `Sec-WebSocket-Protocol` value. Opaque: the server stores a hash and looks it up
+	// (ruling 0), so revocation takes effect on the next request rather than at the next
+	// expiry.
+	AccessToken Token `json:"access_token"`
+	// When the access token stops being accepted. Served rather than left for the client
+	// to compute from a lifetime it hard-codes, which is how the two drift apart when the
+	// lifetime changes.
+	//
+	// Under ruling 2 this does NOT bound a live socket: a session authorized at accept
+	// outlives the credential that opened it, and is ended by revocation rather than by
+	// expiry.
+	AccessExpiresAt Timestamp `json:"access_expires_at"`
+	// Exchanged for the next access token, one per device. Single-use: presenting it
+	// yields a new pair and marks this one replaced, so a second presentation of the same
+	// string is refused. CANT-29 owns what happens next — a replay invalidates the family
+	// rather than just the request.
+	RefreshToken Token `json:"refresh_token"`
+	// When the refresh token stops being exchangeable, after which the device enrols
+	// again. Long enough that a phone in normal use never re-authenticates; short enough
+	// that a device forgotten in a drawer falls out of the account on its own.
+	RefreshExpiresAt Timestamp `json:"refresh_expires_at"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a EnrolResponse: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *EnrolResponse) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "EnrolResponse")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *EnrolResponse) decode(b []byte, p string) error {
+	var s struct {
+		UserID           *Uuid      `json:"user_id"`
+		DeviceID         *Uuid      `json:"device_id"`
+		AccessToken      *Token     `json:"access_token"`
+		AccessExpiresAt  *Timestamp `json:"access_expires_at"`
+		RefreshToken     *Token     `json:"refresh_token"`
+		RefreshExpiresAt *Timestamp `json:"refresh_expires_at"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out EnrolResponse
+	if s.UserID == nil {
+		return badf(p+".user_id", "required field is missing")
+	}
+	out.UserID = *s.UserID
+	if s.DeviceID == nil {
+		return badf(p+".device_id", "required field is missing")
+	}
+	out.DeviceID = *s.DeviceID
+	if s.AccessToken == nil {
+		return badf(p+".access_token", "required field is missing")
+	}
+	out.AccessToken = *s.AccessToken
+	if s.AccessExpiresAt == nil {
+		return badf(p+".access_expires_at", "required field is missing")
+	}
+	out.AccessExpiresAt = *s.AccessExpiresAt
+	if s.RefreshToken == nil {
+		return badf(p+".refresh_token", "required field is missing")
+	}
+	out.RefreshToken = *s.RefreshToken
+	if s.RefreshExpiresAt == nil {
+		return badf(p+".refresh_expires_at", "required field is missing")
+	}
+	out.RefreshExpiresAt = *s.RefreshExpiresAt
+	if err := checkUuid(out.UserID, p+".user_id"); err != nil {
+		return err
+	}
+	if err := checkUuid(out.DeviceID, p+".device_id"); err != nil {
+		return err
+	}
+	if err := checkToken(out.AccessToken, p+".access_token"); err != nil {
+		return err
+	}
+	if err := checkTimestamp(out.AccessExpiresAt, p+".access_expires_at"); err != nil {
+		return err
+	}
+	if err := checkToken(out.RefreshToken, p+".refresh_token"); err != nil {
+		return err
+	}
+	if err := checkTimestamp(out.RefreshExpiresAt, p+".refresh_expires_at"); err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
+// `POST /refresh` — exchange a refresh token for the next pair. The device is
+// identified BY the token rather than alongside it: a request that named its own
+// device id would be asserting something the credential already proves, and the two
+// could disagree.
+//
+// THE TYPE IS HERE AND THE HANDLER IS NOT. CANT-28 ruling 5 puts the handler in a
+// sub-task of CANT-29 filed `review_mode: full`, so that rotation gets the same
+// line-by-line read as the reuse detection built over it. The model is written in one
+// place — this file — and only the handler moved.
+type RefreshRequest struct {
+	// The refresh token this device last received. Presenting one that has already been
+	// exchanged is a replay, and CANT-29 answers it by invalidating the family rather than
+	// the request.
+	RefreshToken Token `json:"refresh_token"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a RefreshRequest: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *RefreshRequest) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "RefreshRequest")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *RefreshRequest) decode(b []byte, p string) error {
+	var s struct {
+		RefreshToken *Token `json:"refresh_token"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out RefreshRequest
+	if s.RefreshToken == nil {
+		return badf(p+".refresh_token", "required field is missing")
+	}
+	out.RefreshToken = *s.RefreshToken
+	if err := checkToken(out.RefreshToken, p+".refresh_token"); err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
+// `POST /refresh` — the next pair. THE REFRESH TOKEN IS ALWAYS NEW: this exchange
+// rotates, so a client that keeps presenting the one it started with is refused on its
+// second call. A response that returned the same refresh token would be a non-rotating
+// credential wearing a rotating one's name, which is the shape CANT-28 exists to rule
+// out.
+type RefreshResponse struct {
+	// Presented on every authenticated request, and on the socket upgrade as the second
+	// `Sec-WebSocket-Protocol` value. Opaque: the server stores a hash and looks it up
+	// (ruling 0), so revocation takes effect on the next request rather than at the next
+	// expiry.
+	AccessToken Token `json:"access_token"`
+	// When the access token stops being accepted. Served rather than left for the client
+	// to compute from a lifetime it hard-codes, which is how the two drift apart when the
+	// lifetime changes.
+	//
+	// Under ruling 2 this does NOT bound a live socket: a session authorized at accept
+	// outlives the credential that opened it, and is ended by revocation rather than by
+	// expiry.
+	AccessExpiresAt Timestamp `json:"access_expires_at"`
+	// Exchanged for the next access token, one per device. Single-use: presenting it
+	// yields a new pair and marks this one replaced, so a second presentation of the same
+	// string is refused. CANT-29 owns what happens next — a replay invalidates the family
+	// rather than just the request.
+	RefreshToken Token `json:"refresh_token"`
+	// When the refresh token stops being exchangeable, after which the device enrols
+	// again. Long enough that a phone in normal use never re-authenticates; short enough
+	// that a device forgotten in a drawer falls out of the account on its own.
+	RefreshExpiresAt Timestamp `json:"refresh_expires_at"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a RefreshResponse: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *RefreshResponse) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "RefreshResponse")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *RefreshResponse) decode(b []byte, p string) error {
+	var s struct {
+		AccessToken      *Token     `json:"access_token"`
+		AccessExpiresAt  *Timestamp `json:"access_expires_at"`
+		RefreshToken     *Token     `json:"refresh_token"`
+		RefreshExpiresAt *Timestamp `json:"refresh_expires_at"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out RefreshResponse
+	if s.AccessToken == nil {
+		return badf(p+".access_token", "required field is missing")
+	}
+	out.AccessToken = *s.AccessToken
+	if s.AccessExpiresAt == nil {
+		return badf(p+".access_expires_at", "required field is missing")
+	}
+	out.AccessExpiresAt = *s.AccessExpiresAt
+	if s.RefreshToken == nil {
+		return badf(p+".refresh_token", "required field is missing")
+	}
+	out.RefreshToken = *s.RefreshToken
+	if s.RefreshExpiresAt == nil {
+		return badf(p+".refresh_expires_at", "required field is missing")
+	}
+	out.RefreshExpiresAt = *s.RefreshExpiresAt
+	if err := checkToken(out.AccessToken, p+".access_token"); err != nil {
+		return err
+	}
+	if err := checkTimestamp(out.AccessExpiresAt, p+".access_expires_at"); err != nil {
+		return err
+	}
+	if err := checkToken(out.RefreshToken, p+".refresh_token"); err != nil {
+		return err
+	}
+	if err := checkTimestamp(out.RefreshExpiresAt, p+".refresh_expires_at"); err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
 // DecodeAttachment dispatches on "kind". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeAttachment(b []byte) (Attachment, error) {
@@ -2551,6 +2869,30 @@ func DecodeNamed(name string, b []byte) (any, error) {
 	case "SyncResponse":
 		var v SyncResponse
 		if err := v.decode(b, "SyncResponse"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "EnrolRequest":
+		var v EnrolRequest
+		if err := v.decode(b, "EnrolRequest"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "EnrolResponse":
+		var v EnrolResponse
+		if err := v.decode(b, "EnrolResponse"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "RefreshRequest":
+		var v RefreshRequest
+		if err := v.decode(b, "RefreshRequest"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "RefreshResponse":
+		var v RefreshResponse
+		if err := v.decode(b, "RefreshResponse"); err != nil {
 			return nil, err
 		}
 		return v, nil

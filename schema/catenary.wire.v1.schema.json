@@ -29,6 +29,11 @@
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$",
       "description": "RFC 3339, UTC, exactly three fractional digits, literal Z. The pattern is enforced rather than advisory because `2026-08-17T04:22:01Z` and `2026-08-17T04:22:01.193000Z` both parse fine in all three languages and then sort differently as strings."
     },
+    "Token": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$",
+      "description": "A credential, in the one encoding this service uses for all four of them — enrolment, refresh, access and bot. 32 bytes from a CSPRNG, rendered base64url WITHOUT padding, which is exactly 43 characters.\n\nTHE ENCODING IS NORMATIVE, AND THE REASON IS THE TRANSPORT. CANT-28 ruling 1 puts the access token on `Sec-WebSocket-Protocol`, because that is the only request header `new WebSocket(url, protocols)` lets a browser set. That header carries RFC 6455 subprotocol names, and each of those is an RFC 7230 `token`: `/` and `=` are NOT legal characters in one, and an intermediary is entitled to reject or mangle a value that contains them. (`+` is legal, which is why this is stated as an alphabet rather than as a list of characters to avoid — a rule of thumb that got `+` wrong would pass a token carrying `/`.) Standard base64 produces `+` and `/`, and padded output adds `=`; base64url's `-` and `_` sidestep the question, so a single encoding serves every shape and the socket needs no second form of the same secret.\n\nONE LENGTH FOR ALL FOUR. A shape-specific length would leak which kind of credential a string is to anyone who saw one, and it would give the enrolment token — the only one a person ever handles — its own quiet pressure to be shortened.\n\nEnforced rather than advisory, for the same reason `Uuid`'s pattern is: a client that padded or truncated a token is refused here, in every generated decoder, rather than at the far end of a handshake in a browser console."
+    },
     "ConversationKind": {
       "type": "string",
       "enum": [
@@ -891,6 +896,107 @@
         }
       },
       "description": "Response to `GET /sync?after=<log_seq>&limit=<n>`. The RECONNECT AND CATCH-UP path, not the steady state — steady state is a `message` frame over the socket. Applying a page is idempotent: every message carries its own seq and id, so replaying an overlapping page cannot duplicate anything, which is what makes reconnection a query rather than a guess."
+    },
+    "EnrolRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enrolment_token",
+        "device_name"
+      ],
+      "properties": {
+        "enrolment_token": {
+          "$ref": "#/$defs/Token",
+          "description": "The bootstrap credential, issued by Purser's Provision and redeemable exactly once. R6: at provisioning time the person has zero devices, so this is the only credential that can exist — and it is one string, which is what lets Purser stay out of the device model entirely."
+        },
+        "device_name": {
+          "type": "string",
+          "description": "What this install should be called in the device list. A revocation list is unusable if the rows do not say which phone they are, which is why `devices.name` is NOT NULL and why this is required rather than defaulted server-side to something like \"unknown device\".\n\nNot length-bounded here: the bound is a server refusal with a test behind it, because this schema's generators enforce `pattern`, `minimum` and `maximum` and would silently ignore a `minLength` — a constraint no decoder checks is worse than none, since it reads as protection."
+        }
+      },
+      "description": "`POST /enrol` — a new install redeeming its enrolment token. The only unauthenticated credential-minting request this service has.\n\nCANT-28. Every refusal of it answers identically — unknown token, expired, already redeemed, deactivated account — so that a prober learns nothing from the response about which of those it hit. The log distinguishes all four."
+    },
+    "EnrolResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "user_id",
+        "device_id",
+        "access_token",
+        "access_expires_at",
+        "refresh_token",
+        "refresh_expires_at"
+      ],
+      "properties": {
+        "user_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "Who this device now speaks as. The client needs it before its first `/sync` page, because `Message.author_id` is the only thing that distinguishes a message you wrote from one you did not — and every read-state rule in the protocol turns on that distinction."
+        },
+        "device_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "This install's identity, minted here and stable for its life. It is what `ClientHello.device_id` carries and what a revocation names, so the enrolment response is the one place a client learns it."
+        },
+        "access_token": {
+          "$ref": "#/$defs/Token",
+          "description": "Presented on every authenticated request, and on the socket upgrade as the second `Sec-WebSocket-Protocol` value. Opaque: the server stores a hash and looks it up (ruling 0), so revocation takes effect on the next request rather than at the next expiry."
+        },
+        "access_expires_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the access token stops being accepted. Served rather than left for the client to compute from a lifetime it hard-codes, which is how the two drift apart when the lifetime changes.\n\nUnder ruling 2 this does NOT bound a live socket: a session authorized at accept outlives the credential that opened it, and is ended by revocation rather than by expiry."
+        },
+        "refresh_token": {
+          "$ref": "#/$defs/Token",
+          "description": "Exchanged for the next access token, one per device. Single-use: presenting it yields a new pair and marks this one replaced, so a second presentation of the same string is refused. CANT-29 owns what happens next — a replay invalidates the family rather than just the request."
+        },
+        "refresh_expires_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the refresh token stops being exchangeable, after which the device enrols again. Long enough that a phone in normal use never re-authenticates; short enough that a device forgotten in a drawer falls out of the account on its own."
+        }
+      },
+      "description": "`POST /enrol` — the first credential pair, returned exactly once. The plaintext tokens are in this response and nowhere else: the server keeps only hashes, so a client that loses this body enrols again rather than recovering it."
+    },
+    "RefreshRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "refresh_token"
+      ],
+      "properties": {
+        "refresh_token": {
+          "$ref": "#/$defs/Token",
+          "description": "The refresh token this device last received. Presenting one that has already been exchanged is a replay, and CANT-29 answers it by invalidating the family rather than the request."
+        }
+      },
+      "description": "`POST /refresh` — exchange a refresh token for the next pair. The device is identified BY the token rather than alongside it: a request that named its own device id would be asserting something the credential already proves, and the two could disagree.\n\nTHE TYPE IS HERE AND THE HANDLER IS NOT. CANT-28 ruling 5 puts the handler in a sub-task of CANT-29 filed `review_mode: full`, so that rotation gets the same line-by-line read as the reuse detection built over it. The model is written in one place — this file — and only the handler moved."
+    },
+    "RefreshResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "access_token",
+        "access_expires_at",
+        "refresh_token",
+        "refresh_expires_at"
+      ],
+      "properties": {
+        "access_token": {
+          "$ref": "#/$defs/Token",
+          "description": "Presented on every authenticated request, and on the socket upgrade as the second `Sec-WebSocket-Protocol` value. Opaque: the server stores a hash and looks it up (ruling 0), so revocation takes effect on the next request rather than at the next expiry."
+        },
+        "access_expires_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the access token stops being accepted. Served rather than left for the client to compute from a lifetime it hard-codes, which is how the two drift apart when the lifetime changes.\n\nUnder ruling 2 this does NOT bound a live socket: a session authorized at accept outlives the credential that opened it, and is ended by revocation rather than by expiry."
+        },
+        "refresh_token": {
+          "$ref": "#/$defs/Token",
+          "description": "Exchanged for the next access token, one per device. Single-use: presenting it yields a new pair and marks this one replaced, so a second presentation of the same string is refused. CANT-29 owns what happens next — a replay invalidates the family rather than just the request."
+        },
+        "refresh_expires_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When the refresh token stops being exchangeable, after which the device enrols again. Long enough that a phone in normal use never re-authenticates; short enough that a device forgotten in a drawer falls out of the account on its own."
+        }
+      },
+      "description": "`POST /refresh` — the next pair. THE REFRESH TOKEN IS ALWAYS NEW: this exchange rotates, so a client that keeps presenting the one it started with is refused on its second call. A response that returned the same refresh token would be a non-rotating credential wearing a rotating one's name, which is the shape CANT-28 exists to rule out."
     }
   },
   "oneOf": [

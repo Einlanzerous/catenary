@@ -25,7 +25,7 @@ Run everything checkable without hardware:
 | `CLAUDE.md` | **the invariants and the working agreement — read this first** |
 | `SPIKE-RESULTS.md` | the P0 summary: all six gates, and the evidence behind each |
 | `verify.sh` | one command, every offline check |
-| `schema/` | **the wire contract** — schema, generator, 41 conformance vectors |
+| `schema/` | **the wire contract** — schema, generator, 48 conformance vectors |
 | `web/` | Vue 3 client against mock data, plus the generated TS |
 | `dart/` | generated Dart wire package + its conformance runner |
 | `internal/wire/` | generated Go wire package — here rather than under `server/` so the service can import it |

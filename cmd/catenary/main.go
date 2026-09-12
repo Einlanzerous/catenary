@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -162,20 +163,30 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	if st != nil {
 		db = st
 	}
-	// CANT-20. Sync is wired whenever there is a store; CallerID is NOT, because
-	// nothing can answer "who is asking" yet — CANT-22's handshake and CANT-29's
-	// refresh rotation own that, both Mode C and both unbuilt.
+	// CANT-20 left this comment saying CallerID was deliberately unwired —
+	// "turns on the moment authentication does". CANT-28 is that moment, so all
+	// three now hang off the same condition: a store.
 	//
-	// So GET /sync is not registered in a real process today. That is the
-	// deliberate outcome: the route exists, is tested end to end against an
-	// injected caller, and turns on the moment authentication does — rather
-	// than shipping now behind a header that would quietly become the auth
-	// scheme.
+	// GET /sync IS REGISTERED IN A REAL PROCESS FOR THE FIRST TIME HERE. Not
+	// behind a header that would quietly have become the auth scheme, which is
+	// what CANT-20 refused to ship: behind store.Authenticate, the one seam
+	// where an unresolvable credential, an expired one, a revoked device and a
+	// deactivated account are all refused.
 	var syncFn func(context.Context, uuid.UUID, int64, int) (wire.SyncResponse, error)
+	var callerID func(*http.Request) (uuid.UUID, bool)
+	var enrolFn func(context.Context, string, string) (store.Enrolment, error)
 	if st != nil {
 		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 			return serveSync(ctx, st, viewer, after, limit)
 		}
+		callerID = func(r *http.Request) (uuid.UUID, bool) {
+			caller, err := st.Authenticate(r.Context(), bearer(r))
+			if err != nil {
+				return uuid.Nil, false
+			}
+			return caller.UserID, true
+		}
+		enrolFn = st.RedeemEnrolment
 	}
 
 	return deps{
@@ -183,13 +194,36 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		logger: logger,
 		store:  st,
 		router: api.NewRouter(api.Deps{
-			Logger:  logger,
-			DB:      db,
-			Sync:    syncFn,
-			Version: buildVersion(),
-			Commit:  commit,
+			Logger:   logger,
+			DB:       db,
+			Sync:     syncFn,
+			CallerID: callerID,
+			Enrol:    enrolFn,
+			Version:  buildVersion(),
+			Commit:   commit,
 		}),
 	}
+}
+
+// bearer pulls the access token off a REST request.
+//
+// `Authorization: Bearer` AND NOT THE SUBPROTOCOL HEADER, and the two are not
+// in tension. CANT-28 ruling 1 settles where the credential rides on the
+// WEBSOCKET UPGRADE, where a browser can set exactly one header and it is not
+// this one. REST has no such constraint in either client, so it uses the
+// conventional header — and CANT-22's upgrade will read the same token out of
+// `Sec-WebSocket-Protocol` and hand it to the same Authenticate.
+//
+// Nothing here reads a query parameter, and that is the decision rather than
+// an omission: Traefik and Cloudflare log request lines, so a credential in
+// one would be written into two access logs on every call.
+func bearer(r *http.Request) string {
+	const prefix = "Bearer "
+	h := r.Header.Get("Authorization")
+	if len(h) < len(prefix) || !strings.EqualFold(h[:len(prefix)], prefix) {
+		return ""
+	}
+	return h[len(prefix):]
 }
 
 func runServe(args []string) error {

@@ -34,7 +34,7 @@ func TestANotificationReachesEveryListeningInstance(t *testing.T) {
 
 	got := make(chan NotifyPayload, 4)
 	for i := 0; i < 2; i++ {
-		l := &Listener{
+		l := &Listener[NotifyPayload]{
 			DSN: dsn, Channel: NotifyChannel, Logger: discardLogger(),
 			OnNotify: func(_ context.Context, p NotifyPayload) { got <- p },
 		}
@@ -76,7 +76,7 @@ func TestANotificationIsHeldUntilCommitAndDroppedOnRollback(t *testing.T) {
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	got := make(chan NotifyPayload, 4)
-	l := &Listener{
+	l := &Listener[NotifyPayload]{
 		DSN: dsn, Channel: NotifyChannel, Logger: discardLogger(),
 		OnNotify: func(_ context.Context, p NotifyPayload) { got <- p },
 	}
@@ -134,7 +134,7 @@ func TestAMalformedPayloadIsSkippedRatherThanFatal(t *testing.T) {
 	runCtx, stop := context.WithCancel(ctx)
 	defer stop()
 	got := make(chan NotifyPayload, 4)
-	l := &Listener{
+	l := &Listener[NotifyPayload]{
 		DSN: dsn, Channel: NotifyChannel, Logger: discardLogger(),
 		OnNotify: func(_ context.Context, p NotifyPayload) { got <- p },
 	}
@@ -190,7 +190,7 @@ func TestAReconnectReportsAGapOnlyOnceItIsListeningAgain(t *testing.T) {
 
 	type gap struct{ listening int }
 	gaps := make(chan gap, 8)
-	l := &Listener{
+	l := &Listener[NotifyPayload]{
 		DSN: dsn, Channel: NotifyChannel, Logger: discardLogger(),
 		OnNotify: func(_ context.Context, p NotifyPayload) { got <- p },
 		OnGap: func(context.Context) {
@@ -387,14 +387,28 @@ type NotifyPayload struct {
 }
 
 func notifyPayloadFields(path string) (string, error) {
+	return structFields(path, "NotifyPayload")
+}
+
+// structFields reads one named struct's field list out of a file.
+//
+// CANT-28 gave this file a SECOND payload type on a second channel, and the
+// ids-only rule applies to both. So the walk takes the type name rather than
+// baking NotifyPayload in — the guard below is unchanged, and the new one gets
+// the same embedded-field handling rather than a second copy of it that drifts.
+func structFields(path, typeName string) (string, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return "", err
 	}
-	return notifyPayloadFieldsIn(path, string(src))
+	return structFieldsIn(path, typeName, string(src))
 }
 
 func notifyPayloadFieldsIn(name, src string) (string, error) {
+	return structFieldsIn(name, "NotifyPayload", src)
+}
+
+func structFieldsIn(name, typeName, src string) (string, error) {
 	f, err := parser.ParseFile(token.NewFileSet(), name, src, 0)
 	if err != nil {
 		return "", err
@@ -402,7 +416,7 @@ func notifyPayloadFieldsIn(name, src string) (string, error) {
 	var out []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		ts, ok := n.(*ast.TypeSpec)
-		if !ok || ts.Name.Name != "NotifyPayload" {
+		if !ok || ts.Name.Name != typeName {
 			return true
 		}
 		st, ok := ts.Type.(*ast.StructType)
@@ -426,6 +440,45 @@ func notifyPayloadFieldsIn(name, src string) (string, error) {
 		return false
 	})
 	return strings.Join(out, ", "), nil
+}
+
+// THE REVOCATION PAYLOAD CARRIES IDS ONLY TOO, and it needs its own guard for
+// the same reason NotifyPayload has one: a size test cannot express the rule,
+// because a `handle` or a `device_name` field would encode to a few dozen
+// bytes and every cap assertion would stay green.
+//
+// It is a SEPARATE constant rather than a widening of the one above. CANT-28's
+// criterion 15 asks that NotifyPayload's `want` be unchanged by this ticket —
+// the whole argument for a second channel was that the first struct's contract
+// is not renegotiated in passing — so the two are checked side by side and
+// neither can be edited to satisfy the other.
+func TestTheRevocationPayloadCannotGrowAContentField(t *testing.T) {
+	const want = "DeviceID *uuid.UUID, UserID *uuid.UUID"
+
+	got, err := structFields("notify.go", "RevocationPayload")
+	if err != nil {
+		t.Fatalf("read notify.go: %v", err)
+	}
+	if got != want {
+		t.Errorf("RevocationPayload is now {%s}, and it is supposed to be {%s}.\n"+
+			"This struct is server-internal and unversioned, and a revocation is "+
+			"broadcast to every instance. A display name or a handle here is a "+
+			"person's details travelling through a channel with no retention story "+
+			"and landing in pg_stat_activity. Two ids are enough to sever a session; "+
+			"if a third is genuinely needed, change the line above deliberately.", got, want)
+	}
+
+	planted := `package store
+type RevocationPayload struct {
+	DeviceID *uuid.UUID ` + "`json:\"device_id,omitempty\"`" + `
+	UserID   *uuid.UUID ` + "`json:\"user_id,omitempty\"`" + `
+	Handle   string     ` + "`json:\"handle\"`" + `
+}`
+	if got, err := structFieldsIn("planted.go", "RevocationPayload", planted); err != nil {
+		t.Fatalf("parse the planted source: %v", err)
+	} else if got == want {
+		t.Error("a planted Handle field did not change the answer — the guard reads nothing")
+	}
 }
 
 // types renders a field's type as written, which is all this guard needs.
@@ -509,7 +562,7 @@ func TestAFailedFirstConnectionIsNotAGap(t *testing.T) {
 	ctx, stop := context.WithCancel(context.Background())
 	defer stop()
 	gaps := make(chan struct{}, 8)
-	l := &Listener{
+	l := &Listener[NotifyPayload]{
 		DSN:     "postgres://postgres@127.0.0.1:1/nope?sslmode=disable&connect_timeout=1",
 		Channel: NotifyChannel, Logger: discardLogger(),
 		OnGap: func(context.Context) { gaps <- struct{}{} },
@@ -532,11 +585,11 @@ func TestAFailedFirstConnectionIsNotAGap(t *testing.T) {
 // — and the only place it was dereferenced is the reconnect path, which is the
 // least-exercised code in this file and the worst place to find a nil pointer.
 func TestAListenerWithNoLoggerStillLogs(t *testing.T) {
-	if (&Listener{}).logger() == nil {
+	if (&Listener[NotifyPayload]{}).logger() == nil {
 		t.Error("logger() returned nil; the reconnect path dereferences it")
 	}
 	custom := discardLogger()
-	if (&Listener{Logger: custom}).logger() != custom {
+	if (&Listener[NotifyPayload]{Logger: custom}).logger() != custom {
 		t.Error("logger() did not return the one it was given")
 	}
 }
