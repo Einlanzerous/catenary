@@ -10,6 +10,13 @@
  * nulled, whether an unknown attachment drops the attachment or the message,
  * whether a constraint is enforced or merely documented. None of those is a
  * type error, so none of them is caught by codegen alone.
+ *
+ * THIS IS A CLIENT-SIDE RUNNER (CANT-74). `tolerate` is the one expectation
+ * whose answer differs by side: an enum value this schema version does not
+ * know decodes here to the sentinel `unknown` and round-trips as `encoded`,
+ * exactly as `roundtrip` does. The Go runner is the server side and treats the
+ * same case as `reject`. Which side a runner is on is stated here, once, and
+ * the vector file stays one word per case.
  */
 
 import { readFileSync } from 'node:fs'
@@ -25,7 +32,7 @@ const VECTORS = resolve(process.cwd(), '..', 'schema', 'vectors', 'vectors.json'
 interface Case {
   name: string
   kind: string
-  expect: 'roundtrip' | 'ignore' | 'reject'
+  expect: 'roundtrip' | 'ignore' | 'reject' | 'tolerate'
   why?: string
   json: unknown
   encoded?: unknown
@@ -92,6 +99,7 @@ for (const c of cases) {
     continue
   }
 
+  // `roundtrip` and, on this side, `tolerate`: decode, re-encode, compare.
   const want = canonical(c.encoded ?? c.json)
   const got = canonical(codec.encode(decoded))
   check(c.name, want === got, want === got ? '' : `\n    want ${want}\n    got  ${got}`)

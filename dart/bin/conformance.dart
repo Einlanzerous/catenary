@@ -12,6 +12,13 @@
 /// as ghost messages and disagreeing unread counts, and not one of them is a
 /// compile error in either language.
 ///
+/// THIS IS A CLIENT-SIDE RUNNER (CANT-74). `tolerate` is the one expectation
+/// whose answer differs by side: an enum value this schema version does not
+/// know decodes here to the sentinel `unknown` and round-trips as `encoded`,
+/// exactly as `roundtrip` does. The Go runner is the server side and treats
+/// the same case as `reject`. Which side a runner is on is stated here, once,
+/// and the vector file stays one word per case.
+///
 /// Run: dart run bin/conformance.dart   (from the dart/ directory)
 library;
 
@@ -99,6 +106,7 @@ void main(List<String> args) {
       continue;
     }
 
+    // `roundtrip` and, on this side, `tolerate`: decode, re-encode, compare.
     final want = canonical(c.containsKey('encoded') ? c['encoded'] : input);
     final got = canonical(codec.encode(decoded));
     check(name, want == got, want == got ? '' : '\n    want $want\n    got  $got');
