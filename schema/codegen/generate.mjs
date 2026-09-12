@@ -1002,7 +1002,7 @@ function emitGo() {
    * Every object below now carries an UnmarshalJSON that decodes into a shadow
    * whose fields are ALL pointers, which is what makes presence observable, and
    * then runs the schema's constraints with the same rules and the same JSON
-   * paths the TS and Dart decoders use. The ten reject vectors are the oracle. */
+   * paths the TS and Dart decoders use. The reject vectors are the oracle. */
   L.push('// DecodeError is a frame that does not match the schema. It carries the JSON')
   L.push('// path, so a failure names the field rather than the frame.')
   L.push('type DecodeError struct {')
@@ -1345,7 +1345,7 @@ function emitGo() {
    * carries an UnmarshalJSON that decodes into an all-pointer shadow — which is
    * what makes an absent required scalar distinguishable from an explicit zero
    * one — and then runs the same checks with the same JSON paths. The Go runner
-   * executes all 41 vectors and skips none. */
+   * executes every vector and skips none. */
   L.push('// DecodeNamed decodes a named wire type. Unions return a nil value with a nil')
   L.push('// error for an unrecognised tag.')
   L.push('func DecodeNamed(name string, b []byte) (any, error) {')

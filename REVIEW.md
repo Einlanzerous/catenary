@@ -28,11 +28,19 @@ already checks:
 
 - the generated TypeScript, Dart, Go and `openapi.yaml` match the schema, and
   the staleness guard is proved to fail **once per file**;
-- all three conformance runners execute all 48 vectors. The generated Go
-  decoders enforce the schema's constraints via validation functions like
-  `checkLogSeq`, `checkSeq`, and the `Token` pattern check — a gap closed by
-  `CANT-25`. **Go is the trust boundary**, so a new `reject` vector asserts that
-  the decoder refused, not which constraint fired;
+- all three conformance runners execute every vector in
+  `schema/vectors/vectors.json`, and each prints the count it ran — the Go
+  runner's line on `main` today is `all green — 56 vectors, none skipped`.
+  Trust that line, not a number in this file: the count moves with every
+  ticket that adds a vector, and a stale one here has already misled two
+  reviews (`CANT-100`, `CANT-104`). The generated decoders in all three
+  languages enforce the schema's constraints — `checkLogSeq`, `checkSeq`, the
+  `Token` pattern and their neighbours in `internal/wire/generated.go` — a gap
+  `CANT-25` closed. **Go is the trust boundary**, so a new `reject` vector
+  asserts that the decoder refused, not which constraint fired. One
+  expectation differs by side on purpose: a `tolerate` case is refused by the
+  Go runner and decoded to the sentinel `unknown` by the TypeScript and Dart
+  runners (`CANT-74`);
 - `gofmt`, `go vet`, `go test ./...` for both modules, with a real Postgres 16;
 - no document repeats the known-wrong "account-global" phrasing for `log_seq`,
   proved against a planted line every run.
