@@ -43,9 +43,11 @@ const TimeLayout = wireTimeLayout
 
 func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncResponse {
 	// Read state comes off the page's own conversation rows. A conversation
-	// with no row here contributes nothing, and deliveryState treats an absent
-	// entry as "nothing read" — which is the safe direction: a message shows
-	// as delivered rather than as read on a claim the page cannot support.
+	// with no row here contributes nothing, and the map's zero value for an
+	// absent entry is "nothing read" — which is the safe direction: a message
+	// shows as delivered rather than as read on a claim the page cannot
+	// support. The mark is passed to DeliveryState as that value, so the
+	// absent case is expressed HERE, by the caller that knows it is absent.
 	readSeq := make(map[uuid.UUID]int64, len(page.Conversations))
 	for _, c := range page.Conversations {
 		readSeq[c.ID] = c.ReadSeq
@@ -88,12 +90,12 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 		// conversation_members — having left, or deleted by CANT-33's Purser
 		// connector — and no current member's receipt to have passed it.
 		//
-		// It is also the value deliveryState reads below, which is what keeps
+		// It is also the value DeliveryState reads below, which is what keeps
 		// the word and the number from being two answers to one question.
 		readBy := page.ReadBy[m.ID]
 		out.Messages = append(out.Messages, Message(m, page.Attachments[m.ID], src, Viewer{
 			UserID:   v.UserID,
-			State:    deliveryState(m, v.UserID, readSeq, readBy),
+			State:    DeliveryState(m, v.UserID, readSeq[m.ConversationID], readBy),
 			ReadBy:   &readBy,
 			MediaURL: v.MediaURL,
 		}))
@@ -125,9 +127,18 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 	return src.ConversationID == m.ConversationID
 }
 
-// deliveryState is what THIS reader sees, and the SUBJECT of the answer
+// DeliveryState is what THIS reader sees, and the SUBJECT of the answer
 // changes with authorship. CANT-90 settled that; the wire schema's
 // DeliveryState description states the same rule for client authors.
+//
+// EXPORTED FOR THE HUB (CANT-107), AND FOR NOTHING ELSE. Sync serves a page
+// and the hub serves a live frame, and both hand the word `state` to
+// wireview.Message; if each derived it, the `readBy > 1` rule below would
+// exist twice and the two transports would answer the same row differently
+// the day one copy moved. The same argument the CANT-84 guard makes for
+// Message, one function down. viewerReadSeq is the reader's own mark in this
+// conversation — 0 when they have read nothing, which is also what a caller
+// passes when it does not know.
 //
 // FOR A MESSAGE THE READER WROTE, `state` describes EVERYONE ELSE: `sent`
 // until another member's receipt has passed it, `read` after, and never
@@ -164,14 +175,14 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 // conversation_members on the viewer, so wherever that branch runs the viewer
 // is a member and their own +1 is in the count. The comparison is total over it
 // anyway, and answers `sent`.
-func deliveryState(m store.MessageRow, viewer uuid.UUID, readSeq map[uuid.UUID]int64, readBy int64) wire.DeliveryState {
+func DeliveryState(m store.MessageRow, viewer uuid.UUID, viewerReadSeq int64, readBy int64) wire.DeliveryState {
 	if m.AuthorID == viewer {
 		if readBy > 1 {
 			return wire.DeliveryStateRead
 		}
 		return wire.DeliveryStateSent
 	}
-	if seq, ok := readSeq[m.ConversationID]; ok && m.Seq <= seq {
+	if m.Seq <= viewerReadSeq {
 		return wire.DeliveryStateRead
 	}
 	return wire.DeliveryStateDelivered

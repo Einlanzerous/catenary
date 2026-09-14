@@ -112,6 +112,24 @@ func (s *Session) Send(ctx context.Context, f wire.ServerFrame) error {
 	return writeFrame(ctx, s.conn, f)
 }
 
+// Close performs the close handshake with a status the client can act on:
+// the hub's drain (1001) and its head-unreadable sever (1012), where the peer
+// is alive and the code is the point. It is closeWith with a receiver, and
+// the read loop sees the handshake complete and runs detach.
+func (s *Session) Close(status websocket.StatusCode, reason string) error {
+	closeWith(s.conn, status, reason)
+	return nil
+}
+
+// CloseNow drops the connection with NO close handshake. It exists for one
+// caller, the hub's slow-consumer sever: a peer that is not reading data
+// frames will not read a close frame either, and the handshake would wait on
+// the write lock the peer's stalled write is holding. The peer sees the
+// connection end and reconnects under its abnormal-closure rule.
+func (s *Session) CloseNow() error {
+	return s.conn.CloseNow()
+}
+
 // socketHandler serves GET /ws.
 //
 // Everything before websocket.Accept is HTTP and answers as HTTP: a refusal

@@ -53,7 +53,18 @@ grows a `healthcheck` subcommand — the choice belongs in CANT-78, in one place
 
 **`stop_grace_period` must exceed `CATENARY_SHUTDOWN_GRACE`** (default 20s, and
 Docker's default stop timeout is 10s), or a redeploy kills the process while it
-is still draining in-flight sends.
+is still draining in-flight sends. Since CANT-107 the grace also covers the
+socket drain: on SIGTERM every open session is closed with `1001 going away`,
+concurrently with the REST shutdown, so clients reconnect deliberately rather
+than on a TCP reset.
+
+**One Postgres connection outside the pool, for the life of the process.** The
+NOTIFY listener (CANT-21) holds its own connection, because `LISTEN` registers
+against a session and a pooled connection handed back is a registration lost.
+CANT-107 is the first process that actually opens it, so the role's connection
+budget is the pool's maximum plus one — and the listener reconnects through a
+Postgres restart on its own backoff, raising a gap to every attached session
+when it does.
 
 **No `ports:` mapping.** Catenary is reached through Traefik. Publishing a port
 would put a listener on the host that bypasses the edge — and until the three
