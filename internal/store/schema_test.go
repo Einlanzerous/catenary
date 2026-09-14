@@ -605,13 +605,8 @@ func TestConcurrentFindOrCreateDirectMakesOneConversation(t *testing.T) {
 	}
 }
 
-func directKey(a, b uuid.UUID) string {
-	x, y := a.String(), b.String()
-	if x > y {
-		x, y = y, x
-	}
-	return x + "|" + y
-}
+// directKey is metadata.go's own — production code now computes it, so the
+// test calls that rather than keeping a second copy that could drift from it.
 
 // A group with no name, and a direct with one, are both refused.
 func TestConversationNameRules(t *testing.T) {

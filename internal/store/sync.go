@@ -11,6 +11,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -458,3 +459,42 @@ func (s *Store) loadUsers(ctx context.Context, tx pgx.Tx, viewer uuid.UUID, afte
 
 // ServerTime is the timestamp a SyncResponse carries, read at serve time.
 func ServerTime() time.Time { return time.Now().UTC() }
+
+// conversationRowOne reads ONE conversation as viewer sees it — the same
+// shape loadConversations builds for a page, without that query's marker OR
+// clause, because the caller already knows exactly which row it wants and
+// why. CANT-75's find-or-create is the first caller: having just created or
+// found a direct conversation, it needs the identical row the client sees on
+// /sync, and a second, looser query here is a second place the two could
+// answer differently for the same conversation.
+//
+// Runs on tx so a caller that just wrote inside one transaction reads its own
+// write rather than waiting for it to commit.
+func (s *Store) conversationRowOne(ctx context.Context, tx pgx.Tx, id, viewer uuid.UUID) (ConversationRow, error) {
+	var c ConversationRow
+	err := tx.QueryRow(ctx, `
+		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
+		       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
+		       `+firstUnreadSeqExpr+`,
+		       (SELECT u.display_name FROM conversation_members o
+		          JOIN users u ON u.id = o.user_id
+		         WHERE o.conversation_id = c.id AND o.user_id <> $2
+		         ORDER BY u.display_name LIMIT 1)
+		  FROM conversations c
+		  JOIN conversation_members cm
+		    ON cm.conversation_id = c.id AND cm.user_id = $2
+		 WHERE c.id = $1`, id, viewer).
+		Scan(&c.ID, &c.Kind, &c.Name, &c.LastSeq, &c.RetentionDays, &c.Muted, &c.ReadSeq,
+			&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberName)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Either id does not exist or viewer is not a member — not_a_member
+		// leaks nothing more than conversation_not_found already does for a
+		// non-member send, and callers of this helper already hold a lock that
+		// proves both conditions false in the ordinary path.
+		return ConversationRow{}, fmt.Errorf("store: conversation %s: %w", id, ErrNotAMember)
+	}
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("store: read conversation: %w", err)
+	}
+	return c, nil
+}

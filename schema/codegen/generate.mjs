@@ -95,7 +95,7 @@ const byName = new Map(model.map((d) => [d.name, d]))
  * Token, Ping, Pong — are normal and neither rule touches them.
  * ------------------------------------------------------------------ */
 const SERVER_ROOTS = ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse']
-const CLIENT_ROOTS = ['ClientFrame', 'EnrollRequest', 'RefreshRequest']
+const CLIENT_ROOTS = ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest']
 
 /** Every $defs name a node references, at any depth. */
 function refsIn(node, out = new Set()) {

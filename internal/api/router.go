@@ -101,8 +101,38 @@ type Deps struct {
 	// asks for. Its Head becomes ready.log_seq.
 	Hello func(ctx context.Context, req store.HelloRequest) (store.HelloResult, error)
 
-	// Send is the `send` frame's write. store.SendMessage.
+	// Send is the `send` frame's write. store.SendMessage. CANT-75's REST send
+	// calls the identical function — both ordinals, the dedup and the notify
+	// are the same code path, and the transport is the only thing that
+	// differs.
 	Send func(ctx context.Context, m store.NewMessage) (store.Sent, error)
+
+	// Caller answers "who is asking", in full — store.Store.Authenticate.
+	//
+	// NOT CallerID. CallerID answers only the account, which is enough for
+	// GET /sync; POST /conversations/{id}/messages has to populate
+	// NewMessage.SenderDeviceID exactly as the socket's handleSend does — nil
+	// for a bot, set for a device — and a bare uuid.UUID cannot say which. Nil
+	// means the two REST routes below are not registered, the same safe
+	// absence as CallerID.
+	Caller func(r *http.Request) (store.Caller, bool)
+
+	// MessageForFanout loads one message with everything a per-viewer
+	// wire.Message is built from — store.Store.MessageForFanout, the hub's own
+	// read. POST /conversations/{id}/messages uses it to answer with the
+	// IDENTICAL Message the hub broadcasts for the same row, rather than a
+	// second assembly that could drift from it (CANT-75, CANT-84).
+	MessageForFanout func(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error)
+
+	// FindOrCreateDirect serves POST /conversations/direct —
+	// store.Store.FindOrCreateDirect.
+	FindOrCreateDirect func(ctx context.Context, viewer uuid.UUID, handle string) (store.ConversationRow, error)
+
+	// MediaURL derives a served URL from an opaque storage key. The same
+	// deriver /sync and the hub use (CANT-84): two derivers here would be the
+	// one way a REST-sent message's attachments could render a different URL
+	// than the identical row served any other way.
+	MediaURL func(storageKey string) string
 
 	// Attach hands a session to the hub the moment it is bound and BEFORE
 	// `ready` is written, and the returned detach runs when the session ends.
@@ -181,6 +211,16 @@ func NewRouter(d Deps) http.Handler {
 
 	if d.Enroll != nil {
 		mux.HandleFunc("POST /enroll", enrollHandler(d))
+	}
+
+	// CANT-75. Both need a full Caller (device or bot), and the send route
+	// additionally needs the fan-out read to build its response — see
+	// Deps.Caller and Deps.MessageForFanout.
+	if d.Send != nil && d.Caller != nil && d.MessageForFanout != nil {
+		mux.HandleFunc("POST /conversations/{id}/messages", messagesHandler(d))
+	}
+	if d.FindOrCreateDirect != nil && d.Caller != nil {
+		mux.HandleFunc("POST /conversations/direct", directConversationHandler(d))
 	}
 
 	// All three or nothing. See Deps.Authenticate.

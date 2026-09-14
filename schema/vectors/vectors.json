@@ -480,6 +480,32 @@
       }
     },
     {
+      "name": "conversation_freshly_found_or_created",
+      "kind": "Conversation",
+      "expect": "roundtrip",
+      "why": "CANT-75. head_seq: 0 is legal here and nowhere on Message.seq — a direct conversation find-or-create just created holds no messages yet, and 0 is the honest answer for what a resync would count towards. head_seq is an inline 0..2^53-1 integer rather than Seq for exactly this reason: Seq's own minimum of 1 stays true for a message's ordinal, which is never 0.",
+      "json": {
+        "id": "cc33dd44-ee55-4f66-8a77-bb88cc99dd00",
+        "kind": "direct",
+        "name": "Argosy",
+        "member_count": 2,
+        "head_seq": 0
+      }
+    },
+    {
+      "name": "reject_conversation_negative_head_seq",
+      "kind": "Conversation",
+      "expect": "reject",
+      "why": "0 is legal (conversation_freshly_found_or_created); -1 is not. The lower bound is real rather than merely inherited from Seq's own.",
+      "json": {
+        "id": "dd44ee55-ff66-4a77-9b88-cc99dd00ee11",
+        "kind": "direct",
+        "name": "Argosy",
+        "member_count": 2,
+        "head_seq": -1
+      }
+    },
+    {
       "name": "message_at_max_safe_seq",
       "kind": "Message",
       "expect": "roundtrip",
@@ -1025,6 +1051,59 @@
         "access_token": "access_token_FIXTURE_not_a_real_secret_____",
         "access_expires_at": "2026-08-17T04:37:00.000Z",
         "refresh_expires_at": "2026-10-16T04:22:00.000Z"
+      }
+    },
+    {
+      "name": "message_send_request",
+      "kind": "MessageSendRequest",
+      "expect": "roundtrip",
+      "why": "CANT-75's REST send: the same fields ClientSend carries below `type` and `conversation_id`, which this body deliberately omits — the path supplies the conversation, so there is nothing for a body value to disagree with.",
+      "json": {
+        "client_id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "text": "posted over REST",
+        "attachments": [
+          {
+            "kind": "voice",
+            "upload_id": "8d9e0f1a-2b3c-4d4e-9e5f-6a7b8c9d0e1f"
+          }
+        ],
+        "reply_to_message_id": "9e0f1a2b-3c4d-4e5f-8f6a-7b8c9d0e1f2a"
+      }
+    },
+    {
+      "name": "message_send_request_minimal",
+      "kind": "MessageSendRequest",
+      "expect": "roundtrip",
+      "why": "Only client_id is required. text, attachments and reply_to_message_id are all absent — the same legal empty send store.NewMessage documents, reached over REST rather than the socket.",
+      "json": {
+        "client_id": "0f1a2b3c-4d5e-4f6a-8a7b-8c9d0e1f2a3b"
+      }
+    },
+    {
+      "name": "reject_message_send_request_without_client_id",
+      "kind": "MessageSendRequest",
+      "expect": "reject",
+      "why": "client_id is the idempotency key and REQUIRED — a caller that omitted it would forfeit deduplication silently, and a bot needs the key more than a phone does because it retries mechanically.",
+      "json": {
+        "text": "no idempotency key"
+      }
+    },
+    {
+      "name": "direct_conversation_request",
+      "kind": "DirectConversationRequest",
+      "expect": "roundtrip",
+      "why": "Find-or-create by handle. One field: the target's handle, never a conversation id, because the caller may not have one yet.",
+      "json": {
+        "handle": "argosy"
+      }
+    },
+    {
+      "name": "reject_direct_conversation_request_empty_handle",
+      "kind": "DirectConversationRequest",
+      "expect": "reject",
+      "why": "An empty handle cannot resolve to a user, and minLength: 1 refuses it as a decode failure rather than as a lookup that always misses.",
+      "json": {
+        "handle": ""
       }
     },
     {

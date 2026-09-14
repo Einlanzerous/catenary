@@ -110,7 +110,7 @@ func TestInitialsFollowTheVectorsRule(t *testing.T) {
 // the rail shows the OTHER member, which is per reader. The wire requires
 // `name`, so the store resolves it and the mapper uses it.
 func TestADirectConversationIsNamedForTheOtherMember(t *testing.T) {
-	got := conversation(store.ConversationRow{
+	got := Conversation(store.ConversationRow{
 		ID: mustUUID(t, convID), Kind: "direct", Name: nil,
 		OtherMemberName: ptr("Nadia Ruiz"), LastSeq: 3, MemberCount: 2,
 	})

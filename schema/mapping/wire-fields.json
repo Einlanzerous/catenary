@@ -638,6 +638,35 @@
       "table": "refresh_tokens",
       "column": "expires_at",
       "note": "Sixty days, so a phone in normal use never re-authenticates and one left in a drawer falls out of the account on its own."
+    },
+    "MessageSendRequest.client_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "client_id",
+      "note": "Inbound: the idempotency key, checked BEFORE either ordinal is drawn and then stored — the identical column ClientSend.client_id backs.",
+      "nullable_because": "Required on this request and nullable in storage, for the same reason ClientSend.client_id is: every sending surface supplies a key, this REST body included — CANT-75's Done-when requires that a sender with no device row is deduplicated exactly like one with, which is store.SendMessage's own refusal of the zero value (CANT-14). The column stays nullable as headroom for a genuinely server-originated row, should one ever exist; nothing writes NULL today."
+    },
+    "MessageSendRequest.text": {
+      "kind": "column",
+      "table": "messages",
+      "column": "text",
+      "note": "Inbound, the same column ClientSend.text backs."
+    },
+    "MessageSendRequest.attachments": {
+      "kind": "derived",
+      "note": "Resolved to attachments rows by ingest; see OutboundAttachment. Refused service-wide until E6's upload flow exists, the same as ClientSend.attachments."
+    },
+    "MessageSendRequest.reply_to_message_id": {
+      "kind": "column",
+      "table": "messages",
+      "column": "reply_to",
+      "note": "Inbound, the same column ClientSend.reply_to_message_id backs."
+    },
+    "DirectConversationRequest.handle": {
+      "kind": "column",
+      "table": "users",
+      "column": "handle",
+      "note": "Inbound: resolved to the target's user id by lookup, never written. users.handle is NOT NULL UNIQUE, so the lookup is exact — an unresolved or deactivated target is refused as conversation_not_found rather than silently creating a conversation with nobody in it."
     }
   }
 }
