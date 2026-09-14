@@ -635,6 +635,17 @@ func (v *User) decode(b []byte, p string) error {
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
 	}
+	if len(out.Name) < 1 {
+		return badf(p+".name", "name must be at least 1 characters, got %d", len(out.Name))
+	}
+	if out.Initials != nil {
+		if len(*out.Initials) < 1 {
+			return badf(p+".initials", "initials must be at least 1 characters, got %d", len(*out.Initials))
+		}
+		if len(*out.Initials) > 2 {
+			return badf(p+".initials", "initials must be at most 2 characters, got %d", len(*out.Initials))
+		}
+	}
 	*v = out
 	return nil
 }
@@ -750,6 +761,16 @@ func (v *Transcript) decode(b []byte, p string) error {
 	if err := checkTranscriptState(out.State, p+".state"); err != nil {
 		return err
 	}
+	if out.WordCount != nil {
+		if *out.WordCount < 0 {
+			return badf(p+".word_count", "word_count must be >= 0, got %v", *out.WordCount)
+		}
+	}
+	if out.ETASec != nil {
+		if *out.ETASec < 0 {
+			return badf(p+".eta_sec", "eta_sec must be >= 0, got %v", *out.ETASec)
+		}
+	}
 	*v = out
 	return nil
 }
@@ -810,6 +831,15 @@ func (v *VoiceAttachment) decode(b []byte, p string) error {
 	}
 	if err := checkDurationMs(out.DurationMs, p+".duration_ms"); err != nil {
 		return err
+	}
+	for i0, v0 := range out.Peaks {
+		_ = i0
+		if v0 < 0 {
+			return badf(fmt.Sprintf("%s[%d]", p+".peaks", i0), "peaks must be >= 0, got %v", v0)
+		}
+		if v0 > 100 {
+			return badf(fmt.Sprintf("%s[%d]", p+".peaks", i0), "peaks must be <= 100, got %v", v0)
+		}
 	}
 	*v = out
 	return nil
@@ -886,6 +916,15 @@ func (v *ImageAttachment) decode(b []byte, p string) error {
 	out.Bytes = *s.Bytes
 	if s.Placeholder != nil {
 		out.Placeholder = s.Placeholder
+	}
+	if out.Width < 1 {
+		return badf(p+".width", "width must be >= 1, got %v", out.Width)
+	}
+	if out.Height < 1 {
+		return badf(p+".height", "height must be >= 1, got %v", out.Height)
+	}
+	if out.Bytes < 0 {
+		return badf(p+".bytes", "bytes must be >= 0, got %v", out.Bytes)
 	}
 	*v = out
 	return nil
@@ -1125,6 +1164,11 @@ func (v *Message) decode(b []byte, p string) error {
 	if err := checkDeliveryState(out.State, p+".state"); err != nil {
 		return err
 	}
+	if out.ReadBy != nil {
+		if *out.ReadBy < 0 {
+			return badf(p+".read_by", "read_by must be >= 0, got %v", *out.ReadBy)
+		}
+	}
 	if out.ClientID != nil {
 		if err := checkUuid(*out.ClientID, p+".client_id"); err != nil {
 			return err
@@ -1218,6 +1262,9 @@ func (v *Conversation) decode(b []byte, p string) error {
 	if err := checkConversationKind(out.Kind, p+".kind"); err != nil {
 		return err
 	}
+	if out.MemberCount < 1 {
+		return badf(p+".member_count", "member_count must be >= 1, got %v", out.MemberCount)
+	}
 	if out.FirstUnreadSeq != nil {
 		if err := checkSeq(*out.FirstUnreadSeq, p+".first_unread_seq"); err != nil {
 			return err
@@ -1225,6 +1272,11 @@ func (v *Conversation) decode(b []byte, p string) error {
 	}
 	if err := checkSeq(out.HeadSeq, p+".head_seq"); err != nil {
 		return err
+	}
+	if out.RetentionDays != nil {
+		if *out.RetentionDays < 1 {
+			return badf(p+".retention_days", "retention_days must be >= 1, got %v", *out.RetentionDays)
+		}
 	}
 	*v = out
 	return nil
@@ -1288,6 +1340,9 @@ func (v *ClientHello) decode(b []byte, p string) error {
 	}
 	if s.ClientInfo != nil {
 		out.ClientInfo = s.ClientInfo
+	}
+	if out.WireVersion < 1 {
+		return badf(p+".wire_version", "wire_version must be >= 1, got %v", out.WireVersion)
 	}
 	if err := checkUuid(out.DeviceID, p+".device_id"); err != nil {
 		return err
@@ -1403,8 +1458,22 @@ func (v *ServerReady) decode(b []byte, p string) error {
 	if err := checkUuid(out.SessionID, p+".session_id"); err != nil {
 		return err
 	}
+	if out.WireVersion != nil {
+		if *out.WireVersion < 1 {
+			return badf(p+".wire_version", "wire_version must be >= 1, got %v", *out.WireVersion)
+		}
+	}
 	if err := checkTimestamp(out.ServerTime, p+".server_time"); err != nil {
 		return err
+	}
+	if out.HeartbeatIntervalSec < 5 {
+		return badf(p+".heartbeat_interval_sec", "heartbeat_interval_sec must be >= 5, got %v", out.HeartbeatIntervalSec)
+	}
+	if out.HeartbeatIntervalSec > 90 {
+		return badf(p+".heartbeat_interval_sec", "heartbeat_interval_sec must be <= 90, got %v", out.HeartbeatIntervalSec)
+	}
+	if out.MissedPongLimit < 1 {
+		return badf(p+".missed_pong_limit", "missed_pong_limit must be >= 1, got %v", out.MissedPongLimit)
 	}
 	if err := checkLogSeq(out.LogSeq, p+".log_seq"); err != nil {
 		return err
@@ -1465,6 +1534,9 @@ func (v *Ping) decode(b []byte, p string) error {
 	if s.At != nil {
 		out.At = s.At
 	}
+	if len(out.ID) < 1 {
+		return badf(p+".id", "id must be at least 1 characters, got %d", len(out.ID))
+	}
 	if out.At != nil {
 		if err := checkTimestamp(*out.At, p+".at"); err != nil {
 			return err
@@ -1520,6 +1592,9 @@ func (v *Pong) decode(b []byte, p string) error {
 	out.ID = *s.ID
 	if s.At != nil {
 		out.At = s.At
+	}
+	if len(out.ID) < 1 {
+		return badf(p+".id", "id must be at least 1 characters, got %d", len(out.ID))
 	}
 	if out.At != nil {
 		if err := checkTimestamp(*out.At, p+".at"); err != nil {
@@ -2137,6 +2212,11 @@ func (v *ServerError) decode(b []byte, p string) error {
 			return err
 		}
 	}
+	if out.RetryAfterSec != nil {
+		if *out.RetryAfterSec < 0 {
+			return badf(p+".retry_after_sec", "retry_after_sec must be >= 0, got %v", *out.RetryAfterSec)
+		}
+	}
 	*v = out
 	return nil
 }
@@ -2353,10 +2433,15 @@ type EnrollRequest struct {
 	// and why this is required rather than defaulted server-side to something like
 	// "unknown device".
 	//
-	// Not length-bounded here: the bound is a server refusal with a test behind it,
-	// because this schema's generators enforce `pattern`, `minimum` and `maximum` and
-	// would silently ignore a `minLength` — a constraint no decoder checks is worse than
-	// none, since it reads as protection.
+	// Not length-bounded here, on purpose rather than by a gap: CANT-106 closed the hole
+	// this paragraph used to describe, where a property-level `minLength` would have been
+	// silently ignored — the generators now enforce `pattern`, `minimum`, `maximum`,
+	// `minLength` and `maxLength` on an object property exactly as they already did on a
+	// named alias like `Token`. Putting a bound on the wire now means every language
+	// enforces it forever, which is the wrong home for `MaxDeviceNameBytes`
+	// (`internal/store/tokens.go`): a server policy number, not a protocol invariant, free
+	// to change without touching this schema or `x-wire-version`. The bound stays a server
+	// refusal with a test behind it instead.
 	DeviceName string `json:"device_name"`
 }
 

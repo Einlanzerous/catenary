@@ -365,8 +365,8 @@ export function decodeUser(v: unknown, p = "User"): User {
   const o = asObj(v, p)
   return {
     id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asUuid(o["id"], `${p}.id`),
-    name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : asStr(o["name"], `${p}.name`),
-    initials: o["initials"] === undefined || o["initials"] === null ? undefined : asStr(o["initials"], `${p}.initials`),
+    name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `name must be at least 1 characters, got ${x.length}`); return x })(o["name"], `${p}.name`),
+    initials: o["initials"] === undefined || o["initials"] === null ? undefined : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `initials must be at least 1 characters, got ${x.length}`); if (x.length > 2) bad(p, `initials must be at most 2 characters, got ${x.length}`); return x })(o["initials"], `${p}.initials`),
   }
 }
 
@@ -425,11 +425,11 @@ export function decodeTranscript(v: unknown, p = "Transcript"): Transcript {
   return {
     state: o["state"] === undefined || o["state"] === null ? bad(`${p}.state`, 'required field is missing') : asTranscriptState(o["state"], `${p}.state`),
     text: o["text"] === undefined || o["text"] === null ? undefined : asStr(o["text"], `${p}.text`),
-    wordCount: o["word_count"] === undefined || o["word_count"] === null ? undefined : asInt(o["word_count"], `${p}.word_count`),
+    wordCount: o["word_count"] === undefined || o["word_count"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `word_count must be >= 0, got ${x}`); return x })(o["word_count"], `${p}.word_count`),
     segments: o["segments"] === undefined || o["segments"] === null ? undefined : asArray(o["segments"], `${p}.segments`).map((x, i) => decodeTranscriptSegment(x, `${p}.segments[${i}]`)),
     engine: o["engine"] === undefined || o["engine"] === null ? undefined : asStr(o["engine"], `${p}.engine`),
     language: o["language"] === undefined || o["language"] === null ? undefined : asStr(o["language"], `${p}.language`),
-    etaSec: o["eta_sec"] === undefined || o["eta_sec"] === null ? undefined : asInt(o["eta_sec"], `${p}.eta_sec`),
+    etaSec: o["eta_sec"] === undefined || o["eta_sec"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `eta_sec must be >= 0, got ${x}`); return x })(o["eta_sec"], `${p}.eta_sec`),
   }
 }
 
@@ -469,7 +469,7 @@ export function decodeVoiceAttachment(v: unknown, p = "VoiceAttachment"): VoiceA
     kind: "voice",
     url: o["url"] === undefined || o["url"] === null ? bad(`${p}.url`, 'required field is missing') : asStr(o["url"], `${p}.url`),
     durationMs: o["duration_ms"] === undefined || o["duration_ms"] === null ? bad(`${p}.duration_ms`, 'required field is missing') : asDurationMs(o["duration_ms"], `${p}.duration_ms`),
-    peaks: o["peaks"] === undefined || o["peaks"] === null ? bad(`${p}.peaks`, 'required field is missing') : asArray(o["peaks"], `${p}.peaks`).map((x, i) => asInt(x, `${p}.peaks[${i}]`)),
+    peaks: o["peaks"] === undefined || o["peaks"] === null ? bad(`${p}.peaks`, 'required field is missing') : asArray(o["peaks"], `${p}.peaks`).map((x, i) => ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `peaks must be >= 0, got ${x}`); if (x > 100) bad(p, `peaks must be <= 100, got ${x}`); return x })(x, `${p}.peaks[${i}]`)),
     transcript: o["transcript"] === undefined || o["transcript"] === null ? bad(`${p}.transcript`, 'required field is missing') : decodeTranscript(o["transcript"], `${p}.transcript`),
   }
 }
@@ -504,9 +504,9 @@ export function decodeImageAttachment(v: unknown, p = "ImageAttachment"): ImageA
     kind: "image",
     url: o["url"] === undefined || o["url"] === null ? bad(`${p}.url`, 'required field is missing') : asStr(o["url"], `${p}.url`),
     filename: o["filename"] === undefined || o["filename"] === null ? bad(`${p}.filename`, 'required field is missing') : asStr(o["filename"], `${p}.filename`),
-    width: o["width"] === undefined || o["width"] === null ? bad(`${p}.width`, 'required field is missing') : asInt(o["width"], `${p}.width`),
-    height: o["height"] === undefined || o["height"] === null ? bad(`${p}.height`, 'required field is missing') : asInt(o["height"], `${p}.height`),
-    bytes: o["bytes"] === undefined || o["bytes"] === null ? bad(`${p}.bytes`, 'required field is missing') : asInt(o["bytes"], `${p}.bytes`),
+    width: o["width"] === undefined || o["width"] === null ? bad(`${p}.width`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `width must be >= 1, got ${x}`); return x })(o["width"], `${p}.width`),
+    height: o["height"] === undefined || o["height"] === null ? bad(`${p}.height`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `height must be >= 1, got ${x}`); return x })(o["height"], `${p}.height`),
+    bytes: o["bytes"] === undefined || o["bytes"] === null ? bad(`${p}.bytes`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `bytes must be >= 0, got ${x}`); return x })(o["bytes"], `${p}.bytes`),
     placeholder: o["placeholder"] === undefined || o["placeholder"] === null ? undefined : asStr(o["placeholder"], `${p}.placeholder`),
   }
 }
@@ -613,7 +613,7 @@ export function decodeMessage(v: unknown, p = "Message"): Message {
     attachments: o["attachments"] === undefined || o["attachments"] === null ? undefined : asArray(o["attachments"], `${p}.attachments`).map((x, i) => decodeAttachment(x, `${p}.attachments[${i}]`)).filter((x): x is Attachment => x !== null),
     replyTo: o["reply_to"] === undefined || o["reply_to"] === null ? undefined : decodeReplyRef(o["reply_to"], `${p}.reply_to`),
     state: o["state"] === undefined || o["state"] === null ? bad(`${p}.state`, 'required field is missing') : asDeliveryState(o["state"], `${p}.state`),
-    readBy: o["read_by"] === undefined || o["read_by"] === null ? undefined : asInt(o["read_by"], `${p}.read_by`),
+    readBy: o["read_by"] === undefined || o["read_by"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `read_by must be >= 0, got ${x}`); return x })(o["read_by"], `${p}.read_by`),
     clientId: o["client_id"] === undefined || o["client_id"] === null ? undefined : asUuid(o["client_id"], `${p}.client_id`),
     editedAt: o["edited_at"] === undefined || o["edited_at"] === null ? undefined : asTimestamp(o["edited_at"], `${p}.edited_at`),
     deleted: o["deleted"] === undefined || o["deleted"] === null ? undefined : asBool(o["deleted"], `${p}.deleted`),
@@ -666,11 +666,11 @@ export function decodeConversation(v: unknown, p = "Conversation"): Conversation
     id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asUuid(o["id"], `${p}.id`),
     kind: o["kind"] === undefined || o["kind"] === null ? bad(`${p}.kind`, 'required field is missing') : asConversationKind(o["kind"], `${p}.kind`),
     name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : asStr(o["name"], `${p}.name`),
-    memberCount: o["member_count"] === undefined || o["member_count"] === null ? bad(`${p}.member_count`, 'required field is missing') : asInt(o["member_count"], `${p}.member_count`),
+    memberCount: o["member_count"] === undefined || o["member_count"] === null ? bad(`${p}.member_count`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `member_count must be >= 1, got ${x}`); return x })(o["member_count"], `${p}.member_count`),
     muted: o["muted"] === undefined || o["muted"] === null ? undefined : asBool(o["muted"], `${p}.muted`),
     firstUnreadSeq: o["first_unread_seq"] === undefined || o["first_unread_seq"] === null ? undefined : asSeq(o["first_unread_seq"], `${p}.first_unread_seq`),
     headSeq: o["head_seq"] === undefined || o["head_seq"] === null ? bad(`${p}.head_seq`, 'required field is missing') : asSeq(o["head_seq"], `${p}.head_seq`),
-    retentionDays: o["retention_days"] === undefined || o["retention_days"] === null ? undefined : asInt(o["retention_days"], `${p}.retention_days`),
+    retentionDays: o["retention_days"] === undefined || o["retention_days"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `retention_days must be >= 1, got ${x}`); return x })(o["retention_days"], `${p}.retention_days`),
   }
 }
 
@@ -718,7 +718,7 @@ export function decodeClientHello(v: unknown, p = "ClientHello"): ClientHello {
   const o = asObj(v, p)
   return {
     type: "hello",
-    wireVersion: o["wire_version"] === undefined || o["wire_version"] === null ? bad(`${p}.wire_version`, 'required field is missing') : asInt(o["wire_version"], `${p}.wire_version`),
+    wireVersion: o["wire_version"] === undefined || o["wire_version"] === null ? bad(`${p}.wire_version`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `wire_version must be >= 1, got ${x}`); return x })(o["wire_version"], `${p}.wire_version`),
     deviceId: o["device_id"] === undefined || o["device_id"] === null ? bad(`${p}.device_id`, 'required field is missing') : asUuid(o["device_id"], `${p}.device_id`),
     resumeFromLogSeq: o["resume_from_log_seq"] === undefined || o["resume_from_log_seq"] === null ? undefined : asLogSeq(o["resume_from_log_seq"], `${p}.resume_from_log_seq`),
     clientInfo: o["client_info"] === undefined || o["client_info"] === null ? undefined : asStr(o["client_info"], `${p}.client_info`),
@@ -776,10 +776,10 @@ export function decodeServerReady(v: unknown, p = "ServerReady"): ServerReady {
   return {
     type: "ready",
     sessionId: o["session_id"] === undefined || o["session_id"] === null ? bad(`${p}.session_id`, 'required field is missing') : asUuid(o["session_id"], `${p}.session_id`),
-    wireVersion: o["wire_version"] === undefined || o["wire_version"] === null ? undefined : asInt(o["wire_version"], `${p}.wire_version`),
+    wireVersion: o["wire_version"] === undefined || o["wire_version"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `wire_version must be >= 1, got ${x}`); return x })(o["wire_version"], `${p}.wire_version`),
     serverTime: o["server_time"] === undefined || o["server_time"] === null ? bad(`${p}.server_time`, 'required field is missing') : asTimestamp(o["server_time"], `${p}.server_time`),
-    heartbeatIntervalSec: o["heartbeat_interval_sec"] === undefined || o["heartbeat_interval_sec"] === null ? bad(`${p}.heartbeat_interval_sec`, 'required field is missing') : asInt(o["heartbeat_interval_sec"], `${p}.heartbeat_interval_sec`),
-    missedPongLimit: o["missed_pong_limit"] === undefined || o["missed_pong_limit"] === null ? bad(`${p}.missed_pong_limit`, 'required field is missing') : asInt(o["missed_pong_limit"], `${p}.missed_pong_limit`),
+    heartbeatIntervalSec: o["heartbeat_interval_sec"] === undefined || o["heartbeat_interval_sec"] === null ? bad(`${p}.heartbeat_interval_sec`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 5) bad(p, `heartbeat_interval_sec must be >= 5, got ${x}`); if (x > 90) bad(p, `heartbeat_interval_sec must be <= 90, got ${x}`); return x })(o["heartbeat_interval_sec"], `${p}.heartbeat_interval_sec`),
+    missedPongLimit: o["missed_pong_limit"] === undefined || o["missed_pong_limit"] === null ? bad(`${p}.missed_pong_limit`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `missed_pong_limit must be >= 1, got ${x}`); return x })(o["missed_pong_limit"], `${p}.missed_pong_limit`),
     logSeq: o["log_seq"] === undefined || o["log_seq"] === null ? bad(`${p}.log_seq`, 'required field is missing') : asLogSeq(o["log_seq"], `${p}.log_seq`),
     resumed: o["resumed"] === undefined || o["resumed"] === null ? bad(`${p}.resumed`, 'required field is missing') : asBool(o["resumed"], `${p}.resumed`),
   }
@@ -816,7 +816,7 @@ export function decodePing(v: unknown, p = "Ping"): Ping {
   const o = asObj(v, p)
   return {
     type: "ping",
-    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asStr(o["id"], `${p}.id`),
+    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `id must be at least 1 characters, got ${x.length}`); return x })(o["id"], `${p}.id`),
     at: o["at"] === undefined || o["at"] === null ? undefined : asTimestamp(o["at"], `${p}.at`),
   }
 }
@@ -840,7 +840,7 @@ export function decodePong(v: unknown, p = "Pong"): Pong {
   const o = asObj(v, p)
   return {
     type: "pong",
-    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asStr(o["id"], `${p}.id`),
+    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `id must be at least 1 characters, got ${x.length}`); return x })(o["id"], `${p}.id`),
     at: o["at"] === undefined || o["at"] === null ? undefined : asTimestamp(o["at"], `${p}.at`),
   }
 }
@@ -1118,7 +1118,7 @@ export function decodeServerError(v: unknown, p = "ServerError"): ServerError {
     message: o["message"] === undefined || o["message"] === null ? bad(`${p}.message`, 'required field is missing') : asStr(o["message"], `${p}.message`),
     retryable: o["retryable"] === undefined || o["retryable"] === null ? bad(`${p}.retryable`, 'required field is missing') : asBool(o["retryable"], `${p}.retryable`),
     clientId: o["client_id"] === undefined || o["client_id"] === null ? undefined : asUuid(o["client_id"], `${p}.client_id`),
-    retryAfterSec: o["retry_after_sec"] === undefined || o["retry_after_sec"] === null ? undefined : asInt(o["retry_after_sec"], `${p}.retry_after_sec`),
+    retryAfterSec: o["retry_after_sec"] === undefined || o["retry_after_sec"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `retry_after_sec must be >= 0, got ${x}`); return x })(o["retry_after_sec"], `${p}.retry_after_sec`),
   }
 }
 
@@ -1251,10 +1251,15 @@ export interface EnrollRequest {
   // and why this is required rather than defaulted server-side to something like
   // "unknown device".
   //
-  // Not length-bounded here: the bound is a server refusal with a test behind it,
-  // because this schema's generators enforce `pattern`, `minimum` and `maximum` and
-  // would silently ignore a `minLength` — a constraint no decoder checks is worse than
-  // none, since it reads as protection.
+  // Not length-bounded here, on purpose rather than by a gap: CANT-106 closed the hole
+  // this paragraph used to describe, where a property-level `minLength` would have been
+  // silently ignored — the generators now enforce `pattern`, `minimum`, `maximum`,
+  // `minLength` and `maxLength` on an object property exactly as they already did on a
+  // named alias like `Token`. Putting a bound on the wire now means every language
+  // enforces it forever, which is the wrong home for `MaxDeviceNameBytes`
+  // (`internal/store/tokens.go`): a server policy number, not a protocol invariant, free
+  // to change without touching this schema or `x-wire-version`. The bound stays a server
+  // refusal with a test behind it instead.
   deviceName: string
 }
 

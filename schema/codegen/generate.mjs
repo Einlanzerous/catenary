@@ -204,14 +204,59 @@ if (process.argv.includes('--classify')) {
   process.exit(0)
 }
 
-/** Resolve a property schema to a type reference. */
+/** Resolve a property schema to a type reference.
+ *
+ * CANT-106. A bound written directly on a property — `minimum`, `maximum`,
+ * `minLength`, `maxLength`, `pattern` — used to be dropped right here: the
+ * `prim` case returned only the JSON type, so `heartbeat_interval_sec:
+ * minimum 5, maximum 90` reached the schema, `openapi.yaml` and the doc
+ * comment and then was checked by nobody in any of the three languages. The
+ * scalar $defs aliases (`Seq`, `Token`, …) carried their own constraints
+ * because they read `n.minimum` etc. straight off `d.node`; a property had no
+ * equivalent node to read from once `typeRef` collapsed it to `{ kind:
+ * 'prim' }`. Carrying the constraint fields through here is what lets
+ * `tsDecode`/`dartDecode`/`goCheck` enforce a property exactly as the alias
+ * branches already enforce a named alias — same `hasScalarConstraints` test,
+ * same `scalarChecks` line-builder, reused rather than duplicated. */
 function typeRef(prop, ctx) {
   if (prop.$ref) return { kind: 'named', name: refName(prop.$ref) }
   if (prop.const !== undefined) return { kind: 'const', value: prop.const }
   if (prop.type === 'array') return { kind: 'list', item: typeRef(prop.items, ctx) }
   if (prop.enum) return { kind: 'inlineEnum', values: prop.enum }
-  if (prop.type) return { kind: 'prim', prim: prop.type }
+  if (prop.type) {
+    const ref = { kind: 'prim', prim: prop.type }
+    if (prop.pattern !== undefined) ref.pattern = prop.pattern
+    if (prop.minimum !== undefined) ref.minimum = prop.minimum
+    if (prop.maximum !== undefined) ref.maximum = prop.maximum
+    if (prop.minLength !== undefined) ref.minLength = prop.minLength
+    if (prop.maxLength !== undefined) ref.maxLength = prop.maxLength
+    return ref
+  }
   fail(`${ctx}: cannot resolve type`)
+}
+
+/* Shared between the alias branches (which read constraints off a $defs node)
+ * and a constrained object property (which reads them off a `prim` type
+ * reference built by `typeRef` above) — both shapes carry the same five
+ * possible keys, so one test and one line-builder serve both. */
+function hasScalarConstraints(n) {
+  return n.pattern !== undefined || n.minimum !== undefined || n.maximum !== undefined ||
+    n.minLength !== undefined || n.maxLength !== undefined
+}
+
+/* The wire property name a generated check message should name, recovered
+ * from the JSON path already being built for the field: `${p}.peaks[${i0}]`
+ * or `ServerReady.heartbeat_interval_sec[]` both reduce to the identifier
+ * right before any trailing `[...]` — which is the array-item case, an alias
+ * name (`Message.log_seq`), or a plain field (`heartbeat_interval_sec`). A
+ * label is cosmetic — the JSON path carried alongside it in every `bad`/`badf`
+ * call is what a caller actually keys off — but naming the field in the
+ * message is what the alias branches already do, and this keeps property
+ * checks reading the same way. */
+function labelFromPath(path) {
+  const stripped = path.replace(/(?:\[[^\]]*\])+$/, '')
+  const m = /([A-Za-z0-9_]+)$/.exec(stripped)
+  return m ? m[1] : stripped
 }
 
 /** Fields of an object def, in schema declaration order. */
@@ -308,6 +353,26 @@ function tsType(ref) {
 const tsPath = (p) => '`' + p + '`'
 const dartPath = (p) => "'" + p + "'"
 
+/* CANT-106. The `if (x < n) bad(...)` lines a constrained scalar needs, shared
+ * between a named alias's `as${Name}` function (label = the alias name, e.g.
+ * `DurationMs`) and a constrained object property (label = the field's own
+ * wire name, recovered by `labelFromPath`) so the two enforce identically
+ * rather than by two separately maintained copies of the same five `if`s.
+ * `patternExpr` is whatever the caller already has in scope to test against —
+ * a precompiled top-level const for an alias, an inline literal for a
+ * property, since no property in the schema carries a `pattern` today and a
+ * one-off inline regex costs nothing next to a compiled one used exactly once
+ * per call site. */
+function tsScalarChecks(n, label, xVar, patternExpr) {
+  const body = []
+  if (n.pattern) body.push(`if (!${patternExpr}.test(${xVar})) bad(p, \`${label} must match ${n.pattern.replace(/`/g, '\\`')}, got \${JSON.stringify(${xVar})}\`)`)
+  if (n.minimum !== undefined) body.push(`if (${xVar} < ${n.minimum}) bad(p, \`${label} must be >= ${n.minimum}, got \${${xVar}}\`)`)
+  if (n.maximum !== undefined) body.push(`if (${xVar} > ${n.maximum}) bad(p, \`${label} must be <= ${n.maximum}, got \${${xVar}}\`)`)
+  if (n.minLength !== undefined) body.push(`if (${xVar}.length < ${n.minLength}) bad(p, \`${label} must be at least ${n.minLength} characters, got \${${xVar}.length}\`)`)
+  if (n.maxLength !== undefined) body.push(`if (${xVar}.length > ${n.maxLength}) bad(p, \`${label} must be at most ${n.maxLength} characters, got \${${xVar}.length}\`)`)
+  return body
+}
+
 /** Expression decoding wire value `src` into the TS shape for `ref`. */
 function tsDecode(ref, src, path, depth = 0) {
   switch (ref.kind) {
@@ -333,11 +398,24 @@ function tsDecode(ref, src, path, depth = 0) {
     }
     case 'const': return JSON.stringify(ref.value)
     case 'inlineEnum': return `asOneOf(${src}, ${JSON.stringify(ref.values)}, ${tsPath(path)})`
-    case 'prim':
-      return ref.prim === 'integer' ? `asInt(${src}, ${tsPath(path)})`
-        : ref.prim === 'number' ? `asNum(${src}, ${tsPath(path)})`
-        : ref.prim === 'boolean' ? `asBool(${src}, ${tsPath(path)})`
-        : `asStr(${src}, ${tsPath(path)})`
+    case 'prim': {
+      const decodeFn = ref.prim === 'integer' ? 'asInt' : ref.prim === 'number' ? 'asNum'
+        : ref.prim === 'boolean' ? 'asBool' : 'asStr'
+      if (!hasScalarConstraints(ref)) return `${decodeFn}(${src}, ${tsPath(path)})`
+      /* CANT-106. A property-level bound reaches here — the alias branches
+       * never do, since a `named` alias reference is handled above and never
+       * falls into `prim` — so this is the ONLY place a property's own
+       * `minimum`/`maximum`/`minLength`/`maxLength`/`pattern` gets enforced.
+       * An IIFE with the exact `(v, p)` signature `as${Name}` uses is what
+       * lets `tsScalarChecks` stay one function for both: this is an
+       * anonymous, inline `as${Name}`, checking a value that has no named
+       * type to hang a top-level function off. */
+      const label = labelFromPath(path)
+      const patternExpr = ref.pattern ? `/${ref.pattern}/` : undefined
+      const t = tsType(ref)
+      const body = [`const x = ${decodeFn}(v, p)`, ...tsScalarChecks(ref, label, 'x', patternExpr), 'return x']
+      return `((v: unknown, p: string): ${t} => { ${body.join('; ')} })(${src}, ${tsPath(path)})`
+    }
   }
 }
 
@@ -431,11 +509,9 @@ function emitTS() {
        * not pinned the format, it has described it — and the two clients will
        * discover the difference by sorting a conversation differently. */
       const n = d.node
-      const body = [`  const x = ${d.node.type === 'integer' ? 'asInt' : d.node.type === 'number' ? 'asNum' : 'asStr'}(v, p)`]
-      if (n.pattern) body.push(`  if (!${d.name}Pattern.test(x)) bad(p, \`${d.name} must match ${n.pattern.replace(/`/g, '\\`')}, got \${JSON.stringify(x)}\`)`)
-      if (n.minimum !== undefined) body.push(`  if (x < ${n.minimum}) bad(p, \`${d.name} must be >= ${n.minimum}, got \${x}\`)`)
-      if (n.maximum !== undefined) body.push(`  if (x > ${n.maximum}) bad(p, \`${d.name} must be <= ${n.maximum}, got \${x}\`)`)
-      body.push('  return x')
+      const body = [`  const x = ${d.node.type === 'integer' ? 'asInt' : d.node.type === 'number' ? 'asNum' : 'asStr'}(v, p)`,
+        ...tsScalarChecks(n, d.name, 'x', `${d.name}Pattern`).map((l) => '  ' + l),
+        '  return x']
       if (n.pattern) L.push(`const ${d.name}Pattern = /${n.pattern}/`)
       L.push(`const as${d.name} = (v: unknown, p: string): ${d.name} => {`, ...body, '}', '')
     } else if (d.kind === 'enum') {
@@ -581,6 +657,23 @@ function dartType(ref, nullable) {
   }
 }
 
+/* Dart mirror of tsScalarChecks — CANT-106. Escaping matches the alias
+ * branch's pattern handling: backslashes first, then the interpolation
+ * sigil, then the quote, because an anchored pattern ends in `$` and Dart
+ * would otherwise read that as the start of an interpolation. */
+function dartScalarChecks(n, label, xVar, patternExpr) {
+  const body = []
+  if (n.pattern) {
+    const lit = n.pattern.replace(/\\/g, '\\\\').replace(/\$/g, '\\$').replace(/'/g, "\\'")
+    body.push(`if (!${patternExpr}.hasMatch(${xVar})) _bad(p, '${label} must match ${lit}, got "\$${xVar}"');`)
+  }
+  if (n.minimum !== undefined) body.push(`if (${xVar} < ${n.minimum}) _bad(p, '${label} must be >= ${n.minimum}, got \$${xVar}');`)
+  if (n.maximum !== undefined) body.push(`if (${xVar} > ${n.maximum}) _bad(p, '${label} must be <= ${n.maximum}, got \$${xVar}');`)
+  if (n.minLength !== undefined) body.push(`if (${xVar}.length < ${n.minLength}) _bad(p, '${label} must be at least ${n.minLength} characters, got \${${xVar}.length}');`)
+  if (n.maxLength !== undefined) body.push(`if (${xVar}.length > ${n.maxLength}) _bad(p, '${label} must be at most ${n.maxLength} characters, got \${${xVar}.length}');`)
+  return body
+}
+
 function dartDecode(ref, src, path, depth = 0) {
   switch (ref.kind) {
     case 'named': {
@@ -602,11 +695,18 @@ function dartDecode(ref, src, path, depth = 0) {
     case 'const': return `_str(${src}, ${dartPath(path)})`
     case 'inlineEnum':
       return `_oneOf(${src}, const [${ref.values.map((v) => JSON.stringify(v)).join(', ')}], ${dartPath(path)})`
-    case 'prim':
-      return ref.prim === 'integer' ? `_int(${src}, ${dartPath(path)})`
-        : ref.prim === 'number' ? `_num(${src}, ${dartPath(path)})`
-        : ref.prim === 'boolean' ? `_bool(${src}, ${dartPath(path)})`
-        : `_str(${src}, ${dartPath(path)})`
+    case 'prim': {
+      const decodeFn = ref.prim === 'integer' ? '_int' : ref.prim === 'number' ? '_num'
+        : ref.prim === 'boolean' ? '_bool' : '_str'
+      if (!hasScalarConstraints(ref)) return `${decodeFn}(${src}, ${dartPath(path)})`
+      /* CANT-106, mirroring the TS half exactly: an inline, anonymous
+       * `_as${Name}` for a value with no named type to hang one on. */
+      const label = labelFromPath(path)
+      const patternExpr = ref.pattern ? `RegExp(r'${ref.pattern.replace(/'/g, "\\'")}')` : undefined
+      const t = dartType(ref, false)
+      const body = [`final x = ${decodeFn}(v, p);`, ...dartScalarChecks(ref, label, 'x', patternExpr), 'return x;']
+      return `((Object? v, String p) { ${body.join(' ')} })(${src}, ${dartPath(path)})`
+    }
   }
 }
 
@@ -708,18 +808,7 @@ function emitDart() {
       }
       L.push(`${t} _as${d.name}(Object? v, String p) {`)
       L.push(`  final x = ${d.node.type === 'integer' ? '_int' : d.node.type === 'number' ? '_num' : '_str'}(v, p);`)
-      if (n.pattern) {
-        /* Escape for a Dart single-quoted string: backslashes first, then the
-         * interpolation sigil, then the quote. Anchored patterns end in `$`,
-         * which Dart would otherwise read as the start of an interpolation. */
-        const lit = n.pattern
-          .replace(/\\/g, '\\\\')
-          .replace(/\$/g, '\\$')
-          .replace(/'/g, "\\'")
-        L.push(`  if (!_${camel(d.name)}Pattern.hasMatch(x)) _bad(p, '${d.name} must match ${lit}, got \"\$x\"');`)
-      }
-      if (n.minimum !== undefined) L.push(`  if (x < ${n.minimum}) _bad(p, '${d.name} must be >= ${n.minimum}, got \$x');`)
-      if (n.maximum !== undefined) L.push(`  if (x > ${n.maximum}) _bad(p, '${d.name} must be <= ${n.maximum}, got \$x');`)
+      L.push(...dartScalarChecks(n, d.name, 'x', `_${camel(d.name)}Pattern`).map((l) => '  ' + l))
       L.push('  return x;', '}', '')
     } else if (d.kind === 'enum') {
       L.push(...doc(d.node.description, '///'))
@@ -885,6 +974,44 @@ function goRawString(v) {
   return v.includes('`') ? JSON.stringify(v) : '`' + v + '`'
 }
 
+/* Go mirror of tsScalarChecks/dartScalarChecks — CANT-106. Lines carry the
+ * `\t` a Go decoder needs at one level of nesting, which is what both call
+ * sites turn out to want: the alias `check${Name}` function's own body, and a
+ * bare statement inside an object's `decode()` emitted by `goCheck` below.
+ * `pathLit` is Go source for `badf`'s path argument as the CALLER already has
+ * it — the alias function's own `p` parameter, or (from `goCheck`) a quoted
+ * literal its caller substitutes the runtime path into afterwards, same as
+ * the `named` and `inlineEnum` cases below already rely on. */
+function goScalarChecks(n, expr, pathLit, label, patternExpr) {
+  const out = []
+  if (n.pattern) {
+    out.push(`\tif !${patternExpr}.MatchString(${expr}) {`)
+    out.push(`\t\treturn badf(${pathLit}, "${label} must match %s, got %q", ${goRawString(n.pattern)}, ${expr})`)
+    out.push('\t}')
+  }
+  if (n.minimum !== undefined) {
+    out.push(`\tif ${expr} < ${n.minimum} {`)
+    out.push(`\t\treturn badf(${pathLit}, "${label} must be >= ${n.minimum}, got %v", ${expr})`)
+    out.push('\t}')
+  }
+  if (n.maximum !== undefined) {
+    out.push(`\tif ${expr} > ${n.maximum} {`)
+    out.push(`\t\treturn badf(${pathLit}, "${label} must be <= ${n.maximum}, got %v", ${expr})`)
+    out.push('\t}')
+  }
+  if (n.minLength !== undefined) {
+    out.push(`\tif len(${expr}) < ${n.minLength} {`)
+    out.push(`\t\treturn badf(${pathLit}, "${label} must be at least ${n.minLength} characters, got %d", len(${expr}))`)
+    out.push('\t}')
+  }
+  if (n.maxLength !== undefined) {
+    out.push(`\tif len(${expr}) > ${n.maxLength} {`)
+    out.push(`\t\treturn badf(${pathLit}, "${label} must be at most ${n.maxLength} characters, got %d", len(${expr}))`)
+    out.push('\t}')
+  }
+  return out
+}
+
 /* The check a Go decoder runs on one value, mirroring tsDecode's dispatch.
  *
  * Returns lines, because Go has no expression form for "validate or return an
@@ -922,6 +1049,19 @@ function goCheck(ref, expr, path, depth = 0) {
       return [`\tif !oneOf(${expr}, []string{${ref.values.map((v) => JSON.stringify(v)).join(', ')}}) {`,
         `\t\treturn badf(${JSON.stringify(path)}, "expected one of %s, got %q", ${JSON.stringify(ref.values.join('|'))}, ${expr})`,
         '\t}']
+    /* CANT-106. A property-level bound reaches here — the alias branches never
+     * do, since a `named` alias reference is handled above. `path` here is
+     * still plain text (`Foo.bar` or, one list level down, `Foo.bar[]`), the
+     * same shape `named` and `inlineEnum` already hand to `JSON.stringify`, so
+     * the object emitter's PATH_EXPR/literal-path substitution — and the list
+     * case just above, for a constrained array item like `VoiceAttachment.peaks` —
+     * apply to these lines exactly as they do to those. */
+    case 'prim': {
+      if (!hasScalarConstraints(ref)) return []
+      const label = labelFromPath(path)
+      const patternExpr = ref.pattern ? `regexp.MustCompile(${goRawString(ref.pattern)})` : undefined
+      return goScalarChecks(ref, expr, JSON.stringify(path), label, patternExpr)
+    }
     default:
       return []
   }
@@ -930,7 +1070,7 @@ function goCheck(ref, expr, path, depth = 0) {
 /* Whether an alias carries anything worth checking. An unconstrained one is a
  * name for a Go builtin and needs no function. */
 function hasConstraints(n) {
-  return n.pattern !== undefined || n.minimum !== undefined || n.maximum !== undefined
+  return hasScalarConstraints(n)
 }
 
 function goType(ref, optional, ctx = '') {
@@ -1063,21 +1203,7 @@ function emitGo() {
         }
         L.push(`// check${d.name} enforces the schema's constraints on a ${d.name}.`)
         L.push(`func check${d.name}(v ${t}, p string) error {`)
-        if (n.pattern) {
-          L.push(`\tif !${camel(d.name)}Pattern.MatchString(v) {`)
-          L.push(`\t\treturn badf(p, "${d.name} must match %s, got %q", ${goRawString(n.pattern)}, v)`)
-          L.push('\t}')
-        }
-        if (n.minimum !== undefined) {
-          L.push(`\tif v < ${n.minimum} {`)
-          L.push(`\t\treturn badf(p, "${d.name} must be >= ${n.minimum}, got %v", v)`)
-          L.push('\t}')
-        }
-        if (n.maximum !== undefined) {
-          L.push(`\tif v > ${n.maximum} {`)
-          L.push(`\t\treturn badf(p, "${d.name} must be <= ${n.maximum}, got %v", v)`)
-          L.push('\t}')
-        }
+        L.push(...goScalarChecks(n, 'v', 'p', d.name, `${camel(d.name)}Pattern`))
         L.push('\treturn nil')
         L.push('}', '')
       }

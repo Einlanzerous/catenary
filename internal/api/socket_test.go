@@ -436,7 +436,17 @@ func TestHelloRefusesAnUnsupportedWireVersion(t *testing.T) {
 	s := newStubs(t)
 	srv := serve(t, s.deps())
 
-	for _, v := range []int64{wireVersionMin - 1, wire.WireVersion + 1} {
+	// CANT-106: wireVersionMin is 1, and so is the wire schema's own minimum on
+	// ClientHello.wire_version — the two floors coincide, so there is no longer
+	// an integer that is both a well-formed frame and below this server's
+	// supported window. wireVersionMin-1 (0) used to probe that low side; it now
+	// fails at DECODE with a "malformed frame" close and no ServerError frame
+	// at all, a different observable shape from the graceful
+	// wire_version_unsupported path this loop asserts — see
+	// reject_client_hello_wire_version_zero in schema/vectors/vectors.json for
+	// that case instead. Only the high side — a version this server does not
+	// speak YET, still perfectly well-formed — remains reachable here.
+	for _, v := range []int64{wire.WireVersion + 1} {
 		conn, _, err := dial(t, srv, subprotocolV1, tokenProto(s.token))
 		if err != nil {
 			t.Fatal(err)
