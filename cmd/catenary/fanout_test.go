@@ -100,6 +100,13 @@ type rig struct {
 	d    deps
 	log  *recorder
 	base string // http://host:port
+	// since is the database's clock when the rig was built. waitForListen
+	// counts only LISTEN backends started after it: the previous test's
+	// listener is stopped in its cleanup, but Postgres reaps the backend a
+	// moment later, and a wait that matched it would let this test commit
+	// before its own listener was registered — a lost notification and a
+	// ten-second timeout, once in a while.
+	since time.Time
 }
 
 // newRig builds the process over a fresh database, serves it, and runs the
@@ -110,9 +117,18 @@ func newRig(t *testing.T) *rig {
 	ctx, pool, st, d := processFixture(t, slog.New(log))
 	srv := httptest.NewServer(d.router)
 	t.Cleanup(srv.Close)
-	r := &rig{t: t, ctx: ctx, pool: pool, st: st, d: d, log: log, base: srv.URL}
+	r := &rig{t: t, ctx: ctx, pool: pool, st: st, d: d, log: log, base: srv.URL, since: dbNow(ctx, t, pool)}
 	r.runListener()
 	return r
+}
+
+func dbNow(ctx context.Context, t *testing.T, pool *pgxpool.Pool) time.Time {
+	t.Helper()
+	var now time.Time
+	if err := pool.QueryRow(ctx, `SELECT now()`).Scan(&now); err != nil {
+		t.Fatal(err)
+	}
+	return now
 }
 
 func (r *rig) runListener() {
@@ -137,7 +153,8 @@ func (r *rig) waitForListen() {
 			SELECT count(*) FROM pg_stat_activity
 			 WHERE datname = current_database()
 			   AND wait_event = 'ClientRead'
-			   AND query ILIKE 'LISTEN %'`).Scan(&n); err != nil {
+			   AND query ILIKE 'LISTEN %'
+			   AND backend_start >= $1`, r.since).Scan(&n); err != nil {
 			r.t.Fatal(err)
 		}
 		if n >= 1 {
@@ -639,12 +656,15 @@ func TestACancelledServeClosesEverySessionWith1001(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The clock is read BEFORE serve starts its listener, or a fast connect
+	// could register a backend older than the mark and never be counted.
+	since := dbNow(ctx, t, pool)
 	serveCtx, cancel := context.WithCancel(ctx)
 	served := make(chan error, 1)
 	go func() { served <- serve(serveCtx, d, ln) }()
 	base := "http://" + ln.Addr().String()
 
-	r := &rig{t: t, ctx: ctx, pool: pool, st: d.store, d: d, log: log, base: base}
+	r := &rig{t: t, ctx: ctx, pool: pool, st: d.store, d: d, log: log, base: base, since: since}
 	r.waitForListen()
 	sessions := []*session{r.open(ada, "laptop"), r.open(theo, "phone")}
 
