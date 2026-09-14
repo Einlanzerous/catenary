@@ -198,11 +198,17 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		authenticateFn = st.Authenticate
 		helloFn = st.Hello
 		sendFn = st.SendMessage
-		// The frame bound follows the message bound: a `send` is its text
-		// plus a handful of upload ids, and 64 KiB of headroom covers the ids,
-		// the reply reference and the JSON around them at any configured
-		// text size.
-		maxFrameBytes = int64(st.Limits().MaxMessageBytes) + 64<<10
+		// The frame bound follows the message bound, MULTIPLICATIVELY. The
+		// store bounds the UTF-8 bytes of `text`; the socket sees that text
+		// JSON-encoded, and encoding is not free: a control character
+		// becomes `\u00XX`, six bytes for one, and no encoder in any of the
+		// three clients does worse. So a message the store would accept
+		// occupies at most six times its text on the wire, and the 64 KiB
+		// on top covers the ids, the reply reference and the JSON around
+		// them. The two must hold together: a frame refused here is severed
+		// with 1009 before the store can answer `message_too_large`, and a
+		// client whose outbox retries it is a client in a reconnect loop.
+		maxFrameBytes = 6*int64(st.Limits().MaxMessageBytes) + 64<<10
 	}
 
 	return deps{

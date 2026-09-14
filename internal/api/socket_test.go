@@ -42,6 +42,11 @@ type stubs struct {
 	attached chan *Session
 	detached chan *Session
 	handled  chan wire.ClientFrame
+
+	// onAttach, when set, runs inside Attach with the session, before Attach
+	// returns to the door. A test that needs to act while the door is still
+	// between the binding and `ready` acts here.
+	onAttach func(*Session)
 }
 
 func newStubs(t *testing.T) *stubs {
@@ -83,6 +88,9 @@ func (s *stubs) deps() Deps {
 		},
 		Attach: func(sess *Session) func() {
 			s.attached <- sess
+			if s.onAttach != nil {
+				s.onAttach(sess)
+			}
 			return func() { s.detached <- sess }
 		},
 		Handle: func(_ context.Context, _ *Session, f wire.ClientFrame) { s.handled <- f },
@@ -362,14 +370,48 @@ func TestHelloBindsTheSocketToTheAccountAndDevice(t *testing.T) {
 		t.Errorf("Hello cursor = %v, want 41207", req.Cursor)
 	}
 
-	// And the hub was handed the same binding, BEFORE ready reached the client.
-	select {
-	case sess := <-s.attached:
-		if sess.ID != sessionID || sess.UserID != s.caller.UserID || sess.DeviceID != s.caller.DeviceID {
-			t.Errorf("attached session %+v does not match the binding", sess)
+	// And the hub was handed the same binding. That it was handed it BEFORE
+	// `ready` went out is TestAttachRunsBeforeReadyIsWritten's, which pins
+	// the order on the wire rather than on a race.
+	sess := <-s.attached
+	if sess.ID != sessionID || sess.UserID != s.caller.UserID || sess.DeviceID != s.caller.DeviceID {
+		t.Errorf("attached session %+v does not match the binding", sess)
+	}
+}
+
+// ATTACH BEFORE READY, pinned on the wire. The stub's Attach writes a frame
+// through the session it was handed, and the client must see that frame
+// FIRST and `ready` second: writes on one connection are serialised, so the
+// order the client reads them in is the order the door made the two calls.
+// Move Attach below the `ready` write in serveSession and this fails every
+// run, not one run in a thousand — a `select`/`default` on a buffered channel
+// cannot say that, because the server reaches Attach nanoseconds after
+// `ready` either way.
+func TestAttachRunsBeforeReadyIsWritten(t *testing.T) {
+	s := newStubs(t)
+	marker := wire.ServerResyncRequired{Reason: wire.ResyncReasonCursorTooOld, LogSeq: testHead}
+	s.onAttach = func(sess *Session) {
+		if err := sess.Send(testCtx(t), marker); err != nil {
+			t.Errorf("send from inside Attach: %v", err)
 		}
-	default:
-		t.Error("ready arrived before Attach was called")
+	}
+	srv := serve(t, s.deps())
+
+	conn, _, err := dial(t, srv, subprotocolV1, tokenProto(s.token))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	sendText(t, conn, helloFor(s, nil))
+
+	first := readServer(t, conn)
+	if _, isReady := first.(wire.ServerReady); isReady {
+		t.Fatal("ready was on the wire before Attach ran: a message committing in between is neither delivered live nor on the page the client requests on ready")
+	}
+	if got, ok := first.(wire.ServerResyncRequired); !ok || got != marker {
+		t.Fatalf("first frame = %+v, want the frame Attach wrote", first)
+	}
+	if _, ok := readServer(t, conn).(wire.ServerReady); !ok {
+		t.Fatal("ready did not follow the frame Attach wrote")
 	}
 }
 

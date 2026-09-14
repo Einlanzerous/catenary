@@ -399,16 +399,26 @@ func readLoop(ctx context.Context, d Deps, sess *Session, logger *slog.Logger) {
 			if !handleSend(ctx, d, sess, logger, v) {
 				return
 			}
-		default:
-			// `read` and `typing`: both cross sockets, so both are the hub's.
-			// Handed over when a hub is wired; dropped, and said so at debug,
-			// when none is — neither frame is acknowledged on the wire, so an
-			// unwired hub owes the client nothing it could otherwise notice.
+		case wire.ClientRead, wire.ClientTyping:
+			// Both cross sockets, so both are the hub's. Handed over when a
+			// hub is wired; dropped, and said so at debug, when none is —
+			// neither frame is acknowledged on the wire, so an unwired hub
+			// owes the client nothing it could otherwise notice.
 			if d.Handle != nil {
 				d.Handle(ctx, sess, v)
 				continue
 			}
 			logger.DebugContext(ctx, "frame not handled", "type", wireTag(v))
+		default:
+			// NAMED, NOT INHERITED. A frame the generated decoder knows and
+			// this switch does not is a client frame the schema gained after
+			// this loop was written, and where it goes — the hub, a handler
+			// here, a refusal — is a decision, not a default. Until it is
+			// made the frame is dropped like an unknown tag, and the log
+			// line says so at warn, because unlike an unknown tag this one
+			// is the server's omission rather than the client's novelty.
+			logger.WarnContext(ctx, "frame type known to the schema but not to this loop",
+				"type", wireTag(v))
 		}
 	}
 }
