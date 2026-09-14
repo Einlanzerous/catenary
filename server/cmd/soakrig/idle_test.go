@@ -204,8 +204,11 @@ func TestIdleAgainstALocalServer(t *testing.T) {
 		if !strings.Contains(rep.Reason, "did not survive") {
 			t.Errorf("reason does not name the close: %q", rep.Reason)
 		}
-		if !strings.Contains(rep.Reason, "no-close-frame") && !strings.Contains(rep.Reason, "-1") {
-			t.Logf("reason: %q (a TCP-level sever is expected to read as no-close-frame(-1))", rep.Reason)
+		// A TCP-level sever (no WebSocket close frame at all) is the -1
+		// bucket, named closeCodeName(-1) — a hard assertion, since the
+		// PR's own evidence table cites this exact string as proof.
+		if !strings.Contains(rep.Reason, "no-close-frame(-1)") {
+			t.Errorf("reason does not name the close status as no-close-frame(-1): %q", rep.Reason)
 		}
 	})
 
