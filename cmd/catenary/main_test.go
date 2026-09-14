@@ -83,6 +83,12 @@ func TestHeartbeatBoundsFromRejectsOutOfRange(t *testing.T) {
 		{"interval below the schema's floor", config.Config{HeartbeatIntervalSec: 4}, "CATENARY_HEARTBEAT_INTERVAL_SEC"},
 		{"interval above the schema's ceiling", config.Config{HeartbeatIntervalSec: 91}, "CATENARY_HEARTBEAT_INTERVAL_SEC"},
 		{"limit below the schema's floor", config.Config{MissedPongLimit: -1}, "CATENARY_MISSED_PONG_LIMIT"},
+		// The schema leaves missed_pong_limit unbounded above; heartbeatWindow
+		// does not survive that (a large enough limit overflows int64
+		// nanoseconds into a negative duration, which severs every session at
+		// `ready`), so this function draws its own ceiling.
+		{"limit above the overflow ceiling", config.Config{MissedPongLimit: missedPongLimitCeiling + 1}, "CATENARY_MISSED_PONG_LIMIT"},
+		{"limit far above the overflow ceiling", config.Config{MissedPongLimit: 200_000_000}, "CATENARY_MISSED_PONG_LIMIT"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := heartbeatBoundsFrom(tc.cfg)
@@ -99,6 +105,7 @@ func TestHeartbeatBoundsFromRejectsOutOfRange(t *testing.T) {
 	for _, cfg := range []config.Config{
 		{HeartbeatIntervalSec: 5, MissedPongLimit: 1},
 		{HeartbeatIntervalSec: 90, MissedPongLimit: 1},
+		{HeartbeatIntervalSec: 90, MissedPongLimit: missedPongLimitCeiling},
 		{},
 	} {
 		if err := heartbeatBoundsFrom(cfg); err != nil {

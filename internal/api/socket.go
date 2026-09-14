@@ -10,9 +10,15 @@ package api
 // and plugs in through Attach and Handle below. The heartbeat is CANT-23's:
 // `ready` announces the dial, this file answers a `ping` with a `pong`, and a
 // session that goes quiet longer than the announced window severs itself —
-// never the reverse. This server never originates a `ping` and never touches
-// the WebSocket protocol's own ping/pong control frames; either would change
-// what the wire says a heartbeat is (invariant 3).
+// never the reverse. THE SCHEMA'S Ping IS EXPLICITLY BIDIRECTIONAL and does
+// not forbid a server-originated one — this server simply has no use for
+// one: the watchdog already proves liveness from the client's own ping, and
+// a second, server-originated ping would only double the traffic for
+// nothing the watchdog does not already have. This file never touches the
+// WebSocket protocol's own ping/pong control frames, though, and THAT is
+// invariant 3's ground: those are invisible to application code and
+// answerable by an intermediary, so a heartbeat built on them could not
+// honestly be called kept.
 //
 // THE CREDENTIAL RIDES ON Sec-WebSocket-Protocol (CANT-28 ruling 1), because it
 // is the one request header `new WebSocket(url, protocols)` lets a browser
@@ -135,6 +141,45 @@ const statusHeartbeatTimeout websocket.StatusCode = 4000
 func heartbeatWindow(intervalSec, missedPongLimit int) time.Duration {
 	return time.Duration(intervalSec) * time.Second * time.Duration(missedPongLimit+1)
 }
+
+// heartbeatWatchdog is the severance timer serveSession starts the moment
+// `ready` goes out and readLoop's case wire.Ping resets.
+//
+// severed IS SET BEFORE THE CLOSE, so readLoop's read error branch can tell
+// "this connection ended because the watchdog fired" from every other
+// closure cause and log the event exactly ONCE — the same problem
+// awaitHello's own timedOut solves for the hello deadline, and the same
+// fix: the timer records the cause and says nothing, and the reader that
+// actually observes the resulting error is the one that logs, instead of
+// both the timer and endSession logging "session closed" for one event at
+// two different levels.
+type heartbeatWatchdog struct {
+	timer   *time.Timer
+	window  time.Duration
+	severed atomic.Bool
+}
+
+// startHeartbeatWatchdog arms a watchdog against conn. Armed, never running:
+// nothing here blocks, and nothing here has an opinion about the session
+// before this call — see serveSession for why that call is exactly at
+// `ready`.
+func startHeartbeatWatchdog(conn *websocket.Conn, window time.Duration) *heartbeatWatchdog {
+	w := &heartbeatWatchdog{window: window}
+	w.timer = time.AfterFunc(window, func() {
+		w.severed.Store(true)
+		closeWith(conn, statusHeartbeatTimeout, "heartbeat timeout: no ping within the announced window")
+	})
+	return w
+}
+
+// ping re-arms the watchdog at its original window. The only caller is
+// readLoop's case wire.Ping — see heartbeatWindow's doc for why nothing else
+// resets it.
+func (w *heartbeatWatchdog) ping() { w.timer.Reset(w.window) }
+
+// stop disarms the watchdog. serveSession defers it so nothing outlives the
+// session it was armed for.
+func (w *heartbeatWatchdog) stop() { w.timer.Stop() }
 
 // Session is one accepted, authenticated, hello'd socket: what the hub holds.
 //
@@ -404,15 +449,10 @@ func serveSession(ctx context.Context, d Deps, conn *websocket.Conn, caller stor
 	// takes the whole of helloTimeout to say hello is not a session this
 	// watchdog has an opinion about yet — only a `ready`'d session can go
 	// quiet on a clock it was never told about.
-	window := heartbeatWindow(heartbeatInterval, missedPongLimit)
-	watchdog := time.AfterFunc(window, func() {
-		logger.WarnContext(ctx, "session closed", "phase", "open",
-			"reason", "heartbeat timeout", "window", window.String())
-		closeWith(conn, statusHeartbeatTimeout, "heartbeat timeout: no ping within the announced window")
-	})
-	defer watchdog.Stop()
+	watchdog := startHeartbeatWatchdog(conn, heartbeatWindow(heartbeatInterval, missedPongLimit))
+	defer watchdog.stop()
 
-	readLoop(ctx, d, sess, logger, watchdog, window)
+	readLoop(ctx, d, sess, logger, watchdog)
 }
 
 // awaitHello reads until the first known frame and requires it to be a hello.
@@ -457,12 +497,21 @@ func awaitHello(ctx context.Context, conn *websocket.Conn, logger *slog.Logger) 
 // connection ends.
 //
 // watchdog is the heartbeat severance timer started the moment `ready` went
-// out (serveSession); window is the exact duration it was armed with, so
-// case wire.Ping can re-arm it at the same window rather than a stale one.
-func readLoop(ctx context.Context, d Deps, sess *Session, logger *slog.Logger, watchdog *time.Timer, window time.Duration) {
+// out (serveSession).
+func readLoop(ctx context.Context, d Deps, sess *Session, logger *slog.Logger, watchdog *heartbeatWatchdog) {
 	for {
 		f, err := readFrame(ctx, sess.conn)
 		if err != nil {
+			if watchdog.severed.Load() {
+				// LOGGED HERE, NOT BY THE TIMER (heartbeatWatchdog's doc):
+				// the same event endSession would otherwise also log, at a
+				// different level and with different fields, splitting one
+				// severance into two "session closed" lines.
+				logger.WarnContext(ctx, "session closed", "phase", "open",
+					"reason", "heartbeat timeout", "status", int(statusHeartbeatTimeout),
+					"window", watchdog.window.String())
+				return
+			}
 			endSession(ctx, sess.conn, logger, "open", err)
 			return
 		}
@@ -478,19 +527,19 @@ func readLoop(ctx context.Context, d Deps, sess *Session, logger *slog.Logger, w
 			// THE ONLY FRAME THAT RESETS THE WATCHDOG (heartbeatWindow's
 			// doc). Reset before the reply: a session that pinged has proven
 			// itself live even if the reply that follows fails to write.
-			watchdog.Reset(window)
+			watchdog.ping()
 			if err := sess.Send(ctx, wire.Pong{ID: v.ID, At: ptrStamp(store.ServerTime())}); err != nil {
 				endSession(ctx, sess.conn, logger, "open", err)
 				return
 			}
 		case wire.Pong:
-			// The schema allows Pong in either direction (it is a symmetric
-			// type), but this server never sends a Ping of its own — a
-			// server-originated app ping is exactly what invariant 3 rules
-			// out, because it would change what the wire says a heartbeat
-			// is. So an inbound Pong answers a ping this server never sent;
-			// accepted and, like every frame but Ping, it does not touch
-			// the watchdog above.
+			// The schema allows Pong in either direction, and this server
+			// could send a Ping of its own without breaking anything it
+			// states — it simply does not, because the watchdog already has
+			// what it needs from the client's own ping (see the file doc).
+			// So an inbound Pong here answers a ping this server never
+			// sent; accepted and, like every frame but Ping, it does not
+			// touch the watchdog above.
 		case wire.ClientHello:
 			// A second hello is a client bug, and ignoring it would hide the
 			// bug behind a session that looks fine.

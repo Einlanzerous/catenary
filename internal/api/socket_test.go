@@ -930,3 +930,29 @@ func TestHeartbeatClockDoesNotStartBeforeReady(t *testing.T) {
 			ready.HeartbeatIntervalSec, ready.MissedPongLimit, testHeartbeatInterval, testHeartbeatLimit)
 	}
 }
+
+// heartbeatWindow multiplies unboundedly: the wire schema leaves
+// missed_pong_limit with no maximum, and cmd/catenary's missedPongLimitCeiling
+// (1000) is what actually keeps an operator value inside int64 nanoseconds —
+// this package has no ceiling of its own to test. What it pins is the
+// arithmetic that ceiling exists for: sane at the ceiling, and genuinely
+// wrapping to a negative duration on the value the review found, so a future
+// change to either number has to look at this again rather than rediscover
+// the bug in production.
+func TestHeartbeatWindowArithmetic(t *testing.T) {
+	if w, want := heartbeatWindow(90, missedPongLimitCeilingForTest), 90*(missedPongLimitCeilingForTest+1)*time.Second; w != want {
+		t.Errorf("heartbeatWindow(90, %d) = %v, want %v", missedPongLimitCeilingForTest, w, want)
+	}
+	// cmd/catenary's heartbeatBoundsFrom refuses this value; recorded here so
+	// the reason it must keeps matching what this function actually does.
+	if w := heartbeatWindow(90, 200_000_000); w > 0 {
+		t.Errorf("heartbeatWindow(90, 200_000_000) = %v, want a wrapped (negative) duration — "+
+			"if this now stays positive, cmd/catenary's missedPongLimitCeiling may no longer need to be as tight as it is", w)
+	}
+}
+
+// missedPongLimitCeilingForTest mirrors cmd/catenary's missedPongLimitCeiling.
+// Not imported — cmd/catenary is package main and cannot be imported, and the
+// constant is small and stable enough that a literal here, named to say what
+// it is, is clearer than a cross-package indirection would be.
+const missedPongLimitCeilingForTest = 1000
