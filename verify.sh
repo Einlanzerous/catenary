@@ -224,6 +224,24 @@ result $? "go test ./... ($(grep -c 'no test files\|^ok' "$LOGDIR/v-go-test.log"
 (cd "$ROOT/server" && go run ./cmd/conformance) >"$LOGDIR/v-go.log" 2>&1
 result $? "$(grep -oE 'all green — .*vectors|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-go.log" | tail -1)"
 
+# CANT-27: a short, bounded, DETERMINISTIC run of the soak/chaos harness
+# itself — a real subprocess, a real Postgres, a real reconnect storm and a
+# real kill -9, just five clients and second-scale phases rather than the
+# ticket's own N>=20 floor, so this stays fast enough for verify.sh. Behind
+# the `soaksmoke` build tag so it runs exactly ONCE per invocation, named by
+# its own step, rather than a second time folded into "R4 · Go" above (which
+# already exercises this package's counter-proof tests against the same
+# database). The full soak is on-demand only — `soakrig soak -h` — never here:
+# a real N>=20 run holds the database and takes tens of seconds, which is
+# exactly what this file's own header says a step must not do.
+step "CANT-27 · soak harness smoke (N clients, a reconnect storm, a kill -9)"
+if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  (cd "$ROOT/server" && go test -tags soaksmoke -run TestSmokeSoak -v -count=1 ./cmd/soakrig/...) >"$LOGDIR/v-soak-smoke.log" 2>&1
+  result $? "$(grep -oE 'N=[0-9]+ duration=[a-z0-9.]+ verdict=[a-z_]+' "$LOGDIR/v-soak-smoke.log" | tail -1)"
+else
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the smoke run needs a real Postgres.\n'
+fi
+
 step "R4 · the staleness guard actually fails the build — once per generated file"
 # CANT-12 criterion 3: proved PER PIPELINE, not once overall. The check has
 # always walked every target; the PROOF used to touch one file, so three of the
