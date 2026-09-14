@@ -55,6 +55,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -184,6 +185,17 @@ type Stats struct {
 	Undecodable      int
 	LastRTT          time.Duration
 	LastClose        string
+
+	// CloseStatuses counts how each session this client held has ended, keyed
+	// by the WebSocket close code the peer sent — or -1 when the session
+	// ended with no close frame at all: a network cut, a `kill -9` on the
+	// other end, or Sever. Keyed by int rather than websocket.StatusCode so a
+	// caller outside this package (CANT-27's harness) reads it without
+	// importing coder/websocket. CANT-35's table is what every code here
+	// means: 1001 drain, 1012 head-unreadable, 4000 heartbeat timeout, -1
+	// abnormal — all four the same "reconnect with backoff" bucket this
+	// client already treats them as.
+	CloseStatuses map[int]int
 }
 
 // Status is a point-in-time view of a Client.
@@ -348,6 +360,10 @@ func (c *Client) Run(ctx context.Context) error {
 		c.mu.Lock()
 		if err != nil {
 			c.stats.LastClose = err.Error()
+			if c.stats.CloseStatuses == nil {
+				c.stats.CloseStatuses = map[int]int{}
+			}
+			c.stats.CloseStatuses[int(websocket.CloseStatus(err))]++
 		}
 		c.mu.Unlock()
 		c.notify()
@@ -395,6 +411,26 @@ func (c *Client) Kill() {
 		_ = conn.CloseNow()
 	}
 	c.notify()
+}
+
+// Sever ends the current session abruptly — no close handshake, the same as a
+// network drop — without stopping Run: the reconnect loop redials with
+// backoff, exactly as it does after any other lost session, and catch-up
+// covers whatever the gap turns out to hold. It is a no-op when no session is
+// open.
+//
+// KILL CANNOT DO THIS: Kill is `kill -9` on the CLIENT and stops Run for
+// good. CANT-27's reconnect storm needs every client to drop its socket at
+// once and then reconnect on its own, which is a capability Kill and Close
+// both lack — Kill ends the client, Close is a graceful handshake the network
+// event this simulates never sends.
+func (c *Client) Sever() {
+	c.mu.Lock()
+	conn := c.conn
+	c.mu.Unlock()
+	if conn != nil {
+		_ = conn.CloseNow()
+	}
 }
 
 // Close stops the client politely: a normal close handshake, then Run returns.
@@ -468,6 +504,11 @@ func (c *Client) Status() Status {
 		MissedPongLimit:   c.missedLimit,
 		CaughtUp:          c.gen == c.doneGen,
 	}
+	// s.Stats is a value copy of c.stats, but a map field copies its header,
+	// not its contents: without this clone, s.CloseStatuses would still alias
+	// the live map and a caller reading it after unlocking could race the
+	// next session's write.
+	s.CloseStatuses = maps.Clone(c.stats.CloseStatuses)
 	c.mu.Unlock()
 	c.j.mu.Lock()
 	s.Cursor, s.HasCursor, s.Messages, s.Wipes = c.j.cursor, c.j.hasCursor, len(c.j.messages), c.j.wipes

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,19 @@ import (
 
 	"github.com/magos/catenary/internal/wire"
 )
+
+// readyFrame is a minimal, valid `ready` frame for a fake server to send.
+func readyFrame(t *testing.T) []byte {
+	t.Helper()
+	b, err := json.Marshal(wire.ServerReady{
+		SessionID: wire.Uuid(uuid.NewString()), ServerTime: "2026-01-01T00:00:00.000Z",
+		HeartbeatIntervalSec: 30, MissedPongLimit: 2, LogSeq: 0, Resumed: false,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
 
 func TestNoFrameCanPrecedeTheHello(t *testing.T) {
 	accepted := make(chan struct{})
@@ -105,5 +119,118 @@ func TestNoFrameCanPrecedeTheHello(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no frame reached the server")
+	}
+}
+
+// CANT-27's reconnect storm needs to drop every client's socket at once and
+// watch it come back on its own — a capability Kill lacks (Kill also stops
+// Run for good) and Close lacks (a graceful handshake is not what a storm
+// looks like). Sever is the addition.
+func TestSeverEndsTheSessionWithoutStoppingRun(t *testing.T) {
+	var upgrades atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{subprotocolV1}})
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		if _, _, err := conn.Read(context.Background()); err != nil { // the hello
+			return
+		}
+		upgrades.Add(1)
+		if err := conn.Write(context.Background(), websocket.MessageText, readyFrame(t)); err != nil {
+			return
+		}
+		_, _, _ = conn.Read(context.Background()) // held until Sever or the test ends
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(Config{
+		BaseURL: srv.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+		BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = c.Run(context.Background()) }()
+	t.Cleanup(func() { c.Kill(); <-done })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Await(ctx, func() bool { return c.Status().Ready }); err != nil {
+		t.Fatalf("waiting for the first ready: %v", err)
+	}
+
+	// A Sever with nothing open is a documented no-op; proved here rather
+	// than assumed, since a panic on a nil conn would fail every other test
+	// that never calls it.
+	idle, err := New(Config{BaseURL: srv.URL, AccessToken: "unused", DeviceID: wire.Uuid(uuid.NewString())})
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle.Sever()
+
+	c.Sever()
+
+	if err := c.Await(ctx, func() bool { return upgrades.Load() >= 2 && c.Status().Ready }); err != nil {
+		t.Fatalf("waiting for the reconnect: %v; status %+v", err, c.Status())
+	}
+	select {
+	case <-done:
+		t.Fatal("Run returned after Sever; Sever must not stop Run the way Kill does")
+	default:
+	}
+	if s := c.Status(); s.Dials < 2 || s.Readys < 2 {
+		t.Errorf("dials %d, readys %d — want at least two of each after one Sever", s.Dials, s.Readys)
+	}
+}
+
+// The close code a session ended with is CANT-27's "close statuses seen":
+// evidence that the client is tolerating the drain (1001), heartbeat-timeout
+// (4000) and head-unreadable (1012) codes CANT-35's table names, and the
+// abnormal case (-1) a `kill -9` or a network cut produces, rather than
+// treating any of them as a protocol error.
+func TestCloseStatusesRecordsTheCodeAndAbnormalClosures(t *testing.T) {
+	var sessions atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{subprotocolV1}})
+		if err != nil {
+			return
+		}
+		if _, _, err := conn.Read(context.Background()); err != nil {
+			conn.CloseNow()
+			return
+		}
+		if err := conn.Write(context.Background(), websocket.MessageText, readyFrame(t)); err != nil {
+			conn.CloseNow()
+			return
+		}
+		if sessions.Add(1) == 1 {
+			_ = conn.Close(websocket.StatusGoingAway, "draining") // a real close frame: 1001
+		} else {
+			_ = conn.CloseNow() // no close frame: abnormal, -1
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(Config{
+		BaseURL: srv.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+		BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = c.Run(context.Background()) }()
+	t.Cleanup(func() { c.Kill(); <-done })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Await(ctx, func() bool {
+		s := c.Status()
+		return s.CloseStatuses[int(websocket.StatusGoingAway)] >= 1 && s.CloseStatuses[-1] >= 1
+	}); err != nil {
+		t.Fatalf("waiting for both close codes: %v; status %+v", err, c.Status())
 	}
 }
