@@ -22,12 +22,13 @@ Five sub-tasks: `CANT-82` (the wire package's home), `CANT-83` (validation and t
 3. Begin.
 4. Idempotency check — before either ordinal is drawn.
 5. Membership and existence — one query, two `EXISTS`.
-7. Upload resolution (`CANT-85`).
+7. Upload resolution, through `UploadResolver` — only when the send carries attachments (`CANT-85`).
 8. Draw `seq` from `conversations.last_seq`.
 8b. `reply_to` resolution, `FOR KEY SHARE`.
 9. *(empty — the author's `read_seq` advance was removed; see below.)*
 10. Draw `log_seq` from `log_counter`.
-11. Insert the message, then its attachments (`CANT-85`).
+11. Insert the message.
+11b. Insert its attachments, every row in one statement (`CANT-85`).
 12. `pg_notify`, inside the transaction and last before commit (`CANT-86`). The payload is CANT-21's `(conversation_id, seq)`.
 
 **A replay wins over every refusal that depends on server state** — membership, existence, `reply_to`, upload resolution — because position 4 sits above all of them.
@@ -52,6 +53,10 @@ The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when
 - **CANT-63** draws `log_counter` for an edit and takes these in this order.
 - **CANT-26's** receipt write takes `conversation_members` and, since `CANT-89`, `log_counter` after it. The send path never locks a member row, so the counter is the only lock the two share, and both take it last: no cycle in either direction.
 
+**Position 11b takes `KEY SHARE` on one more `messages` row** — the one position 11 inserted a statement earlier, invisible to every other transaction until commit, so nothing can contend for it. The serialized section is draw, insert, attachments, notify, commit.
+
+**Position 7 takes whatever the resolver takes, before `conversations`.** `RefuseUploads` takes nothing. The rule stated outward: a resolver locks only upload-side rows, never `conversations`, `messages` or `log_counter` (`CANT-48`); and no path may lock `conversations` or `messages` and then an upload-side row (`CANT-67`).
+
 **The commit takes one more lock, and it is instance-wide.** `pg_notify` at position 12 locks nothing when it runs; at commit `PreCommit_Notify` takes an `AccessExclusiveLock` on "database 0", shared by every notifying committer on the Postgres instance, other services' databases included. It is acquired inside commit after every row lock and nothing waits on a row lock after it, so it is last in every notifier's order and cannot join a cycle. `RevokeDevice` is the other transaction in this service that takes it.
 
 ## What the operation guarantees
@@ -65,6 +70,12 @@ The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when
 - A `reply_to` that is missing or in another conversation is stored NULL and logged at `info` with both ids. The send succeeds, and the source is held `FOR KEY SHARE` so a concurrent delete cannot turn a valid ref into a failed send.
 - **A membership revoked between position 5 and commit is not caught**, and that is accepted: one more message lands from someone who was a member when asked. Closing it means locking the member row at position 5, which takes it *before* `conversations` and inverts against CANT-67's sweep.
 - An **empty send** — no `text`, no attachments — is stored.
+- **A message and its attachments commit together or not at all**, every row in one statement, with `position` 0…N−1 in the order the send listed them — assigned by the store, never taken from the resolver. A failure at 11b rolls back the message and both ordinals.
+- **A send with no attachments never reaches the resolver**, and **a replay never resolves**: position 7 sits below the idempotency check.
+- **A race loser under one key gets the original, not `upload_not_found`.** Before a not-found refusal leaves the store, the key is re-read; a row found is returned as a duplicate, `ErrNotFound` lets the refusal stand, and any other re-read error is returned as itself.
+- A resolved `kind` that differs from the requested one is refused `upload_not_found`, not retryable. A resolver returning the wrong number of rows is `internal`, not retryable.
+- Until `CANT-48`, `New` wires `RefuseUploads`, so every send carrying attachments is refused `upload_not_found`, not retryable. `WithUploadResolver` swaps it.
+- **`CATENARY_MAX_ATTACHMENTS` is at most 64** (`MaxAttachmentsCeiling`), enforced once by `Limits.Validate`: `New` panics above it, and `serve` refuses to start, naming the variable.
 - **A committed send raises exactly one notification, ids only, at commit.** A refusal, a replay, a race loser and a rolled-back send raise none. The call is inside the insert's transaction, on the same connection, last before commit; an over-cap payload (`ErrNotifyTooLarge`, unreachable with two fixed-width fields) fails the send as `internal`, not retryable.
 - Every refusal **logs once**: `warn` for `internal`, `info` for the rest, with `conversation_id`, `author_id`, `client_id`, `code` and `retryable`; **every** `internal` also logs its SQLSTATE and constraint name, retryable or not, because the permanent ones are the ones that need diagnosing. **The body is never logged, at any level** — `pgErr.Detail` is excluded by name, because on a CHECK violation it renders as `Failing row contains (…)` and that row is the message.
 
@@ -83,6 +94,12 @@ The insert at position 11 also takes `KEY SHARE` on `users(author_id)` and, when
 | `bigserial` for either ordinal | Unchanged from CANT-14: the number is handed out outside the transaction. |
 | Advancing the author's own `read_seq` on send | Built, then removed. It made `first_unread_seq` arithmetic at the price of marking an unread backlog read whenever an author replied without opening the thread — and the arithmetic was never necessary, because the derivation is an index scan. It also put a fourth lock in this transaction. |
 | Leaving `read_seq` alone *and* keeping `read_seq + 1` | The author's own message then counts toward their own unread, which Invariant 3 forbids outright. |
+| Resolving uploads below the `seq` draw, beside 8b | Every send in the conversation would queue on its row behind the resolver's lookup; upload rows have no existing lock direction to agree with. |
+| `unnest` for the attachment rows | `peaks` is a per-row array, and `unnest` over a two-dimensional array flattens it. |
+| Trusting the resolver's `position` | Order is a fact about the send, not about the upload. |
+| Writing the upload's `kind` when it disagrees with the request | The served message would differ from what the sender's client rendered, with no signal. |
+| A required resolver parameter on `New` | ~90 mechanical call-site edits in a diff read line by line; the default refuses loudly instead of dropping silently. |
+| An attachment ceiling derived from the 65,535-parameter limit | The socket's frame bound is crossed first, at under a thousand. |
 
 ## Not claimed here
 

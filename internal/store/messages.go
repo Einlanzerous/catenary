@@ -101,8 +101,34 @@ package store
 // only when nothing is pending. Negligible at this scale, and named because an
 // unnamed lock is one nobody can reason about.
 //
+// POSITION 11b TAKES ONE MORE KEY SHARE, AND NOTHING CAN CONTEND FOR IT. The
+// attachment insert's foreign key locks the `messages` row it references —
+// the row position 11 inserted one statement earlier, which no other
+// transaction can see until this one commits. Named because this list is read
+// as exhaustive, not because it can join a cycle.
+//
+// POSITION 7 TAKES WHATEVER THE RESOLVER TAKES, AND IT TAKES IT FIRST.
+// RefuseUploads locks nothing and queries nothing. CANT-48's resolver has to
+// lock and consume upload rows in this transaction (UploadResolver's contract),
+// and at position 7 those locks come BEFORE `conversations`. So, stated outward:
+//
+//   - A RESOLVER LOCKS ONLY UPLOAD-SIDE ROWS — never `conversations`, `messages`
+//     or `log_counter`. CANT-48 owns that half.
+//   - NO PATH MAY LOCK `conversations` OR `messages` AND THEN AN UPLOAD-SIDE ROW.
+//     CANT-67 owns that half: if its sweep ever reclaims upload rows while
+//     holding a conversation floor, it does so in a separate transaction or
+//     takes the upload rows first.
+//
+// Above the draw rather than beside 8b, and the difference is the reason. 8b
+// moved below the draw because its lock is on `messages`, which CANT-67 takes
+// after `conversations` — there was a direction to agree with. No path takes
+// upload rows in any order yet. Below the draw, the resolver would run while
+// this send holds the conversation row, and every send in the conversation
+// would queue behind whatever lookup CANT-48 writes; above it, a slow resolver
+// costs one pool connection.
+//
 // Taking log_counter LAST keeps the deployment-wide serialised section down to
-// draw-insert-notify-commit rather than the whole transaction. The larger reason for
+// draw, insert, attachments, notify, commit rather than the whole transaction. The larger reason for
 // fixing any order at all is that two writers taking the same locks in
 // opposite orders DEADLOCK, and Postgres resolves a deadlock by aborting
 // somebody's send.
@@ -224,9 +250,10 @@ type NewMessage struct {
 	// should be prevented.
 	Text *string
 
-	// Attachments as the SENDER describes them. CANT-83 only counts them, to
-	// enforce CATENARY_MAX_ATTACHMENTS; CANT-85 resolves the upload ids and
-	// writes the rows inside this transaction.
+	// Attachments as the SENDER describes them, in the order they are to be
+	// shown. Counted at position 2 against CATENARY_MAX_ATTACHMENTS, resolved
+	// through the store's UploadResolver at position 7, and written at 11b in
+	// this transaction with `position` set to this slice's index (CANT-85).
 	Attachments []NewAttachment
 }
 
@@ -338,12 +365,46 @@ func (s *Store) send(ctx context.Context, m NewMessage) (Sent, error) {
 	if err == nil {
 		return sent, nil
 	}
-	if !isUniqueViolation(err, dedupConstraint) {
-		return Sent{}, err
+	switch {
+	case isUniqueViolation(err, dedupConstraint):
+		// Somebody else committed this key while we were drawing. Our ordinals
+		// went back with the rollback; re-read theirs.
+		return s.sentByKey(ctx, m.AuthorID, m.ClientID)
+
+	case errors.Is(err, ErrUploadNotFound):
+		// THE RACE LOSER UNDER A CONSUMING RESOLVER (CANT-85). Two sends under
+		// one key — a client re-sending after a timeout while the first attempt
+		// is still in flight — both pass position 4, because neither row exists
+		// yet. The loser's resolver blocks on the winner's upload-row lock, sees
+		// the handle consumed once the winner commits, and says not-found.
+		// Refused as-is, that is upload_not_found, NOT RETRYABLE, for a message
+		// every other member can see: the outbox marking failed something the
+		// server kept.
+		//
+		// So before a not-found leaves the store, the key is read again. The
+		// attempt's deferred rollback has already released the resolver's locks,
+		// and the winner, if there is one, has committed — that is what made the
+		// handle read as consumed. This is sound only because the resolver
+		// contract requires locking what is consumed; see UploadResolver.
+		//
+		// It runs on every not-found, the kind mismatch included. A row found
+		// there is the original, which position 4 would have returned anyway had
+		// the winner committed a moment sooner.
+		original, rerr := s.sentByKey(ctx, m.AuthorID, m.ClientID)
+		switch {
+		case rerr == nil:
+			return original, nil
+		case errors.Is(rerr, ErrNotFound):
+			// The handle really is gone. The refusal stands.
+			return Sent{}, err
+		default:
+			// The store could not confirm the refusal. Reporting the re-read's
+			// own failure — transient, as a rule — is truer than a permanent
+			// upload_not_found, and the key makes the client's retry free.
+			return Sent{}, rerr
+		}
 	}
-	// Somebody else committed this key while we were drawing. Our ordinals
-	// went back with the rollback; re-read theirs.
-	return s.sentByKey(ctx, m.AuthorID, m.ClientID)
+	return Sent{}, err
 }
 
 // checkBounds is position 2: everything refusable without a database.
@@ -412,6 +473,24 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	if !isMember {
 		return Sent{}, fmt.Errorf("store: %s in conversation %s: %w",
 			m.AuthorID, m.ConversationID, ErrNotAMember)
+	}
+
+	// 7 — resolve the uploads this send names (CANT-85). Skipped entirely for a
+	// send with no attachments; see resolveUploads.
+	//
+	// BELOW 4, so a replay never resolves: once CANT-48 consumes uploads, the
+	// replay of an acked attachment send would otherwise be refused for handles
+	// its own first attempt used up. BELOW 5, so a non-member hears not_a_member
+	// before anything is said about what they sent.
+	//
+	// ABOVE 8, and that is the lock-order note's to explain: whatever the
+	// resolver locks is taken before `conversations`, so a slow resolver costs
+	// one pool connection rather than every send in this conversation queueing
+	// behind it on the conversation row. The race window that leaves is closed
+	// in send, not by moving this.
+	atts, err := s.resolveUploads(ctx, tx, m)
+	if err != nil {
+		return Sent{}, err
 	}
 
 	// 8 — draw, conversation first. See the lock-order note at the top.
@@ -555,6 +634,20 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 		return Sent{}, fmt.Errorf("store: insert message: %w", err)
 	}
 
+	// 11b — the attachment rows, in ONE statement, on tx (CANT-85). After the
+	// message because the foreign key needs the row; before the notify because
+	// the notify is the last statement before Commit.
+	//
+	// A MESSAGE AND ITS ATTACHMENTS COMMIT TOGETHER OR NOT AT ALL. A committed
+	// message whose rows are missing is visible on /sync with a hole in it, and
+	// the client has no way to ask again. A failure here — a CHECK, the FK, a
+	// dropped connection — returns through the same deferred rollback as every
+	// failure below position 10, which takes the message and un-draws both
+	// ordinals with it.
+	if err := insertAttachments(ctx, tx, out.ID, atts); err != nil {
+		return Sent{}, err
+	}
+
 	// 12 — notify, INSIDE the transaction, on the same connection, LAST
 	// before commit. CANT-18 ruling 2 (not CANT-14's ruling 2 above, which
 	// is the idempotency order): Postgres delivers a notification at commit,
@@ -576,7 +669,7 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	// RevokeDevice in tokens.go, which is this block's twin and stays
 	// byte-identical in shape.
 	//
-	// CANT-85 lands the attachments insert ABOVE this, at 11. The notify is
+	// CANT-85 landed the attachments insert ABOVE this, at 11b. The notify is
 	// the last statement before Commit, and it stays last.
 	payload, err := NotifyPayload{ConversationID: m.ConversationID, Seq: out.Seq}.Encode()
 	if err != nil {
@@ -592,7 +685,10 @@ func (s *Store) attemptSend(ctx context.Context, m NewMessage) (Sent, error) {
 	return out, nil
 }
 
-// sentByKey re-reads the winner of a dedup race.
+// sentByKey re-reads the winner of a race under one key. Two races reach it:
+// the dedup constraint at position 11, and — since CANT-85 — a consumed upload
+// at position 7, where the loser's resolver sees the winner's handles already
+// used. Either way the attempt has rolled back, so this reads on the pool.
 func (s *Store) sentByKey(ctx context.Context, authorID, clientID uuid.UUID) (Sent, error) {
 	var out Sent
 	err := s.pool.QueryRow(ctx,
@@ -602,7 +698,7 @@ func (s *Store) sentByKey(ctx context.Context, authorID, clientID uuid.UUID) (Se
 		return Sent{}, ErrNotFound
 	}
 	if err != nil {
-		return Sent{}, fmt.Errorf("store: re-read after dedup conflict: %w", err)
+		return Sent{}, fmt.Errorf("store: re-read by idempotency key: %w", err)
 	}
 	out.Duplicate = true
 	return out, nil
