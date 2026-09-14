@@ -220,6 +220,13 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var authenticateFn func(context.Context, string) (store.Caller, error)
 	var helloFn func(context.Context, store.HelloRequest) (store.HelloResult, error)
 	var sendFn func(context.Context, store.NewMessage) (store.Sent, error)
+	// CANT-75: the two REST routes' own seams. callerFn answers "who is
+	// asking, in full" — callerID below is now built from it, rather than
+	// each running its own bearer/Authenticate pair, so there is one place
+	// that resolves the header into a caller and two views onto the result.
+	var callerFn func(*http.Request) (store.Caller, bool)
+	var messageForFanoutFn func(context.Context, uuid.UUID, int64) (store.FanoutMessage, error)
+	var findOrCreateDirectFn func(context.Context, uuid.UUID, string) (store.ConversationRow, error)
 	var maxFrameBytes int64
 	var attachFn func(*api.Session) func()
 	var handleFn func(context.Context, *api.Session, wire.ClientFrame)
@@ -229,9 +236,16 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 			return serveSync(ctx, st, viewer, after, limit)
 		}
-		callerID = func(r *http.Request) (uuid.UUID, bool) {
+		callerFn = func(r *http.Request) (store.Caller, bool) {
 			caller, err := st.Authenticate(r.Context(), bearer(r))
 			if err != nil {
+				return store.Caller{}, false
+			}
+			return caller, true
+		}
+		callerID = func(r *http.Request) (uuid.UUID, bool) {
+			caller, ok := callerFn(r)
+			if !ok {
 				return uuid.Nil, false
 			}
 			return caller.UserID, true
@@ -240,6 +254,8 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		authenticateFn = st.Authenticate
 		helloFn = st.Hello
 		sendFn = st.SendMessage
+		messageForFanoutFn = st.MessageForFanout
+		findOrCreateDirectFn = st.FindOrCreateDirect
 		// The frame bound follows the message bound, MULTIPLICATIVELY. The
 		// store bounds the UTF-8 bytes of `text`; the socket sees that text
 		// JSON-encoded, and encoding is not free: a control character
@@ -250,6 +266,13 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		// them. The two must hold together: a frame refused here is severed
 		// with 1009 before the store can answer `message_too_large`, and a
 		// client whose outbox retries it is a client in a reconnect loop.
+		//
+		// REST SHARES THIS BOUND (CANT-75's review): a fixed constant on the
+		// REST side, independent of this one, let an operator raise
+		// CATENARY_MAX_MESSAGE_BYTES and have a message the store would have
+		// accepted refused by the REST transport instead — the 400 would have
+		// read as a client's JSON bug and been nothing of the kind. One
+		// number, both transports.
 		maxFrameBytes = 6*int64(st.Limits().MaxMessageBytes) + 64<<10
 
 		// CANT-107: the hub, and the listener that feeds it. The hub's two
@@ -294,6 +317,12 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			// the same convention MaxFrameBytes above already follows.
 			HeartbeatIntervalSec: cfg.HeartbeatIntervalSec,
 			MissedPongLimit:      cfg.MissedPongLimit,
+
+			Caller:             callerFn,
+			MessageForFanout:   messageForFanoutFn,
+			FindOrCreateDirect: findOrCreateDirectFn,
+			MediaURL:           mediaURL,
+			MaxRESTBodyBytes:   maxFrameBytes,
 		}),
 	}
 }

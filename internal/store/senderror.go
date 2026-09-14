@@ -20,6 +20,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -78,6 +79,32 @@ var (
 	// PRODUCE, not that every ErrorCode is reachable, so this staying unemitted
 	// is not a red build.
 	ErrRateLimited = errors.New("store: rate limited")
+
+	// ErrTargetNotFound is CANT-75's find-or-create direct naming a handle no
+	// user has. Carries conversation_not_found: the direct conversation this
+	// request asks for cannot be resolved, and never can be, because its other
+	// party does not exist — the same reading conversation_not_found already
+	// gives a stale id.
+	ErrTargetNotFound = errors.New("store: find-or-create direct: target handle not found")
+
+	// ErrTargetDeactivated is a find-or-create direct naming a handle whose
+	// account is offboarded. SAME CODE AS ErrTargetNotFound, deliberately — the
+	// table is cause-to-code and not a bijection (ErrTooManyAttachments already
+	// shares message_too_large this way), and RedeemEnrollment already collapses
+	// "unknown token" and "deactivated account" into one answer for the same
+	// reason: among a small trusted group with authenticated senders, telling a
+	// caller a handle exists but is offboarded is not a distinction this surface
+	// owes finer than "there is no such conversation".
+	ErrTargetDeactivated = errors.New("store: find-or-create direct: target account is deactivated")
+
+	// ErrSelfDirect is a find-or-create direct naming the caller's own handle.
+	// D4's direct conversation is a pair — "create" is one conversations row
+	// PLUS TWO conversation_members rows — and a self-pair can supply only one
+	// member row, so this is refused rather than built as a one-member direct
+	// that would violate every reader downstream that assumes two. SAME CODE
+	// AS THE OTHER TWO: the direct conversation this request names cannot exist,
+	// for a third reason a caller cannot fix by retrying.
+	ErrSelfDirect = errors.New("store: find-or-create direct: cannot open a direct conversation with yourself")
 )
 
 // SendError is what a refusal looks like leaving the store. It carries
@@ -103,6 +130,15 @@ type SendError struct {
 	// Cause is the underlying error, preserved so a log can say what actually
 	// happened without the code having to carry it.
 	Cause error
+
+	// httpStatus is what a REST transport answers with. CANT-83's 2026-09-06
+	// comment on CANT-75 already decided where this lives: on the row, next to
+	// the code and retryable, because a REST handler mapping a wire.ErrorCode
+	// to a status is the same second decision the guard bans everywhere but
+	// this file. Read through the HTTPStatus method, which is nil-safe the way
+	// Level and Wire already are — a REST call site treats *SendError as
+	// possibly nil the same way a socket call site does.
+	httpStatus int
 }
 
 func (e *SendError) Error() string {
@@ -157,6 +193,23 @@ func (e *SendError) Wire(message string) wire.ServerError {
 		Retryable:     e.Retryable,
 		RetryAfterSec: e.RetryAfterSec,
 	}
+}
+
+// HTTPStatus is the status a REST transport writes for this refusal.
+//
+// IT LIVES HERE FOR THE SAME REASON Level DOES. A REST handler choosing a
+// status per wire.ErrorCode itself would be naming a code outside this file —
+// exactly the second decision errorcode_guard_test.go exists to forbid — so
+// the status is decided once, on the row below, and read rather than derived
+// at the transport.
+//
+// A nil receiver answers 500, the same shape an unclassified failure gets
+// everywhere else in this file.
+func (e *SendError) HTTPStatus() int {
+	if e == nil || e.httpStatus == 0 {
+		return http.StatusInternalServerError
+	}
+	return e.httpStatus
 }
 
 // Level is the level a refusal logs at, and it is a per-CODE decision, so it
@@ -222,12 +275,14 @@ func (e *SendError) LogAttrs() []any {
 	return attrs
 }
 
-// sendErrorRow is one row of the table: a cause, the code it gets, and whether
-// the server thinks the identical frame could succeed next time.
+// sendErrorRow is one row of the table: a cause, the code it gets, whether the
+// server thinks the identical frame could succeed next time, and the HTTP
+// status a REST transport answers with for it (CANT-75).
 type sendErrorRow struct {
 	cause     error
 	code      wire.ErrorCode
 	retryable bool
+	status    int
 }
 
 // THE TABLE.
@@ -255,12 +310,20 @@ type sendErrorRow struct {
 // thing. Among a small trusted group with authenticated senders that is the
 // right trade, and it is written down here rather than discovered later.
 var sendErrorTable = []sendErrorRow{
-	{cause: ErrNotAMember, code: wire.ErrorCodeNotAMember, retryable: false},
-	{cause: ErrConversationNotFound, code: wire.ErrorCodeConversationNotFound, retryable: false},
-	{cause: ErrMessageTooLarge, code: wire.ErrorCodeMessageTooLarge, retryable: false},
-	{cause: ErrTooManyAttachments, code: wire.ErrorCodeMessageTooLarge, retryable: false},
-	{cause: ErrUploadNotFound, code: wire.ErrorCodeUploadNotFound, retryable: false},
-	{cause: ErrRateLimited, code: wire.ErrorCodeRateLimited, retryable: true},
+	{cause: ErrNotAMember, code: wire.ErrorCodeNotAMember, retryable: false, status: http.StatusForbidden},
+	{cause: ErrConversationNotFound, code: wire.ErrorCodeConversationNotFound, retryable: false, status: http.StatusNotFound},
+	{cause: ErrMessageTooLarge, code: wire.ErrorCodeMessageTooLarge, retryable: false, status: http.StatusRequestEntityTooLarge},
+	{cause: ErrTooManyAttachments, code: wire.ErrorCodeMessageTooLarge, retryable: false, status: http.StatusRequestEntityTooLarge},
+	{cause: ErrUploadNotFound, code: wire.ErrorCodeUploadNotFound, retryable: false, status: http.StatusNotFound},
+	{cause: ErrRateLimited, code: wire.ErrorCodeRateLimited, retryable: true, status: http.StatusTooManyRequests},
+
+	// CANT-75's find-or-create causes. All three carry conversation_not_found —
+	// see the reasoning next to each var above — and 404 follows the code: the
+	// direct conversation this request names does not exist and this call did
+	// not create one.
+	{cause: ErrTargetNotFound, code: wire.ErrorCodeConversationNotFound, retryable: false, status: http.StatusNotFound},
+	{cause: ErrTargetDeactivated, code: wire.ErrorCodeConversationNotFound, retryable: false, status: http.StatusNotFound},
+	{cause: ErrSelfDirect, code: wire.ErrorCodeConversationNotFound, retryable: false, status: http.StatusNotFound},
 
 	// `internal`, and stated rather than reached by falling off the end of the
 	// table. A missing client_id is OUR bug — every sending surface supplies
@@ -268,21 +331,21 @@ var sendErrorTable = []sendErrorRow{
 	// a way it would not be for an empty send, where the fault would be the
 	// sender's and the plan declined to lie about it. Not retryable: the
 	// identical frame is missing the identical key.
-	{cause: ErrNoClientID, code: wire.ErrorCodeInternal, retryable: false},
+	{cause: ErrNoClientID, code: wire.ErrorCodeInternal, retryable: false, status: http.StatusInternalServerError},
 
 	// Same standing as the row above: `internal`, stated, and unreachable
 	// today. NotifyPayload is two fixed-width fields and cannot approach the
 	// 8,000-byte cap, so this fires only after somebody widens the struct —
 	// which is OUR bug and not the sender's, exactly as a missing client_id
 	// is. Not retryable: the identical frame encodes the identical payload.
-	{cause: ErrNotifyTooLarge, code: wire.ErrorCodeInternal, retryable: false},
+	{cause: ErrNotifyTooLarge, code: wire.ErrorCodeInternal, retryable: false, status: http.StatusInternalServerError},
 
 	// `internal`, stated, and the same standing again (CANT-85). A resolver that
 	// returns more or fewer rows than it was asked about is server code that
 	// answered the wrong question — not an upload the sender named wrongly, so
 	// never upload_not_found. Not retryable: the identical frame reaches the
 	// identical resolver.
-	{cause: ErrUploadResolverContract, code: wire.ErrorCodeInternal, retryable: false},
+	{cause: ErrUploadResolverContract, code: wire.ErrorCodeInternal, retryable: false, status: http.StatusInternalServerError},
 }
 
 // SendErrorFor is the single decision. Everything the store refuses goes
@@ -334,7 +397,7 @@ func sendErrorFor(err error) *SendError {
 
 	for _, row := range sendErrorTable {
 		if errors.Is(err, row.cause) {
-			return &SendError{Code: row.code, Retryable: row.retryable, Cause: err}
+			return &SendError{Code: row.code, Retryable: row.retryable, Cause: err, httpStatus: row.status}
 		}
 	}
 	return internalSendError(err)
@@ -342,9 +405,12 @@ func sendErrorFor(err error) *SendError {
 
 // internalSendError is the table's last row, and the only one that reads the
 // error rather than matching it. `internal` is not one cause: a transient
-// failure underneath us is retryable and everything else is not.
+// failure underneath us is retryable and everything else is not. 500 either
+// way — a REST caller cannot tell a retryable internal from a permanent one by
+// status, and retryable already travels on the body.
 func internalSendError(err error) *SendError {
-	return &SendError{Code: wire.ErrorCodeInternal, Retryable: isTransient(err), Cause: err}
+	return &SendError{Code: wire.ErrorCodeInternal, Retryable: isTransient(err), Cause: err,
+		httpStatus: http.StatusInternalServerError}
 }
 
 // IsTransient is isTransient, exported for the hub's retry of a fan-out load

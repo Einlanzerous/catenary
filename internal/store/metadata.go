@@ -75,8 +75,10 @@ package store
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -225,4 +227,186 @@ func (b *metadataBump) apply(ctx context.Context, tx pgx.Tx) (int64, error) {
 		}
 	}
 	return v, nil
+}
+
+// CANT-75 — find-or-create the direct conversation between two people.
+//
+// D4: "create" is a conversations row PLUS TWO conversation_members rows,
+// atomically, and "find" is the lookup of the pair that already exists. Both
+// live here, in the one file the guard above lets write INSERT INTO
+// conversations and INSERT INTO conversation_members, because creating one IS
+// a metadata change — a row left at the DEFAULT metadata_log_seq is invisible
+// to every cursor there is (see TestOnlyOneFileMovesAMetadataMarker's own
+// case for exactly this statement).
+//
+// directKey (0002) is the two member ids, sorted so either side of the pair
+// computes the identical string, then joined. `conversations_direct_key_idx`
+// is a PARTIAL UNIQUE index over it, so two callers racing to find-or-create
+// the SAME pair collide on the database's own constraint rather than on
+// anything this file has to coordinate — the loser's INSERT reports zero rows
+// affected rather than an error (ON CONFLICT DO NOTHING is the house idiom
+// TestConcurrentFindOrCreateDirectMakesOneConversation already proves safe
+// under ten concurrent callers), and it falls through to read the winner's
+// row back inside the SAME transaction, never a second one.
+//
+// directKey is unexported and lives here rather than as a test helper,
+// because it is now something production code computes and not only
+// something a test asserts about the database's own uniqueness.
+func directKey(a, b uuid.UUID) string {
+	x, y := a.String(), b.String()
+	if x > y {
+		x, y = y, x
+	}
+	return x + "|" + y
+}
+
+// FindOrCreateDirect finds or creates the direct conversation between viewer
+// and the user targetHandle names, and returns it exactly as viewer would see
+// it on /sync.
+//
+// THREE REFUSALS, ONE CODE. targetHandle resolving to nobody, resolving to a
+// deactivated account, and resolving to viewer's own handle are three
+// different causes and senderror.go gives all three conversation_not_found —
+// the direct conversation this request names does not exist and this call
+// will never make one, for three different reasons a caller cannot retry
+// past. RedeemEnrollment already collapses "unknown token" and "deactivated
+// account" into one answer for the identical reason: among a small trusted
+// group with authenticated senders, a finer distinction than "no such
+// conversation" is not one this surface owes.
+//
+// A SELF-DIRECT IS REFUSED RATHER THAN BUILT AS A ONE-MEMBER "DIRECT". D4's
+// "two conversation_members rows" is not a detail to relax when the two ids
+// happen to be equal — conversation_members' primary key is (conversation_id,
+// user_id), so a self-pair could hold at most one row, and every reader
+// downstream of this table (member_count, the OtherMemberName join /sync
+// serves a direct's name from) assumes two. Refusing here is cheaper than
+// auditing every one of them for a member_count of 1 they were never
+// designed to see.
+func (s *Store) FindOrCreateDirect(ctx context.Context, viewer uuid.UUID, targetHandle string) (ConversationRow, error) {
+	c, err := s.findOrCreateDirect(ctx, viewer, targetHandle)
+	if err == nil {
+		return c, nil
+	}
+	// ONE EXIT, ONE LOG LINE — the same shape SendMessage and MarkRead use.
+	// The handle is logged: unlike a message body, D1's honesty argument does
+	// not cover it, and it is the one piece of information that makes this
+	// line useful to an operator diagnosing a bot's misbehaviour.
+	se := sendErrorFor(err)
+	s.logger.Log(ctx, se.Level(), "find-or-create direct refused", append([]any{
+		"viewer_id", viewer, "target_handle", targetHandle,
+	}, se.LogAttrs()...)...)
+	return ConversationRow{}, se
+}
+
+func (s *Store) findOrCreateDirect(ctx context.Context, viewer uuid.UUID, targetHandle string) (ConversationRow, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("store: find-or-create direct: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Resolved first, and not locked — the same argument RedeemEnrollment
+	// makes for reading users.deactivated_at unlocked: the race that leaves
+	// open (a deactivation committing a moment later) is closed at
+	// Authenticate, on the target's own next request, not here.
+	var target uuid.UUID
+	var deactivated *time.Time
+	err = tx.QueryRow(ctx, `SELECT id, deactivated_at FROM users WHERE handle = $1`, targetHandle).
+		Scan(&target, &deactivated)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return ConversationRow{}, ErrTargetNotFound
+	case err != nil:
+		return ConversationRow{}, fmt.Errorf("store: find-or-create direct: resolve handle: %w", err)
+	}
+	if deactivated != nil {
+		return ConversationRow{}, ErrTargetDeactivated
+	}
+	if target == viewer {
+		return ConversationRow{}, ErrSelfDirect
+	}
+
+	key := directKey(viewer, target)
+
+	// THE HOUSE FIND-OR-CREATE IDIOM: attempt the insert, ON CONFLICT DO
+	// NOTHING rather than a targeted arbiter, because DO NOTHING with no
+	// target suppresses ANY unique violation on the table without having to
+	// restate the partial index's predicate. A row comes back only when this
+	// call created it.
+	id := uuid.New()
+	created := false
+	err = tx.QueryRow(ctx, `
+		INSERT INTO conversations (id, kind, direct_key) VALUES ($1, 'direct', $2)
+		ON CONFLICT DO NOTHING
+		RETURNING id`, id, key).Scan(&id)
+	switch {
+	case err == nil:
+		created = true
+	case errors.Is(err, pgx.ErrNoRows):
+		// Somebody else's row won the race. It is visible to this statement
+		// under READ COMMITTED the instant it commits — ON CONFLICT DO
+		// NOTHING waits on the conflicting row's inserter rather than racing
+		// past it — so this read cannot miss it.
+		//
+		// AND kind = 'direct' (CANT-75's review): conversations_direct_key_idx
+		// is PARTIAL — ON conversations (direct_key) WHERE kind = 'direct' —
+		// and a bare `WHERE direct_key = $1` does not imply that predicate, so
+		// the planner cannot prove the partial index applies and falls back
+		// to a sequential scan. Restating the predicate here is what lets this
+		// read use the very index the find-or-create idiom leans on for
+		// uniqueness.
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM conversations WHERE direct_key = $1 AND kind = 'direct'`, key).Scan(&id); err != nil {
+			return ConversationRow{}, fmt.Errorf("store: find-or-create direct: find existing: %w", err)
+		}
+	default:
+		return ConversationRow{}, fmt.Errorf("store: find-or-create direct: insert: %w", err)
+	}
+
+	if created {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1, $2), ($1, $3)`,
+			id, viewer, target); err != nil {
+			return ConversationRow{}, fmt.Errorf("store: find-or-create direct: insert members: %w", err)
+		}
+	}
+
+	// Read back on tx, so a caller that just created the row sees it without
+	// waiting for the commit below — the same reason conversationRowOne runs
+	// on the caller's own transaction rather than the pool.
+	//
+	// BEFORE THE BUMP, DELIBERATELY (CANT-75's review). messages.go's own
+	// lock-order note puts the counter draw LAST so the deployment-wide
+	// serialised section is draw-insert-commit rather than the whole
+	// transaction; a read sitting between the bump and Commit widens that
+	// section by however long the read takes, and every send anywhere in the
+	// deployment queues behind it. Nothing conversationRowOne selects — id,
+	// kind, name, last_seq, retention_days, muted, read_seq, member_count,
+	// first_unread_seq, other_member_name — is written by the bump below, so
+	// moving the read above it costs nothing the caller can observe and
+	// restores draw-then-commit.
+	out, err := s.conversationRowOne(ctx, tx, id, viewer)
+	if err != nil {
+		return ConversationRow{}, err
+	}
+
+	if created {
+		// ONE BUMP FOR ALL THREE ROWS THIS CREATE TOUCHED — the conversation
+		// and both fresh member rows — on the same argument the type's own
+		// doc gives: a membership change is one event, not three, and only
+		// one draw should say so. Without the conversation's marker moving,
+		// the row sits at DEFAULT 0 and is invisible to every cursor there
+		// is; that is what makes this call, and not only the insert above,
+		// load-bearing. LAST, right before Commit, which is what keeps the
+		// counter at the bottom of this transaction's own order.
+		if _, err := newMetadataBump().conversation(id).member(id, viewer).member(id, target).
+			apply(ctx, tx); err != nil {
+			return ConversationRow{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return ConversationRow{}, fmt.Errorf("store: find-or-create direct: commit: %w", err)
+	}
+	return out, nil
 }

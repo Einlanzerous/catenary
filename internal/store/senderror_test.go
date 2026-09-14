@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
@@ -34,6 +35,9 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 		{ErrUploadNotFound, wire.ErrorCodeUploadNotFound, false},
 		{ErrUploadResolverContract, wire.ErrorCodeInternal, false},
 		{ErrRateLimited, wire.ErrorCodeRateLimited, true},
+		{ErrTargetNotFound, wire.ErrorCodeConversationNotFound, false},
+		{ErrTargetDeactivated, wire.ErrorCodeConversationNotFound, false},
+		{ErrSelfDirect, wire.ErrorCodeConversationNotFound, false},
 		{ErrNoClientID, wire.ErrorCodeInternal, false},
 		{ErrNotifyTooLarge, wire.ErrorCodeInternal, false},
 	}
@@ -214,6 +218,42 @@ func TestRateLimitedCarriesNoRetryAfterUntilAPolicySetsOne(t *testing.T) {
 	// would need a conversion at the boundary — which is exactly the
 	// translation SendError carrying wire types exists to avoid.
 	var _ *int64 = got.RetryAfterSec
+}
+
+// The status lives on the row (CANT-75), one per cause, read through the
+// nil-safe method — never derived at a transport, which is the whole reason
+// the guard exists.
+func TestHTTPStatusIsPerRowAndNilSafe(t *testing.T) {
+	for _, tc := range []struct {
+		cause  error
+		status int
+	}{
+		{ErrNotAMember, http.StatusForbidden},
+		{ErrConversationNotFound, http.StatusNotFound},
+		{ErrMessageTooLarge, http.StatusRequestEntityTooLarge},
+		{ErrTooManyAttachments, http.StatusRequestEntityTooLarge},
+		{ErrUploadNotFound, http.StatusNotFound},
+		{ErrRateLimited, http.StatusTooManyRequests},
+		{ErrTargetNotFound, http.StatusNotFound},
+		{ErrTargetDeactivated, http.StatusNotFound},
+		{ErrSelfDirect, http.StatusNotFound},
+		{ErrNoClientID, http.StatusInternalServerError},
+		{ErrNotifyTooLarge, http.StatusInternalServerError},
+		{ErrUploadResolverContract, http.StatusInternalServerError},
+		{errors.New("something unclassified"), http.StatusInternalServerError},
+	} {
+		t.Run(tc.cause.Error(), func(t *testing.T) {
+			se := sendErrorFor(tc.cause)
+			if got := se.HTTPStatus(); got != tc.status {
+				t.Errorf("HTTPStatus() = %d, want %d", got, tc.status)
+			}
+		})
+	}
+
+	var nilSE *SendError
+	if got := nilSE.HTTPStatus(); got != http.StatusInternalServerError {
+		t.Errorf("a nil *SendError.HTTPStatus() = %d, want 500 — the same shape an unclassified failure gets everywhere else in this file", got)
+	}
 }
 
 // The EXPORTED wrapper has a different contract from the decision behind it,

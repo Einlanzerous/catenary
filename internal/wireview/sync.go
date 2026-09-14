@@ -102,7 +102,7 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 	}
 
 	for _, c := range page.Conversations {
-		out.Conversations = append(out.Conversations, conversation(c))
+		out.Conversations = append(out.Conversations, Conversation(c))
 	}
 	for _, u := range page.Users {
 		out.Users = append(out.Users, user(u))
@@ -188,7 +188,14 @@ func DeliveryState(m store.MessageRow, viewer uuid.UUID, viewerReadSeq int64, re
 	return wire.DeliveryStateDelivered
 }
 
-func conversation(c store.ConversationRow) wire.Conversation {
+// Conversation maps one stored row to the wire type, for one reader. EXPORTED
+// (CANT-75) so a REST handler returning "the same Conversation either way"
+// from POST /conversations/direct builds it here rather than a second time —
+// there is no CANT-84-style guard over wire.Conversation the way there is over
+// wire.Message, but the reason to have one function is the same reason: two
+// assemblers of the same row are two places they can start answering
+// differently for it.
+func Conversation(c store.ConversationRow) wire.Conversation {
 	out := wire.Conversation{
 		ID:          wire.Uuid(c.ID.String()),
 		Kind:        wire.ConversationKind(c.Kind),
