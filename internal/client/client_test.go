@@ -234,3 +234,33 @@ func TestCloseStatusesRecordsTheCodeAndAbnormalClosures(t *testing.T) {
 		t.Fatalf("waiting for both close codes: %v; status %+v", err, c.Status())
 	}
 }
+
+// A pure dial failure never held a session to end, and Stats.DialErrors
+// already counts it — CANT-27's review found it ALSO landing in
+// CloseStatuses' -1 bucket, double-counted under two names.
+func TestDialFailuresDoNotReachCloseStatuses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no /ws here", http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(srv.Close)
+
+	c, err := New(Config{
+		BaseURL: srv.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+		BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	go func() { defer close(done); _ = c.Run(context.Background()) }()
+	t.Cleanup(func() { c.Kill(); <-done })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := c.Await(ctx, func() bool { return c.Status().DialErrors >= 3 }); err != nil {
+		t.Fatalf("waiting for dial errors: %v; status %+v", err, c.Status())
+	}
+	if s := c.Status(); len(s.CloseStatuses) != 0 {
+		t.Errorf("CloseStatuses = %v after %d dial errors, want empty — a dial failure never opened a session to end", s.CloseStatuses, s.DialErrors)
+	}
+}

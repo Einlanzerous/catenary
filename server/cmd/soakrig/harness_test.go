@@ -73,6 +73,27 @@ func TestClassify(t *testing.T) {
 				}},
 			want: VerdictServerFailure,
 		},
+		{
+			name: "steady traffic sent but nothing was acked is a server failure, even with every comparison clean",
+			rep: Report{N: 1, ComparisonsRun: 1,
+				Phases:  []PhaseReport{{Name: steadyTrafficPhase, MessagesSent: 40, MessagesAcked: 0}},
+				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
+			want: VerdictServerFailure,
+		},
+		{
+			name: "acked-zero in the KILL phase is not a server failure — the server is legitimately down for part of it",
+			rep: Report{N: 1, ComparisonsRun: 1,
+				Phases:  []PhaseReport{{Name: killPhase, MessagesSent: 12, MessagesAcked: 0}},
+				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
+			want: VerdictPass,
+		},
+		{
+			name: "some acked in steady traffic is not the all-refused case",
+			rep: Report{N: 1, ComparisonsRun: 1,
+				Phases:  []PhaseReport{{Name: steadyTrafficPhase, MessagesSent: 40, MessagesAcked: 3}},
+				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
+			want: VerdictPass,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := classify(&tc.rep); got != tc.want {

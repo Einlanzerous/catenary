@@ -142,19 +142,40 @@ func computeAggregate(rep *Report) {
 // classify is the whole of CANT-27's harness-vs-server distinction, stated as
 // one function so the counter-proof tests can drive it directly.
 //
-// SERVER FAILURE WINS. If any comparison that ran is dirty, the run is a
-// server failure even if harness-side problems also occurred elsewhere —
+// SERVER FAILURE WINS. If any comparison that ran is dirty, OR the steady
+// traffic phase sent messages the server acked NONE of, the run is a server
+// failure even if harness-side problems also occurred elsewhere —
 // CLAUDE.md's "stop and report back" is the more urgent thing a reader needs
 // to see, and HarnessErrors still lists the rest for a person to notice.
+//
+// A COMPARISON CAN BE CLEAN AND STILL MISS A REAL FAILURE — a server that
+// refuses every `send` leaves nothing on either side to disagree about:
+// client.Compare over two near-empty sets is clean by construction. This
+// review finding is the ticket's own epigraph pointed at the verdict itself
+// rather than at a counter: "the measurement says zero" about ACKS, not just
+// about loss, is a claim that needs the same scrutiny. So classify reads the
+// steady-traffic PhaseReport too, not only the comparisons: sent > 0 with
+// acked == 0 means every attempt was refused, and no clean Compare can
+// excuse that. Steady traffic only, not the kill phase — a send failing
+// while the server is actually down is the chaos working as designed, not a
+// finding.
 //
 // ZERO COMPARISONS IS NEVER A PASS. rep.ComparisonsRun < rep.N covers every
 // earlier-stage failure uniformly — the server never starting, every client
 // failing to provision, a fatal config error before anything ran — without a
 // separate "fatal" path: whatever stopped the run short, fewer comparisons
-// ran than clients existed, and that alone is disqualifying.
+// ran than clients existed, and that alone is disqualifying. steadyTraffic
+// itself records a harness error when it sent NOTHING at all (no client was
+// ever ready), which is this rule's other half: zero sent is inconclusive,
+// zero acked with something sent is a finding.
 func classify(rep *Report) Verdict {
 	for _, c := range rep.Clients {
 		if c.Compared && !c.Compare.Clean() {
+			return VerdictServerFailure
+		}
+	}
+	for _, p := range rep.Phases {
+		if p.Name == steadyTrafficPhase && p.MessagesSent > 0 && p.MessagesAcked == 0 {
 			return VerdictServerFailure
 		}
 	}

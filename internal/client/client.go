@@ -186,15 +186,19 @@ type Stats struct {
 	LastRTT          time.Duration
 	LastClose        string
 
-	// CloseStatuses counts how each session this client held has ended, keyed
-	// by the WebSocket close code the peer sent — or -1 when the session
-	// ended with no close frame at all: a network cut, a `kill -9` on the
-	// other end, or Sever. Keyed by int rather than websocket.StatusCode so a
-	// caller outside this package (CANT-27's harness) reads it without
-	// importing coder/websocket. CANT-35's table is what every code here
-	// means: 1001 drain, 1012 head-unreadable, 4000 heartbeat timeout, -1
-	// abnormal — all four the same "reconnect with backoff" bucket this
-	// client already treats them as.
+	// CloseStatuses counts how each session this client HELD has ended —
+	// a session that actually opened a socket, whether or not it reached
+	// `ready` — keyed by the WebSocket close code the peer sent, or -1 when
+	// it ended with no close frame at all: a network cut, a `kill -9` on the
+	// other end, or Sever. A pure DIAL failure is not in here at all: it
+	// never held a session to end, and Stats.DialErrors already counts it —
+	// folding it into the -1 bucket too would count it twice under two
+	// names. Keyed by int rather than websocket.StatusCode so a caller
+	// outside this package (CANT-27's harness) reads it without importing
+	// coder/websocket. CANT-35's table is what every code here means: 1001
+	// drain, 1012 head-unreadable, 4000 heartbeat timeout, -1 abnormal — all
+	// four the same "reconnect with backoff" bucket this client already
+	// treats them as.
 	CloseStatuses map[int]int
 }
 
@@ -356,14 +360,20 @@ func (c *Client) Run(ctx context.Context) error {
 		c.wakeCatchUp()
 		c.notify()
 
-		readied, err := c.session(ctx)
+		opened, readied, err := c.session(ctx)
 		c.mu.Lock()
 		if err != nil {
 			c.stats.LastClose = err.Error()
-			if c.stats.CloseStatuses == nil {
-				c.stats.CloseStatuses = map[int]int{}
+			// opened=false is a pure dial failure — DialErrors already
+			// counts it, and CloseStatuses' -1 bucket exists for a session
+			// that opened and then ended with no close frame, not for one
+			// that never opened at all.
+			if opened {
+				if c.stats.CloseStatuses == nil {
+					c.stats.CloseStatuses = map[int]int{}
+				}
+				c.stats.CloseStatuses[int(websocket.CloseStatus(err))]++
 			}
-			c.stats.CloseStatuses[int(websocket.CloseStatus(err))]++
 		}
 		c.mu.Unlock()
 		c.notify()
@@ -572,9 +582,12 @@ func (c *Client) wakeCatchUp() {
 
 // --- the socket ------------------------------------------------------------
 
-// session runs one socket from dial to close. readied reports whether it got
-// as far as `ready`.
-func (c *Client) session(ctx context.Context) (readied bool, err error) {
+// session runs one socket from dial to close. opened reports whether a real
+// socket ever existed — false only for a dial failure, which is not a close
+// status at all (Stats.DialErrors already counts it, and CANT-27's review
+// found it double-counted into CloseStatuses' -1 bucket before this).
+// readied reports whether it got as far as `ready`.
+func (c *Client) session(ctx context.Context) (opened, readied bool, err error) {
 	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
 	conn, resp, err := websocket.Dial(dctx, c.wsURL, &websocket.DialOptions{
 		HTTPClient:   c.http,
@@ -586,9 +599,9 @@ func (c *Client) session(ctx context.Context) (readied bool, err error) {
 		c.stats.DialErrors++
 		c.mu.Unlock()
 		if resp != nil {
-			return false, fmt.Errorf("client: dial: %s: %w", resp.Status, err)
+			return false, false, fmt.Errorf("client: dial: %s: %w", resp.Status, err)
 		}
-		return false, fmt.Errorf("client: dial: %w", err)
+		return false, false, fmt.Errorf("client: dial: %w", err)
 	}
 	conn.SetReadLimit(maxFrameBytes)
 
@@ -596,7 +609,7 @@ func (c *Client) session(ctx context.Context) (readied bool, err error) {
 	defer scancel()
 	if c.killed.Load() {
 		_ = conn.CloseNow()
-		return false, ErrKilled
+		return true, false, ErrKilled
 	}
 
 	// THE HELLO IS WRITTEN BEFORE THE SOCKET IS PUBLISHED. The server closes
@@ -620,7 +633,7 @@ func (c *Client) session(ctx context.Context) (readied bool, err error) {
 	}
 	if err := c.write(sctx, conn, hello); err != nil {
 		_ = conn.CloseNow()
-		return false, fmt.Errorf("client: hello: %w", err)
+		return true, false, fmt.Errorf("client: hello: %w", err)
 	}
 
 	c.mu.Lock()
@@ -632,16 +645,16 @@ func (c *Client) session(ctx context.Context) (readied bool, err error) {
 	// behind it. One that lands before this point has also cancelled ctx,
 	// which ends a hello write still in flight.
 	if c.killed.Load() {
-		return false, ErrKilled
+		return true, false, ErrKilled
 	}
 	if ctx.Err() != nil {
-		return false, ctx.Err()
+		return true, false, ctx.Err()
 	}
 
 	for {
 		_, data, err := conn.Read(sctx)
 		if err != nil {
-			return readied, fmt.Errorf("client: read: %w", err)
+			return true, readied, fmt.Errorf("client: read: %w", err)
 		}
 		f, err := wire.DecodeServerFrame(data)
 		if err != nil {

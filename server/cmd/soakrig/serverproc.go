@@ -158,12 +158,23 @@ func (h *harness) startServerOnce(ctx context.Context) error {
 		"CATENARY_LOG_LEVEL=info",
 	)
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("stdout pipe: %w", err)
-	}
+	// OUR OWN PIPE, NOT cmd.StdoutPipe(). os/exec's own doc on that method:
+	// "Wait will close the pipe after seeing the command exit... it is thus
+	// incorrect to call Wait before all reads from the pipe have completed" —
+	// and killServer's whole contract is to call Wait (via procDone)
+	// concurrently with the tail goroutine reading it, which is exactly the
+	// race that warns against. cmd.Stdout = pw instead makes os/exec run its
+	// OWN copy-to-pw goroutine, and Wait() is documented to block until that
+	// copy finishes — which, because io.Pipe's Write is synchronous, cannot
+	// happen until our tail goroutine has actually consumed every byte. A
+	// `kill -9` closes the child's OS pipe at once, but everything already
+	// written before that reaches pr regardless: CANT-27's review (this file
+	// used cmd.StdoutPipe() when it found this).
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+
 	var stdoutLog, stderrLog io.Writer = io.Discard, io.Discard
-	var stderrBuf bytes.Buffer
+	stderrBuf := &syncBuffer{}
 	if h.cfg.ServerLogDir != "" {
 		if f, err := os.Create(filepath.Join(h.cfg.ServerLogDir, fmt.Sprintf("server-%d.stdout.log", h.instance))); err == nil {
 			stdoutLog = f
@@ -174,16 +185,17 @@ func (h *harness) startServerOnce(ctx context.Context) error {
 			h.logFiles = append(h.logFiles, f)
 		}
 	}
-	cmd.Stderr = io.MultiWriter(&stderrBuf, stderrLog)
+	cmd.Stderr = io.MultiWriter(stderrBuf, stderrLog)
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
 	h.proc = cmd
-	h.procStderr = &stderrBuf
+	h.procStderr = stderrBuf
 	procDone := make(chan struct{})
 	go func() {
 		h.waitErr = cmd.Wait()
+		_ = pw.Close() // safe only AFTER Wait: see the comment above pr/pw.
 		close(procDone)
 	}()
 	h.procDone = procDone
@@ -191,7 +203,7 @@ func (h *harness) startServerOnce(ctx context.Context) error {
 	tailDone := make(chan struct{})
 	go func() {
 		defer close(tailDone)
-		h.hello.tail(io.TeeReader(stdout, stdoutLog))
+		h.hello.tail(io.TeeReader(pr, stdoutLog))
 	}()
 	h.tailDone = tailDone
 
@@ -201,6 +213,28 @@ func (h *harness) startServerOnce(ctx context.Context) error {
 	}
 	h.logf("server up", "instance", h.instance, "port", h.port)
 	return nil
+}
+
+// syncBuffer is bytes.Buffer with a lock: cmd.Stderr is written from
+// os/exec's own copying goroutine, and waitReady's timeout path reads it
+// concurrently from this one. A plain bytes.Buffer there is a data race
+// `-race` catches the moment a start takes long enough to hit the 15s bound
+// (CANT-27's review).
+type syncBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
 }
 
 // waitReady polls /readyz — which pings the database, not just the process —

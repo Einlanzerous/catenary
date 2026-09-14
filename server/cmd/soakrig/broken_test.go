@@ -115,6 +115,39 @@ func TestBrokenRunCountsAsServerFailure(t *testing.T) {
 	}
 }
 
+// COUNTER-PROOF — a server that refuses every send is a server failure even
+// though nothing either side holds ever disagrees. debugRejectAllSends
+// targets steady traffic at a conversation none of the clients belong to, so
+// the REAL server refuses every one of them with a real membership error —
+// client.Compare stays clean (there is nothing on either side to compare),
+// and classify's OTHER server-failure path — sent > 0, acked == 0 — is what
+// has to catch it. Found by review: the first version of classify only ever
+// looked at Compare.
+func TestAllSendsRefusedCountsAsServerFailure(t *testing.T) {
+	dbURL := soakDBFixture(t)
+	cfg := tinyConfig(dbURL)
+	cfg.debugRejectAllSends = true
+	res := runSoak(context.Background(), cfg)
+	if res.Verdict != VerdictServerFailure {
+		t.Fatalf("verdict = %s, want server_failure\n%s", res.Verdict, reportString(res.Report))
+	}
+	for _, p := range res.Report.Phases {
+		if p.Name == steadyTrafficPhase {
+			if p.MessagesSent == 0 {
+				t.Fatalf("steady traffic sent 0 — this test proves nothing without an attempt:\n%s", reportString(res.Report))
+			}
+			if p.MessagesAcked != 0 {
+				t.Errorf("steady traffic acked %d, want 0 — the target conversation should refuse every send", p.MessagesAcked)
+			}
+		}
+	}
+	for _, c := range res.Report.Clients {
+		if c.Compared && !c.Compare.Clean() {
+			t.Errorf("client %d's own comparison is dirty (%s) — this test is about a clean comparison that still misses a real failure", c.Index, c.Compare)
+		}
+	}
+}
+
 // COUNTER-PROOF — a client that could not provision is a harness failure,
 // not a client silently dropped out of N.
 func TestUnprovisionableClientCountsAsHarnessFailure(t *testing.T) {

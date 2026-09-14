@@ -15,6 +15,14 @@ import (
 	"github.com/magos/catenary/internal/wire"
 )
 
+// Phase names. classify() matches steadyTrafficPhase by name against
+// rep.Phases, so the string is a constant rather than typed twice.
+const (
+	steadyTrafficPhase = "steady traffic"
+	stormPhase         = "reconnect storm"
+	killPhase          = "kill -9 and restart"
+)
+
 // jitter spreads N clients' sends instead of a thundering herd every tick:
 // +/- 20% of d, uniformly. A non-positive d is returned unchanged.
 func jitter(d time.Duration) time.Duration {
@@ -38,6 +46,15 @@ func (h *harness) steadyTraffic(ctx context.Context, clients []*soakClient, room
 	start := time.Now()
 	var sent, acked, errs int64
 
+	// debugRejectAllSends targets a conversation none of the clients belong
+	// to, so the real server refuses every send — the counter-proof for
+	// classify's "acked == 0 with sent > 0" rule. Never set outside
+	// broken_test.go.
+	target := room
+	if h.cfg.debugRejectAllSends {
+		target = uuid.New()
+	}
+
 	pctx, cancel := context.WithTimeout(ctx, h.cfg.SteadyDuration)
 	defer cancel()
 
@@ -58,7 +75,7 @@ func (h *harness) steadyTraffic(ctx context.Context, clients []*soakClient, room
 				atomic.AddInt64(&sent, 1)
 				sctx, scancel := context.WithTimeout(ctx, 5*time.Second)
 				text := fmt.Sprintf("steady traffic from %s", sc.name)
-				_, err := sc.c.Send(sctx, wire.ClientSend{ClientID: wid(uuid.New()), ConversationID: wid(room), Text: &text})
+				_, err := sc.c.Send(sctx, wire.ClientSend{ClientID: wid(uuid.New()), ConversationID: wid(target), Text: &text})
 				scancel()
 				if err != nil {
 					atomic.AddInt64(&errs, 1)
@@ -70,8 +87,17 @@ func (h *harness) steadyTraffic(ctx context.Context, clients []*soakClient, room
 	}
 	wg.Wait()
 
-	h.awaitAllCaughtUp(ctx, clients, "steady traffic")
-	return PhaseReport{Name: "steady traffic", Duration: time.Since(start),
+	if sent == 0 {
+		// Nothing was even ATTEMPTED — no client was ever Ready during the
+		// whole phase. Distinct from "attempted and refused"
+		// (classify's own check, over MessagesAcked): this is inconclusive,
+		// not a finding, and CLAUDE.md's "the measurement says zero" applies
+		// to the instrument having nothing to say at all.
+		h.harnessError("steady traffic sent zero messages — no client was ever ready to send")
+	}
+
+	h.awaitAllCaughtUp(ctx, clients, steadyTrafficPhase)
+	return PhaseReport{Name: steadyTrafficPhase, Duration: time.Since(start),
 		MessagesSent: int(sent), MessagesAcked: int(acked), SendErrors: int(errs)}
 }
 
@@ -95,14 +121,14 @@ func (h *harness) reconnectStorm(ctx context.Context, clients []*soakClient) Pha
 			go func(sc *soakClient) { defer wg.Done(); sc.c.Sever() }(sc)
 		}
 		wg.Wait()
-		h.awaitAllCaughtUp(ctx, clients, fmt.Sprintf("reconnect storm round %d/%d", round, h.cfg.StormRounds))
+		h.awaitAllCaughtUp(ctx, clients, fmt.Sprintf("%s round %d/%d", stormPhase, round, h.cfg.StormRounds))
 	}
 
 	reconnects := 0
 	for _, sc := range clients {
 		reconnects += sc.c.Status().Dials - before[sc.index]
 	}
-	return PhaseReport{Name: "reconnect storm", Duration: time.Since(start), Reconnects: reconnects}
+	return PhaseReport{Name: stormPhase, Duration: time.Since(start), Reconnects: reconnects}
 }
 
 // killAndRestart is phase three: a real `kill -9` of the server subprocess
@@ -115,17 +141,32 @@ func (h *harness) killAndRestart(ctx context.Context, clients []*soakClient, roo
 	start := time.Now()
 
 	stopBg := make(chan struct{})
-	var bgSent, bgErrs int64
+	var bgSent, bgAcked, bgErrs int64
 	var wg sync.WaitGroup
 	for _, sc := range clients {
 		wg.Add(1)
 		go func(sc *soakClient) {
 			defer wg.Done()
+			first := true
 			for {
+				if first {
+					// THE FIRST ATTEMPT IS IMMEDIATE, not jittered: the
+					// whole point of this loop is traffic that overlaps the
+					// kill and the restart, and a phase short enough to fit
+					// inside one jittered tick would otherwise send nothing
+					// at all (CANT-27's review, on the PR's own pasted run).
+					first = false
+				} else {
+					select {
+					case <-stopBg:
+						return
+					case <-time.After(jitter(h.cfg.SendInterval)):
+					}
+				}
 				select {
 				case <-stopBg:
 					return
-				case <-time.After(jitter(h.cfg.SendInterval)):
+				default:
 				}
 				atomic.AddInt64(&bgSent, 1)
 				sctx, cancel := context.WithTimeout(ctx, 2*time.Second)
@@ -134,6 +175,8 @@ func (h *harness) killAndRestart(ctx context.Context, clients []*soakClient, roo
 				cancel()
 				if err != nil {
 					atomic.AddInt64(&bgErrs, 1)
+				} else {
+					atomic.AddInt64(&bgAcked, 1)
 				}
 			}
 		}(sc)
@@ -164,8 +207,8 @@ func (h *harness) killAndRestart(ctx context.Context, clients []*soakClient, roo
 	// fairness depends on. See awaitFinalSettle's own comment.
 	h.awaitFinalSettle(ctx, clients)
 
-	return PhaseReport{Name: "kill -9 and restart", Duration: time.Since(start),
-		MessagesSent: int(bgSent), SendErrors: int(bgErrs)}, missing
+	return PhaseReport{Name: killPhase, Duration: time.Since(start),
+		MessagesSent: int(bgSent), MessagesAcked: int(bgAcked), SendErrors: int(bgErrs)}, missing
 }
 
 // snapshotLostCount is R1's control, taken mid-phase: the messages committed
@@ -173,12 +216,16 @@ func (h *harness) killAndRestart(ctx context.Context, clients []*soakClient, roo
 // the dead subprocess) can already see, and that no client has yet held.
 // Zero here would mean the kill landed on a quiet log and proved nothing —
 // the counter-proof this ticket's own text asks for is that this number is
-// NOT always zero.
+// NOT always zero. A query failure is recorded as a harness error rather than
+// silently skipped: an all-query failure would otherwise read exactly like
+// "nothing to lose", which is the one ambiguity R1's own watcher — and this
+// ticket's epigraph — already warns about.
 func (h *harness) snapshotLostCount(ctx context.Context, clients []*soakClient) int {
 	total := 0
 	for _, sc := range clients {
 		rows, err := h.serverLogFor(ctx, sc.userID)
 		if err != nil {
+			h.harnessError("read the server log for client %d (%s) while the server was down: %v", sc.index, sc.name, err)
 			continue // best-effort evidence; the final compareAll is the claim of record
 		}
 		total += len(client.Compare(rows, sc.c.Snapshot()).Lost)

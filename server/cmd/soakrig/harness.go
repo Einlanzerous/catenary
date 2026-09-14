@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"maps"
@@ -42,7 +41,7 @@ type harness struct {
 	proc       *exec.Cmd
 	procDone   <-chan struct{}
 	waitErr    error
-	procStderr *bytes.Buffer
+	procStderr *syncBuffer
 	tailDone   <-chan struct{}
 	instance   int
 	logFiles   []closer

@@ -55,9 +55,17 @@ type Config struct {
 	//                          comparison step itself had errored. Proves "a
 	//                          comparison that never ran" is a harness
 	//                          failure and never folds into a clean report.
+	//   debugRejectAllSends    sends steady traffic into a conversation NONE
+	//                          of the clients belong to, so the real server
+	//                          genuinely refuses every one of them. Proves
+	//                          classify's other server-failure path: a
+	//                          comparison can be clean (nothing either side
+	//                          disagrees about) while the traffic that
+	//                          mattered never landed at all.
 	debugFaults         map[int]client.Faults
 	debugFailProvision  map[int]bool
 	debugSkipCompareFor map[int]bool
+	debugRejectAllSends bool
 }
 
 // validate fills in defaults and checks what it can before anything slow
