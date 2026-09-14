@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.5.0](https://github.com/Einlanzerous/catenary/compare/v0.4.0...v0.5.0) (2026-09-14)
+
+
+### Features
+
+* CANT-101 — the hello outcome, the schema descriptions, and the CANT-24 decision record ([#37](https://github.com/Einlanzerous/catenary/issues/37)) ([011f315](https://github.com/Einlanzerous/catenary/commit/011f31501e3c2f04f7a5562a7bdbe5aa27d91a57))
+* CANT-107 — the hub: per-viewer fan-out, gap → resync_required, read/typing, and the drain ([#46](https://github.com/Einlanzerous/catenary/issues/46)) ([d3eb771](https://github.com/Einlanzerous/catenary/commit/d3eb771879944827282151c9a1f30b24a299b08b))
+* CANT-108 — the logomark: the 1C "Span" tile in the rail brand, the favicon, and the accent-mark token ([#47](https://github.com/Einlanzerous/catenary/issues/47)) ([ad3e7fa](https://github.com/Einlanzerous/catenary/commit/ad3e7fa3c82a1824e0329e2d21857b828eec132a))
+* CANT-22 — the door: WebSocket upgrade, auth handshake, and the codec on the generated types ([#42](https://github.com/Einlanzerous/catenary/issues/42)) ([6cbe11d](https://github.com/Einlanzerous/catenary/commit/6cbe11dabb10a6ba8b956bd13c8dedc54f7d3db1))
+* CANT-85 — attachments linked inside the insert's own transaction ([#45](https://github.com/Einlanzerous/catenary/issues/45)) ([c57878d](https://github.com/Einlanzerous/catenary/commit/c57878d3f6bc0a5e01c980b32b9ec5049e06a35a))
+
+
+### Bug Fixes
+
+* CANT-105 — allow-list toOpenAPISchema's pass-through keywords ([#43](https://github.com/Einlanzerous/catenary/issues/43)) ([244f734](https://github.com/Einlanzerous/catenary/commit/244f734b7fd579b9f92e2aecc561d4190ad5ccc1))
+
 ## [0.4.0](https://github.com/Einlanzerous/catenary/compare/v0.3.0...v0.4.0) (2026-09-12)
 
 
