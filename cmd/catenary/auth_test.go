@@ -40,6 +40,14 @@ func authFixture(t *testing.T) (context.Context, *pgxpool.Pool, *store.Store, ht
 // with the logger the caller wants to read.
 func processFixture(t *testing.T, logger *slog.Logger) (context.Context, *pgxpool.Pool, *store.Store, deps) {
 	t.Helper()
+	return processFixtureWith(t, logger, nil)
+}
+
+// processFixtureWith is processFixture with a hand on the config setup() is
+// given. CANT-102's kill rig uses it to point the listener at a proxy it can
+// sever, and to keep the config for the processes it restarts.
+func processFixtureWith(t *testing.T, logger *slog.Logger, tune func(*config.Config)) (context.Context, *pgxpool.Pool, *store.Store, deps) {
+	t.Helper()
 	dsn := os.Getenv("CATENARY_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("CATENARY_TEST_DATABASE_URL not set; skipping database test")
@@ -61,6 +69,9 @@ func processFixture(t *testing.T, logger *slog.Logger) (context.Context, *pgxpoo
 	st := store.New(pool, store.DefaultLimits(), slog.New(slog.DiscardHandler))
 
 	cfg := config.Config{DatabaseURL: dsn, Addr: ":0", LogFormat: "json", ShutdownGrace: 5 * time.Second}
+	if tune != nil {
+		tune(&cfg)
+	}
 	return ctx, pool, st, setup(cfg, logger, st)
 }
 
