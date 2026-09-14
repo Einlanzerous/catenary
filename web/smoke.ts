@@ -26,6 +26,13 @@ async function main() {
   const main = await render()
   check('mounts', main.length > 2000, `${main.length} bytes`)
   check('rail wordmark', main.includes('CATENARY'))
+  // Canvas 07: the 1C "Span" tile sits beside the wordmark — the mask's one
+  // curve is the geometry that names the form, and it precedes the word.
+  check(
+    'logomark tile beside the wordmark',
+    main.includes('class="logomark"') && main.includes('M12 15 Q24 27 36 15') &&
+      main.indexOf('class="logomark"') < main.indexOf('CATENARY'),
+  )
   check('rooms + direct headers', main.includes('ROOMS') && main.includes('DIRECT'))
   check('active thread title', main.includes('Kitchen Table'))
   // The updated canvas states the guarantee that actually holds.

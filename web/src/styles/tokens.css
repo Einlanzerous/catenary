@@ -47,6 +47,12 @@
   --accent-queue: #8c6533; /* offline QUEUE button */
   --on-accent: #0b0d0e; /* text on an accent fill */
 
+  /* ── the logomark tile (canvas 07, form 1C) ───────────────── */
+  /* The brand, not a state: the copper pushed one step toward yellow, so
+   * the tile reads as the mark and not as an unread lamp. Nothing else
+   * uses it. */
+  --accent-mark: #e5a03c;
+
   /* ── the only other color in the system ───────────────────── */
   --signal-fault: #d1594a; /* failed send only — never decorative */
 
@@ -90,6 +96,9 @@
   --accent-dim: #8a5518;
   --accent-queue: #c08a4e;
   --on-accent: #f7f6f3;
+
+  /* The tile darkens on paper white so the cutout stays visible. */
+  --accent-mark: #c4761f;
 
   --signal-fault: #a63a2c;
 
