@@ -171,9 +171,9 @@ func TestOwnMessageStateIsWhatOTHERSHaveRead(t *testing.T) {
 		{"theirs, behind my read_seq", other, 1905, memberCount, wire.DeliveryStateRead},
 		{"theirs, ahead of my read_seq", other, 1906, memberCount, wire.DeliveryStateDelivered},
 	} {
-		got := deliveryState(store.MessageRow{
+		got := DeliveryState(store.MessageRow{
 			ConversationID: conv, AuthorID: tc.author, Seq: tc.seq,
-		}, reader, readSeq, tc.readBy)
+		}, reader, readSeq[conv], tc.readBy)
 		if got != tc.want {
 			t.Errorf("%s: state = %q, want %q", tc.name, got, tc.want)
 		}
@@ -194,9 +194,9 @@ func TestYourOwnMessageIsNeverDelivered(t *testing.T) {
 
 	for readBy := int64(0); readBy <= 32; readBy++ {
 		for _, seq := range []int64{1904, 1905, 1906} {
-			got := deliveryState(store.MessageRow{
+			got := DeliveryState(store.MessageRow{
 				ConversationID: conv, AuthorID: reader, Seq: seq,
-			}, reader, readSeq, readBy)
+			}, reader, readSeq[conv], readBy)
 			if got == wire.DeliveryStateDelivered {
 				t.Fatalf("readBy %d, seq %d: state = %q on my own message; "+
 					"the server stores nothing between written and read", readBy, seq, got)
