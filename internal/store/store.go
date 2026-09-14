@@ -34,7 +34,8 @@ type Limits struct {
 	// different set of messages than the one the database would.
 	MaxMessageBytes int
 
-	// MaxAttachments bounds how many attachments one send may carry.
+	// MaxAttachments bounds how many attachments one send may carry, and it may
+	// not exceed MaxAttachmentsCeiling.
 	MaxAttachments int
 }
 
@@ -50,12 +51,75 @@ func DefaultLimits() Limits {
 	}
 }
 
+// MaxAttachmentsCeiling is the most CATENARY_MAX_ATTACHMENTS may be set to
+// (CANT-85). The wire puts no maxItems on ClientSend.attachments, so without it
+// the variable is unbounded, and TWO ceilings sit above the default:
+//
+//   - The socket's frame. cmd/catenary sizes it as 6 × MaxMessageBytes + 64 KiB,
+//     and attachments ride in the 64 KiB — about 68 bytes of JSON each. Somewhere
+//     under a thousand, a legal maximal send is severed with 1009 before the
+//     store can answer, and a client whose outbox retries it reconnect-loops.
+//     64 × 68 bytes is about 4.3 KiB.
+//   - The extended protocol's 65,535 parameters. Position 11b writes every row
+//     in one statement at 14 columns a row, so 4,681 rows is the most one
+//     statement can carry, and above it pgx refuses client-side with an error
+//     classified internal and not retryable. 64 × 14 is 896.
+//
+// A plain number rather than one derived from the parameter limit, because the
+// derived one is the ceiling the socket crosses first. If a real need for more
+// ever appears, the frame allowance moves with this, which is why both reasons
+// are written here.
+const MaxAttachmentsCeiling = 64
+
+// LimitError is a bound Validate refuses. Field is the Limits field rather than
+// an environment variable, because the store is handed its policy and does not
+// know where it came from; the composition root, which does, names the source.
+type LimitError struct {
+	Field  string
+	Value  int
+	Reason string
+}
+
+func (e *LimitError) Error() string {
+	return fmt.Sprintf("store: %s = %d: %s", e.Field, e.Value, e.Reason)
+}
+
+// Validate reports the first bound this store would refuse to run with. It is
+// the ONE check: New panics on it, and the composition root calls it before
+// opening the pool so an operator gets a startup error naming the variable
+// rather than a panic trace after a database wait.
+func (l Limits) Validate() error {
+	// A non-positive bound is legal Go and silently inverts the check: a zero
+	// MaxMessageBytes refuses every message carrying any text, and a zero
+	// MaxAttachments every send carrying any attachment, with nothing anywhere
+	// saying why.
+	if l.MaxMessageBytes < 1 {
+		return &LimitError{Field: "MaxMessageBytes", Value: l.MaxMessageBytes,
+			Reason: "must be positive (a zero bound refuses every send rather than none)"}
+	}
+	if l.MaxAttachments < 1 {
+		return &LimitError{Field: "MaxAttachments", Value: l.MaxAttachments,
+			Reason: "must be positive (a zero bound refuses every send rather than none)"}
+	}
+	if l.MaxAttachments > MaxAttachmentsCeiling {
+		return &LimitError{Field: "MaxAttachments", Value: l.MaxAttachments,
+			Reason: fmt.Sprintf("must be at most %d (above it a maximal send outgrows the socket frame, "+
+				"and then the one statement that writes the rows)", MaxAttachmentsCeiling)}
+	}
+	return nil
+}
+
 // Store is the query surface over Catenary's pool. Repos hang off it rather
 // than off free functions so the growing set of queries has one place to live.
 type Store struct {
 	pool   *pgxpool.Pool
 	limits Limits
 	logger *slog.Logger
+
+	// uploads resolves the upload handles a send names. RefuseUploads unless
+	// WithUploadResolver said otherwise — CANT-85 Ruling 2 — so a store that
+	// nobody wired refuses attachments loudly rather than dropping them.
+	uploads UploadResolver
 }
 
 // New wraps an existing pool.
@@ -83,14 +147,17 @@ func New(pool *pgxpool.Pool, limits Limits, logger *slog.Logger) *Store {
 	// environment variables for the same reason, so this cannot fire from a
 	// real configuration; it fires when something constructs a Store by hand.
 	//
-	// A panic rather than an error return: New has no error result and ~20
+	// A panic rather than an error return: New has no error result and ~90
 	// call sites, this is a wiring mistake rather than a runtime condition,
 	// and it happens once at composition where a dead process is the clearest
 	// possible signal.
-	if limits.MaxMessageBytes < 1 || limits.MaxAttachments < 1 {
-		panic(fmt.Sprintf("store.New: limits must be positive, got MaxMessageBytes=%d MaxAttachments=%d "+
-			"(a zero bound refuses every send rather than none; pass DefaultLimits() if you do not care)",
-			limits.MaxMessageBytes, limits.MaxAttachments))
+	//
+	// Limits.Validate is the check, and since CANT-85 it also refuses
+	// MaxAttachments above MaxAttachmentsCeiling. The composition root runs
+	// the same Validate before opening the pool, so this still cannot fire
+	// from a real configuration.
+	if err := limits.Validate(); err != nil {
+		panic(fmt.Sprintf("store.New: %v (pass DefaultLimits() if you do not care)", err))
 	}
 	// Nil for the same reason, and it is the cheaper mistake to make: a nil
 	// *slog.Logger panics at the first refusal rather than at composition, so
@@ -98,7 +165,7 @@ func New(pool *pgxpool.Pool, limits Limits, logger *slog.Logger) *Store {
 	if logger == nil {
 		panic("store.New: logger must not be nil (pass slog.New(slog.DiscardHandler) to drop refusal logs deliberately)")
 	}
-	return &Store{pool: pool, limits: limits, logger: logger}
+	return &Store{pool: pool, limits: limits, logger: logger, uploads: RefuseUploads{}}
 }
 
 // Limits reports the bounds this store enforces.

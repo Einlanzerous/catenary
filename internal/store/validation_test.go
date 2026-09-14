@@ -255,43 +255,6 @@ func TestAnEmptySendIsStored(t *testing.T) {
 	}
 }
 
-// CANT-85's seam, pinned as a gap rather than left to a comment.
-//
-// NewMessage.Attachments is COUNTED by checkBounds and never written: the
-// INSERT lists no attachment columns and no upload id is resolved. The field
-// comment says so, but a comment does not stop CANT-22 or CANT-75 wiring
-// ClientSend.Attachments through and acking a send whose attachments silently
-// vanished. This test makes the gap visible and gives CANT-85 something to
-// invert — when it lands, this assertion flips from 0 to 2 and the skip goes.
-func TestAttachmentsAreCountedButNotYetStored(t *testing.T) {
-	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits(), discardLogger())
-	u := mkUser(ctx, t, pool, "att")
-	conv := mkGroup(ctx, t, pool, "room", u)
-
-	sent, err := st.SendMessage(ctx, NewMessage{
-		ConversationID: conv,
-		AuthorID:       u,
-		ClientID:       uuid.New(),
-		Text:           ptr("two attachments, neither stored"),
-		Attachments: []NewAttachment{
-			{Kind: "image", UploadID: uuid.New()},
-			{Kind: "voice", UploadID: uuid.New()},
-		},
-	})
-	if err != nil {
-		t.Fatalf("a send within CATENARY_MAX_ATTACHMENTS was refused: %v", err)
-	}
-
-	var rows int
-	mustScan(t, pool.QueryRow(ctx,
-		`SELECT count(*) FROM attachments WHERE message_id = $1`, sent.ID), &rows)
-	if rows != 0 {
-		t.Fatalf("%d attachment rows exist — CANT-85 has landed, so this test should now assert "+
-			"that both rows are present and committed with the message", rows)
-	}
-}
-
 // CANT-83's half of the cross-conversation replay. The transaction half —
 // membership, existence — is above; this is about what the ACK may say.
 //
@@ -362,24 +325,35 @@ func TestAReplayUnderOneKeyReportsTheConversationTheRowIsActuallyIn(t *testing.T
 // not refusing; this is the same failure in the other and worse direction, so
 // it is loud instead.
 func TestNewRefusesANonPositiveBound(t *testing.T) {
+	const inverts = "it would refuse every send with any text as message_too_large and say nothing about why"
 	for _, tc := range []struct {
 		name   string
 		limits Limits
+		why    string
 	}{
-		{"the zero value", Limits{}},
-		{"no byte bound", Limits{MaxAttachments: 16}},
-		{"no attachment bound", Limits{MaxMessageBytes: 16384}},
-		{"a negative bound", Limits{MaxMessageBytes: -1, MaxAttachments: 16}},
+		{"the zero value", Limits{}, inverts},
+		{"no byte bound", Limits{MaxAttachments: 16}, inverts},
+		{"no attachment bound", Limits{MaxMessageBytes: 16384}, inverts},
+		{"a negative bound", Limits{MaxMessageBytes: -1, MaxAttachments: 16}, inverts},
+		// CANT-85. The same door, and the other direction: a bound so large that
+		// a legal maximal send is severed by the socket's frame bound before the
+		// store can answer, and past that cannot fit in one statement.
+		{"above the attachment ceiling", Limits{MaxMessageBytes: 16384, MaxAttachments: MaxAttachmentsCeiling + 1},
+			"a maximal send would outgrow the socket frame and then the one INSERT that writes its rows"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			defer func() {
 				if recover() == nil {
-					t.Errorf("New(pool, %+v) returned a store; it would refuse every send "+
-						"with any text as message_too_large and say nothing about why", tc.limits)
+					t.Errorf("New(pool, %+v) returned a store; %s", tc.limits, tc.why)
 				}
 			}()
 			_ = New(closedPool(t), tc.limits, discardLogger())
 		})
+	}
+
+	// At the ceiling is legal: the bound is inclusive.
+	if err := (Limits{MaxMessageBytes: 16384, MaxAttachments: MaxAttachmentsCeiling}).Validate(); err != nil {
+		t.Errorf("a store configured AT the ceiling was refused: %v", err)
 	}
 
 	// And the shape a caller who does not care is meant to use still works.

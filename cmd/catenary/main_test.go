@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/magos/catenary/internal/config"
+	"github.com/magos/catenary/internal/store"
 )
 
 func TestRunRejectsUnknownSubcommands(t *testing.T) {
@@ -41,6 +42,30 @@ func TestSetup(t *testing.T) {
 	}
 	if d.store != nil {
 		t.Error("setup invented a store it was not given")
+	}
+}
+
+// CANT-85. An attachment bound above the store's ceiling is a STARTUP error that
+// names the variable the operator set — not a panic out of store.New after the
+// database wait, and not a Limits field name the operator never typed.
+func TestLimitsFromNamesTheVariableThatIsOutOfRange(t *testing.T) {
+	_, err := limitsFrom(config.Config{MaxAttachments: store.MaxAttachmentsCeiling + 1})
+	if err == nil {
+		t.Fatalf("CATENARY_MAX_ATTACHMENTS=%d was accepted; the ceiling is %d",
+			store.MaxAttachmentsCeiling+1, store.MaxAttachmentsCeiling)
+	}
+	if !strings.Contains(err.Error(), "CATENARY_MAX_ATTACHMENTS") {
+		t.Errorf("the error does not name the variable: %v", err)
+	}
+
+	// At the ceiling is accepted, and unset keeps the store's defaults.
+	got, err := limitsFrom(config.Config{MaxAttachments: store.MaxAttachmentsCeiling})
+	if err != nil || got.MaxAttachments != store.MaxAttachmentsCeiling {
+		t.Errorf("limitsFrom at the ceiling = %+v, %v", got, err)
+	}
+	got, err = limitsFrom(config.Config{})
+	if err != nil || got != store.DefaultLimits() {
+		t.Errorf("limitsFrom with nothing set = %+v, %v; want DefaultLimits", got, err)
 	}
 }
 

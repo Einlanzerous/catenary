@@ -89,7 +89,7 @@ func usage() { fmt.Fprint(os.Stderr, usageText()) }
 // surface. Split out from usage() so a test can assert it names every variable
 // config.Load reads — env-only configuration is documented or it is folklore.
 func usageText() string {
-	return `catenary — self-hosted chat for a small trusted group
+	return fmt.Sprintf(`catenary — self-hosted chat for a small trusted group
 
 usage:
   catenary serve            run the HTTP and WebSocket server
@@ -109,8 +109,8 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
   CATENARY_LOG_FORMAT      json | text. Default json.
   CATENARY_SHUTDOWN_GRACE  how long in-flight work has on SIGTERM. Default 20s.
   CATENARY_MAX_MESSAGE_BYTES  UTF-8 byte bound on a message body. Default 16384.
-  CATENARY_MAX_ATTACHMENTS    how many attachments one send may carry. Default 16.
-`
+  CATENARY_MAX_ATTACHMENTS    how many attachments one send may carry. Default 16, at most %d.
+`, store.MaxAttachmentsCeiling)
 }
 
 // serveSync reads one page and maps it, which is the whole of GET /sync's body.
@@ -257,6 +257,40 @@ func bearer(r *http.Request) string {
 	return h[len(prefix):]
 }
 
+// limitsFrom merges the two bound variables over the store's defaults and
+// validates the result.
+//
+// Unset variables leave DefaultLimits alone, which is why config carries 0
+// rather than a second copy of the numbers. Validation is store.Limits.Validate
+// — the same check New panics on — so there is one ceiling and one place it is
+// enforced (CANT-85). What this adds is the NAME: the store knows only a
+// Limits field, and an operator needs the variable they set.
+func limitsFrom(cfg config.Config) (store.Limits, error) {
+	limits := store.DefaultLimits()
+	if cfg.MaxMessageBytes > 0 {
+		limits.MaxMessageBytes = cfg.MaxMessageBytes
+	}
+	if cfg.MaxAttachments > 0 {
+		limits.MaxAttachments = cfg.MaxAttachments
+	}
+	if err := limits.Validate(); err != nil {
+		var le *store.LimitError
+		if errors.As(err, &le) {
+			if name, ok := limitVariables[le.Field]; ok {
+				return store.Limits{}, fmt.Errorf("config: %s: %w", name, err)
+			}
+		}
+		return store.Limits{}, err
+	}
+	return limits, nil
+}
+
+// limitVariables names the environment variable behind each Limits field.
+var limitVariables = map[string]string{
+	"MaxMessageBytes": "CATENARY_MAX_MESSAGE_BYTES",
+	"MaxAttachments":  "CATENARY_MAX_ATTACHMENTS",
+}
+
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -268,6 +302,15 @@ func runServe(args []string) error {
 		return err
 	}
 	logger := cfg.Logger(os.Stdout)
+
+	// The store is handed its bounds; it does not read the environment.
+	// Validated HERE, before anything slow starts, so a bound out of range is a
+	// startup error naming the variable rather than a panic out of store.New
+	// after a sixty-second database wait.
+	limits, err := limitsFrom(cfg)
+	if err != nil {
+		return err
+	}
 
 	// Signals are trapped before anything slow starts. A SIGTERM arriving
 	// during a migration or while waiting on a restarting Postgres would
@@ -286,17 +329,6 @@ func runServe(args []string) error {
 	// restart after the first.
 	if err := store.Migrate(ctx, pool); err != nil {
 		return err
-	}
-
-	// The store is handed its bounds; it does not read the environment. Unset
-	// variables leave DefaultLimits alone, which is why config carries 0 rather
-	// than a second copy of the numbers.
-	limits := store.DefaultLimits()
-	if cfg.MaxMessageBytes > 0 {
-		limits.MaxMessageBytes = cfg.MaxMessageBytes
-	}
-	if cfg.MaxAttachments > 0 {
-		limits.MaxAttachments = cfg.MaxAttachments
 	}
 
 	d := setup(cfg, logger, store.New(pool, limits, logger))

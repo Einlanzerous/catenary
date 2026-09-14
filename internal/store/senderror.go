@@ -63,6 +63,12 @@ var (
 	// already, so the seam is named here rather than invented later.
 	ErrUploadNotFound = errors.New("store: upload not found")
 
+	// ErrUploadResolverContract is a resolver that returned a different number
+	// of rows from the number of attachments it was asked about (CANT-85). That
+	// is OUR bug — the resolver is server code — so it is never reported as the
+	// sender's upload_not_found.
+	ErrUploadResolverContract = errors.New("store: the upload resolver broke its contract")
+
 	// ErrRateLimited is PLUMBED AND UNEMITTED. retry_after_sec travels end to
 	// end and the vector server_error_rate_limited stays satisfied, but no
 	// policy decides when to raise it and no ticket on the board owns one.
@@ -270,6 +276,13 @@ var sendErrorTable = []sendErrorRow{
 	// which is OUR bug and not the sender's, exactly as a missing client_id
 	// is. Not retryable: the identical frame encodes the identical payload.
 	{cause: ErrNotifyTooLarge, code: wire.ErrorCodeInternal, retryable: false},
+
+	// `internal`, stated, and the same standing again (CANT-85). A resolver that
+	// returns more or fewer rows than it was asked about is server code that
+	// answered the wrong question — not an upload the sender named wrongly, so
+	// never upload_not_found. Not retryable: the identical frame reaches the
+	// identical resolver.
+	{cause: ErrUploadResolverContract, code: wire.ErrorCodeInternal, retryable: false},
 }
 
 // SendErrorFor is the single decision. Everything the store refuses goes

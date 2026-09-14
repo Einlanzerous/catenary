@@ -32,6 +32,7 @@ func TestTheTableIsTotalOverTheCausesTheStoreCanProduce(t *testing.T) {
 		{ErrMessageTooLarge, wire.ErrorCodeMessageTooLarge, false},
 		{ErrTooManyAttachments, wire.ErrorCodeMessageTooLarge, false},
 		{ErrUploadNotFound, wire.ErrorCodeUploadNotFound, false},
+		{ErrUploadResolverContract, wire.ErrorCodeInternal, false},
 		{ErrRateLimited, wire.ErrorCodeRateLimited, true},
 		{ErrNoClientID, wire.ErrorCodeInternal, false},
 		{ErrNotifyTooLarge, wire.ErrorCodeInternal, false},
