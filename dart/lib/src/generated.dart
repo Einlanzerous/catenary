@@ -532,8 +532,8 @@ final class User {
     final o = _obj(v, p);
     return User(
       id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _asUuid(o["id"], '${p}.id'),
-      name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.length < 1) _bad(p, 'name must be at least 1 characters, got ${x.length}'); return x; })(o["name"], '${p}.name'),
-      initials: o["initials"] == null ? null : ((Object? v, String p) { final x = _str(v, p); if (x.length < 1) _bad(p, 'initials must be at least 1 characters, got ${x.length}'); if (x.length > 2) _bad(p, 'initials must be at most 2 characters, got ${x.length}'); return x; })(o["initials"], '${p}.initials'),
+      name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'name must be at least 1 characters, got ${x.runes.length}'); return x; })(o["name"], '${p}.name'),
+      initials: o["initials"] == null ? null : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'initials must be at least 1 characters, got ${x.runes.length}'); if (x.runes.length > 2) _bad(p, 'initials must be at most 2 characters, got ${x.runes.length}'); return x; })(o["initials"], '${p}.initials'),
     );
   }
 
@@ -1112,7 +1112,7 @@ final class Ping implements ClientFrame, ServerFrame {
   factory Ping.fromJson(Object? v, [String p = "Ping"]) {
     final o = _obj(v, p);
     return Ping(
-      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.length < 1) _bad(p, 'id must be at least 1 characters, got ${x.length}'); return x; })(o["id"], '${p}.id'),
+      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'id must be at least 1 characters, got ${x.runes.length}'); return x; })(o["id"], '${p}.id'),
       at: o["at"] == null ? null : _asTimestamp(o["at"], '${p}.at'),
     );
   }
@@ -1142,7 +1142,7 @@ final class Pong implements ClientFrame, ServerFrame {
   factory Pong.fromJson(Object? v, [String p = "Pong"]) {
     final o = _obj(v, p);
     return Pong(
-      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.length < 1) _bad(p, 'id must be at least 1 characters, got ${x.length}'); return x; })(o["id"], '${p}.id'),
+      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'id must be at least 1 characters, got ${x.runes.length}'); return x; })(o["id"], '${p}.id'),
       at: o["at"] == null ? null : _asTimestamp(o["at"], '${p}.at'),
     );
   }

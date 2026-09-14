@@ -206,9 +206,10 @@ func TestYourOwnMessageIsNeverDelivered(t *testing.T) {
 }
 
 // A name that derives to nothing produces NO `initials` key rather than an
-// empty one. User.initials is minLength: 1, and neither generated decoder
-// enforces minLength today — so `"initials":""` would have shipped as a blank
-// avatar tile in both clients instead of being refused by either.
+// empty one. User.initials is minLength: 1; CANT-106 made every generated
+// decoder enforce that, so `"initials":""` is refused rather than shipped as
+// a blank avatar tile — this test is about the mapper choosing absent on its
+// own, not about relying on a decoder somewhere else to catch an empty one.
 //
 // The `omitempty` on a *string means absent is reachable at all; this asserts
 // the mapper actually takes it.

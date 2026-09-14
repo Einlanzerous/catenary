@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"unicode/utf8"
 )
 
 // WireVersion is the schema version this package was generated from.
@@ -635,15 +636,15 @@ func (v *User) decode(b []byte, p string) error {
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
 	}
-	if len(out.Name) < 1 {
-		return badf(p+".name", "name must be at least 1 characters, got %d", len(out.Name))
+	if utf8.RuneCountInString(out.Name) < 1 {
+		return badf(p+".name", "name must be at least 1 characters, got %d", utf8.RuneCountInString(out.Name))
 	}
 	if out.Initials != nil {
-		if len(*out.Initials) < 1 {
-			return badf(p+".initials", "initials must be at least 1 characters, got %d", len(*out.Initials))
+		if utf8.RuneCountInString(*out.Initials) < 1 {
+			return badf(p+".initials", "initials must be at least 1 characters, got %d", utf8.RuneCountInString(*out.Initials))
 		}
-		if len(*out.Initials) > 2 {
-			return badf(p+".initials", "initials must be at most 2 characters, got %d", len(*out.Initials))
+		if utf8.RuneCountInString(*out.Initials) > 2 {
+			return badf(p+".initials", "initials must be at most 2 characters, got %d", utf8.RuneCountInString(*out.Initials))
 		}
 	}
 	*v = out
@@ -1534,8 +1535,8 @@ func (v *Ping) decode(b []byte, p string) error {
 	if s.At != nil {
 		out.At = s.At
 	}
-	if len(out.ID) < 1 {
-		return badf(p+".id", "id must be at least 1 characters, got %d", len(out.ID))
+	if utf8.RuneCountInString(out.ID) < 1 {
+		return badf(p+".id", "id must be at least 1 characters, got %d", utf8.RuneCountInString(out.ID))
 	}
 	if out.At != nil {
 		if err := checkTimestamp(*out.At, p+".at"); err != nil {
@@ -1593,8 +1594,8 @@ func (v *Pong) decode(b []byte, p string) error {
 	if s.At != nil {
 		out.At = s.At
 	}
-	if len(out.ID) < 1 {
-		return badf(p+".id", "id must be at least 1 characters, got %d", len(out.ID))
+	if utf8.RuneCountInString(out.ID) < 1 {
+		return badf(p+".id", "id must be at least 1 characters, got %d", utf8.RuneCountInString(out.ID))
 	}
 	if out.At != nil {
 		if err := checkTimestamp(*out.At, p+".at"); err != nil {

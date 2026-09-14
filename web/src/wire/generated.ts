@@ -365,8 +365,8 @@ export function decodeUser(v: unknown, p = "User"): User {
   const o = asObj(v, p)
   return {
     id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asUuid(o["id"], `${p}.id`),
-    name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `name must be at least 1 characters, got ${x.length}`); return x })(o["name"], `${p}.name`),
-    initials: o["initials"] === undefined || o["initials"] === null ? undefined : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `initials must be at least 1 characters, got ${x.length}`); if (x.length > 2) bad(p, `initials must be at most 2 characters, got ${x.length}`); return x })(o["initials"], `${p}.initials`),
+    name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `name must be at least 1 characters, got ${[...x].length}`); return x })(o["name"], `${p}.name`),
+    initials: o["initials"] === undefined || o["initials"] === null ? undefined : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `initials must be at least 1 characters, got ${[...x].length}`); if ([...x].length > 2) bad(p, `initials must be at most 2 characters, got ${[...x].length}`); return x })(o["initials"], `${p}.initials`),
   }
 }
 
@@ -816,7 +816,7 @@ export function decodePing(v: unknown, p = "Ping"): Ping {
   const o = asObj(v, p)
   return {
     type: "ping",
-    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `id must be at least 1 characters, got ${x.length}`); return x })(o["id"], `${p}.id`),
+    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `id must be at least 1 characters, got ${[...x].length}`); return x })(o["id"], `${p}.id`),
     at: o["at"] === undefined || o["at"] === null ? undefined : asTimestamp(o["at"], `${p}.at`),
   }
 }
@@ -840,7 +840,7 @@ export function decodePong(v: unknown, p = "Pong"): Pong {
   const o = asObj(v, p)
   return {
     type: "pong",
-    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if (x.length < 1) bad(p, `id must be at least 1 characters, got ${x.length}`); return x })(o["id"], `${p}.id`),
+    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `id must be at least 1 characters, got ${[...x].length}`); return x })(o["id"], `${p}.id`),
     at: o["at"] === undefined || o["at"] === null ? undefined : asTimestamp(o["at"], `${p}.at`),
   }
 }

@@ -1164,6 +1164,28 @@
         "head_seq": 1908,
         "retention_days": 0
       }
+    },
+    {
+      "name": "user_initials_cjk",
+      "kind": "User",
+      "expect": "roundtrip",
+      "why": "CANT-106 review. `minLength`/`maxLength` count UNICODE CODE POINTS; `.length` in TypeScript and Dart counts UTF-16 code units and `len()` in Go counts bytes, and the three agree with each other and with the schema only for ASCII. `internal/wireview/sync.go`'s `initials()` derives exactly this two-code-point value from \"陳 大文\" per its own documented test case — `len(\"陳大\")` is 6 bytes, which a byte-counting Go check would have refused while both code-unit-counting clients accepted the identical page.",
+      "json": {
+        "id": "6a7b8c9d-0e1f-4a2b-9c3d-4e5f6a7b8c9d",
+        "name": "陳 大文",
+        "initials": "陳大"
+      }
+    },
+    {
+      "name": "user_initials_astral",
+      "kind": "User",
+      "expect": "roundtrip",
+      "why": "CANT-106 review, the surrogate-pair case: U+1D400 MATHEMATICAL BOLD CAPITAL A is ONE code point and TWO UTF-16 code units, so \"𝐀L\" is 2 code points (valid) but 3 code units — a naive `.length` fix in TypeScript or Dart would refuse this exact value while a byte-counting Go fix would refuse it for yet another count (5 bytes). All three must agree it is exactly 2.",
+      "json": {
+        "id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "name": "𝐀 Lovelace",
+        "initials": "𝐀L"
+      }
     }
   ]
 }

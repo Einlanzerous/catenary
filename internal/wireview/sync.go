@@ -219,10 +219,11 @@ func user(u store.UserRow) wire.User {
 	}
 	// ABSENT rather than empty. User.initials is minLength: 1, and
 	// users.display_name is TEXT NOT NULL with no CHECK — so a name of "!!!" or
-	// a lone emoji is storable and derives to nothing. Neither the generated Go
-	// decoder nor the TypeScript one enforces minLength, so `"initials":""`
-	// would have shipped as an empty avatar tile rather than being refused.
-	// Optional-and-absent is what the schema actually allows.
+	// a lone emoji is storable and derives to nothing. CANT-106 closed the gap
+	// where no generated decoder enforced a property-level minLength, so
+	// `"initials":""` would decode fine as an empty avatar tile rather than
+	// being refused; the mapper still sends absent rather than empty because
+	// that is what the schema actually allows, not because refusal was optional.
 	if init := initials(u.DisplayName); init != "" {
 		out.Initials = &init
 	}

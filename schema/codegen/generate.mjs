@@ -285,6 +285,12 @@ const isUnionRef = (ref) => ref.kind === 'named' && byName.get(ref.name)?.kind =
 const usesFloat = () => JSON.stringify(defs).includes('"type": "number"') ||
   JSON.stringify(defs).includes('"type":"number"')
 
+/* True when any alias or property anywhere carries minLength/maxLength — Go's
+ * check needs `unicode/utf8` only then, and an unconditional import would be
+ * unused (a Go compile error, not a lint) the day this schema has neither. */
+const usesStringLength = () => JSON.stringify(defs).includes('"minLength"') ||
+  JSON.stringify(defs).includes('"maxLength"')
+
 const camel = (s) => s.replace(/_([a-z0-9])/g, (_, c) => c.toUpperCase())
 const pascal = (s) => {
   const c = camel(s)
@@ -368,8 +374,16 @@ function tsScalarChecks(n, label, xVar, patternExpr) {
   if (n.pattern) body.push(`if (!${patternExpr}.test(${xVar})) bad(p, \`${label} must match ${n.pattern.replace(/`/g, '\\`')}, got \${JSON.stringify(${xVar})}\`)`)
   if (n.minimum !== undefined) body.push(`if (${xVar} < ${n.minimum}) bad(p, \`${label} must be >= ${n.minimum}, got \${${xVar}}\`)`)
   if (n.maximum !== undefined) body.push(`if (${xVar} > ${n.maximum}) bad(p, \`${label} must be <= ${n.maximum}, got \${${xVar}}\`)`)
-  if (n.minLength !== undefined) body.push(`if (${xVar}.length < ${n.minLength}) bad(p, \`${label} must be at least ${n.minLength} characters, got \${${xVar}.length}\`)`)
-  if (n.maxLength !== undefined) body.push(`if (${xVar}.length > ${n.maxLength}) bad(p, \`${label} must be at most ${n.maxLength} characters, got \${${xVar}.length}\`)`)
+  /* JSON Schema counts minLength/maxLength in UNICODE CODE POINTS, not UTF-16
+   * code units — `.length` on a JS string is the latter, and the two agree
+   * only inside the Basic Multilingual Plane. `[...s]` iterates a string by
+   * code point (a surrogate pair included), so `[...s].length` is the count
+   * the schema means; `initials()` in internal/wireview/sync.go derives a
+   * two-CODE-POINT `User.initials` from a display name, and "陳大".length is
+   * 2 same as its code-point count, but a name that derives astral characters
+   * would not be — a mismatch that ASCII-only vectors cannot see. */
+  if (n.minLength !== undefined) body.push(`if ([...${xVar}].length < ${n.minLength}) bad(p, \`${label} must be at least ${n.minLength} characters, got \${[...${xVar}].length}\`)`)
+  if (n.maxLength !== undefined) body.push(`if ([...${xVar}].length > ${n.maxLength}) bad(p, \`${label} must be at most ${n.maxLength} characters, got \${[...${xVar}].length}\`)`)
   return body
 }
 
@@ -669,8 +683,12 @@ function dartScalarChecks(n, label, xVar, patternExpr) {
   }
   if (n.minimum !== undefined) body.push(`if (${xVar} < ${n.minimum}) _bad(p, '${label} must be >= ${n.minimum}, got \$${xVar}');`)
   if (n.maximum !== undefined) body.push(`if (${xVar} > ${n.maximum}) _bad(p, '${label} must be <= ${n.maximum}, got \$${xVar}');`)
-  if (n.minLength !== undefined) body.push(`if (${xVar}.length < ${n.minLength}) _bad(p, '${label} must be at least ${n.minLength} characters, got \${${xVar}.length}');`)
-  if (n.maxLength !== undefined) body.push(`if (${xVar}.length > ${n.maxLength}) _bad(p, '${label} must be at most ${n.maxLength} characters, got \${${xVar}.length}');`)
+  /* See tsScalarChecks: JSON Schema's minLength/maxLength count UNICODE CODE
+   * POINTS. A Dart String is UTF-16 internally and `.length` counts CODE
+   * UNITS, so the two disagree the moment a code point needs a surrogate
+   * pair — `.runes` iterates by code point and is what the schema means. */
+  if (n.minLength !== undefined) body.push(`if (${xVar}.runes.length < ${n.minLength}) _bad(p, '${label} must be at least ${n.minLength} characters, got \${${xVar}.runes.length}');`)
+  if (n.maxLength !== undefined) body.push(`if (${xVar}.runes.length > ${n.maxLength}) _bad(p, '${label} must be at most ${n.maxLength} characters, got \${${xVar}.runes.length}');`)
   return body
 }
 
@@ -700,10 +718,15 @@ function dartDecode(ref, src, path, depth = 0) {
         : ref.prim === 'boolean' ? '_bool' : '_str'
       if (!hasScalarConstraints(ref)) return `${decodeFn}(${src}, ${dartPath(path)})`
       /* CANT-106, mirroring the TS half exactly: an inline, anonymous
-       * `_as${Name}` for a value with no named type to hang one on. */
+       * `_as${Name}` for a value with no named type to hang one on. The
+       * pattern source goes into a Dart RAW string unescaped, matching the
+       * alias branch's own `RegExp(r'${n.pattern}')` above — a raw string has
+       * no escape mechanism at all, so a `\'`-style attempt at handling a
+       * literal quote does not survive one, it just moves where parsing
+       * breaks. No pattern in this schema contains a quote; a future one that
+       * did would need a non-raw string here, same as the alias branch would. */
       const label = labelFromPath(path)
-      const patternExpr = ref.pattern ? `RegExp(r'${ref.pattern.replace(/'/g, "\\'")}')` : undefined
-      const t = dartType(ref, false)
+      const patternExpr = ref.pattern ? `RegExp(r'${ref.pattern}')` : undefined
       const body = [`final x = ${decodeFn}(v, p);`, ...dartScalarChecks(ref, label, 'x', patternExpr), 'return x;']
       return `((Object? v, String p) { ${body.join(' ')} })(${src}, ${dartPath(path)})`
     }
@@ -999,14 +1022,23 @@ function goScalarChecks(n, expr, pathLit, label, patternExpr) {
     out.push(`\t\treturn badf(${pathLit}, "${label} must be <= ${n.maximum}, got %v", ${expr})`)
     out.push('\t}')
   }
+  /* See tsScalarChecks: JSON Schema's minLength/maxLength count UNICODE CODE
+   * POINTS, and `len()` on a Go string counts BYTES — the two agree only for
+   * ASCII. utf8.RuneCountInString counts code points, which is what a
+   * property-level bound on a Go string has to use to agree with TypeScript's
+   * `[...s].length` and Dart's `.runes.length` on the same input. Measured:
+   * `len("陳大")` is 6 (three UTF-8 bytes per character) where the schema
+   * means 2, which `internal/wireview/sync.go`'s `initials()` — itself
+   * deriving a two-CODE-POINT `User.initials` — would have hit on its own
+   * documented CJK test case. */
   if (n.minLength !== undefined) {
-    out.push(`\tif len(${expr}) < ${n.minLength} {`)
-    out.push(`\t\treturn badf(${pathLit}, "${label} must be at least ${n.minLength} characters, got %d", len(${expr}))`)
+    out.push(`\tif utf8.RuneCountInString(${expr}) < ${n.minLength} {`)
+    out.push(`\t\treturn badf(${pathLit}, "${label} must be at least ${n.minLength} characters, got %d", utf8.RuneCountInString(${expr}))`)
     out.push('\t}')
   }
   if (n.maxLength !== undefined) {
-    out.push(`\tif len(${expr}) > ${n.maxLength} {`)
-    out.push(`\t\treturn badf(${pathLit}, "${label} must be at most ${n.maxLength} characters, got %d", len(${expr}))`)
+    out.push(`\tif utf8.RuneCountInString(${expr}) > ${n.maxLength} {`)
+    out.push(`\t\treturn badf(${pathLit}, "${label} must be at most ${n.maxLength} characters, got %d", utf8.RuneCountInString(${expr}))`)
     out.push('\t}')
   }
   return out
@@ -1129,7 +1161,8 @@ function emitGo() {
   const L = []
   L.push(BANNER, '')
   L.push('package wire', '')
-  L.push('import (', '\t"encoding/json"', '\t"errors"', '\t"fmt"', '\t"regexp"', ')', '')
+  L.push('import (', '\t"encoding/json"', '\t"errors"', '\t"fmt"', '\t"regexp"',
+    ...(usesStringLength() ? ['\t"unicode/utf8"'] : []), ')', '')
   L.push(`// WireVersion is the schema version this package was generated from.`)
   L.push(`const WireVersion = ${WIRE_VERSION}`, '')
 
