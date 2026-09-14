@@ -347,8 +347,16 @@ func (s *Store) findOrCreateDirect(ctx context.Context, viewer uuid.UUID, target
 		// under READ COMMITTED the instant it commits — ON CONFLICT DO
 		// NOTHING waits on the conflicting row's inserter rather than racing
 		// past it — so this read cannot miss it.
+		//
+		// AND kind = 'direct' (CANT-75's review): conversations_direct_key_idx
+		// is PARTIAL — ON conversations (direct_key) WHERE kind = 'direct' —
+		// and a bare `WHERE direct_key = $1` does not imply that predicate, so
+		// the planner cannot prove the partial index applies and falls back
+		// to a sequential scan. Restating the predicate here is what lets this
+		// read use the very index the find-or-create idiom leans on for
+		// uniqueness.
 		if err := tx.QueryRow(ctx,
-			`SELECT id FROM conversations WHERE direct_key = $1`, key).Scan(&id); err != nil {
+			`SELECT id FROM conversations WHERE direct_key = $1 AND kind = 'direct'`, key).Scan(&id); err != nil {
 			return ConversationRow{}, fmt.Errorf("store: find-or-create direct: find existing: %w", err)
 		}
 	default:
