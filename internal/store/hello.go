@@ -122,9 +122,9 @@ func (s *Store) Hello(ctx context.Context, req HelloRequest) (HelloResult, error
 			"cursor", *req.Cursor, "reason", "negative_cursor")
 		return HelloResult{}, ErrNegativeCursor
 	}
-	var head int64
-	if err := s.pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`).Scan(&head); err != nil {
-		return HelloResult{}, fmt.Errorf("store: hello: read head: %w", err)
+	head, err := s.Head(ctx)
+	if err != nil {
+		return HelloResult{}, fmt.Errorf("store: hello: %w", err)
 	}
 
 	res := HelloResult{Head: head, Cursor: req.Cursor}

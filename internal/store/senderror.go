@@ -334,6 +334,16 @@ func internalSendError(err error) *SendError {
 	return &SendError{Code: wire.ErrorCodeInternal, Retryable: isTransient(err), Cause: err}
 }
 
+// IsTransient is isTransient, exported for the hub's retry of a fan-out load
+// (CANT-107). The reasoning below is written for a retried `send`, where
+// client_id makes a repeat safe; a fan-out load is a read, where a repeat can
+// at worst read again, so the same liberal classification is safe for the
+// same reason. It classifies context.Canceled as transient ON PURPOSE (see
+// below), so a caller running on a context that a shutdown cancels checks
+// that context BEFORE consulting this — the hub does — or it will retry a
+// cancellation until its budget is spent.
+func IsTransient(err error) bool { return isTransient(err) }
+
 // isTransient reports whether re-running the identical statement could
 // plausibly succeed.
 //
