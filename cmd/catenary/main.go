@@ -114,6 +114,8 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
   CATENARY_SHUTDOWN_GRACE  how long in-flight work has on SIGTERM. Default 20s.
   CATENARY_MAX_MESSAGE_BYTES  UTF-8 byte bound on a message body. Default 16384.
   CATENARY_MAX_ATTACHMENTS    how many attachments one send may carry. Default 16, at most %d.
+  CATENARY_HEARTBEAT_INTERVAL_SEC  how often ready tells the client to ping. Default 35, 5-90.
+  CATENARY_MISSED_PONG_LIMIT       missed pings before severance, both ends. Default 2, at least 1.
 `, store.MaxAttachmentsCeiling)
 }
 
@@ -286,6 +288,12 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			MaxFrameBytes: maxFrameBytes,
 			Attach:        attachFn,
 			Handle:        handleFn,
+
+			// CANT-23: validated by heartbeatBoundsFrom in runServe before
+			// setup ever runs. api.Deps merges zero with its own defaults,
+			// the same convention MaxFrameBytes above already follows.
+			HeartbeatIntervalSec: cfg.HeartbeatIntervalSec,
+			MissedPongLimit:      cfg.MissedPongLimit,
 		}),
 	}
 }
@@ -345,6 +353,49 @@ var limitVariables = map[string]string{
 	"MaxAttachments":  "CATENARY_MAX_ATTACHMENTS",
 }
 
+// missedPongLimitCeiling bounds CATENARY_MISSED_PONG_LIMIT, which the wire
+// schema itself leaves unbounded above (ServerReady.missed_pong_limit has no
+// maximum). Unbounded is not survivable here: heartbeatWindow
+// (internal/api/socket.go) multiplies it by up to 90 seconds in int64
+// nanoseconds, and a limit north of roughly 10^8 overflows into a NEGATIVE
+// duration — time.AfterFunc fires a negative
+// duration at once, so every session would be severed with 4000 the instant
+// `ready` goes out, silently, behind a green /readyz. 1000 is nowhere near
+// that edge (90 s × 1001 is already a ~25-hour severance window, absurd on
+// its own merits) and nowhere near any real deployment either; it exists
+// purely so this function's own job — a value `ready` announces must be one
+// this server can actually enforce — holds at the boundary too.
+const missedPongLimitCeiling = 1000
+
+// heartbeatBoundsFrom validates an operator's CATENARY_HEARTBEAT_INTERVAL_SEC
+// / CATENARY_MISSED_PONG_LIMIT against the wire schema's own bounds on
+// ServerReady (interval [5, 90], limit >= 1 — and missedPongLimitCeiling
+// above, which the schema leaves to us) — CANT-23: a number `ready`
+// announces has to be a number its own generated decoders would accept AND
+// a number this server can actually enforce, and this is the one place
+// either is checked, called before anything slow starts, the same way
+// limitsFrom is the one place a send bound is.
+//
+// UNSET (ZERO) ALWAYS PASSES. config.Load's positiveInt has already floored
+// a SET value at 1; api.Deps merges 0 with DefaultHeartbeatIntervalSec /
+// DefaultMissedPongLimit itself, so there is nothing here for an unset
+// variable to fail.
+func heartbeatBoundsFrom(cfg config.Config) error {
+	if v := cfg.HeartbeatIntervalSec; v != 0 && (v < 5 || v > 90) {
+		return fmt.Errorf("config: CATENARY_HEARTBEAT_INTERVAL_SEC %d is outside the wire schema's bounds [5, 90]", v)
+	}
+	if v := cfg.MissedPongLimit; v != 0 && v < 1 {
+		// Unreachable behind config.Load's positiveInt, which already floors
+		// a set value at 1 — kept so a future change to that floor cannot
+		// silently let `ready` announce a limit below the wire schema's own.
+		return fmt.Errorf("config: CATENARY_MISSED_PONG_LIMIT %d must be at least 1", v)
+	}
+	if v := cfg.MissedPongLimit; v > missedPongLimitCeiling {
+		return fmt.Errorf("config: CATENARY_MISSED_PONG_LIMIT %d is above %d, the most heartbeatWindow can enforce without overflowing", v, missedPongLimitCeiling)
+	}
+	return nil
+}
+
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	if err := fs.Parse(args); err != nil {
@@ -363,6 +414,9 @@ func runServe(args []string) error {
 	// after a sixty-second database wait.
 	limits, err := limitsFrom(cfg)
 	if err != nil {
+		return err
+	}
+	if err := heartbeatBoundsFrom(cfg); err != nil {
 		return err
 	}
 

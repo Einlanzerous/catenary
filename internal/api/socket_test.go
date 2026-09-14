@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -188,6 +189,45 @@ func expectClose(t *testing.T, conn *websocket.Conn, want websocket.StatusCode) 
 	return ce.Reason
 }
 
+// readServerWithin and expectCloseWithin are readServer and expectClose with
+// a caller-chosen bound instead of testCtx's fixed 5 s — the heartbeat tests
+// below wait out a real window, which is longer than that.
+func readServerWithin(t *testing.T, conn *websocket.Conn, d time.Duration) wire.ServerFrame {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	_, data, err := conn.Read(ctx)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	f, err := wire.DecodeServerFrame(data)
+	if err != nil {
+		t.Fatalf("server sent a frame the generated decoder refuses: %v\n%s", err, data)
+	}
+	if f == nil {
+		t.Fatalf("server sent a frame of unknown type: %s", data)
+	}
+	return f
+}
+
+func expectCloseWithin(t *testing.T, conn *websocket.Conn, want websocket.StatusCode, d time.Duration) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), d)
+	defer cancel()
+	_, data, err := conn.Read(ctx)
+	if err == nil {
+		t.Fatalf("expected the socket to close, got a frame: %s", data)
+	}
+	var ce websocket.CloseError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected a close, got: %v", err)
+	}
+	if ce.Code != want {
+		t.Errorf("close status = %d (%s), want %d", ce.Code, ce.Reason, want)
+	}
+	return ce.Reason
+}
+
 func helloFor(s *stubs, cursor *int64) wire.ClientHello {
 	info := "catenary-test/0"
 	return wire.ClientHello{
@@ -348,9 +388,9 @@ func TestHelloBindsTheSocketToTheAccountAndDevice(t *testing.T) {
 	if ready.WireVersion == nil || *ready.WireVersion != wire.WireVersion {
 		t.Errorf("ready.wire_version = %v, want %d", ready.WireVersion, wire.WireVersion)
 	}
-	if ready.HeartbeatIntervalSec != heartbeatIntervalSec || ready.MissedPongLimit != missedPongLimit {
+	if ready.HeartbeatIntervalSec != DefaultHeartbeatIntervalSec || ready.MissedPongLimit != DefaultMissedPongLimit {
 		t.Errorf("ready announces %d s / %d, want %d s / %d",
-			ready.HeartbeatIntervalSec, ready.MissedPongLimit, heartbeatIntervalSec, missedPongLimit)
+			ready.HeartbeatIntervalSec, ready.MissedPongLimit, DefaultHeartbeatIntervalSec, DefaultMissedPongLimit)
 	}
 	if _, err := time.Parse(wireview.TimeLayout, string(ready.ServerTime)); err != nil {
 		t.Errorf("ready.server_time %q is not the wire format: %v", ready.ServerTime, err)
@@ -749,3 +789,170 @@ func TestASessionCanBeWrittenToFromOutsideItsLoop(t *testing.T) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }
+
+// --- the heartbeat (CANT-23) ------------------------------------------------
+//
+// R1's production dial (35 s / 2 missed) would make every test below
+// minute-long. These use the wire schema's own floor instead — interval 5,
+// limit 1, heartbeatWindow's 10 s — the smallest dial the generated decoder
+// readServer/open read `ready` through will still accept (ServerReady's
+// heartbeat_interval_sec has a hard minimum of 5), so the tests exercise the
+// real formula end to end rather than a shortcut that only looks like it.
+
+const (
+	testHeartbeatInterval = 5
+	testHeartbeatLimit    = 1
+)
+
+func testHeartbeatWindow() time.Duration {
+	return heartbeatWindow(testHeartbeatInterval, testHeartbeatLimit)
+}
+
+// openWithHeartbeat is open with the package's fast test dial armed, for
+// every test below that cares about the watchdog rather than the wire values
+// themselves (TestReadyCarriesTheConfiguredHeartbeatDial covers those).
+func openWithHeartbeat(t *testing.T, s *stubs) (*websocket.Conn, wire.ServerReady) {
+	t.Helper()
+	d := s.deps()
+	d.HeartbeatIntervalSec = testHeartbeatInterval
+	d.MissedPongLimit = testHeartbeatLimit
+	return open(t, serve(t, d), s)
+}
+
+// Clause 1 of CANT-23's Done-when: the interval comes from the server.
+func TestReadyCarriesTheConfiguredHeartbeatDial(t *testing.T) {
+	s := newStubs(t)
+	d := s.deps()
+	d.HeartbeatIntervalSec = 7
+	d.MissedPongLimit = 3
+	conn, ready := open(t, serve(t, d), s)
+	defer conn.CloseNow()
+
+	if ready.HeartbeatIntervalSec != 7 || ready.MissedPongLimit != 3 {
+		t.Errorf("ready = %d s / %d, want the configured 7 s / 3", ready.HeartbeatIntervalSec, ready.MissedPongLimit)
+	}
+}
+
+// Deps carrying neither field falls back to the exported defaults — the same
+// zero-means-default MaxFrameBytes already follows.
+func TestReadyFallsBackToTheDefaultHeartbeatDialWhenUnconfigured(t *testing.T) {
+	s := newStubs(t)
+	srv := serve(t, s.deps())
+	conn, ready := open(t, srv, s)
+	defer conn.CloseNow()
+
+	if ready.HeartbeatIntervalSec != DefaultHeartbeatIntervalSec || ready.MissedPongLimit != DefaultMissedPongLimit {
+		t.Errorf("ready = %d s / %d, want the defaults %d s / %d",
+			ready.HeartbeatIntervalSec, ready.MissedPongLimit, DefaultHeartbeatIntervalSec, DefaultMissedPongLimit)
+	}
+}
+
+// Clause 2: two missed pongs — the announced window — severs the socket, with
+// the reconnect-eligible status this file's own doc names, and the session
+// detaches from the hub exactly as any other closed session does.
+func TestASilentSessionIsSeveredAtTheHeartbeatWindowAndDetaches(t *testing.T) {
+	s := newStubs(t)
+	conn, _ := openWithHeartbeat(t, s)
+	defer conn.CloseNow()
+
+	attached := <-s.attached // proves detach below is proving something
+
+	reason := expectCloseWithin(t, conn, statusHeartbeatTimeout, testHeartbeatWindow()+5*time.Second)
+	if !strings.Contains(reason, "heartbeat") {
+		t.Errorf("close reason %q does not name the cause", reason)
+	}
+
+	select {
+	case detached := <-s.detached:
+		if detached != attached {
+			t.Error("detach was handed a different session than attach")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a heartbeat-severed session did not detach from the hub")
+	}
+}
+
+// A session that pings on schedule outlives several windows on repeated
+// resets — not on some longer absolute session lifetime, which is the bug a
+// test that only waits ONE window could not tell apart from this.
+func TestPingingOnScheduleSurvivesSeveralHeartbeatWindows(t *testing.T) {
+	s := newStubs(t)
+	conn, _ := openWithHeartbeat(t, s)
+	defer conn.CloseNow()
+
+	window := testHeartbeatWindow()
+	deadline := time.Now().Add(2*window + 2*time.Second)
+	for i := 0; time.Now().Before(deadline); i++ {
+		id := fmt.Sprintf("p-%d", i)
+		sendText(t, conn, wire.Ping{ID: id})
+		pong, ok := readServerWithin(t, conn, 5*time.Second).(wire.Pong)
+		if !ok || pong.ID != id {
+			t.Fatalf("ping %s: expected the matching pong, got %+v (ok=%v)", id, pong, ok)
+		}
+		time.Sleep(window / 3)
+	}
+}
+
+// The heartbeat clock starts at `ready` and nowhere earlier
+// (docs/decisions/cant-24-resume.md's "What CANT-102 inherits"). A socket
+// that is slow to say hello — up to just under what would be a heartbeat
+// window, were the clock (wrongly) already running — is still answered with
+// a normal `ready` once it does, rather than found already severed.
+func TestHeartbeatClockDoesNotStartBeforeReady(t *testing.T) {
+	s := newStubs(t)
+	d := s.deps()
+	d.HeartbeatIntervalSec = testHeartbeatInterval
+	d.MissedPongLimit = testHeartbeatLimit
+	srv := serve(t, d)
+
+	window := testHeartbeatWindow()
+	prev := helloTimeout
+	helloTimeout = window + 5*time.Second // long enough to hold the socket open past the window below
+	t.Cleanup(func() { helloTimeout = prev })
+
+	conn, _, err := dial(t, srv, subprotocolV1, tokenProto(s.token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	// No hello yet, so no `ready` yet — if the watchdog had wrongly started
+	// at accept, it would fire here, before the window is even up.
+	time.Sleep(window - 2*time.Second)
+
+	sendText(t, conn, helloFor(s, nil))
+	ready, ok := readServerWithin(t, conn, 5*time.Second).(wire.ServerReady)
+	if !ok {
+		t.Fatal("no ready after a late hello — the session was severed before it, so the heartbeat clock ran before ready")
+	}
+	if ready.HeartbeatIntervalSec != testHeartbeatInterval || ready.MissedPongLimit != testHeartbeatLimit {
+		t.Fatalf("ready = %d s / %d, want the configured %d s / %d",
+			ready.HeartbeatIntervalSec, ready.MissedPongLimit, testHeartbeatInterval, testHeartbeatLimit)
+	}
+}
+
+// heartbeatWindow multiplies unboundedly: the wire schema leaves
+// missed_pong_limit with no maximum, and cmd/catenary's missedPongLimitCeiling
+// (1000) is what actually keeps an operator value inside int64 nanoseconds —
+// this package has no ceiling of its own to test. What it pins is the
+// arithmetic that ceiling exists for: sane at the ceiling, and genuinely
+// wrapping to a negative duration on the value the review found, so a future
+// change to either number has to look at this again rather than rediscover
+// the bug in production.
+func TestHeartbeatWindowArithmetic(t *testing.T) {
+	if w, want := heartbeatWindow(90, missedPongLimitCeilingForTest), 90*(missedPongLimitCeilingForTest+1)*time.Second; w != want {
+		t.Errorf("heartbeatWindow(90, %d) = %v, want %v", missedPongLimitCeilingForTest, w, want)
+	}
+	// cmd/catenary's heartbeatBoundsFrom refuses this value; recorded here so
+	// the reason it must keeps matching what this function actually does.
+	if w := heartbeatWindow(90, 200_000_000); w > 0 {
+		t.Errorf("heartbeatWindow(90, 200_000_000) = %v, want a wrapped (negative) duration — "+
+			"if this now stays positive, cmd/catenary's missedPongLimitCeiling may no longer need to be as tight as it is", w)
+	}
+}
+
+// missedPongLimitCeilingForTest mirrors cmd/catenary's missedPongLimitCeiling.
+// Not imported — cmd/catenary is package main and cannot be imported, and the
+// constant is small and stable enough that a literal here, named to say what
+// it is, is clearer than a cross-package indirection would be.
+const missedPongLimitCeilingForTest = 1000

@@ -13,6 +13,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/magos/catenary/internal/config"
+	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/wire"
 )
 
@@ -201,6 +203,68 @@ func TestADeviceEnrollsOpensASocketAndSends(t *testing.T) {
 	_, resp, err = wsDial(t, srv, "catenary.v1", "catenary.token."+access)
 	if err == nil || resp == nil || resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("upgrade after revocation: err=%v resp=%v, want 401", err, resp)
+	}
+}
+
+// CANT-23: the composition root's own pass-through, over a real socket
+// through the REAL router setup() builds — not the internal/api stubs, which
+// prove the same field flows into `ready` but cannot prove setup() is the
+// one that hands it over. cfg.HeartbeatIntervalSec / cfg.MissedPongLimit are
+// the SAME fields a real `catenary serve` loads from the environment; setup
+// does no merge of its own, only the pass-through into api.Deps.
+func TestTheHeartbeatDialFlowsThroughSetup(t *testing.T) {
+	dsn := os.Getenv("CATENARY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("CATENARY_TEST_DATABASE_URL not set; skipping database test")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	t.Cleanup(cancel)
+
+	pool, err := store.Connect(ctx, dsn)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	if err := store.MigrateDown(ctx, pool, 0); err != nil {
+		t.Fatalf("reset: %v", err)
+	}
+	if err := store.Migrate(ctx, pool); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	st := store.New(pool, store.DefaultLimits(), slog.New(slog.DiscardHandler))
+
+	cfg := config.Config{DatabaseURL: dsn, Addr: ":0", LogFormat: "json",
+		HeartbeatIntervalSec: 7, MissedPongLimit: 4}
+	d := setup(cfg, slog.New(slog.DiscardHandler), st)
+	srv := httptest.NewServer(d.router)
+	t.Cleanup(srv.Close)
+
+	ada := mkUser(ctx, t, pool, "ada", "Ada Lovelace")
+	issued, err := st.IssueEnrollmentToken(ctx, ada)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body := do(t, d.router, enrollRequest(t, issued.Plaintext, "Framework 13"))
+	if code != http.StatusOK {
+		t.Fatalf("enroll = %d: %s", code, body)
+	}
+	var enrolled wire.EnrollResponse
+	if err := json.Unmarshal(body, &enrolled); err != nil {
+		t.Fatal(err)
+	}
+
+	conn, _, err := wsDial(t, srv, "catenary.v1", "catenary.token."+string(enrolled.AccessToken))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	wsSend(ctx, t, conn, wire.ClientHello{WireVersion: wire.WireVersion, DeviceID: enrolled.DeviceID})
+	ready, ok := wsRead(ctx, t, conn).(wire.ServerReady)
+	if !ok {
+		t.Fatal("no ready")
+	}
+	if ready.HeartbeatIntervalSec != 7 || ready.MissedPongLimit != 4 {
+		t.Errorf("ready via the real composition root = %d s / %d, want the configured 7 s / 4",
+			ready.HeartbeatIntervalSec, ready.MissedPongLimit)
 	}
 }
 
