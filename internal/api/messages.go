@@ -27,13 +27,29 @@ import (
 	"github.com/magos/catenary/internal/wireview"
 )
 
-// maxRESTWriteBody bounds a REST write's JSON body: a handle, or a text body
-// plus a handful of upload ids and a reply reference. Comfortably above
-// anything either request legitimately carries and far below anything that
-// would trouble the process — the same order of magnitude as the socket's
-// per-frame allowance in cmd/catenary, without that allowance's attachment
-// multiplier, because attachments are refused service-wide today (E6).
-const maxRESTWriteBody = 64 << 10
+// defaultMaxRESTWriteBody is the REST body bound when Deps carries none —
+// the same fallback socket.go's defaultMaxFrameBytes uses, and for the same
+// reason: a caller that builds Deps outside the composition root (a test)
+// still gets a sane bound rather than an unbounded read.
+//
+// NOT THE BOUND A REAL PROCESS RUNS WITH. A fixed constant here, independent
+// of CATENARY_MAX_MESSAGE_BYTES, was a review finding on CANT-75's PR: an
+// operator who raised the message bound got a message the store would have
+// accepted refused by the TRANSPORT first, as a 400 "malformed body" that
+// looks like a JSON bug and is not one — the transport was no longer only
+// the thing that differs. cmd/catenary now derives Deps.MaxRESTBodyBytes
+// with the identical expression main.go already used for the socket's
+// Deps.MaxFrameBytes, so the two transports share one bound rather than
+// disagreeing at whatever margin CATENARY_MAX_MESSAGE_BYTES is set to.
+const defaultMaxRESTWriteBody = 256 << 10
+
+// restBodyLimit resolves the configured bound or the fallback above.
+func restBodyLimit(d Deps) int64 {
+	if d.MaxRESTBodyBytes > 0 {
+		return d.MaxRESTBodyBytes
+	}
+	return defaultMaxRESTWriteBody
+}
 
 // messagesHandler serves POST /conversations/{id}/messages.
 //
@@ -65,7 +81,7 @@ func messagesHandler(d Deps) http.HandlerFunc {
 		}
 
 		var req wire.MessageSendRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRESTWriteBody)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, restBodyLimit(d))).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body is not a valid MessageSendRequest"})
 			return
 		}
@@ -164,7 +180,7 @@ func directConversationHandler(d Deps) http.HandlerFunc {
 		}
 
 		var req wire.DirectConversationRequest
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRESTWriteBody)).Decode(&req); err != nil {
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, restBodyLimit(d))).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body is not a valid DirectConversationRequest"})
 			return
 		}

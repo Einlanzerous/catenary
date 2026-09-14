@@ -134,6 +134,17 @@ type Deps struct {
 	// than the identical row served any other way.
 	MediaURL func(storageKey string) string
 
+	// MaxRESTBodyBytes bounds the two REST write routes' JSON body. Zero
+	// means the default. SAME DERIVATION AS MaxFrameBytes, DELIBERATELY — a
+	// review finding on CANT-75's PR: a fixed REST bound independent of the
+	// configured message size let an operator raise CATENARY_MAX_MESSAGE_BYTES
+	// and have the TRANSPORT refuse a message the store would have accepted,
+	// which is the exact disagreement the two transports sharing one insert
+	// exists to prevent. cmd/catenary computes this with the identical
+	// expression it already used for the socket's MaxFrameBytes, so both
+	// bounds move together.
+	MaxRESTBodyBytes int64
+
 	// Attach hands a session to the hub the moment it is bound and BEFORE
 	// `ready` is written, and the returned detach runs when the session ends.
 	// Optional: with none wired, sessions are served and nothing is fanned

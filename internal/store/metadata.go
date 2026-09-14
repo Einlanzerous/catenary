@@ -361,25 +361,40 @@ func (s *Store) findOrCreateDirect(ctx context.Context, viewer uuid.UUID, target
 			id, viewer, target); err != nil {
 			return ConversationRow{}, fmt.Errorf("store: find-or-create direct: insert members: %w", err)
 		}
+	}
+
+	// Read back on tx, so a caller that just created the row sees it without
+	// waiting for the commit below — the same reason conversationRowOne runs
+	// on the caller's own transaction rather than the pool.
+	//
+	// BEFORE THE BUMP, DELIBERATELY (CANT-75's review). messages.go's own
+	// lock-order note puts the counter draw LAST so the deployment-wide
+	// serialised section is draw-insert-commit rather than the whole
+	// transaction; a read sitting between the bump and Commit widens that
+	// section by however long the read takes, and every send anywhere in the
+	// deployment queues behind it. Nothing conversationRowOne selects — id,
+	// kind, name, last_seq, retention_days, muted, read_seq, member_count,
+	// first_unread_seq, other_member_name — is written by the bump below, so
+	// moving the read above it costs nothing the caller can observe and
+	// restores draw-then-commit.
+	out, err := s.conversationRowOne(ctx, tx, id, viewer)
+	if err != nil {
+		return ConversationRow{}, err
+	}
+
+	if created {
 		// ONE BUMP FOR ALL THREE ROWS THIS CREATE TOUCHED — the conversation
 		// and both fresh member rows — on the same argument the type's own
 		// doc gives: a membership change is one event, not three, and only
 		// one draw should say so. Without the conversation's marker moving,
 		// the row sits at DEFAULT 0 and is invisible to every cursor there
 		// is; that is what makes this call, and not only the insert above,
-		// load-bearing.
+		// load-bearing. LAST, right before Commit, which is what keeps the
+		// counter at the bottom of this transaction's own order.
 		if _, err := newMetadataBump().conversation(id).member(id, viewer).member(id, target).
 			apply(ctx, tx); err != nil {
 			return ConversationRow{}, err
 		}
-	}
-
-	// Read back on tx, so a caller that just created the row sees it without
-	// waiting for the commit below — the same reason conversationRowOne runs
-	// on the caller's own transaction rather than the pool.
-	out, err := s.conversationRowOne(ctx, tx, id, viewer)
-	if err != nil {
-		return ConversationRow{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

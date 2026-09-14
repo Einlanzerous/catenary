@@ -489,8 +489,17 @@ func (s *Store) conversationRowOne(ctx context.Context, tx pgx.Tx, id, viewer uu
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Either id does not exist or viewer is not a member — not_a_member
 		// leaks nothing more than conversation_not_found already does for a
-		// non-member send, and callers of this helper already hold a lock that
-		// proves both conditions false in the ordinary path.
+		// non-member send. UNREACHABLE TODAY, on two different arguments for
+		// findOrCreateDirect's two paths, and worth stating separately rather
+		// than as one blanket guarantee (CANT-75's review caught the
+		// blanket version overclaiming). On the CREATED path, the row this
+		// reads is the one this same transaction just inserted seconds
+		// earlier — self-evidently present under its own snapshot. On the
+		// FOUND path, nothing here is locked at all; what makes it safe is
+		// that no production path removes a row from conversation_members —
+		// a member never leaves a direct conversation. A caller that adds one
+		// (departure, an admin removal) has to re-examine this comment rather
+		// than trust it.
 		return ConversationRow{}, fmt.Errorf("store: conversation %s: %w", id, ErrNotAMember)
 	}
 	if err != nil {

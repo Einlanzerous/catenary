@@ -181,6 +181,49 @@ func TestAMalformedDirectConversationBodyIsABadRequest(t *testing.T) {
 	}
 }
 
+// --- the REST body bound follows Deps.MaxRESTBodyBytes ------------------------
+
+// A review finding on this PR: a FIXED REST body constant, independent of
+// the configured message bound, let an operator raise
+// CATENARY_MAX_MESSAGE_BYTES and have a message the store would have
+// accepted refused by the TRANSPORT instead. Deps.MaxRESTBodyBytes exists so
+// the two move together; this proves the handler actually reads it rather
+// than a package constant.
+func TestRESTBodyLimitFollowsMaxRESTBodyBytes(t *testing.T) {
+	// A handle long enough to clear a tiny configured bound but well under
+	// the default (256 KiB) — so the DEFAULT would accept this request and
+	// only a configured, smaller bound refuses it.
+	handle := string(bytes.Repeat([]byte("a"), 200))
+	reqBody := map[string]any{"handle": handle}
+
+	tooSmall := NewRouter(Deps{
+		Logger: discardLogger(), FindOrCreateDirect: okFindOrCreateDirect, Caller: someFullCaller,
+		MaxRESTBodyBytes: 100, // smaller than the body this request carries
+	})
+	res, body := post(t, tooSmall, "/conversations/direct", reqBody)
+	if res.StatusCode != http.StatusBadRequest {
+		t.Errorf("with MaxRESTBodyBytes=100, status = %d, want 400: %s", res.StatusCode, body)
+	}
+
+	roomy := NewRouter(Deps{
+		Logger: discardLogger(), FindOrCreateDirect: okFindOrCreateDirect, Caller: someFullCaller,
+		MaxRESTBodyBytes: 1 << 20, // comfortably above this request's body
+	})
+	res, body = post(t, roomy, "/conversations/direct", reqBody)
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("with MaxRESTBodyBytes=1MiB, status = %d, want 200: %s", res.StatusCode, body)
+	}
+
+	// Zero (unset) falls back to the default, which is comfortably above
+	// this 200-byte-ish request too — the ordinary case for a store built
+	// outside the composition root, e.g. these very tests.
+	defaulted := NewRouter(Deps{Logger: discardLogger(), FindOrCreateDirect: okFindOrCreateDirect, Caller: someFullCaller})
+	res, body = post(t, defaulted, "/conversations/direct", reqBody)
+	if res.StatusCode != http.StatusOK {
+		t.Errorf("with the default bound, status = %d, want 200: %s", res.StatusCode, body)
+	}
+}
+
 // --- success shape ---------------------------------------------------------
 
 // The response is a wire.Message the generated decoder accepts — the

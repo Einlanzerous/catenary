@@ -266,6 +266,13 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		// them. The two must hold together: a frame refused here is severed
 		// with 1009 before the store can answer `message_too_large`, and a
 		// client whose outbox retries it is a client in a reconnect loop.
+		//
+		// REST SHARES THIS BOUND (CANT-75's review): a fixed constant on the
+		// REST side, independent of this one, let an operator raise
+		// CATENARY_MAX_MESSAGE_BYTES and have a message the store would have
+		// accepted refused by the REST transport instead — the 400 would have
+		// read as a client's JSON bug and been nothing of the kind. One
+		// number, both transports.
 		maxFrameBytes = 6*int64(st.Limits().MaxMessageBytes) + 64<<10
 
 		// CANT-107: the hub, and the listener that feeds it. The hub's two
@@ -315,6 +322,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			MessageForFanout:   messageForFanoutFn,
 			FindOrCreateDirect: findOrCreateDirectFn,
 			MediaURL:           mediaURL,
+			MaxRESTBodyBytes:   maxFrameBytes,
 		}),
 	}
 }
