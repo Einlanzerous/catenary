@@ -1472,6 +1472,22 @@ function yamlEmit(node, indent = 0) {
   return yamlScalar(node, indent)
 }
 
+/* The keyword census over today's schema (CANT-105) — every key the walk
+ * below finds on a Schema Object that ISN'T one of the six rewritten above
+ * or the three dropped, and that OpenAPI 3.0 gives the same meaning JSON
+ * Schema does, so copying it through unrewritten is correct rather than
+ * merely unnoticed. Allow-listed by name, not padded with anything the
+ * schema does not use today: the failure mode this guards is precisely a
+ * keyword nobody looked at, and a speculative entry here is that same
+ * failure filed in advance. A keyword the schema grows that belongs here
+ * gets added by the person adding it; one that needs a JSON-Schema-to-3.0
+ * rewrite (like the six above) gets its own `case`, not an entry in this set. */
+const OPENAPI_PASSTHROUGH_KEYWORDS = new Set([
+  'type', 'description', 'format', 'pattern',
+  'minimum', 'maximum', 'minLength', 'maxLength', 'maxItems',
+  'enum', 'required', 'additionalProperties',
+])
+
 /** One JSON Schema node, rewritten as an OpenAPI 3.0 Schema Object. */
 function toOpenAPISchema(node, ctx) {
   const out = {}
@@ -1533,6 +1549,23 @@ function toOpenAPISchema(node, ctx) {
       case '$schema': case '$id': case '$defs':
         break
       default:
+        // Anything reaching here is neither rewritten above nor known to mean
+        // the same thing in OpenAPI 3.0 as it does in JSON Schema — a stray
+        // keyword the schema grew that this arm was never taught. Copying it
+        // through unrewritten is how CANT-12's PR #3 finding happened: the
+        // staleness guard proves the spec matches the schema, not that it is
+        // valid OpenAPI 3.0, and kin-openapi's parse test (CANT-74) cannot
+        // reach every such keyword either (a value it does not object to at
+        // load or validate). Naming both the keyword and the schema path here
+        // is strictly more than the parser can say — it does not know which
+        // component a keyword arrived through, only which one it landed on.
+        if (!OPENAPI_PASSTHROUGH_KEYWORDS.has(k)) {
+          fail(`openapi: ${ctx}.${k} is a keyword toOpenAPISchema does not know: not one of the ` +
+            'rewritten keywords ($ref, const, oneOf, discriminator, properties, items), not dropped ' +
+            '($schema, $id, $defs), and not in OPENAPI_PASSTHROUGH_KEYWORDS. Add an explicit rewrite ' +
+            'if OpenAPI 3.0 gives it a different shape, or add it to OPENAPI_PASSTHROUGH_KEYWORDS by ' +
+            `name if the two agree on "${k}" (CANT-105)`)
+        }
         out[k] = v
     }
   }
@@ -1542,7 +1575,7 @@ function toOpenAPISchema(node, ctx) {
 function emitOpenAPI() {
   const schemas = {}
   for (const [name, node] of Object.entries(defs)) {
-    schemas[name] = toOpenAPISchema(node, name)
+    schemas[name] = toOpenAPISchema(node, `$defs.${name}`)
     /* CANT-74. OpenAPI 3.0 has no open-enum keyword, so the policy rides as a
      * specification extension: any house generator wired over this spec must
      * pass the `tolerate` vectors for every enum carrying it, or be wrapped. */

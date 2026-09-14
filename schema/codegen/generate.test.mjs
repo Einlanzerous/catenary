@@ -122,6 +122,17 @@ test('an inline enum on a server-emitted type fails, naming the field, with no a
   assert.doesNotMatch(readFileSync(GEN, 'utf8'), /allowList|allow-list|ALLOW_LIST/)
 })
 
+test('a stray keyword in the OpenAPI pass-through arm fails gen, naming the keyword and the schema path', () => {
+  const s = loadSchema()
+  // Not a keyword toOpenAPISchema rewrites, drops or allow-lists — the
+  // CANT-105 fixture. Landed directly on a $defs entry so the path names
+  // the def itself rather than a nested property.
+  s.$defs.Uuid.prefixItems = []
+  const r = runOn(s, '--dry-run')
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, /openapi: \$defs\.Uuid\.prefixItems is a keyword toOpenAPISchema does not know/)
+})
+
 /* ------------------------------------------------------------------ *
  * The emitted OpenAPI carries the classification and nothing else does.
  * ------------------------------------------------------------------ */
