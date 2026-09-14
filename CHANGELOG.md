@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/Einlanzerous/catenary/compare/v0.6.0...v0.7.0) (2026-09-14)
+
+
+### Features
+
+* CANT-109 — soakrig against a deployed server: Access headers, provision, a stricter idle ([#53](https://github.com/Einlanzerous/catenary/issues/53)) ([c720a4d](https://github.com/Einlanzerous/catenary/commit/c720a4d416d44d18664488e7a0ca58e8c3caec1b))
+
 ## [0.6.0](https://github.com/Einlanzerous/catenary/compare/v0.5.0...v0.6.0) (2026-09-14)
 
 
