@@ -80,8 +80,10 @@ type LimitError struct {
 	Reason string
 }
 
+// No package prefix: New and the composition root each add their own, and a
+// reader of either should not see "store.New: store: ...".
 func (e *LimitError) Error() string {
-	return fmt.Sprintf("store: %s = %d: %s", e.Field, e.Value, e.Reason)
+	return fmt.Sprintf("%s = %d: %s", e.Field, e.Value, e.Reason)
 }
 
 // Validate reports the first bound this store would refuse to run with. It is

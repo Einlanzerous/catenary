@@ -523,6 +523,14 @@ func TestARaceLoserUnderAConsumingResolverGetsTheOriginal(t *testing.T) {
 	}
 
 	resolver := &consumingResolver{holding: make(chan struct{}, 1), release: make(chan struct{})}
+	// Released exactly once, and on cleanup as well as on the happy path. If
+	// the test fails while the winner is paused on its row locks, the fixture
+	// table's DROP would otherwise wait behind the winner's open transaction
+	// until go test's own timeout. Registered after dropFixture, so it runs
+	// before it.
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(resolver.release) }) }
+	t.Cleanup(release)
 	st := New(pool, DefaultLimits(), discardLogger()).WithUploadResolver(resolver)
 	msg := NewMessage{ClientID: uuid.New(), ConversationID: conv, AuthorID: author, Attachments: want}
 
@@ -542,7 +550,7 @@ func TestARaceLoserUnderAConsumingResolverGetsTheOriginal(t *testing.T) {
 	// has committed, and into the UPDATE, where it waits on the winner's rows.
 	go func() { s, err := st.SendMessage(ctx, msg); loser <- outcome{s, err} }()
 	waitForLockWaiter(ctx, t, pool)
-	close(resolver.release)
+	release()
 
 	var w, l outcome
 	for _, c := range []struct {
