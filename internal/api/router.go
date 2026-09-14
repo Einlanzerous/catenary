@@ -87,6 +87,36 @@ type Deps struct {
 	// can identify the caller here, because the caller is a fresh install whose
 	// only claim is the string it was given.
 	Enroll func(ctx context.Context, token, deviceName string) (store.Enrollment, error)
+
+	// The socket. Authenticate, Hello and Send together register GET /ws; if
+	// any is nil the route does not exist — the same safe absence as CallerID,
+	// for the same reason. CANT-22.
+	//
+	// Authenticate resolves the access token the upgrade carries on
+	// Sec-WebSocket-Protocol. It is store.Authenticate and not CallerID,
+	// because the socket binds to a DEVICE and CallerID answers only who.
+	Authenticate func(ctx context.Context, token string) (store.Caller, error)
+
+	// Hello compares the hello's cursor to head and logs the one line CANT-24
+	// asks for. Its Head becomes ready.log_seq.
+	Hello func(ctx context.Context, req store.HelloRequest) (store.HelloResult, error)
+
+	// Send is the `send` frame's write. store.SendMessage.
+	Send func(ctx context.Context, m store.NewMessage) (store.Sent, error)
+
+	// Attach hands a session to the hub the moment it is bound and BEFORE
+	// `ready` is written, and the returned detach runs when the session ends.
+	// Optional: with none wired, sessions are served and nothing is fanned
+	// out to them. The hub is a sub-task of CANT-22.
+	Attach func(s *Session) (detach func())
+
+	// Handle receives the client frames the door does not answer itself —
+	// `read` and `typing`, both of which cross sockets. Optional, and the
+	// hub's; without it those frames are dropped at debug.
+	Handle func(ctx context.Context, s *Session, f wire.ClientFrame)
+
+	// MaxFrameBytes bounds one inbound socket frame. Zero means the default.
+	MaxFrameBytes int64
 }
 
 // NewRouter builds the HTTP handler.
@@ -137,6 +167,11 @@ func NewRouter(d Deps) http.Handler {
 
 	if d.Enroll != nil {
 		mux.HandleFunc("POST /enroll", enrollHandler(d))
+	}
+
+	// All three or nothing. See Deps.Authenticate.
+	if d.Authenticate != nil && d.Hello != nil && d.Send != nil {
+		mux.HandleFunc("GET /ws", socketHandler(d))
 	}
 
 	return requestLogger(d.Logger, mux)
@@ -321,15 +356,14 @@ func (s *statusRecorder) WriteHeader(code int) {
 	s.ResponseWriter.WriteHeader(code)
 }
 
-// Unwrap and Hijack exist for E2's WebSocket upgrade, which does not exist yet.
+// Unwrap and Hijack exist for the WebSocket upgrade in socket.go.
 //
 // Embedding http.ResponseWriter satisfies exactly that interface and nothing
-// else, and EVERY request passes through this wrapper. Both websocket libraries
-// begin with `w.(http.Hijacker)`, and http.NewResponseController needs Unwrap to
-// follow — so without these, the first upgrade handler added under this router
-// fails at runtime with "does not implement http.Hijacker", two files away from
-// the middleware that caused it. CANT-22 is Mode C; that hour should not be
-// spent on this.
+// else, and EVERY request passes through this wrapper. coder/websocket's Accept
+// begins with `w.(http.Hijacker)`, and http.NewResponseController needs Unwrap
+// to follow — so without these the upgrade fails at runtime with "does not
+// implement http.Hijacker", two files away from the middleware that caused it.
+// CANT-17 wrote them ahead of CANT-22 for exactly that reason.
 func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {

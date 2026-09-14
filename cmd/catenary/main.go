@@ -175,6 +175,14 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var syncFn func(context.Context, uuid.UUID, int64, int) (wire.SyncResponse, error)
 	var callerID func(*http.Request) (uuid.UUID, bool)
 	var enrollFn func(context.Context, string, string) (store.Enrollment, error)
+	// CANT-22: the socket's three seams, all off the same condition. The
+	// upgrade calls the SAME Authenticate the REST adapter above calls — one
+	// seam, two transports, so a revoked device is refused at both doors by
+	// one query.
+	var authenticateFn func(context.Context, string) (store.Caller, error)
+	var helloFn func(context.Context, store.HelloRequest) (store.HelloResult, error)
+	var sendFn func(context.Context, store.NewMessage) (store.Sent, error)
+	var maxFrameBytes int64
 	if st != nil {
 		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 			return serveSync(ctx, st, viewer, after, limit)
@@ -187,6 +195,20 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			return caller.UserID, true
 		}
 		enrollFn = st.RedeemEnrollment
+		authenticateFn = st.Authenticate
+		helloFn = st.Hello
+		sendFn = st.SendMessage
+		// The frame bound follows the message bound, MULTIPLICATIVELY. The
+		// store bounds the UTF-8 bytes of `text`; the socket sees that text
+		// JSON-encoded, and encoding is not free: a control character
+		// becomes `\u00XX`, six bytes for one, and no encoder in any of the
+		// three clients does worse. So a message the store would accept
+		// occupies at most six times its text on the wire, and the 64 KiB
+		// on top covers the ids, the reply reference and the JSON around
+		// them. The two must hold together: a frame refused here is severed
+		// with 1009 before the store can answer `message_too_large`, and a
+		// client whose outbox retries it is a client in a reconnect loop.
+		maxFrameBytes = 6*int64(st.Limits().MaxMessageBytes) + 64<<10
 	}
 
 	return deps{
@@ -201,6 +223,15 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			Enroll:   enrollFn,
 			Version:  buildVersion(),
 			Commit:   commit,
+
+			Authenticate:  authenticateFn,
+			Hello:         helloFn,
+			Send:          sendFn,
+			MaxFrameBytes: maxFrameBytes,
+			// Attach and Handle stay nil until the hub lands. The route is
+			// registered regardless: a session with no hub is still an
+			// authenticated, bound socket that acks its sends, and that is
+			// this ticket's claim.
 		}),
 	}
 }
