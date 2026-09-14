@@ -36,7 +36,6 @@ package store
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
@@ -122,9 +121,12 @@ func (s *Store) Hello(ctx context.Context, req HelloRequest) (HelloResult, error
 			"cursor", *req.Cursor, "reason", "negative_cursor")
 		return HelloResult{}, ErrNegativeCursor
 	}
+	// Head carries its own "store: read head:" prefix; wrapping it again
+	// would read "store: hello: store: read head:", two prefixes for one
+	// layer.
 	head, err := s.Head(ctx)
 	if err != nil {
-		return HelloResult{}, fmt.Errorf("store: hello: %w", err)
+		return HelloResult{}, err
 	}
 
 	res := HelloResult{Head: head, Cursor: req.Cursor}

@@ -292,6 +292,17 @@ func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
 		// The message committed and this instance cannot say who it was
 		// for. A skipped log line here would be a hole; a gap is the one
 		// answer that closes it.
+		//
+		// THE VOLUME IS KNOWN AND ACCEPTED. A permanent failure — a column
+		// missing after a bad migration, say — raises a gap on EVERY
+		// notification, and each gap is one /sync from every attached
+		// client. The transient path is floored by its budget (one gap per
+		// ~3 s per instance); this one is floored by nothing but the send
+		// rate. It is still right: /sync does not go through this read, so
+		// the clients do catch up, and a floor here would be a window in
+		// which committed messages reach nobody live and nobody is told.
+		// The ERROR line per notification is what says the migration is
+		// bad.
 		h.logger.Error("fan-out load failed; treating as a listener gap",
 			"conversation_id", p.ConversationID, "seq", p.Seq, "error", err)
 		h.gap(ctx)
