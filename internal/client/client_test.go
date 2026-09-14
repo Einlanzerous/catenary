@@ -13,6 +13,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -262,5 +264,124 @@ func TestDialFailuresDoNotReachCloseStatuses(t *testing.T) {
 	}
 	if s := c.Status(); len(s.CloseStatuses) != 0 {
 		t.Errorf("CloseStatuses = %v after %d dial errors, want empty — a dial failure never opened a session to end", s.CloseStatuses, s.DialErrors)
+	}
+}
+
+// CANT-109 — Config.ExtraHeaders reaches both surfaces. A small front proxy
+// stands in for Cloudflare Access in front of the deployed router
+// (construct-server/config/traefik/dynamic/routers.yml, the catenary
+// router's AUD): it 403s any request — /sync or the /ws upgrade alike —
+// missing either CF-Access-Client-Id or CF-Access-Client-Secret, or carrying
+// the wrong value, and only then forwards to a real backend behind it. The
+// backend is reached, and the client reaches ready+caught-up, only when
+// ExtraHeaders carries both correctly — proving the headers land on the HTTP
+// request AND the upgrade request, not just one of the two.
+func TestExtraHeadersReachHTTPAndTheUpgrade(t *testing.T) {
+	const wantID, wantSecret = "test-access-client-id", "test-access-client-secret"
+
+	var syncHits, wsHits atomic.Int64
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sync":
+			syncHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"log_seq":0,"messages":[],"conversations":[],"users":[],"has_more":false,"server_time":"2026-01-01T00:00:00.000Z"}`))
+		case "/ws":
+			wsHits.Add(1)
+			conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{Subprotocols: []string{subprotocolV1}})
+			if err != nil {
+				return
+			}
+			defer conn.CloseNow()
+			if _, _, err := conn.Read(context.Background()); err != nil { // the hello
+				return
+			}
+			if err := conn.Write(context.Background(), websocket.MessageText, readyFrame(t)); err != nil {
+				return
+			}
+			_, _, _ = conn.Read(context.Background()) // held until the test ends
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(backend.Close)
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// httputil.ReverseProxy proxies a Connection: Upgrade request (the
+	// WebSocket handshake) transparently, exactly as Traefik does — so a
+	// gate placed in front of it is a faithful stand-in for Access sitting
+	// in front of the real router, on both surfaces at once.
+	rp := httputil.NewSingleHostReverseProxy(backendURL)
+
+	var refusals atomic.Int64
+	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("CF-Access-Client-Id") != wantID || r.Header.Get("CF-Access-Client-Secret") != wantSecret {
+			refusals.Add(1)
+			http.Error(w, "cloudflare access: service token required", http.StatusForbidden)
+			return
+		}
+		rp.ServeHTTP(w, r)
+	}))
+	t.Cleanup(gate.Close)
+
+	correct := http.Header{}
+	correct.Set("CF-Access-Client-Id", wantID)
+	correct.Set("CF-Access-Client-Secret", wantSecret)
+
+	for _, tc := range []struct {
+		name      string
+		headers   http.Header
+		wantReady bool
+	}{
+		{"both headers correct", correct, true},
+		{"no headers at all", nil, false},
+		{"secret missing", http.Header{"CF-Access-Client-Id": {wantID}}, false},
+		{"id missing", http.Header{"CF-Access-Client-Secret": {wantSecret}}, false},
+		{"wrong secret", http.Header{"CF-Access-Client-Id": {wantID}, "CF-Access-Client-Secret": {"not-the-secret"}}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, err := New(Config{
+				BaseURL: gate.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+				ExtraHeaders: tc.headers, BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan struct{})
+			go func() { defer close(done); _ = c.Run(context.Background()) }()
+			t.Cleanup(func() { c.Kill(); <-done })
+
+			bound := 300 * time.Millisecond
+			if tc.wantReady {
+				bound = 10 * time.Second
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), bound)
+			defer cancel()
+			pred := func() bool { return c.Status().Ready }
+			if tc.wantReady {
+				pred = func() bool { s := c.Status(); return s.Ready && s.CaughtUp }
+			}
+			err = c.Await(ctx, pred)
+			switch {
+			case tc.wantReady && err != nil:
+				t.Fatalf("a client WITH the correct Access headers never reached ready+caught-up: %v; status %+v", err, c.Status())
+			case !tc.wantReady && err == nil:
+				t.Fatalf("a client with %s reached ready — the gate did not refuse it", tc.name)
+			case !tc.wantReady:
+				if s := c.Status(); s.DialErrors == 0 {
+					t.Errorf("a client with %s never recorded a dial error — want the gate's 403 to fail the upgrade", tc.name)
+				}
+			}
+		})
+	}
+
+	if wsHits.Load() == 0 || syncHits.Load() == 0 {
+		t.Fatalf("the real backend behind the gate was never reached — this test proves nothing: ws=%d sync=%d", wsHits.Load(), syncHits.Load())
+	}
+	if refusals.Load() == 0 {
+		t.Errorf("the gate never recorded a refusal — the negative cases above prove nothing without it")
 	}
 }
