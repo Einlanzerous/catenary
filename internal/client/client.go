@@ -553,19 +553,18 @@ func (c *Client) session(ctx context.Context) (readied bool, err error) {
 
 	sctx, scancel := context.WithCancel(ctx)
 	defer scancel()
-	c.mu.Lock()
-	c.conn, c.ready, c.outstanding = conn, false, map[string]time.Time{}
-	c.mu.Unlock()
-	defer c.endSession(conn)
-	// Kill reads c.conn after setting killed, so one of the two sees the
-	// other: a kill racing the dial never leaves a socket open behind it.
 	if c.killed.Load() {
+		_ = conn.CloseNow()
 		return false, ErrKilled
 	}
-	if ctx.Err() != nil {
-		return false, ctx.Err()
-	}
 
+	// THE HELLO IS WRITTEN BEFORE THE SOCKET IS PUBLISHED. The server closes
+	// a session whose first known frame is not a hello with 1008, and Send
+	// writes to whatever c.conn holds — so until the hello is on the wire
+	// c.conn stays nil, and a Send racing a reconnect gets ErrNotConnected
+	// instead of severing the session it raced (PR #51's review;
+	// TestNoFrameCanPrecedeTheHello). Frames after the hello and before
+	// `ready` still go out, as the wire allows.
 	c.j.mu.Lock()
 	var resume *wire.LogSeq
 	if c.j.hasCursor {
@@ -579,7 +578,23 @@ func (c *Client) session(ctx context.Context) (readied bool, err error) {
 		ResumeFromLogSeq: resume, ClientInfo: &info,
 	}
 	if err := c.write(sctx, conn, hello); err != nil {
+		_ = conn.CloseNow()
 		return false, fmt.Errorf("client: hello: %w", err)
+	}
+
+	c.mu.Lock()
+	c.conn, c.ready, c.outstanding = conn, false, map[string]time.Time{}
+	c.mu.Unlock()
+	defer c.endSession(conn)
+	// Kill reads c.conn after setting killed, so one of the two sees the
+	// other: a kill racing the dial or the hello never leaves a socket open
+	// behind it. One that lands before this point has also cancelled ctx,
+	// which ends a hello write still in flight.
+	if c.killed.Load() {
+		return false, ErrKilled
+	}
+	if ctx.Err() != nil {
+		return false, ctx.Err()
 	}
 
 	for {
