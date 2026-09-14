@@ -122,6 +122,46 @@ test('an inline enum on a server-emitted type fails, naming the field, with no a
   assert.doesNotMatch(readFileSync(GEN, 'utf8'), /allowList|allow-list|ALLOW_LIST/)
 })
 
+test('a stray keyword in the OpenAPI pass-through arm fails gen, naming the keyword and the schema path', () => {
+  const s = loadSchema()
+  // Not a keyword toOpenAPISchema rewrites, drops or allow-lists — the
+  // CANT-105 fixture. Landed directly on a $defs entry so the path names
+  // the def itself rather than a nested property.
+  s.$defs.Uuid.prefixItems = []
+  const r = runOn(s, '--dry-run')
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, /openapi: \$defs\.Uuid\.prefixItems is a keyword toOpenAPISchema does not know/)
+})
+
+test('additionalProperties recurses into a subschema rather than passing it through unrewritten', () => {
+  const s = loadSchema()
+  // A subschema in additionalProperties (e.g. `{"$ref": …}`) is itself a
+  // Schema Object and needs the same rewrites as everywhere else — the
+  // review's finding on this PR. Proved by depth: a stray keyword nested
+  // BESIDE the $ref inside additionalProperties is only reachable if
+  // toOpenAPISchema actually walks into it, so the path this fails at
+  // (…ServerAck.additionalProperties.prefixItems) is itself the proof of
+  // recursion, not just of the $ref-sibling rule below.
+  s.$defs.ServerAck.additionalProperties = { $ref: '#/$defs/Uuid', prefixItems: [] }
+  const r = runOn(s, '--dry-run')
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, /\$defs\.ServerAck\.additionalProperties\.prefixItems sits beside a \$ref/)
+})
+
+test('a stray keyword beside a $ref fails rather than leaving silently with "description"', () => {
+  const s = loadSchema()
+  // toOpenAPISchema returns as soon as it sees $ref, which is what makes
+  // `description` disappear next to one (CANT-12 Ruling 2/4 territory) — but
+  // that same early return let any OTHER sibling disappear the same way,
+  // unchecked, whenever it happened to be enumerated after $ref. This lands
+  // the stray key on an existing $ref'd property (ServerAck.conversation_id)
+  // exactly as the review reproduced it.
+  s.$defs.ServerAck.properties.conversation_id.prefixItems = []
+  const r = runOn(s, '--dry-run')
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, /\$defs\.ServerAck\.conversation_id\.prefixItems sits beside a \$ref/)
+})
+
 /* ------------------------------------------------------------------ *
  * The emitted OpenAPI carries the classification and nothing else does.
  * ------------------------------------------------------------------ */
