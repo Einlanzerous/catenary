@@ -158,6 +158,17 @@ type Config struct {
 	// SyncLimit is the page size /sync is asked for. Zero is the server's.
 	SyncLimit int
 
+	// ExtraHeaders rides on every HTTP request (/sync) and on the WebSocket
+	// upgrade itself, ALONGSIDE Authorization and Sec-WebSocket-Protocol —
+	// never in place of them. CANT-109's reason to exist: the deployed
+	// router sits behind Cloudflare Access, which refuses a request before
+	// it ever reaches this service unless it carries the Access
+	// service-token headers, on the upgrade exactly as much as on /sync — an
+	// upgrade IS an HTTP request, and Access gates the router, not a route.
+	// Nil is a plain client with nothing extra, which is the correct Config
+	// for a local server Access does not sit in front of.
+	ExtraHeaders http.Header
+
 	// BackoffMin and BackoffMax bound the reconnect and catch-up retry
 	// backoff, which doubles from the one to the other. Zero means 250 ms and
 	// 5 s.
@@ -589,8 +600,13 @@ func (c *Client) wakeCatchUp() {
 // readied reports whether it got as far as `ready`.
 func (c *Client) session(ctx context.Context) (opened, readied bool, err error) {
 	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
+	// HTTPHeader RIDES ON THE UPGRADE REQUEST ITSELF (CANT-109): a nil map
+	// here is safe — coder/websocket substitutes an empty http.Header before
+	// it ever reaches the request, so this is exactly as inert as omitting
+	// the field when ExtraHeaders is unset.
 	conn, resp, err := websocket.Dial(dctx, c.wsURL, &websocket.DialOptions{
 		HTTPClient:   c.http,
+		HTTPHeader:   c.cfg.ExtraHeaders,
 		Subprotocols: []string{subprotocolV1, tokenSubprotocolPrefix + c.cfg.AccessToken},
 	})
 	cancel()
@@ -1004,6 +1020,14 @@ func (c *Client) fetch(ctx context.Context, after int64) (wire.SyncResponse, err
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.cfg.AccessToken)
+	// ADDED, NOT SET: Authorization above is the request's own credential,
+	// and ExtraHeaders (CANT-109) is a separate, additive set — Cloudflare
+	// Access's two headers sit beside it, never replacing it.
+	for k, vs := range c.cfg.ExtraHeaders {
+		for _, v := range vs {
+			req.Header.Add(k, v)
+		}
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: %w", err)
