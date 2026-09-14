@@ -10,18 +10,22 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/coder/websocket"
 	"github.com/google/uuid"
 
 	"github.com/magos/catenary/internal/api"
 	"github.com/magos/catenary/internal/config"
+	"github.com/magos/catenary/internal/hub"
 	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/wire"
 	"github.com/magos/catenary/internal/wireview"
@@ -120,10 +124,7 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
 // wireview turns rows into wire types, and neither should import the other's
 // transport concerns.
 //
-// MediaURL is the identity for now. CANT-47 decides whether a served url is a
-// presigned R2 GET or a Traefik route, and until it does the honest thing is to
-// hand back the storage key rather than invent a URL shape that would be wrong
-// the moment that lands.
+// MediaURL is mediaURL below, the one deriver both transports share.
 func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 	page, err := st.Sync(ctx, viewer, after, limit)
 	if err != nil {
@@ -137,9 +138,38 @@ func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int
 	// get wrong. CANT-26.
 	return wireview.Sync(page, wireview.SyncViewer{
 		UserID:   viewer,
-		MediaURL: func(storageKey string) string { return storageKey },
+		MediaURL: mediaURL,
 	}, store.ServerTime().Format(wireview.TimeLayout)), nil
 }
+
+// mediaURL derives a served URL from an opaque storage key, and it is the
+// identity for now. CANT-47 decides whether a served url is a presigned R2 GET
+// or a Traefik route, and until it does the honest thing is to hand back the
+// storage key rather than invent a URL shape that would be wrong the moment
+// that lands.
+//
+// ONE FUNCTION FOR BOTH TRANSPORTS. /sync's page and the hub's `message`
+// frame are built by the same wireview.Message, and this is the one input to
+// it that the composition root supplies; two derivers here would be the one
+// way the socket's Message and REST's could still differ (CANT-84).
+func mediaURL(storageKey string) string { return storageKey }
+
+// sessionConn adapts *api.Session to hub.Conn. The session's UserID and
+// DeviceID are exported FIELDS, and Go refuses a method of the same name on
+// the same type, so the accessors live here — at the one place that knows
+// both types — rather than on the session.
+type sessionConn struct{ s *api.Session }
+
+func (c sessionConn) SessionID() uuid.UUID { return c.s.ID }
+func (c sessionConn) UserID() uuid.UUID    { return c.s.UserID }
+func (c sessionConn) DeviceID() uuid.UUID  { return c.s.DeviceID }
+func (c sessionConn) Send(ctx context.Context, f wire.ServerFrame) error {
+	return c.s.Send(ctx, f)
+}
+func (c sessionConn) Close(status websocket.StatusCode, reason string) error {
+	return c.s.Close(status, reason)
+}
+func (c sessionConn) CloseNow() error { return c.s.CloseNow() }
 
 // deps is what setup() produces: everything the process needs to serve, built
 // once and owned by runServe.
@@ -148,6 +178,12 @@ type deps struct {
 	logger *slog.Logger
 	store  *store.Store
 	router http.Handler
+
+	// hub and listener exist exactly when store does. setup constructs the
+	// listener and does not run it: serve runs it, and so does a test, on a
+	// context it owns.
+	hub      *hub.Hub
+	listener *store.Listener[store.NotifyPayload]
 }
 
 // setup is the composition root. Every dependency is constructed here and
@@ -183,6 +219,10 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var helloFn func(context.Context, store.HelloRequest) (store.HelloResult, error)
 	var sendFn func(context.Context, store.NewMessage) (store.Sent, error)
 	var maxFrameBytes int64
+	var attachFn func(*api.Session) func()
+	var handleFn func(context.Context, *api.Session, wire.ClientFrame)
+	var h *hub.Hub
+	var listener *store.Listener[store.NotifyPayload]
 	if st != nil {
 		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 			return serveSync(ctx, st, viewer, after, limit)
@@ -209,12 +249,28 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		// with 1009 before the store can answer `message_too_large`, and a
 		// client whose outbox retries it is a client in a reconnect loop.
 		maxFrameBytes = 6*int64(st.Limits().MaxMessageBytes) + 64<<10
+
+		// CANT-107: the hub, and the listener that feeds it. The hub's two
+		// seams on the door are its own methods over the sessionConn
+		// adapter; the listener carries message notifications and nothing
+		// else (the revocation channel is CANT-30's to consume).
+		h = hub.New(st, logger, mediaURL)
+		attachFn = func(s *api.Session) func() { return h.Attach(sessionConn{s}) }
+		handleFn = func(ctx context.Context, s *api.Session, f wire.ClientFrame) {
+			h.Handle(ctx, sessionConn{s}, f)
+		}
+		listener = &store.Listener[store.NotifyPayload]{
+			DSN: cfg.DatabaseURL, Channel: store.NotifyChannel, Logger: logger,
+			OnNotify: h.OnNotify, OnGap: h.OnGap,
+		}
 	}
 
 	return deps{
-		cfg:    cfg,
-		logger: logger,
-		store:  st,
+		cfg:      cfg,
+		logger:   logger,
+		store:    st,
+		hub:      h,
+		listener: listener,
 		router: api.NewRouter(api.Deps{
 			Logger:   logger,
 			DB:       db,
@@ -228,10 +284,8 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			Hello:         helloFn,
 			Send:          sendFn,
 			MaxFrameBytes: maxFrameBytes,
-			// Attach and Handle stay nil until the hub lands. The route is
-			// registered regardless: a session with no hub is still an
-			// authenticated, bound socket that acks its sends, and that is
-			// this ticket's claim.
+			Attach:        attachFn,
+			Handle:        handleFn,
 		}),
 	}
 }
@@ -301,8 +355,33 @@ func runServe(args []string) error {
 
 	d := setup(cfg, logger, store.New(pool, limits, logger))
 
+	ln, err := net.Listen("tcp", cfg.Addr)
+	if err != nil {
+		return fmt.Errorf("serve: %w", err)
+	}
+	return serve(ctx, d, ln)
+}
+
+// serve runs the process until ctx is cancelled, then drains it.
+//
+// SPLIT FROM runServe FOR ONE REASON: signal.NotifyContext cancels ctx on
+// SIGTERM, and a test that cancels the same context proves the same shutdown
+// path without sending a process signal. Everything that needs the world —
+// config, signals, the pool — stays in runServe.
+//
+// THE DRAIN. http.Server.Shutdown does not track hijacked connections, so on
+// its own every socket would die with the process by TCP reset. The hub
+// holds the set, and closes each with 1001 so the client reconnects
+// deliberately. The two run CONCURRENTLY under one grace deadline: Shutdown
+// returns only when REST is quiet, and one slow request would otherwise hand
+// the drain a deadline already spent — the outcome the drain exists to
+// replace. The listener stops LAST, after both: stopped first, it would
+// leave attached sessions with a healthy-looking socket and no delivery
+// behind it for the length of the drain. An upgrade that races the listen
+// socket closing attaches into a hub that has begun shutting down and is
+// closed 1001 there.
+func serve(ctx context.Context, d deps, ln net.Listener) error {
 	srv := &http.Server{
-		Addr:    cfg.Addr,
 		Handler: d.router,
 
 		// ReadHeaderTimeout only. A read or write deadline on the whole
@@ -311,14 +390,29 @@ func runServe(args []string) error {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
+	// The listener runs on its OWN context, not ctx: it must outlive the
+	// signal by the length of the drain, and be cancelled by this function
+	// rather than by the signal.
+	listenerCtx, stopListener := context.WithCancel(context.Background())
+	defer stopListener()
+	listenerDone := make(chan struct{})
+	if d.listener != nil {
+		go func() {
+			defer close(listenerDone)
+			_ = d.listener.Run(listenerCtx)
+		}()
+	} else {
+		close(listenerDone)
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		d.logger.Info("listening",
-			"addr", cfg.Addr,
+			"addr", ln.Addr().String(),
 			"version", buildVersion(),
-			"log_format", cfg.LogFormat,
+			"log_format", d.cfg.LogFormat,
 		)
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			errCh <- err
 		}
 	}()
@@ -329,11 +423,34 @@ func runServe(args []string) error {
 	case <-ctx.Done():
 	}
 
-	d.logger.Info("shutting down", "grace", cfg.ShutdownGrace)
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownGrace)
+	d.logger.Info("shutting down", "grace", d.cfg.ShutdownGrace)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), d.cfg.ShutdownGrace)
 	defer cancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown: %w", err)
+
+	var wg sync.WaitGroup
+	var srvErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srvErr = srv.Shutdown(shutdownCtx)
+	}()
+	if d.hub != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			// A drain that timed out is logged by the hub; the sessions it
+			// did not reach die with the process, as every session did
+			// before there was a hub.
+			_ = d.hub.Shutdown(shutdownCtx)
+		}()
+	}
+	wg.Wait()
+
+	stopListener()
+	<-listenerDone
+
+	if srvErr != nil {
+		return fmt.Errorf("shutdown: %w", srvErr)
 	}
 	d.logger.Info("stopped")
 	return nil

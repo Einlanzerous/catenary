@@ -32,11 +32,19 @@ import (
 
 func authFixture(t *testing.T) (context.Context, *pgxpool.Pool, *store.Store, http.Handler) {
 	t.Helper()
+	ctx, pool, st, d := processFixture(t, slog.New(slog.DiscardHandler))
+	return ctx, pool, st, d.router
+}
+
+// processFixture is a fresh database and everything setup() builds over it,
+// with the logger the caller wants to read.
+func processFixture(t *testing.T, logger *slog.Logger) (context.Context, *pgxpool.Pool, *store.Store, deps) {
+	t.Helper()
 	dsn := os.Getenv("CATENARY_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("CATENARY_TEST_DATABASE_URL not set; skipping database test")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	t.Cleanup(cancel)
 
 	pool, err := store.Connect(ctx, dsn)
@@ -52,9 +60,8 @@ func authFixture(t *testing.T) (context.Context, *pgxpool.Pool, *store.Store, ht
 	}
 	st := store.New(pool, store.DefaultLimits(), slog.New(slog.DiscardHandler))
 
-	cfg := config.Config{DatabaseURL: dsn, Addr: ":0", LogFormat: "json"}
-	d := setup(cfg, slog.New(slog.DiscardHandler), st)
-	return ctx, pool, st, d.router
+	cfg := config.Config{DatabaseURL: dsn, Addr: ":0", LogFormat: "json", ShutdownGrace: 5 * time.Second}
+	return ctx, pool, st, setup(cfg, logger, st)
 }
 
 func do(t *testing.T, h http.Handler, req *http.Request) (int, []byte) {
