@@ -239,3 +239,69 @@ func TestTheNewBoundsAreVisibleToTheEnvScanner(t *testing.T) {
 		}
 	}
 }
+
+// CANT-23. Both are OPTIONAL and zero means unset, the same convention as the
+// send bounds: the defaults — R1's 35 s / 2 — live in internal/api and the
+// composition root merges these over them.
+func TestHeartbeatDialIsOptionalAndZeroMeansUnset(t *testing.T) {
+	setEnv(t, map[string]string{"CATENARY_DATABASE_URL": "postgres://x/y"})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.HeartbeatIntervalSec != 0 || c.MissedPongLimit != 0 {
+		t.Errorf("unset heartbeat dial = %d/%d, want 0/0 so api's defaults stand",
+			c.HeartbeatIntervalSec, c.MissedPongLimit)
+	}
+
+	setEnv(t, map[string]string{
+		"CATENARY_DATABASE_URL":           "postgres://x/y",
+		"CATENARY_HEARTBEAT_INTERVAL_SEC": "45",
+		"CATENARY_MISSED_PONG_LIMIT":      "3",
+	})
+	c, err = Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.HeartbeatIntervalSec != 45 || c.MissedPongLimit != 3 {
+		t.Errorf("heartbeat dial = %d/%d, want 45/3", c.HeartbeatIntervalSec, c.MissedPongLimit)
+	}
+}
+
+// Load only floors these at a positive integer (positiveInt, shared with the
+// send bounds). The wire schema's own bounds — interval [5, 90], and the
+// floor of 1 this already matches for the limit — are checked at the
+// composition root; see cmd/catenary's TestHeartbeatBoundsFromRejectsOutOfRange.
+func TestHeartbeatDialRejectsNonPositiveValues(t *testing.T) {
+	for _, tc := range []struct{ name, key, val string }{
+		{"interval zero", "CATENARY_HEARTBEAT_INTERVAL_SEC", "0"},
+		{"interval negative", "CATENARY_HEARTBEAT_INTERVAL_SEC", "-1"},
+		{"interval not a number", "CATENARY_HEARTBEAT_INTERVAL_SEC", "soon"},
+		{"limit zero", "CATENARY_MISSED_PONG_LIMIT", "0"},
+		{"limit negative", "CATENARY_MISSED_PONG_LIMIT", "-2"},
+		{"limit not a number", "CATENARY_MISSED_PONG_LIMIT", "several"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			setEnv(t, map[string]string{"CATENARY_DATABASE_URL": "postgres://x/y", tc.key: tc.val})
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load succeeded, want an error naming the variable")
+			}
+			if !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("error does not name the variable: %v", err)
+			}
+		})
+	}
+}
+
+// The same drift guard as TestTheNewBoundsAreVisibleToTheEnvScanner, for the
+// heartbeat dial.
+func TestTheHeartbeatDialIsVisibleToTheEnvScanner(t *testing.T) {
+	got := envVarsReadByLoad(t)
+	for _, want := range []string{"CATENARY_HEARTBEAT_INTERVAL_SEC", "CATENARY_MISSED_PONG_LIMIT"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s is not visible to envVarsReadByLoad — it reaches os.Getenv through a "+
+				"parameter, so setEnv will stop clearing it: %v", want, got)
+		}
+	}
+}

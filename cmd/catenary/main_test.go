@@ -69,6 +69,59 @@ func TestLimitsFromNamesTheVariableThatIsOutOfRange(t *testing.T) {
 	}
 }
 
+// CANT-23. A dial outside the wire schema's own bounds on ServerReady
+// (interval [5, 90], limit >= 1) is a STARTUP error naming the variable — the
+// same shape TestLimitsFromNamesTheVariableThatIsOutOfRange asserts for
+// CATENARY_MAX_ATTACHMENTS, so `ready` can never announce a number its own
+// generated decoders would refuse.
+func TestHeartbeatBoundsFromRejectsOutOfRange(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  config.Config
+		want string
+	}{
+		{"interval below the schema's floor", config.Config{HeartbeatIntervalSec: 4}, "CATENARY_HEARTBEAT_INTERVAL_SEC"},
+		{"interval above the schema's ceiling", config.Config{HeartbeatIntervalSec: 91}, "CATENARY_HEARTBEAT_INTERVAL_SEC"},
+		{"limit below the schema's floor", config.Config{MissedPongLimit: -1}, "CATENARY_MISSED_PONG_LIMIT"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := heartbeatBoundsFrom(tc.cfg)
+			if err == nil {
+				t.Fatalf("heartbeatBoundsFrom(%+v) succeeded, want an error", tc.cfg)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error does not name the variable: %v", err)
+			}
+		})
+	}
+
+	// At the bounds, and unset, are both accepted.
+	for _, cfg := range []config.Config{
+		{HeartbeatIntervalSec: 5, MissedPongLimit: 1},
+		{HeartbeatIntervalSec: 90, MissedPongLimit: 1},
+		{},
+	} {
+		if err := heartbeatBoundsFrom(cfg); err != nil {
+			t.Errorf("heartbeatBoundsFrom(%+v) = %v, want nil", cfg, err)
+		}
+	}
+}
+
+// setup threads an operator's dial straight into api.Deps, which merges zero
+// with api.DefaultHeartbeatIntervalSec / api.DefaultMissedPongLimit itself —
+// so setup needs no merge logic of its own, only the pass-through. Proven end
+// to end, over a real socket through the REAL router setup builds, by
+// cmd/catenary/socket_test.go's TestTheHeartbeatDialFlowsThroughSetup; this
+// pins that setup does not build without the two new fields wired at all.
+func TestSetupBuildsWithAHeartbeatDial(t *testing.T) {
+	cfg := config.Config{DatabaseURL: "postgres://x/y", Addr: ":4012", LogFormat: "json",
+		HeartbeatIntervalSec: 45, MissedPongLimit: 3}
+	d := setup(cfg, cfg.Logger(os.Stdout), nil)
+	if d.router == nil {
+		t.Fatal("setup returned an incomplete deps")
+	}
+}
+
 // Every variable the loader reads is named in the usage text. A config surface
 // that is env-only is only documented if `catenary --help` IS the
 // documentation, and the two drift the moment a variable is added.

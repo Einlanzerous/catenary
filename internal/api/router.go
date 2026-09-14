@@ -117,6 +117,20 @@ type Deps struct {
 
 	// MaxFrameBytes bounds one inbound socket frame. Zero means the default.
 	MaxFrameBytes int64
+
+	// HeartbeatIntervalSec and MissedPongLimit are CANT-23's deployed dial:
+	// announced verbatim on `ready` as heartbeat_interval_sec /
+	// missed_pong_limit, and what the session's own severance watchdog
+	// derives its window from (socket.go's heartbeatWindow). Zero means
+	// DefaultHeartbeatIntervalSec / DefaultMissedPongLimit — the same
+	// zero-means-default convention MaxFrameBytes already follows.
+	//
+	// NEITHER IS BOUNDS-CHECKED HERE. cmd/catenary validates an operator's
+	// override against the wire schema's own bounds before setup ever builds
+	// a Deps, so a value that reaches this struct is already one `ready`'s
+	// generated encoder-side peers (every client's decoder) would accept.
+	HeartbeatIntervalSec int
+	MissedPongLimit      int
 }
 
 // NewRouter builds the HTTP handler.

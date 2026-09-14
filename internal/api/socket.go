@@ -7,9 +7,12 @@ package api
 // account and a device, and the CODEC carries generated wire types and only
 // those. Everything that crosses sockets — fan-out of a committed message, a
 // receipt, typing — is the hub's, which is a `full` sub-task of this ticket
-// and plugs in through Attach and Handle below. The heartbeat CLOCK is
-// CANT-23's; `ready` announces the dial, and this file answers a ping, and
-// that is all it does about liveness.
+// and plugs in through Attach and Handle below. The heartbeat is CANT-23's:
+// `ready` announces the dial, this file answers a `ping` with a `pong`, and a
+// session that goes quiet longer than the announced window severs itself —
+// never the reverse. This server never originates a `ping` and never touches
+// the WebSocket protocol's own ping/pong control frames; either would change
+// what the wire says a heartbeat is (invariant 3).
 //
 // THE CREDENTIAL RIDES ON Sec-WebSocket-Protocol (CANT-28 ruling 1), because it
 // is the one request header `new WebSocket(url, protocols)` lets a browser
@@ -69,13 +72,15 @@ const (
 	// exactly that reason.
 	wireVersionMin = 1
 
-	// R1's dial. 35 s sits under Cloudflare's ~100 s idle window; 2 missed
-	// pongs is the client's severance rule. Constants here rather than
-	// config because CANT-23 owns turning them into a deployed dial, and a
-	// number announced in `ready` has to be the number the server will
-	// enforce — which is also CANT-23's.
-	heartbeatIntervalSec = 35
-	missedPongLimit      = 2
+	// DefaultHeartbeatIntervalSec and DefaultMissedPongLimit are R1's dial:
+	// 35 s sits under Cloudflare's ~100 s idle window, and 2 missed pings is
+	// the client's own severance rule (spike/r1-websocket/FINDINGS.md §3).
+	// Exported so cmd/catenary's composition root can merge an operator's
+	// CATENARY_HEARTBEAT_INTERVAL_SEC / CATENARY_MISSED_PONG_LIMIT override
+	// over them — the same zero-means-unset convention CANT-83 established
+	// for the send bounds, so the number is not restated in internal/config.
+	DefaultHeartbeatIntervalSec = 35
+	DefaultMissedPongLimit      = 2
 
 	// writeTimeout bounds one frame write. A peer that stops reading is a
 	// peer that will be severed, not one that is allowed to wedge the
@@ -92,6 +97,44 @@ const (
 // helloTimeout is how long an accepted socket has to say hello. A variable
 // rather than a constant so a test can shorten it; nothing else writes it.
 var helloTimeout = 10 * time.Second
+
+// statusHeartbeatTimeout is CANT-23's own severance code: RFC 6455 §7.4.2's
+// private-use range (3000-4999) lets each distinct reason a session ends
+// carry its own code, which this file already follows for the hub's drain
+// (1001) and its head-unreadable sever (1012) — "a status that is the
+// point" (Session.Close's doc). It is deliberately not 1008 Policy
+// Violation: the client did nothing wrong, and 1008 is this door's own
+// signal not to retry the same handshake (refuse, above). A client's
+// reconnect table must treat 4000 as reconnect-with-backoff, the same
+// bucket 1001 and 1012 are already in.
+const statusHeartbeatTimeout websocket.StatusCode = 4000
+
+// heartbeatWindow is how long a session may go without a `ping` before this
+// server severs it, derived from the exact numbers `ready` announced.
+//
+// ONLY `ping` RESETS IT (readLoop's case wire.Ping) — not `send`, not
+// `read`, not any other traffic. The wire schema is explicit that the
+// client "must send `ping`" on the announced cadence regardless of what
+// else it is doing (R1's hb client pings on its own schedule throughout,
+// independent of message traffic), so a client that stops pinging while
+// still sending has stopped keeping its half of the contract `ready`
+// stated, and inferring liveness from other frames would silently loosen
+// it. It is also the only rule simple enough to state as an invariant a
+// test can pin deterministically.
+//
+// THE MULTIPLE IS missed_pong_limit + 1, not missed_pong_limit alone. R1
+// measured the client's own worst-case self-detection latency at
+// heartbeat × (missed_pong_limit + 1) (FINDINGS.md §3) — the server's own
+// backstop uses the identical formula from its side of the same clock, so
+// it is never tighter than a well-behaved client's own patience. A bare
+// missed_pong_limit multiple would let a single slow round trip sever a
+// client before the client's own rule ever would, which is the false
+// severance this margin exists to rule out; R1's measured round trip
+// (8-12 ms) is negligible next to either number, so the margin costs
+// nothing when the network is healthy.
+func heartbeatWindow(intervalSec, missedPongLimit int) time.Duration {
+	return time.Duration(intervalSec) * time.Second * time.Duration(missedPongLimit+1)
+}
 
 // Session is one accepted, authenticated, hello'd socket: what the hub holds.
 //
@@ -113,9 +156,10 @@ func (s *Session) Send(ctx context.Context, f wire.ServerFrame) error {
 }
 
 // Close performs the close handshake with a status the client can act on:
-// the hub's drain (1001) and its head-unreadable sever (1012), where the peer
-// is alive and the code is the point. It is closeWith with a receiver, and
-// the read loop sees the handshake complete and runs detach.
+// the hub's drain (1001), its head-unreadable sever (1012), and this file's
+// own heartbeat timeout (4000, statusHeartbeatTimeout) — the peer is alive
+// in every case and the code is the point. It is closeWith with a receiver,
+// and the read loop sees the handshake complete and runs detach.
 func (s *Session) Close(status websocket.StatusCode, reason string) error {
 	closeWith(s.conn, status, reason)
 	return nil
@@ -321,12 +365,26 @@ func serveSession(ctx context.Context, d Deps, conn *websocket.Conn, caller stor
 		defer detach()
 	}
 
+	// THE DEPLOYED DIAL (CANT-23). Zero means Deps carries no override, so
+	// the default stands — the same convention MaxFrameBytes follows below.
+	// Whatever these resolve to is exactly what `ready` announces AND
+	// exactly what heartbeatWindow enforces: one pair of numbers, read once,
+	// so the server can never enforce a window `ready` did not announce.
+	heartbeatInterval := d.HeartbeatIntervalSec
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = DefaultHeartbeatIntervalSec
+	}
+	missedPongLimit := d.MissedPongLimit
+	if missedPongLimit <= 0 {
+		missedPongLimit = DefaultMissedPongLimit
+	}
+
 	ready := wire.ServerReady{
 		SessionID:            wire.Uuid(sess.ID.String()),
 		WireVersion:          ptrInt64(wire.WireVersion),
 		ServerTime:           stamp(store.ServerTime()),
-		HeartbeatIntervalSec: heartbeatIntervalSec,
-		MissedPongLimit:      missedPongLimit,
+		HeartbeatIntervalSec: int64(heartbeatInterval),
+		MissedPongLimit:      int64(missedPongLimit),
 		LogSeq:               res.Head,
 		// FALSE, ALWAYS, IN WIRE VERSION 1 (CANT-24 ruling 0): the socket
 		// does not resume, /sync does. Written as a literal beside the
@@ -341,7 +399,20 @@ func serveSession(ctx context.Context, d Deps, conn *websocket.Conn, caller stor
 	logger.InfoContext(ctx, "session open",
 		"client_info", derefString(hello.ClientInfo), "hello_outcome", string(res.Outcome))
 
-	readLoop(ctx, d, sess, logger)
+	// THE HEARTBEAT CLOCK STARTS HERE, AND NOWHERE EARLIER (CANT-24's "What
+	// CANT-102 inherits", docs/decisions/cant-24-resume.md). A session that
+	// takes the whole of helloTimeout to say hello is not a session this
+	// watchdog has an opinion about yet — only a `ready`'d session can go
+	// quiet on a clock it was never told about.
+	window := heartbeatWindow(heartbeatInterval, missedPongLimit)
+	watchdog := time.AfterFunc(window, func() {
+		logger.WarnContext(ctx, "session closed", "phase", "open",
+			"reason", "heartbeat timeout", "window", window.String())
+		closeWith(conn, statusHeartbeatTimeout, "heartbeat timeout: no ping within the announced window")
+	})
+	defer watchdog.Stop()
+
+	readLoop(ctx, d, sess, logger, watchdog, window)
 }
 
 // awaitHello reads until the first known frame and requires it to be a hello.
@@ -384,7 +455,11 @@ func awaitHello(ctx context.Context, conn *websocket.Conn, logger *slog.Logger) 
 
 // readLoop is the session after `ready`: one frame at a time, until the
 // connection ends.
-func readLoop(ctx context.Context, d Deps, sess *Session, logger *slog.Logger) {
+//
+// watchdog is the heartbeat severance timer started the moment `ready` went
+// out (serveSession); window is the exact duration it was armed with, so
+// case wire.Ping can re-arm it at the same window rather than a stale one.
+func readLoop(ctx context.Context, d Deps, sess *Session, logger *slog.Logger, watchdog *time.Timer, window time.Duration) {
 	for {
 		f, err := readFrame(ctx, sess.conn)
 		if err != nil {
@@ -400,13 +475,22 @@ func readLoop(ctx context.Context, d Deps, sess *Session, logger *slog.Logger) {
 		}
 		switch v := f.(type) {
 		case wire.Ping:
+			// THE ONLY FRAME THAT RESETS THE WATCHDOG (heartbeatWindow's
+			// doc). Reset before the reply: a session that pinged has proven
+			// itself live even if the reply that follows fails to write.
+			watchdog.Reset(window)
 			if err := sess.Send(ctx, wire.Pong{ID: v.ID, At: ptrStamp(store.ServerTime())}); err != nil {
 				endSession(ctx, sess.conn, logger, "open", err)
 				return
 			}
 		case wire.Pong:
-			// The answer to a server ping. CANT-23 sends those and counts
-			// these; until then a pong is accepted and nothing is owed.
+			// The schema allows Pong in either direction (it is a symmetric
+			// type), but this server never sends a Ping of its own — a
+			// server-originated app ping is exactly what invariant 3 rules
+			// out, because it would change what the wire says a heartbeat
+			// is. So an inbound Pong answers a ping this server never sent;
+			// accepted and, like every frame but Ping, it does not touch
+			// the watchdog above.
 		case wire.ClientHello:
 			// A second hello is a client bug, and ignoring it would hide the
 			// bug behind a session that looks fine.

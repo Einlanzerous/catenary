@@ -71,6 +71,23 @@ type Config struct {
 	// without inverting the layering.
 	MaxMessageBytes int
 	MaxAttachments  int
+
+	// HeartbeatIntervalSec is CATENARY_HEARTBEAT_INTERVAL_SEC and
+	// MissedPongLimit is CATENARY_MISSED_PONG_LIMIT: CANT-23's deployed dial,
+	// announced verbatim in `ready` and what the socket's own severance
+	// watchdog derives its window from.
+	//
+	// ZERO MEANS UNSET, same convention as the two bounds above and for the
+	// same reason: the defaults — R1's 35 s / 2 — live in internal/api as
+	// DefaultHeartbeatIntervalSec / DefaultMissedPongLimit, and the
+	// composition root merges these over them. What Load checks here is only
+	// that a SET value is a positive integer; the wire schema's own bounds
+	// (interval [5, 90], limit >= 1) are checked at the composition root,
+	// before anything slow starts, the same way MaxAttachmentsCeiling is —
+	// so `ready` can never announce a value its own generated decoders
+	// would refuse.
+	HeartbeatIntervalSec int
+	MissedPongLimit      int
 }
 
 // Load reads the environment and validates it, or returns the first error.
@@ -130,6 +147,12 @@ func Load() (Config, error) {
 		return c, err
 	}
 	if c.MaxAttachments, err = positiveInt("CATENARY_MAX_ATTACHMENTS", os.Getenv("CATENARY_MAX_ATTACHMENTS")); err != nil {
+		return c, err
+	}
+	if c.HeartbeatIntervalSec, err = positiveInt("CATENARY_HEARTBEAT_INTERVAL_SEC", os.Getenv("CATENARY_HEARTBEAT_INTERVAL_SEC")); err != nil {
+		return c, err
+	}
+	if c.MissedPongLimit, err = positiveInt("CATENARY_MISSED_PONG_LIMIT", os.Getenv("CATENARY_MISSED_PONG_LIMIT")); err != nil {
 		return c, err
 	}
 
