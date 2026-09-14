@@ -2,6 +2,7 @@
 import { directs, openSearch, rooms, state, totalUnread, user } from '@/store'
 import Avatar from './Avatar.vue'
 import ConversationRow from './ConversationRow.vue'
+import Logomark from './Logomark.vue'
 
 /**
  * Deliberate call 04: one list, two headers. Rooms above DMs in the same
@@ -14,7 +15,8 @@ const me = user(state.me)
 <template>
   <nav class="rail">
     <header class="brand">
-      <span class="mark" />
+      <!-- Canvas 07: the 1C tile at 18px where the blank square was. -->
+      <Logomark :size="18" />
       <span class="wordmark">CATENARY</span>
       <span class="who">
         {{ me?.name.split(' ')[0].toUpperCase() }} · {{ totalUnread }}
@@ -77,13 +79,6 @@ const me = user(state.me)
   align-items: center;
   padding: 0 16px 0 20px;
   border-bottom: 1px solid var(--line-hair);
-}
-
-.mark {
-  display: block;
-  width: 9px;
-  height: 9px;
-  background: var(--accent-wire);
 }
 
 .wordmark {

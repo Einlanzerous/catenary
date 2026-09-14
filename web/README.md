@@ -28,7 +28,9 @@ So: no transport, no auth, no persistence. `src/mock/fixtures.ts` holds the canv
 
 ## Sections covered
 
-01 main view · 02 composer and connection states (recording, offline/queued, failed send, resync, typing) · 03 voice note, all three transcript states · 04 image message · 05 search over text and transcripts · 06 replies, four source types plus jump-to-source. Narrow layout below 900px. Both themes.
+01 main view · 02 composer and connection states (recording, offline/queued, failed send, resync, typing) · 03 voice note, all three transcript states · 04 image message · 05 search over text and transcripts · 06 replies, four source types plus jump-to-source · 07 logomark. Narrow layout below 900px. Both themes.
+
+**The logomark** (section 07) is form 1C "Span" — two masts and the messenger wire's sag, the catenary curve itself, knocked out of a solid tile. `Logomark.vue` draws it on the canvas's 48-grid mask and fills the tile from `--accent-mark`, a token of its own (`#E5A03C` dark, darkening to `#C4761F` on light so the cutout stays visible): the brand is not a state, so it does not compete with the one live conductor. `public/favicon.svg` is the same geometry, and the one raw hex in the client, because a favicon cannot read a stylesheet.
 
 Two things the canvas is specific about and it is easy to get wrong:
 
