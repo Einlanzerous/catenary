@@ -1026,6 +1026,166 @@
         "access_expires_at": "2026-08-17T04:37:00.000Z",
         "refresh_expires_at": "2026-10-16T04:22:00.000Z"
       }
+    },
+    {
+      "name": "reject_heartbeat_interval_zero",
+      "kind": "ServerFrame",
+      "expect": "reject",
+      "why": "CANT-106. `heartbeat_interval_sec` is server-driven precisely so the 30-45s window under Cloudflare's ~100s idle timeout lives in one place; a property-level `minimum`/`maximum` used to be checked by nobody in any of the three languages, and 0 decoded fine — a client would ping in a hot loop rather than on the announced interval.",
+      "json": {
+        "type": "ready",
+        "session_id": "3d4e5f6a-7b8c-4d9e-8a0b-1c2d3e4f5a6b",
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 0,
+        "missed_pong_limit": 2,
+        "log_seq": 41250,
+        "resumed": false
+      }
+    },
+    {
+      "name": "reject_heartbeat_interval_too_high",
+      "kind": "ServerFrame",
+      "expect": "reject",
+      "why": "CANT-106's other edge: 91 clears Cloudflare's ~100s idle timeout with no margin left for a slow round trip. The same gap that let 0 through let this through too, since neither bound was checked on a property.",
+      "json": {
+        "type": "ready",
+        "session_id": "4e5f6a7b-8c9d-4e0f-9a1b-2c3d4e5f6a7b",
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 91,
+        "missed_pong_limit": 2,
+        "log_seq": 41250,
+        "resumed": false
+      }
+    },
+    {
+      "name": "server_ready_heartbeat_min_boundary",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-106. The lower bound itself must still decode — a fix for `reject_heartbeat_interval_zero` that refused 5 as well would be an off-by-one wearing a passing test.",
+      "json": {
+        "type": "ready",
+        "session_id": "5f6a7b8c-9d0e-4f1a-8b2c-3d4e5f6a7b8c",
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 5,
+        "missed_pong_limit": 2,
+        "log_seq": 41250,
+        "resumed": false
+      }
+    },
+    {
+      "name": "server_ready_heartbeat_max_boundary",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-106, the upper edge of the same boundary check.",
+      "json": {
+        "type": "ready",
+        "session_id": "6a7b8c9d-0e1f-4a2b-9c3d-4e5f6a7b8c9d",
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 90,
+        "missed_pong_limit": 2,
+        "log_seq": 41250,
+        "resumed": false
+      }
+    },
+    {
+      "name": "reject_missed_pong_limit_zero",
+      "kind": "ServerFrame",
+      "expect": "reject",
+      "why": "CANT-106. `missed_pong_limit` has a `minimum` and no `maximum` — a different shape from `heartbeat_interval_sec`'s paired bound, worth its own vector. 0 means severing before a single ping goes unanswered, which is not what R1's `missed_pong_limit: 2` means by the word.",
+      "json": {
+        "type": "ready",
+        "session_id": "7b8c9d0e-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+        "server_time": "2026-08-17T04:22:02.001Z",
+        "heartbeat_interval_sec": 35,
+        "missed_pong_limit": 0,
+        "log_seq": 41250,
+        "resumed": false
+      }
+    },
+    {
+      "name": "reject_client_hello_wire_version_zero",
+      "kind": "ClientFrame",
+      "expect": "reject",
+      "why": "CANT-106. `ClientHello.wire_version` carries the same `minimum: 1` gap as `ServerReady.wire_version`, on the CLIENT-authored side of the frame union rather than the server-emitted side — proving the fix reaches both unions' object decoders, not just `ServerFrame`'s. Zero is what an uninitialised field looks like, the same reasoning `reject_seq_zero` already applies to `seq`.",
+      "json": {
+        "type": "hello",
+        "wire_version": 0,
+        "device_id": "8c9d0e1f-2a3b-4c4d-9e5f-6a7b8c9d0e1f"
+      }
+    },
+    {
+      "name": "reject_user_initials_too_long",
+      "kind": "User",
+      "expect": "reject",
+      "why": "CANT-106. `initials` is two letters for the avatar tile and carries both `minLength` and `maxLength` — neither was enforced anywhere before this fix. Three characters is not a near miss the tile silently truncates; it is a value the schema already said was invalid.",
+      "json": {
+        "id": "6a7b8c9d-0e1f-4a2b-9c3d-4e5f6a7b8c9d",
+        "name": "Nadia Ruiz",
+        "initials": "NRZ"
+      }
+    },
+    {
+      "name": "reject_ping_id_empty",
+      "kind": "ClientFrame",
+      "expect": "reject",
+      "why": "CANT-106. `Ping.id` carries `minLength: 1` so a missed pong can be matched by id — matching by arrival order cannot tell a lost pong from a slow one. An empty id used to decode fine, defeating exactly the matching this field exists for.",
+      "json": {
+        "type": "ping",
+        "id": "",
+        "at": "2026-08-17T04:45:00.000Z"
+      }
+    },
+    {
+      "name": "reject_voice_attachment_peak_out_of_range",
+      "kind": "VoiceAttachment",
+      "expect": "reject",
+      "why": "CANT-106's nested-array case: `peaks` items carry `minimum: 0, maximum: 100`, a constraint on the ARRAY ITEM rather than the property itself, one level deeper than every other vector this ticket adds. A bar above 100 is not merely off the canvas's own 0-100 scale; before this fix nothing checked it.",
+      "json": {
+        "kind": "voice",
+        "url": "https://media.catenary.invalid/v/9e0f1a2b.opus",
+        "duration_ms": 12000,
+        "peaks": [10, 40, 101, 22],
+        "transcript": {
+          "state": "pending",
+          "eta_sec": 4
+        }
+      }
+    },
+    {
+      "name": "reject_conversation_retention_days_zero",
+      "kind": "Conversation",
+      "expect": "reject",
+      "why": "CANT-106, on an OPTIONAL property: `retention_days` carries `minimum: 1` because absent means inherit-global-infinite, NOT zero days — CLAUDE.md is explicit that code reading it as 0 deletes everything. This proves an out-of-bounds value is refused when present, not merely skipped because the field is optional.",
+      "json": {
+        "id": "7b8c9d0e-1f2a-4b3c-8d4e-5f6a7b8c9d0e",
+        "kind": "group",
+        "name": "Sunday Dinner",
+        "member_count": 7,
+        "head_seq": 1908,
+        "retention_days": 0
+      }
+    },
+    {
+      "name": "user_initials_cjk",
+      "kind": "User",
+      "expect": "roundtrip",
+      "why": "CANT-106 review. `minLength`/`maxLength` count UNICODE CODE POINTS; `.length` in TypeScript and Dart counts UTF-16 code units and `len()` in Go counts bytes, and the three agree with each other and with the schema only for ASCII. `internal/wireview/sync.go`'s `initials()` derives exactly this two-code-point value from \"陳 大文\" per its own documented test case — `len(\"陳大\")` is 6 bytes, which a byte-counting Go check would have refused while both code-unit-counting clients accepted the identical page.",
+      "json": {
+        "id": "6a7b8c9d-0e1f-4a2b-9c3d-4e5f6a7b8c9d",
+        "name": "陳 大文",
+        "initials": "陳大"
+      }
+    },
+    {
+      "name": "user_initials_astral",
+      "kind": "User",
+      "expect": "roundtrip",
+      "why": "CANT-106 review, the surrogate-pair case: U+1D400 MATHEMATICAL BOLD CAPITAL A is ONE code point and TWO UTF-16 code units, so \"𝐀L\" is 2 code points (valid) but 3 code units — a naive `.length` fix in TypeScript or Dart would refuse this exact value while a byte-counting Go fix would refuse it for yet another count (5 bytes). All three must agree it is exactly 2.",
+      "json": {
+        "id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f",
+        "name": "𝐀 Lovelace",
+        "initials": "𝐀L"
+      }
     }
   ]
 }

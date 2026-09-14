@@ -532,8 +532,8 @@ final class User {
     final o = _obj(v, p);
     return User(
       id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _asUuid(o["id"], '${p}.id'),
-      name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : _str(o["name"], '${p}.name'),
-      initials: o["initials"] == null ? null : _str(o["initials"], '${p}.initials'),
+      name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'name must be at least 1 characters, got ${x.runes.length}'); return x; })(o["name"], '${p}.name'),
+      initials: o["initials"] == null ? null : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'initials must be at least 1 characters, got ${x.runes.length}'); if (x.runes.length > 2) _bad(p, 'initials must be at most 2 characters, got ${x.runes.length}'); return x; })(o["initials"], '${p}.initials'),
     );
   }
 
@@ -610,11 +610,11 @@ final class Transcript {
     return Transcript(
       state: o["state"] == null ? _bad('${p}.state', 'required field is missing') : TranscriptState.fromWire(o["state"], '${p}.state'),
       text: o["text"] == null ? null : _str(o["text"], '${p}.text'),
-      wordCount: o["word_count"] == null ? null : _int(o["word_count"], '${p}.word_count'),
+      wordCount: o["word_count"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'word_count must be >= 0, got $x'); return x; })(o["word_count"], '${p}.word_count'),
       segments: o["segments"] == null ? null : [for (final (i, x) in _arr(o["segments"], '${p}.segments').indexed) TranscriptSegment.fromJson(x, '${p}.segments[${i}]')],
       engine: o["engine"] == null ? null : _str(o["engine"], '${p}.engine'),
       language: o["language"] == null ? null : _str(o["language"], '${p}.language'),
-      etaSec: o["eta_sec"] == null ? null : _int(o["eta_sec"], '${p}.eta_sec'),
+      etaSec: o["eta_sec"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'eta_sec must be >= 0, got $x'); return x; })(o["eta_sec"], '${p}.eta_sec'),
     );
   }
 
@@ -663,7 +663,7 @@ final class VoiceAttachment implements Attachment {
     return VoiceAttachment(
       url: o["url"] == null ? _bad('${p}.url', 'required field is missing') : _str(o["url"], '${p}.url'),
       durationMs: o["duration_ms"] == null ? _bad('${p}.duration_ms', 'required field is missing') : _asDurationMs(o["duration_ms"], '${p}.duration_ms'),
-      peaks: o["peaks"] == null ? _bad('${p}.peaks', 'required field is missing') : [for (final (i, x) in _arr(o["peaks"], '${p}.peaks').indexed) _int(x, '${p}.peaks[${i}]')],
+      peaks: o["peaks"] == null ? _bad('${p}.peaks', 'required field is missing') : [for (final (i, x) in _arr(o["peaks"], '${p}.peaks').indexed) ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'peaks must be >= 0, got $x'); if (x > 100) _bad(p, 'peaks must be <= 100, got $x'); return x; })(x, '${p}.peaks[${i}]')],
       transcript: o["transcript"] == null ? _bad('${p}.transcript', 'required field is missing') : Transcript.fromJson(o["transcript"], '${p}.transcript'),
     );
   }
@@ -712,9 +712,9 @@ final class ImageAttachment implements Attachment {
     return ImageAttachment(
       url: o["url"] == null ? _bad('${p}.url', 'required field is missing') : _str(o["url"], '${p}.url'),
       filename: o["filename"] == null ? _bad('${p}.filename', 'required field is missing') : _str(o["filename"], '${p}.filename'),
-      width: o["width"] == null ? _bad('${p}.width', 'required field is missing') : _int(o["width"], '${p}.width'),
-      height: o["height"] == null ? _bad('${p}.height', 'required field is missing') : _int(o["height"], '${p}.height'),
-      bytes: o["bytes"] == null ? _bad('${p}.bytes', 'required field is missing') : _int(o["bytes"], '${p}.bytes'),
+      width: o["width"] == null ? _bad('${p}.width', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'width must be >= 1, got $x'); return x; })(o["width"], '${p}.width'),
+      height: o["height"] == null ? _bad('${p}.height', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'height must be >= 1, got $x'); return x; })(o["height"], '${p}.height'),
+      bytes: o["bytes"] == null ? _bad('${p}.bytes', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'bytes must be >= 0, got $x'); return x; })(o["bytes"], '${p}.bytes'),
       placeholder: o["placeholder"] == null ? null : _str(o["placeholder"], '${p}.placeholder'),
     );
   }
@@ -862,7 +862,7 @@ final class Message {
       attachments: o["attachments"] == null ? null : [for (final (i, x) in _arr(o["attachments"], '${p}.attachments').indexed) Attachment.fromJson(x, '${p}.attachments[${i}]')].whereType<Attachment>().toList(),
       replyTo: o["reply_to"] == null ? null : ReplyRef.fromJson(o["reply_to"], '${p}.reply_to'),
       state: o["state"] == null ? _bad('${p}.state', 'required field is missing') : DeliveryState.fromWire(o["state"], '${p}.state'),
-      readBy: o["read_by"] == null ? null : _int(o["read_by"], '${p}.read_by'),
+      readBy: o["read_by"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'read_by must be >= 0, got $x'); return x; })(o["read_by"], '${p}.read_by'),
       clientId: o["client_id"] == null ? null : _asUuid(o["client_id"], '${p}.client_id'),
       editedAt: o["edited_at"] == null ? null : _asTimestamp(o["edited_at"], '${p}.edited_at'),
       deleted: o["deleted"] == null ? null : _bool(o["deleted"], '${p}.deleted'),
@@ -931,11 +931,11 @@ final class Conversation {
       id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _asUuid(o["id"], '${p}.id'),
       kind: o["kind"] == null ? _bad('${p}.kind', 'required field is missing') : ConversationKind.fromWire(o["kind"], '${p}.kind'),
       name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : _str(o["name"], '${p}.name'),
-      memberCount: o["member_count"] == null ? _bad('${p}.member_count', 'required field is missing') : _int(o["member_count"], '${p}.member_count'),
+      memberCount: o["member_count"] == null ? _bad('${p}.member_count', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'member_count must be >= 1, got $x'); return x; })(o["member_count"], '${p}.member_count'),
       muted: o["muted"] == null ? null : _bool(o["muted"], '${p}.muted'),
       firstUnreadSeq: o["first_unread_seq"] == null ? null : _asSeq(o["first_unread_seq"], '${p}.first_unread_seq'),
       headSeq: o["head_seq"] == null ? _bad('${p}.head_seq', 'required field is missing') : _asSeq(o["head_seq"], '${p}.head_seq'),
-      retentionDays: o["retention_days"] == null ? null : _int(o["retention_days"], '${p}.retention_days'),
+      retentionDays: o["retention_days"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'retention_days must be >= 1, got $x'); return x; })(o["retention_days"], '${p}.retention_days'),
     );
   }
 
@@ -992,7 +992,7 @@ final class ClientHello implements ClientFrame {
   factory ClientHello.fromJson(Object? v, [String p = "ClientHello"]) {
     final o = _obj(v, p);
     return ClientHello(
-      wireVersion: o["wire_version"] == null ? _bad('${p}.wire_version', 'required field is missing') : _int(o["wire_version"], '${p}.wire_version'),
+      wireVersion: o["wire_version"] == null ? _bad('${p}.wire_version', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'wire_version must be >= 1, got $x'); return x; })(o["wire_version"], '${p}.wire_version'),
       deviceId: o["device_id"] == null ? _bad('${p}.device_id', 'required field is missing') : _asUuid(o["device_id"], '${p}.device_id'),
       resumeFromLogSeq: o["resume_from_log_seq"] == null ? null : _asLogSeq(o["resume_from_log_seq"], '${p}.resume_from_log_seq'),
       clientInfo: o["client_info"] == null ? null : _str(o["client_info"], '${p}.client_info'),
@@ -1066,10 +1066,10 @@ final class ServerReady implements ServerFrame {
     final o = _obj(v, p);
     return ServerReady(
       sessionId: o["session_id"] == null ? _bad('${p}.session_id', 'required field is missing') : _asUuid(o["session_id"], '${p}.session_id'),
-      wireVersion: o["wire_version"] == null ? null : _int(o["wire_version"], '${p}.wire_version'),
+      wireVersion: o["wire_version"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'wire_version must be >= 1, got $x'); return x; })(o["wire_version"], '${p}.wire_version'),
       serverTime: o["server_time"] == null ? _bad('${p}.server_time', 'required field is missing') : _asTimestamp(o["server_time"], '${p}.server_time'),
-      heartbeatIntervalSec: o["heartbeat_interval_sec"] == null ? _bad('${p}.heartbeat_interval_sec', 'required field is missing') : _int(o["heartbeat_interval_sec"], '${p}.heartbeat_interval_sec'),
-      missedPongLimit: o["missed_pong_limit"] == null ? _bad('${p}.missed_pong_limit', 'required field is missing') : _int(o["missed_pong_limit"], '${p}.missed_pong_limit'),
+      heartbeatIntervalSec: o["heartbeat_interval_sec"] == null ? _bad('${p}.heartbeat_interval_sec', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 5) _bad(p, 'heartbeat_interval_sec must be >= 5, got $x'); if (x > 90) _bad(p, 'heartbeat_interval_sec must be <= 90, got $x'); return x; })(o["heartbeat_interval_sec"], '${p}.heartbeat_interval_sec'),
+      missedPongLimit: o["missed_pong_limit"] == null ? _bad('${p}.missed_pong_limit', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'missed_pong_limit must be >= 1, got $x'); return x; })(o["missed_pong_limit"], '${p}.missed_pong_limit'),
       logSeq: o["log_seq"] == null ? _bad('${p}.log_seq', 'required field is missing') : _asLogSeq(o["log_seq"], '${p}.log_seq'),
       resumed: o["resumed"] == null ? _bad('${p}.resumed', 'required field is missing') : _bool(o["resumed"], '${p}.resumed'),
     );
@@ -1112,7 +1112,7 @@ final class Ping implements ClientFrame, ServerFrame {
   factory Ping.fromJson(Object? v, [String p = "Ping"]) {
     final o = _obj(v, p);
     return Ping(
-      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _str(o["id"], '${p}.id'),
+      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'id must be at least 1 characters, got ${x.runes.length}'); return x; })(o["id"], '${p}.id'),
       at: o["at"] == null ? null : _asTimestamp(o["at"], '${p}.at'),
     );
   }
@@ -1142,7 +1142,7 @@ final class Pong implements ClientFrame, ServerFrame {
   factory Pong.fromJson(Object? v, [String p = "Pong"]) {
     final o = _obj(v, p);
     return Pong(
-      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _str(o["id"], '${p}.id'),
+      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'id must be at least 1 characters, got ${x.runes.length}'); return x; })(o["id"], '${p}.id'),
       at: o["at"] == null ? null : _asTimestamp(o["at"], '${p}.at'),
     );
   }
@@ -1494,7 +1494,7 @@ final class ServerError implements ServerFrame {
       message: o["message"] == null ? _bad('${p}.message', 'required field is missing') : _str(o["message"], '${p}.message'),
       retryable: o["retryable"] == null ? _bad('${p}.retryable', 'required field is missing') : _bool(o["retryable"], '${p}.retryable'),
       clientId: o["client_id"] == null ? null : _asUuid(o["client_id"], '${p}.client_id'),
-      retryAfterSec: o["retry_after_sec"] == null ? null : _int(o["retry_after_sec"], '${p}.retry_after_sec'),
+      retryAfterSec: o["retry_after_sec"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'retry_after_sec must be >= 0, got $x'); return x; })(o["retry_after_sec"], '${p}.retry_after_sec'),
     );
   }
 
@@ -1651,10 +1651,15 @@ final class EnrollRequest {
   /// and why this is required rather than defaulted server-side to something like
   /// "unknown device".
   ///
-  /// Not length-bounded here: the bound is a server refusal with a test behind it,
-  /// because this schema's generators enforce `pattern`, `minimum` and `maximum` and
-  /// would silently ignore a `minLength` — a constraint no decoder checks is worse than
-  /// none, since it reads as protection.
+  /// Not length-bounded here, on purpose rather than by a gap: CANT-106 closed the hole
+  /// this paragraph used to describe, where a property-level `minLength` would have been
+  /// silently ignored — the generators now enforce `pattern`, `minimum`, `maximum`,
+  /// `minLength` and `maxLength` on an object property exactly as they already did on a
+  /// named alias like `Token`. Putting a bound on the wire now means every language
+  /// enforces it forever, which is the wrong home for `MaxDeviceNameBytes`
+  /// (`internal/store/tokens.go`): a server policy number, not a protocol invariant, free
+  /// to change without touching this schema or `x-wire-version`. The bound stays a server
+  /// refusal with a test behind it instead.
   final String deviceName;
 
   factory EnrollRequest.fromJson(Object? v, [String p = "EnrollRequest"]) {
