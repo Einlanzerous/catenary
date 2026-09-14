@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.6.0](https://github.com/Einlanzerous/catenary/compare/v0.5.0...v0.6.0) (2026-09-14)
+
+
+### Features
+
+* CANT-102 — the kill test over the socket, and a reusable Go client ([#51](https://github.com/Einlanzerous/catenary/issues/51)) ([937e430](https://github.com/Einlanzerous/catenary/commit/937e430bca3c68828101173bbbf57cdc745c3469))
+* CANT-23 — heartbeat severance: server-driven dial and server-side enforcement ([#48](https://github.com/Einlanzerous/catenary/issues/48)) ([67440ef](https://github.com/Einlanzerous/catenary/commit/67440efd53bd56320ef87eeda00d626adb17461c))
+* CANT-27 — the soak and chaos harness ([#52](https://github.com/Einlanzerous/catenary/issues/52)) ([7ebd246](https://github.com/Einlanzerous/catenary/commit/7ebd246183fc3ff4b2edc4509ba47a1af1035c11))
+* CANT-75 — REST send and find-or-create DM, the write path for bots and agents ([#49](https://github.com/Einlanzerous/catenary/issues/49)) ([4bea19e](https://github.com/Einlanzerous/catenary/commit/4bea19e0fe440ce2723073d4ba88cb03b59d55ca))
+
 ## [0.5.0](https://github.com/Einlanzerous/catenary/compare/v0.4.0...v0.5.0) (2026-09-14)
 
 
