@@ -105,7 +105,7 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 		out.Conversations = append(out.Conversations, Conversation(c))
 	}
 	for _, u := range page.Users {
-		out.Users = append(out.Users, user(u))
+		out.Users = append(out.Users, User(u))
 	}
 	return out
 }
@@ -230,7 +230,12 @@ func Conversation(c store.ConversationRow) wire.Conversation {
 	return out
 }
 
-func user(u store.UserRow) wire.User {
+// User maps one stored user row to the wire type. EXPORTED (CANT-114) on the
+// same argument Conversation is: the hub's `user` frame introduces the same
+// record /sync serves, and two assemblers of one row are two places they can
+// start answering differently — here, over `initials`, which is derived rather
+// than stored precisely so web and Flutter cannot disagree about it.
+func User(u store.UserRow) wire.User {
 	out := wire.User{
 		ID:   wire.Uuid(u.ID.String()),
 		Name: u.DisplayName,
