@@ -863,7 +863,8 @@ func asUser(t *testing.T, fr wire.ServerFrame) wire.User {
 	return u.User
 }
 
-// CRITERION 11, in memory — cmd/catenary proves the same thing over real
+// CRITERION 11 (the plan's numbering; 12 in the ticket's `Done when`), in
+// memory — cmd/catenary proves the same thing over real
 // sockets. On a conversation's first message every attached member session
 // reads the conversation record, then the user records, then the message, in
 // that order on that one session; a non-member's session reads none of them.
@@ -903,7 +904,8 @@ func TestAFirstMessageIntroducesTheConversationBeforeIt(t *testing.T) {
 	mal.nothing(t)
 }
 
-// CRITERION 13: the gate is the ordinal. A second message into the same
+// CRITERION 13 (the plan's numbering; 14 in the ticket's `Done when`): the
+// gate is the ordinal. A second message into the same
 // conversation puts nothing in front of itself.
 //
 // THE FAKE OFFERS THE RECORDS ON EVERY MESSAGE, and that is what makes this a
@@ -957,7 +959,8 @@ func TestAReceiptReEmissionCarriesNoIntroduction(t *testing.T) {
 	ada.nothing(t)
 }
 
-// CRITERION 15: a failed load on a conversation's first message still ends in
+// CRITERION 15 (the plan's numbering; 16 in the ticket's `Done when`): a
+// failed load on a conversation's first message still ends in
 // a gap for every attached session, and delivers nothing — not the message,
 // and not a record either. There is no per-session failure path to test,
 // because there is no per-session state.

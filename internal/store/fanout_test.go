@@ -234,7 +234,8 @@ func TestMessageForFanoutIntroducesAConversationOnItsFirstMessage(t *testing.T) 
 	}
 }
 
-// CRITERION 12 — the batched statement correlates BOTH viewer binds.
+// CRITERION 12 (the plan's numbering; 13 in the ticket's `Done when`) — the
+// batched statement correlates BOTH viewer binds.
 //
 // A direct conversation has NO STORED NAME (0002): each member sees it named
 // for the OTHER one, which is per reader and cannot live in a column. A
@@ -280,7 +281,8 @@ func (c *statementCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, _ p
 
 func (c *statementCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
-// CRITERION 14 — the introduction is two more statements inside the EXISTING
+// CRITERION 14 (the plan's numbering; 15 in the ticket's `Done when`) — the
+// introduction is two more statements inside the EXISTING
 // transaction, and a message that is not a first pays for neither.
 //
 // One connection, so the count is this read's statements and not a second

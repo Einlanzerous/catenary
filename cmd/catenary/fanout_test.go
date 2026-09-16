@@ -236,7 +236,8 @@ func (s *session) next() wire.ServerFrame {
 // IT HOLDS EVERY RECORD IT SKIPS TO THE MESSAGE'S OWN CONVERSATION, so the
 // marker technique above keeps its teeth: a `conversation` record for a room
 // this reader should never have heard of fails here, exactly as the message
-// that would have followed it does. A test that is ABOUT the introduction
+// that would have followed it does, and a `user` record with no conversation
+// record in front of it fails too. A test that is ABOUT the introduction
 // reads the frames raw, through conversationFrame and userFrame.
 func (s *session) message() wire.Message {
 	s.t.Helper()
@@ -254,8 +255,16 @@ func (s *session) message() wire.Message {
 		case wire.ServerConversationFrame:
 			records = append(records, v.Conversation.ID)
 		case wire.ServerUserFrame:
-			// A user record carries no conversation of its own; it is bounded
-			// by the conversation record it follows.
+			// A user record carries no conversation of its own, so its bound
+			// is the conversation record it MUST follow — CHECKED, not
+			// assumed. Skipping it unconditionally would let user records
+			// reach a session with no record in front of them and still pass
+			// every test that reads through here, marker idiom included,
+			// which is the sentence above being false for half the records it
+			// claims to hold.
+			if len(records) == 0 {
+				s.t.Fatalf("a user record arrived with no conversation record in front of it: %+v", v)
+			}
 		default:
 			s.t.Fatalf("next frame = %T %+v, want message", f, f)
 		}
@@ -812,6 +821,11 @@ func TestACancelledServeClosesEverySessionWith1001(t *testing.T) {
 }
 
 // --- CANT-114: criteria 11, 13 and 16 -------------------------------------------
+//
+// THE NUMBERS IN THIS FILE ARE THE PLAN'S POSITIONS. CANT-103's plan rev 3
+// numbers these rows 11, 13 and 16; the ticket's own `Done when` numbers the
+// same three 12, 14 and 17. Each header below states both, because the code
+// outlives the pull request that carried the mapping.
 
 // wireJSON renders a wire value the way a client receives it, so two records
 // are compared as the bytes that cross the wire rather than as Go structs.
@@ -847,7 +861,8 @@ func (r *rig) syncConversation(token string, id uuid.UUID) wire.Conversation {
 	return wire.Conversation{}
 }
 
-// CRITERION 11 and 13, over real sockets against Postgres through the router
+// CRITERION 11 AND 13 (the plan's numbering; 12 and 14 in the ticket's
+// `Done when`), over real sockets against Postgres through the router
 // setup() builds. On a conversation's FIRST message every attached member
 // session reads the `conversation` record, then that conversation's `user`
 // records, then the `message` — in that order, on that one session. A
@@ -911,7 +926,8 @@ func TestAFirstMessageIntroducesTheConversationAndItsUsers(t *testing.T) {
 	theoS.message() // Theo is in B as well; drain B's introduction and message.
 }
 
-// CRITERION 16 — the over-fire, asserted rather than assumed. A session that
+// CRITERION 16 (the plan's numbering; 17 in the ticket's `Done when`) — the
+// over-fire, asserted rather than assumed. A session that
 // ALREADY holds the conversation is introduced to it again on its first
 // message, and the record is the same one /sync serves, so a client that
 // replaces by id changes nothing by applying it. That is the stated price of
