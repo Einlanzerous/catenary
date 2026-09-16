@@ -38,7 +38,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// NotifyChannel carries message notifications and nothing else.
+// NotifyChannel carries NotifyPayload's two shapes — a message notification
+// and, since CANT-92, a receipt notification — and nothing else. One channel
+// for both is the same decision as the one struct that crosses it: two
+// shapes on two channels would be a second thing to keep in step for no
+// reason the RevocationChannel split above does not already cover (that
+// split exists because a revocation and a message decode DIFFERENTLY on a
+// parse failure, which is not true of the two NotifyPayload shapes).
 const NotifyChannel = "catenary_message"
 
 // RevocationChannel carries "this credential is no longer live, sever it".

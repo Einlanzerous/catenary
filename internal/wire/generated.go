@@ -1875,8 +1875,12 @@ func (ServerAck) isServerFrame() {}
 // Carries the WHOLE message, deliberately. IDEA-23 is explicit that this must not
 // degrade into a ping that makes the client go and fetch: that doubles latency on
 // every message in the steady state. The internal Postgres NOTIFY payload between
-// server instances is the thing that carries only (conversation_id, seq) under its
-// 8000-byte cap — that is a different layer and never appears on this wire.
+// server instances is a different layer and never appears on this wire — it carries
+// only ids (conversation_id, seq) for a first delivery, or (conversation_id, user_id,
+// before, after) for a receipt's live re-emission of this same frame, either way under
+// its 8000-byte cap. A re-emission is this frame again, with an updated state and
+// read_by and the row's original log_seq; nothing distinguishes it from a first
+// delivery except that a client has seen its id before.
 type ServerMessageFrame struct {
 	Message Message `json:"message"`
 }
