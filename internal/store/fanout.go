@@ -41,7 +41,40 @@ type FanoutMessage struct {
 	// Members is EVERY current member, read in the same snapshot as the
 	// message. The hub intersects it with the sessions it holds.
 	Members []Member
+
+	// Conversations and Users are CANT-114's INTRODUCTION, and they are
+	// POPULATED ONLY WHEN THIS MESSAGE IS ITS CONVERSATION'S FIRST
+	// (Message.Seq == FirstMessageSeq). Conversations is the conversation as
+	// EACH member sees it, keyed by member, because a direct's name and
+	// first_unread_seq are per reader and there is no one row to hand every
+	// viewer. Users is every current member's record, which is
+	// viewer-independent.
+	//
+	// EMPTY ON EVERY OTHER MESSAGE, and that is the gate rather than an
+	// economy: a conversation is introduced when a client that may never have
+	// heard of it is about to be handed a message naming it, and on no other
+	// occasion. It is NOT a freshness channel — a later rename, membership
+	// change or muted change reaches a client at its next /sync, which is what
+	// both frames' wire descriptions say.
+	Conversations map[uuid.UUID]ConversationRow
+	Users         []UserRow
 }
+
+// FirstMessageSeq is the ordinal a conversation's first message carries, and
+// the whole of CANT-114's gate.
+//
+// IT IS A TOTAL, STATELESS TEST, and that is why the hub needs no per-session
+// memory to introduce a conversation. seq is dense from 1 (CANT-14), and
+// conversations.last_seq starts at 0 with exactly one production writer — the
+// send's own `UPDATE … RETURNING` inside the inserting transaction — so "this
+// message is the first in its conversation" is a property of the row itself
+// rather than of anything the server has to remember.
+//
+// One exception, recorded rather than guarded against: a restore rewinds
+// last_seq (docs/decisions/cant-103-conversation-introduction.md), after which
+// a conversation's next first message introduces it again. That is right, not
+// tolerated — every client has just been made to discard and bootstrap.
+const FirstMessageSeq int64 = 1
 
 // MessageForFanout reads one message by (conversation_id, seq) — the UNIQUE
 // the thread ordering hangs off, and exactly what a NotifyPayload carries —
@@ -56,6 +89,14 @@ type FanoutMessage struct {
 // the moment this message was read" is a sentence that is actually true. A
 // read-only transaction cannot raise a serialization failure, so the stricter
 // level costs nothing.
+//
+// ON A CONVERSATION'S FIRST MESSAGE IT READS TWO MORE THINGS, IN THAT SAME
+// SNAPSHOT: the conversation as each member sees it, and the members' user
+// records (CANT-114's introduction). Inside rather than beside, so the record a
+// client is introduced to is the one that goes with the message it arrives
+// with, from the same membership. GATED ON THE ORDINAL, so a message that is
+// not a first costs neither of the two round trips — which is the steady state
+// and therefore the case that had to stay free.
 //
 // The three page loaders are reused over a one-message SyncPage rather than
 // re-written for one row: the SQL for attachments, reply sources and read_by
@@ -123,6 +164,22 @@ func (s *Store) MessageForFanout(ctx context.Context, conv uuid.UUID, seq int64)
 		if src, ok := page.ReplySources[*m.ReplyTo]; ok {
 			out.ReplySource = &src
 		}
+	}
+
+	// The introduction, on this message being its conversation's first and on
+	// nothing else. Two statements, in this transaction's snapshot, for the
+	// same member list read above.
+	if m.Seq == FirstMessageSeq {
+		convs, err := s.conversationRowsForMembers(ctx, tx, conv)
+		if err != nil {
+			return FanoutMessage{}, err
+		}
+		users, err := s.memberUsers(ctx, tx, conv)
+		if err != nil {
+			return FanoutMessage{}, err
+		}
+		out.Conversations = convs
+		out.Users = users
 	}
 	return out, nil
 }
