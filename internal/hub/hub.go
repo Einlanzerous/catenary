@@ -404,6 +404,14 @@ func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
 // each gets exactly ONE Message, from their own point of view, the same way
 // OnNotify builds one per viewer above.
 //
+// MEMBERSHIP IS STILL READ, NEVER CACHED (package header), even though this
+// function never calls Store.Members: MessagesForReadNotify itself excludes
+// an author who is no longer a current member, in the same snapshot as
+// everything else it reads, which is what the header's rule actually asks
+// for. Without that a departed author's still-attached session would get a
+// message frame for a room they have left — messages.author_id survives a
+// departure (ON DELETE RESTRICT), so the row does not disappear with them.
+//
 // THE HUB DEDUPES NOTHING (package header). A re-emission is an ordinary
 // `message` frame carrying the row's original log_seq — unchanged by a
 // receipt, which never rewrites a message — and it passes through

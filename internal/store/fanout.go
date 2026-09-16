@@ -144,8 +144,8 @@ type ReadNotifyMessage struct {
 
 // MessagesForReadNotify reads the messages a receipt's span changed the
 // read_by of, for CANT-92's live re-emission: seq IN (before, after] in conv,
-// excluding the reader's own messages, newest `capPerAuthor` per remaining
-// author.
+// excluding the reader's own messages and any author who is no longer a
+// current member, newest `capPerAuthor` per remaining author.
 //
 // THE READER'S OWN MESSAGES ARE EXCLUDED HERE, NOT AT THE HUB, and it is not
 // an optimisation — it is what makes the ticket's own claim true. readByExpr
@@ -153,6 +153,17 @@ type ReadNotifyMessage struct {
 // member's read_seq passing their OWN message never changes that message's
 // read_by: there is nothing to re-emit, and a query that included it would
 // put a no-op frame on the wire and waste a slot in the cap on it.
+//
+// A DEPARTED AUTHOR IS EXCLUDED TOO, on hub.go's own header: "MEMBERSHIP IS
+// READ, NEVER CACHED … a cached index would keep serving a departed member."
+// messages.author_id is ON DELETE RESTRICT, so the row — and its author_id —
+// outlives a member leaving; without this guard a departed author who still
+// holds a live socket on this instance would get a `message` frame for a room
+// they are no longer in, carrying read_by and a reply_to preview computed
+// over CURRENT membership. Nothing removes a conversation_members row today
+// (CANT-75 will), so this is a latent seam rather than a live one — closed
+// now because it is one EXISTS in a query already inside this transaction's
+// snapshot, and much cheaper here than after CANT-75 ships.
 //
 // THE CAP IS PER AUTHOR, NOT PER RECEIPT, on the same reasoning CANT-92
 // settled: a wide span can carry many authors, each going to a DIFFERENT
@@ -170,7 +181,8 @@ type ReadNotifyMessage struct {
 // ONE TRANSACTION, REPEATABLE READ, READ ONLY — MessageForFanout's own
 // reasoning: the read_by read must see the same membership snapshot the
 // message read did, or "the read_by this receipt produced" stops being a
-// sentence that is true.
+// sentence that is true. The membership check above runs in the SAME
+// snapshot for the same reason.
 func (s *Store) MessagesForReadNotify(ctx context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]ReadNotifyMessage, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
@@ -187,6 +199,8 @@ func (s *Store) MessagesForReadNotify(ctx context.Context, conv, reader uuid.UUI
 			       row_number() OVER (PARTITION BY m.author_id ORDER BY m.seq DESC) AS rn
 			  FROM messages m
 			 WHERE m.conversation_id = $1 AND m.seq > $2 AND m.seq <= $3 AND m.author_id <> $4
+			   AND EXISTS (SELECT 1 FROM conversation_members cm
+			                WHERE cm.conversation_id = m.conversation_id AND cm.user_id = m.author_id)
 		  ) ranked
 		 WHERE ranked.rn <= $5
 		 ORDER BY ranked.author_id, ranked.seq DESC`,

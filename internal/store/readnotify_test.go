@@ -116,6 +116,43 @@ func TestMessagesForReadNotifyExcludesTheReaderCapsPerAuthorNewestFirst(t *testi
 	}
 }
 
+// A DEPARTED AUTHOR IS EXCLUDED, on the same terms as the reader's own
+// messages: messages.author_id is ON DELETE RESTRICT, so a message survives
+// its author leaving, and without this guard a departed author's still-live
+// session would get a `message` frame for a room they are no longer in
+// (found on review). Planted past the send path, since there is no product
+// path that removes a conversation_members row today (CANT-75 will add one).
+func TestMessagesForReadNotifyExcludesAnAuthorWhoHasLeft(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	ada := mkUser(ctx, t, pool, "ada")
+	mallory := mkUser(ctx, t, pool, "mallory")
+	theo := mkUser(ctx, t, pool, "theo")
+	conv := mkGroup(ctx, t, pool, "room", ada, mallory, theo)
+
+	staying := send(ctx, t, st, conv, ada, "still here").Seq
+	left := send(ctx, t, st, conv, mallory, "on my way out").Seq
+	if _, err := pool.Exec(ctx, `DELETE FROM conversation_members WHERE conversation_id = $1 AND user_id = $2`, conv, mallory); err != nil {
+		t.Fatalf("remove mallory: %v", err)
+	}
+
+	if _, err := st.MarkRead(ctx, conv, theo, left); err != nil {
+		t.Fatalf("mark read: %v", err)
+	}
+	rows, err := st.MessagesForReadNotify(ctx, conv, theo, 0, left, 64)
+	if err != nil {
+		t.Fatalf("MessagesForReadNotify: %v", err)
+	}
+	for _, r := range rows {
+		if r.Message.AuthorID == mallory {
+			t.Fatalf("mallory's message (seq %d) was returned after she left the conversation", r.Message.Seq)
+		}
+	}
+	if len(rows) != 1 || rows[0].Message.Seq != staying {
+		t.Errorf("rows = %+v, want exactly ada's message (seq %d)", rows, staying)
+	}
+}
+
 func equalSeqs(got, want []int64) bool {
 	if len(got) != len(want) {
 		return false

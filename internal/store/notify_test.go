@@ -314,9 +314,10 @@ func TestThePayloadIsNowhereNearTheCap(t *testing.T) {
 
 // And the cap is where Postgres says it is, which a Go constant cannot assert
 // on its own. The encoder's own refusal is unreachable through NotifyPayload —
-// two fixed-width fields cannot reach 8,000 bytes — so the half that can be
-// proved today is that the number in notify.go describes a real limit. The
-// struct guard below is what keeps the other half unreachable.
+// five fixed-width fields, on either of its two shapes, cannot reach 8,000
+// bytes — so the half that can be proved today is that the number in notify.go
+// describes a real limit. The struct guard below is what keeps the other half
+// unreachable.
 func TestPostgresRefusesAPayloadOverTheDocumentedLimit(t *testing.T) {
 	ctx, pool := freshDB(t)
 
@@ -365,7 +366,7 @@ func TestTheNotifyPayloadCannotGrowAContentField(t *testing.T) {
 	// CANT-92 widened this from "ConversationID uuid.UUID, Seq int64" to add
 	// the receipt shape — UserID, Before, After — deliberately, per its own
 	// ticket: widen the struct rather than open a second shape on the
-	// channel. Four ids and two integers, still nothing a receiver could
+	// channel. Two ids and three integers, still nothing a receiver could
 	// render without a query.
 	const want = "ConversationID uuid.UUID, Seq int64, UserID *uuid.UUID, Before int64, After int64"
 

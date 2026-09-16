@@ -17,9 +17,14 @@ package store
 // transaction, so a notification cannot exist without its message or the
 // reverse. That is the MESSAGE call site: attemptSend, position 12, in
 // messages.go. The REVOCATION call site is RevokeDevice in tokens.go, and the
-// two are byte-identical in shape. They are also the two transactions in this
-// service whose commit takes Postgres's instance-wide notify lock; messages.go's
-// lock-order note names it. Everything below the call is here.
+// two are byte-identical in shape. CANT-92 added a THIRD: markRead in
+// readstate.go, on the same reasoning, for the receipt shape below. All three
+// are transactions in this service whose commit takes Postgres's
+// instance-wide notify lock — messages.go's lock-order note names the first
+// two; readstate.go's own comment reasons about markRead's, which reaches
+// commit holding conversation_members FOR UPDATE plus the metadata bump's
+// locks, and does not go on to take another after it. Everything below the
+// call is here.
 
 import (
 	"context"
@@ -42,9 +47,19 @@ const NotifyChannel = "catenary_message"
 // and the reason is that the alternative fails SILENTLY. The listener below
 // decodes with a plain json.Unmarshal: Go ignores unknown fields and zeroes
 // absent ones, so a revocation sent down catenary_message would not reach the
-// "did not parse" branch at all. It would decode to a NotifyPayload{uuid.Nil,
-// 0} and be delivered as a message notification for the nil conversation at
-// seq 0 — which is worse than an error, because nothing anywhere would say so.
+// "did not parse" branch at all — and CANT-92's widened NotifyPayload changes
+// WHICH silent thing happens, because the two structs now share a JSON tag.
+// A device revocation (`device_id` only) decodes with UserID nil: IsReceipt()
+// is false, and it is delivered as a MESSAGE notification for the nil
+// conversation at seq 0 — the original failure this paragraph described. A
+// USER revocation (`user_id` set, CANT-33's) decodes with NotifyPayload's own
+// UserID field populated, because `"user_id"` is the tag both structs use:
+// IsReceipt() is now TRUE, and it is delivered as a RECEIPT notification for
+// the nil conversation, span (0, 0] — which MessagesForReadNotify reads as
+// empty and answers with zero rows, so this particular branch is a silent
+// no-op rather than a wrong delivery. Neither outcome is an error, which is
+// the actual point: nothing anywhere would say a misrouted payload happened,
+// on either shape.
 //
 // It also left one thing alone that was not this ticket's to settle: the AST
 // guard over NotifyPayload's field list, so the ids-only guarantee was not
@@ -151,10 +166,12 @@ func (p RevocationPayload) Encode() (string, error) {
 
 // Encode renders the payload and refuses one that would exceed the cap.
 //
-// Unreachable with two fixed-width fields, and that is the reason it is a
-// function rather than an assumption: the check has to already exist on the day
-// somebody adds a third field, because the failure it prevents surfaces as
-// messages being refused rather than as notifications going missing.
+// STILL UNREACHABLE AT FIVE FIXED-WIDTH FIELDS, and that is the reason this
+// is a function rather than an assumption: CANT-92 was the day somebody added
+// a third (then a fourth, then a fifth), and the check was already here to
+// hold, rather than something that had to be remembered on the way in. The
+// failure it prevents surfaces as messages — or receipts — being refused
+// rather than as notifications going missing.
 func (p NotifyPayload) Encode() (string, error) {
 	raw, err := json.Marshal(p)
 	if err != nil {
