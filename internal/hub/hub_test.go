@@ -905,9 +905,21 @@ func TestAFirstMessageIntroducesTheConversationBeforeIt(t *testing.T) {
 
 // CRITERION 13: the gate is the ordinal. A second message into the same
 // conversation puts nothing in front of itself.
+//
+// THE FAKE OFFERS THE RECORDS ON EVERY MESSAGE, and that is what makes this a
+// test of the HUB's gate. The store has a gate of its own — MessageForFanout
+// reads nothing on a later message — and a fake that copied it would leave
+// this passing against a hub that introduced every message it was handed
+// records for, which is exactly what it did until this fake stopped copying
+// it.
 func TestOnlyAConversationsFirstMessageIntroduces(t *testing.T) {
 	f := newFixture(t)
 	theo := f.attach(f.theo)
+	f.st.fanout = func(_ context.Context, _ uuid.UUID, seq int64) (store.FanoutMessage, error) {
+		fm, records := f.message(seq), f.message(store.FirstMessageSeq)
+		fm.Conversations, fm.Users = records.Conversations, records.Users
+		return fm, nil
+	}
 
 	f.notify(store.FirstMessageSeq)
 	asConversation(t, theo.next(t))
