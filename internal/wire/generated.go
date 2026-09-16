@@ -556,12 +556,16 @@ func (l *ClientFrameList) decode(b []byte, p string) error {
 
 // Anything the server may send over the socket. ORDERING, AND IT IS NORMATIVE: every
 // `message` frame that is the FIRST delivery of a message to this session arrives in
-// ascending `log_seq`. A `message` frame for an id the client already holds is a
-// re-emission — a changed `read_by` (CANT-92) — and the later record is authoritative.
-// THE DEDUPE KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the
-// message's original `log_seq`, so a client that discarded frames at or below a
-// `log_seq` it had seen would discard the refresh. No frame in this union moves the
-// client's cursor (CANT-24 ruling 5).
+// ascending `log_seq`. AN INTRODUCTION SITS OUTSIDE THIS GUARANTEE: a `conversation`
+// or `user` frame (CANT-113) carries no `log_seq` of its own, so ascending order is
+// not defined between introductions, but each still arrives in the run of frames
+// immediately preceding, on the same session, the `message` frame whose first delivery
+// it introduces. A `message` frame for an id the client already holds is a re-emission
+// — a changed `read_by` (CANT-92) — and the later record is authoritative. THE DEDUPE
+// KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the message's original
+// `log_seq`, so a client that discarded frames at or below a `log_seq` it had seen
+// would discard the refresh. No frame in this union moves the client's cursor (CANT-24
+// ruling 5).
 type ServerFrame interface {
 	isServerFrame()
 	// WireTag returns the discriminator value this member carries.
@@ -1876,6 +1880,113 @@ func (v ServerAck) MarshalJSON() ([]byte, error) {
 
 func (ServerAck) isServerFrame() {}
 
+// Introduces a conversation, wrapping the existing `Conversation` record. Emitted to
+// every attached member session when a conversation's FIRST MESSAGE is delivered,
+// IMMEDIATELY BEFORE THAT `message` FRAME ON THE SAME SESSION, carrying the same
+// record `/sync` serves, as of the fan-out's snapshot. A RECORD FOR AN ID THE CLIENT
+// ALREADY HOLDS REPLACES IT. The introduction over-fires by design, and a second
+// record is not a change signal. NOT A FRESHNESS CHANNEL. A later rename, membership
+// change or `muted` change is not re-served here — only at the next catch-up. MOVES NO
+// CURSOR, like every frame in this union, and MAY ARRIVE BEFORE `ready`.
+type ServerConversationFrame struct {
+	Conversation Conversation `json:"conversation"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a ServerConversationFrame: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *ServerConversationFrame) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "ServerConversationFrame")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *ServerConversationFrame) decode(b []byte, p string) error {
+	var s struct {
+		Conversation *json.RawMessage `json:"conversation"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out ServerConversationFrame
+	if s.Conversation == nil {
+		return badf(p+".conversation", "required field is missing")
+	}
+	if err := out.Conversation.decode(*s.Conversation, p+".conversation"); err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
+// WireTag returns the discriminator value "conversation".
+func (ServerConversationFrame) WireTag() string { return "conversation" }
+
+// MarshalJSON injects the constant "type" tag, so the tag cannot be
+// forgotten at a call site or set to something the schema does not allow.
+func (v ServerConversationFrame) MarshalJSON() ([]byte, error) {
+	type alias ServerConversationFrame
+	return json.Marshal(struct {
+		T string `json:"type"`
+		alias
+	}{T: "conversation", alias: alias(v)})
+}
+
+func (ServerConversationFrame) isServerFrame() {}
+
+// Introduces a user referenced by a conversation's first message, wrapping the
+// existing `User` record. Emitted to every attached member session when a
+// conversation's FIRST MESSAGE is delivered, IMMEDIATELY BEFORE THAT `message` FRAME
+// ON THE SAME SESSION, carrying the same record `/sync` serves, as of the fan-out's
+// snapshot. A RECORD FOR AN ID THE CLIENT ALREADY HOLDS REPLACES IT. The introduction
+// over-fires by design, and a second record is not a change signal. NOT A FRESHNESS
+// CHANNEL. A later rename, membership change or `muted` change is not re-served here —
+// only at the next catch-up. MOVES NO CURSOR, like every frame in this union, and MAY
+// ARRIVE BEFORE `ready`.
+type ServerUserFrame struct {
+	User User `json:"user"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a ServerUserFrame: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *ServerUserFrame) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "ServerUserFrame")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *ServerUserFrame) decode(b []byte, p string) error {
+	var s struct {
+		User *json.RawMessage `json:"user"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out ServerUserFrame
+	if s.User == nil {
+		return badf(p+".user", "required field is missing")
+	}
+	if err := out.User.decode(*s.User, p+".user"); err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
+// WireTag returns the discriminator value "user".
+func (ServerUserFrame) WireTag() string { return "user" }
+
+// MarshalJSON injects the constant "type" tag, so the tag cannot be
+// forgotten at a call site or set to something the schema does not allow.
+func (v ServerUserFrame) MarshalJSON() ([]byte, error) {
+	type alias ServerUserFrame
+	return json.Marshal(struct {
+		T string `json:"type"`
+		alias
+	}{T: "user", alias: alias(v)})
+}
+
+func (ServerUserFrame) isServerFrame() {}
+
 // Carries the WHOLE message, deliberately. IDEA-23 is explicit that this must not
 // degrade into a ping that makes the client go and fetch: that doubles latency on
 // every message in the steady state. The internal Postgres NOTIFY payload between
@@ -2337,10 +2448,11 @@ func (ServerResyncRequired) isServerFrame() {}
 // to every attached session of every member with no exclusion (CANT-107), the origin
 // user's own other devices included — but a `Hub` holds only the sessions attached to
 // its own instance, so a device attached to a different instance still learns the mark
-// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` does not
-// yet introduce a conversation or its users on a first message — CANT-113, which this
-// ticket blocks, owns that. Until it lands, `/sync` is the general path and the only
-// one that carries conversations and users; in wire version 1 it is also the resume.
+// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` now
+// carries `conversation` and `user` frames introducing a conversation and its users on
+// a first message (CANT-113), but nothing emits them yet — CANT-114, which CANT-113
+// blocks, owns that. Until it lands, `/sync` is the general path and the only one that
+// carries conversations and users; in wire version 1 it is also the resume.
 type SyncResponse struct {
 	// The cursor to send on the NEXT call. Always the caller's new high-water mark — not
 	// the server's head, which may be further along when `has_more` is true. Deriving this
@@ -2973,6 +3085,18 @@ func decodeServerFrame(b []byte, p string) (ServerFrame, error) {
 			return nil, err
 		}
 		return v, nil
+	case "conversation":
+		var v ServerConversationFrame
+		if err := v.decode(b, p+"[conversation]"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "user":
+		var v ServerUserFrame
+		if err := v.decode(b, p+"[user]"); err != nil {
+			return nil, err
+		}
+		return v, nil
 	case "message":
 		var v ServerMessageFrame
 		if err := v.decode(b, p+"[message]"); err != nil {
@@ -3107,6 +3231,18 @@ func DecodeNamed(name string, b []byte) (any, error) {
 	case "ServerAck":
 		var v ServerAck
 		if err := v.decode(b, "ServerAck"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "ServerConversationFrame":
+		var v ServerConversationFrame
+		if err := v.decode(b, "ServerConversationFrame"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "ServerUserFrame":
+		var v ServerUserFrame
+		if err := v.decode(b, "ServerUserFrame"); err != nil {
 			return nil, err
 		}
 		return v, nil

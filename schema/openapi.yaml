@@ -527,6 +527,34 @@ components:
           type: "boolean"
           description: "True when this ack replays an earlier send with the same `client_id`. The client treats it identically; it exists so the deduplication path is observable in logs and in R1's zero-duplication test rather than being invisibly correct."
       description: "The other half of the send/ack pair. Receiving this moves the outbox entry from `sending` to `sent` and fixes its seq."
+    ServerConversationFrame:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "conversation"
+      properties:
+        type:
+          enum:
+            - "conversation"
+          type: "string"
+        conversation:
+          "$ref": "#/components/schemas/Conversation"
+      description: "Introduces a conversation, wrapping the existing `Conversation` record. Emitted to every attached member session when a conversation's FIRST MESSAGE is delivered, IMMEDIATELY BEFORE THAT `message` FRAME ON THE SAME SESSION, carrying the same record `/sync` serves, as of the fan-out's snapshot. A RECORD FOR AN ID THE CLIENT ALREADY HOLDS REPLACES IT. The introduction over-fires by design, and a second record is not a change signal. NOT A FRESHNESS CHANNEL. A later rename, membership change or `muted` change is not re-served here — only at the next catch-up. MOVES NO CURSOR, like every frame in this union, and MAY ARRIVE BEFORE `ready`."
+    ServerUserFrame:
+      type: "object"
+      additionalProperties: false
+      required:
+        - "type"
+        - "user"
+      properties:
+        type:
+          enum:
+            - "user"
+          type: "string"
+        user:
+          "$ref": "#/components/schemas/User"
+      description: "Introduces a user referenced by a conversation's first message, wrapping the existing `User` record. Emitted to every attached member session when a conversation's FIRST MESSAGE is delivered, IMMEDIATELY BEFORE THAT `message` FRAME ON THE SAME SESSION, carrying the same record `/sync` serves, as of the fan-out's snapshot. A RECORD FOR AN ID THE CLIENT ALREADY HOLDS REPLACES IT. The introduction over-fires by design, and a second record is not a change signal. NOT A FRESHNESS CHANNEL. A later rename, membership change or `muted` change is not re-served here — only at the next catch-up. MOVES NO CURSOR, like every frame in this union, and MAY ARRIVE BEFORE `ready`."
     ServerMessageFrame:
       type: "object"
       additionalProperties: false
@@ -703,6 +731,8 @@ components:
         - "$ref": "#/components/schemas/Ping"
         - "$ref": "#/components/schemas/Pong"
         - "$ref": "#/components/schemas/ServerAck"
+        - "$ref": "#/components/schemas/ServerConversationFrame"
+        - "$ref": "#/components/schemas/ServerUserFrame"
         - "$ref": "#/components/schemas/ServerMessageFrame"
         - "$ref": "#/components/schemas/ServerReceipt"
         - "$ref": "#/components/schemas/ServerTyping"
@@ -715,12 +745,14 @@ components:
           ping: "#/components/schemas/Ping"
           pong: "#/components/schemas/Pong"
           ack: "#/components/schemas/ServerAck"
+          conversation: "#/components/schemas/ServerConversationFrame"
+          user: "#/components/schemas/ServerUserFrame"
           message: "#/components/schemas/ServerMessageFrame"
           receipt: "#/components/schemas/ServerReceipt"
           typing: "#/components/schemas/ServerTyping"
           error: "#/components/schemas/ServerError"
           resync_required: "#/components/schemas/ServerResyncRequired"
-      description: "Anything the server may send over the socket. ORDERING, AND IT IS NORMATIVE: every `message` frame that is the FIRST delivery of a message to this session arrives in ascending `log_seq`. A `message` frame for an id the client already holds is a re-emission — a changed `read_by` (CANT-92) — and the later record is authoritative. THE DEDUPE KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the message's original `log_seq`, so a client that discarded frames at or below a `log_seq` it had seen would discard the refresh. No frame in this union moves the client's cursor (CANT-24 ruling 5)."
+      description: "Anything the server may send over the socket. ORDERING, AND IT IS NORMATIVE: every `message` frame that is the FIRST delivery of a message to this session arrives in ascending `log_seq`. AN INTRODUCTION SITS OUTSIDE THIS GUARANTEE: a `conversation` or `user` frame (CANT-113) carries no `log_seq` of its own, so ascending order is not defined between introductions, but each still arrives in the run of frames immediately preceding, on the same session, the `message` frame whose first delivery it introduces. A `message` frame for an id the client already holds is a re-emission — a changed `read_by` (CANT-92) — and the later record is authoritative. THE DEDUPE KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the message's original `log_seq`, so a client that discarded frames at or below a `log_seq` it had seen would discard the refresh. No frame in this union moves the client's cursor (CANT-24 ruling 5)."
     SyncResponse:
       type: "object"
       additionalProperties: false
@@ -759,7 +791,7 @@ components:
           description: "Call again with the returned `log_seq`. The resync UI renders numeric progress rather than a spinner, which is only possible because `Conversation.head_seq` says what it is counting towards."
         server_time:
           "$ref": "#/components/schemas/Timestamp"
-      description: "Response to `GET /sync?after=<log_seq>&limit=<n>`. The RECONNECT AND CATCH-UP path, not the steady state — steady state is a `message` frame over the socket. Applying a page is idempotent: every message carries its own seq and id, so replaying an overlapping page cannot duplicate anything, which is what makes reconnection a query rather than a guess. THE CURSOR MOVES ONLY ON A PAGE OF THIS RESPONSE (CANT-24 ruling 5): a `message` frame over the socket never moves it, because the socket cannot carry what this response carries, and a cursor is a promise that everything below it was received. CONVERSATION AND USER CHANGES ARE NOT DELIVERED OVER THE SOCKET IN WIRE VERSION 1 — a rename, a membership change or `muted` reaches a client only on its next `/sync`, and because the cursor moves only here, the next `/sync` always covers them. A receipt from another of the viewer's devices attached to THE SAME INSTANCE is a live exception, not deferred: `Hub.read` broadcasts a `receipt` to every attached session of every member with no exclusion (CANT-107), the origin user's own other devices included — but a `Hub` holds only the sessions attached to its own instance, so a device attached to a different instance still learns the mark at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` does not yet introduce a conversation or its users on a first message — CANT-113, which this ticket blocks, owns that. Until it lands, `/sync` is the general path and the only one that carries conversations and users; in wire version 1 it is also the resume."
+      description: "Response to `GET /sync?after=<log_seq>&limit=<n>`. The RECONNECT AND CATCH-UP path, not the steady state — steady state is a `message` frame over the socket. Applying a page is idempotent: every message carries its own seq and id, so replaying an overlapping page cannot duplicate anything, which is what makes reconnection a query rather than a guess. THE CURSOR MOVES ONLY ON A PAGE OF THIS RESPONSE (CANT-24 ruling 5): a `message` frame over the socket never moves it, because the socket cannot carry what this response carries, and a cursor is a promise that everything below it was received. CONVERSATION AND USER CHANGES ARE NOT DELIVERED OVER THE SOCKET IN WIRE VERSION 1 — a rename, a membership change or `muted` reaches a client only on its next `/sync`, and because the cursor moves only here, the next `/sync` always covers them. A receipt from another of the viewer's devices attached to THE SAME INSTANCE is a live exception, not deferred: `Hub.read` broadcasts a `receipt` to every attached session of every member with no exclusion (CANT-107), the origin user's own other devices included — but a `Hub` holds only the sessions attached to its own instance, so a device attached to a different instance still learns the mark at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` now carries `conversation` and `user` frames introducing a conversation and its users on a first message (CANT-113), but nothing emits them yet — CANT-114, which CANT-113 blocks, owns that. Until it lands, `/sync` is the general path and the only one that carries conversations and users; in wire version 1 it is also the resume."
     EnrollRequest:
       type: "object"
       additionalProperties: false

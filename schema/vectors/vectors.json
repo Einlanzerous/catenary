@@ -186,6 +186,68 @@
       }
     },
     {
+      "name": "server_conversation_frame",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-113. Introduces a conversation before its first message, wrapping the existing Conversation record with every optional field present.",
+      "json": {
+        "type": "conversation",
+        "conversation": {
+          "id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+          "kind": "group",
+          "name": "Wire Crew",
+          "member_count": 4,
+          "muted": false,
+          "first_unread_seq": 1905,
+          "head_seq": 1905,
+          "retention_days": 90
+        }
+      }
+    },
+    {
+      "name": "server_conversation_frame_new_direct",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-113, absent optional. muted, first_unread_seq and retention_days are all legally absent on Conversation and stay so wrapped in the introduction.",
+      "json": {
+        "type": "conversation",
+        "conversation": {
+          "id": "cc33dd44-ee55-4f66-8a77-bb88cc99dd00",
+          "kind": "direct",
+          "name": "Argosy",
+          "member_count": 2,
+          "head_seq": 1
+        }
+      }
+    },
+    {
+      "name": "server_user_frame",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-113. Introduces a user referenced by a conversation's first message, wrapping the existing User record with initials present.",
+      "json": {
+        "type": "user",
+        "user": {
+          "id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+          "name": "Marisol Byrne",
+          "initials": "MB"
+        }
+      }
+    },
+    {
+      "name": "server_user_frame_no_initials",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-113, absent optional. initials is User's only optional field; every earlier User vector carried one, so this is the first to omit it.",
+      "json": {
+        "type": "user",
+        "user": {
+          "id": "9c0d1e2f-3a4b-4c5d-8e6f-7a8b9c0d1e2f",
+          "name": "Priya Desai"
+        }
+      }
+    },
+    {
       "name": "server_message_text",
       "kind": "ServerFrame",
       "expect": "roundtrip",
