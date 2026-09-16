@@ -225,10 +225,15 @@ func newFixture(t *testing.T) *fixture {
 }
 
 // message is a row Ada wrote, with Theo's mark at 5 and read_by 1.
+//
+// ON SEQ 1 IT CARRIES THE INTRODUCTION, because MessageForFanout does: the
+// conversation as each member sees it (a direct, so each is named for the
+// other) and both members' user records. A fake that answered otherwise would
+// let the hub's gate pass a test the store could not.
 func (f *fixture) message(seq int64) store.FanoutMessage {
 	text := "hello"
 	cid := uuid.New()
-	return store.FanoutMessage{
+	fm := store.FanoutMessage{
 		Message: store.MessageRow{
 			ID: uuid.New(), ConversationID: f.conv, AuthorID: f.ada, Seq: seq, LogSeq: seq * 10,
 			At: time.Now(), Text: &text, ClientID: &cid,
@@ -236,7 +241,17 @@ func (f *fixture) message(seq int64) store.FanoutMessage {
 		ReadBy:  1,
 		Members: []store.Member{{UserID: f.ada, ReadSeq: 0}, {UserID: f.theo, ReadSeq: 5}},
 	}
+	if seq == store.FirstMessageSeq {
+		fm.Conversations = map[uuid.UUID]store.ConversationRow{
+			f.ada:  {ID: f.conv, Kind: "direct", LastSeq: seq, MemberCount: 2, OtherMemberName: strptr("Theo")},
+			f.theo: {ID: f.conv, Kind: "direct", LastSeq: seq, MemberCount: 2, OtherMemberName: strptr("Ada")},
+		}
+		fm.Users = []store.UserRow{{ID: f.ada, DisplayName: "Ada"}, {ID: f.theo, DisplayName: "Theo"}}
+	}
+	return fm
 }
+
+func strptr(s string) *string { return &s }
 
 // attach registers a peer and wires its Close/CloseNow to the detach, as
 // the door's read loop ending would.
@@ -336,13 +351,16 @@ func TestAReEmissionWithAnOldLogSeqIsDelivered(t *testing.T) {
 func TestDetachRemovesTheSession(t *testing.T) {
 	f := newFixture(t)
 	theo := f.attach(f.theo)
-	f.notify(1)
+	// Seq 2 and 3: this is about the index, and a conversation's first message
+	// would put an introduction in front of the frame being counted (CANT-114,
+	// which has its own tests).
+	f.notify(2)
 	theo.next(t)
 	f.peers[0].detach()
 	if n := f.hub.Attached(); n != 0 {
 		t.Fatalf("attached = %d after detach, want 0", n)
 	}
-	f.notify(2)
+	f.notify(3)
 	theo.nothing(t)
 	if recs := f.log.atLeast(slog.LevelWarn); len(recs) != 0 {
 		t.Errorf("%d line(s) at WARN or above after a clean detach: %v", len(recs), recs[0].Message)
@@ -358,11 +376,15 @@ func TestASlowConsumerIsSeveredWithoutBlockingTheEnqueuer(t *testing.T) {
 	stuck.block = make(chan struct{})
 	r1, r2 := f.attach(f.ada), f.attach(f.ada)
 
+	// FROM SEQ 2, for the same reason TestDetachRemovesTheSession does: this
+	// test is about volume and ordering under an overflowing outbox, and a
+	// conversation's first message would prepend an introduction to the burst.
 	const frames = outboxBound + 20
+	const firstBurstSeq = store.FirstMessageSeq + 1
 	var slowest time.Duration
-	for i := 1; i <= frames; i++ {
+	for i := firstBurstSeq; i < firstBurstSeq+frames; i++ {
 		start := time.Now()
-		f.notify(int64(i))
+		f.notify(i)
 		if d := time.Since(start); d > slowest {
 			slowest = d
 		}
@@ -384,8 +406,8 @@ func TestASlowConsumerIsSeveredWithoutBlockingTheEnqueuer(t *testing.T) {
 		t.Errorf("attached = %d after the sever, want the two readers", n)
 	}
 	for _, r := range []*peer{r1, r2} {
-		for i := 1; i <= frames; i++ {
-			if m := asMessage(t, r.next(t)); int64(m.Seq) != int64(i) {
+		for i := firstBurstSeq; i < firstBurstSeq+frames; i++ {
+			if m := asMessage(t, r.next(t)); int64(m.Seq) != i {
 				t.Fatalf("reader got seq %d, want %d: order or loss", m.Seq, i)
 			}
 		}
@@ -818,5 +840,158 @@ func TestShutdownGivesUpAtTheDeadline(t *testing.T) {
 	defer cancel()
 	if err := f.hub.Shutdown(ctx); err == nil {
 		t.Error("shutdown returned nil with a session that never detached")
+	}
+}
+
+// --- CANT-114: the introduction ------------------------------------------------
+
+func asConversation(t *testing.T, fr wire.ServerFrame) wire.Conversation {
+	t.Helper()
+	c, ok := fr.(wire.ServerConversationFrame)
+	if !ok {
+		t.Fatalf("frame = %T %+v, want a conversation record", fr, fr)
+	}
+	return c.Conversation
+}
+
+func asUser(t *testing.T, fr wire.ServerFrame) wire.User {
+	t.Helper()
+	u, ok := fr.(wire.ServerUserFrame)
+	if !ok {
+		t.Fatalf("frame = %T %+v, want a user record", fr, fr)
+	}
+	return u.User
+}
+
+// CRITERION 11, in memory — cmd/catenary proves the same thing over real
+// sockets. On a conversation's first message every attached member session
+// reads the conversation record, then the user records, then the message, in
+// that order on that one session; a non-member's session reads none of them.
+//
+// The conversation record is PER VIEWER: this is a direct, so each member is
+// introduced to it named for the OTHER one.
+func TestAFirstMessageIntroducesTheConversationBeforeIt(t *testing.T) {
+	f := newFixture(t)
+	ada, theo, mal := f.attach(f.ada), f.attach(f.theo), f.attach(f.mal)
+
+	f.notify(store.FirstMessageSeq)
+
+	for _, tc := range []struct {
+		who      string
+		p        *peer
+		wantName string
+	}{
+		{"ada", ada, "Theo"},
+		{"theo", theo, "Ada"},
+	} {
+		c := asConversation(t, tc.p.next(t))
+		if string(c.ID) != f.conv.String() || c.Name != tc.wantName || c.MemberCount != 2 {
+			t.Errorf("%s: conversation = %+v, want %s named %s with 2 members", tc.who, c, f.conv, tc.wantName)
+		}
+		names := map[string]string{}
+		for i := 0; i < 2; i++ {
+			u := asUser(t, tc.p.next(t))
+			names[string(u.ID)] = u.Name
+		}
+		if len(names) != 2 || names[f.ada.String()] != "Ada" || names[f.theo.String()] != "Theo" {
+			t.Errorf("%s: user records = %v, want both members", tc.who, names)
+		}
+		if m := asMessage(t, tc.p.next(t)); int64(m.Seq) != store.FirstMessageSeq {
+			t.Errorf("%s: the frame after the records = seq %d, want the message it introduced", tc.who, m.Seq)
+		}
+	}
+	mal.nothing(t)
+}
+
+// CRITERION 13: the gate is the ordinal. A second message into the same
+// conversation puts nothing in front of itself.
+func TestOnlyAConversationsFirstMessageIntroduces(t *testing.T) {
+	f := newFixture(t)
+	theo := f.attach(f.theo)
+
+	f.notify(store.FirstMessageSeq)
+	asConversation(t, theo.next(t))
+	asUser(t, theo.next(t))
+	asUser(t, theo.next(t))
+	asMessage(t, theo.next(t))
+
+	f.notify(store.FirstMessageSeq + 1)
+	if m := asMessage(t, theo.next(t)); int64(m.Seq) != store.FirstMessageSeq+1 {
+		t.Errorf("the next frame = seq %d, want the second message with no record in front of it", m.Seq)
+	}
+	theo.nothing(t)
+}
+
+// THE GATE IS A MESSAGE NOTIFICATION, NEVER A CANT-92 RECEIPT RE-EMISSION.
+//
+// A re-emission reaches only the author, who holds the conversation by
+// definition, and its burst is bounded by readNotifyCap — 1 + N introduction
+// frames per re-emitted message is exactly what must not ride along with it.
+// The two shapes part ways at the top of OnNotify, so this is the test that
+// says the introduction sits on the far side of that branch.
+func TestAReceiptReEmissionCarriesNoIntroduction(t *testing.T) {
+	f := newFixture(t)
+	ada := f.attach(f.ada)
+	f.st.readNotify = func(context.Context, uuid.UUID, uuid.UUID, int64, int64, int) ([]store.ReadNotifyMessage, error) {
+		return []store.ReadNotifyMessage{f.readNotifyMessage(store.FirstMessageSeq, 2)}, nil
+	}
+
+	f.readNotify(f.theo, 0, store.FirstMessageSeq)
+
+	m := asMessage(t, ada.next(t))
+	if int64(m.Seq) != store.FirstMessageSeq || m.State != wire.DeliveryStateRead {
+		t.Errorf("re-emission = %+v, want the seq 1 message refreshed as read", m)
+	}
+	ada.nothing(t)
+}
+
+// CRITERION 15: a failed load on a conversation's first message still ends in
+// a gap for every attached session, and delivers nothing — not the message,
+// and not a record either. There is no per-session failure path to test,
+// because there is no per-session state.
+func TestAFailedLoadOnAFirstMessageIsStillAGapAndDeliversNothing(t *testing.T) {
+	f := newFixture(t)
+	theo, ada := f.attach(f.theo), f.attach(f.ada)
+	f.st.fanout = func(context.Context, uuid.UUID, int64) (store.FanoutMessage, error) {
+		return store.FanoutMessage{}, errors.New("column does not exist")
+	}
+
+	f.notify(store.FirstMessageSeq)
+
+	for _, p := range []*peer{theo, ada} {
+		r, ok := p.next(t).(wire.ServerResyncRequired)
+		if !ok || r.Reason != wire.ResyncReasonCursorTooOld || r.LogSeq != 900 {
+			t.Errorf("frame = %+v, want resync_required{cursor_too_old, 900}", r)
+		}
+		p.nothing(t)
+		if len(p.closedWith()) != 0 || p.closedNow() != 0 {
+			t.Error("a failed introduction closed a session")
+		}
+	}
+}
+
+// THE MESSAGE IS NEVER HELD BACK BY ITS RECORD. A member the store somehow
+// returned no conversation row for still receives the message — withholding it
+// would be this package breaking its own header — and the omission is logged
+// rather than swallowed. Unreachable through the real store, which reads both
+// from one snapshot over one member list; pinned because the branch is written
+// rather than assumed.
+func TestAMemberWithNoConversationRecordStillGetsTheMessage(t *testing.T) {
+	f := newFixture(t)
+	theo := f.attach(f.theo)
+	f.st.fanout = func(_ context.Context, _ uuid.UUID, seq int64) (store.FanoutMessage, error) {
+		fm := f.message(seq)
+		delete(fm.Conversations, f.theo)
+		return fm, nil
+	}
+
+	f.notify(store.FirstMessageSeq)
+
+	if m := asMessage(t, theo.next(t)); int64(m.Seq) != store.FirstMessageSeq {
+		t.Errorf("frame = seq %d, want the message delivered without its record", m.Seq)
+	}
+	warns := f.log.atLeast(slog.LevelWarn)
+	if len(warns) != 1 || warns[0].Message != "no conversation record for a member on a first message; delivering the message alone" {
+		t.Errorf("warn lines = %+v, want the one missing-record line", warns)
 	}
 }

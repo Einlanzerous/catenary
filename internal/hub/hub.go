@@ -17,6 +17,17 @@
 // THE HUB HOLDS NO CURSOR AND DEDUPES NOTHING. A CANT-92 re-emission is a
 // `message` frame with an old log_seq and it goes through like any other.
 //
+// A CONVERSATION IS INTRODUCED ON ITS FIRST MESSAGE, STATELESSLY (CANT-114).
+// `seq == 1` is a total test on the row itself — seq is dense from 1 and
+// last_seq has one production writer — so this package can hand a client the
+// `conversation` and `user` records before a `message` naming a conversation
+// it may never have held, WITHOUT REMEMBERING WHAT ANY SESSION HAS SEEN. That
+// statelessness is the whole design, and its price is that the introduction
+// OVER-FIRES: a session that already holds the conversation is told again, and
+// applies the record idempotently by id. The alternative — a per-session set —
+// is state on the delivery path that has to be kept right on attach, detach
+// and every membership change, to save a frame that costs nothing.
+//
 // MEMBERSHIP IS READ, NEVER CACHED. Sessions are indexed by user; who is in a
 // room is read from the store on every fan-out, in the same snapshot as the
 // message, because nothing produces `membership_changed` yet (CANT-75) and a
@@ -305,6 +316,15 @@ func (h *Hub) enqueueLocked(s *session, f wire.ServerFrame) bool {
 // builds one Message per attached member through wireview, enqueues it on
 // each of their sessions. In commit order, because the listener delivers in
 // commit order and this enqueues in arrival order.
+//
+// ON A CONVERSATION'S FIRST MESSAGE IT INTRODUCES THE CONVERSATION FIRST
+// (CANT-114): `conversation` → `user`(s) → `message`, on each member session,
+// enqueued under the one lock this fan-out already takes so nothing can come
+// between a record and the message it introduces. THE GATE IS THE MESSAGE'S
+// OWN ORDINAL AND THIS BRANCH ONLY — a CANT-92 receipt re-emission returns
+// above and can never reach it, which is deliberate: a re-emission goes to the
+// author alone, who holds the conversation by definition, and its burst of up
+// to readNotifyCap frames must not carry 1 + N introduction frames with it.
 func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
 	if p.IsReceipt() {
 		h.onReadNotify(ctx, p)
@@ -359,8 +379,21 @@ func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
 		src = fm.ReplySource
 	}
 
+	// The `user` records are the same for everybody, so they are mapped ONCE
+	// and BEFORE THE LOCK. h.mu is held while every attached session on this
+	// instance is enqueued to, on the goroutine that serialises delivery for
+	// all of them; pure mapping has no business inside it.
+	introduce := fm.Message.Seq == store.FirstMessageSeq
+	var users []wire.ServerFrame
+	if introduce {
+		users = make([]wire.ServerFrame, 0, len(fm.Users))
+		for _, u := range fm.Users {
+			users = append(users, wire.ServerUserFrame{User: wireview.User(u)})
+		}
+	}
+
 	h.mu.Lock()
-	n := 0
+	n, records := 0, 0
 	for _, mem := range fm.Members {
 		set := h.sessions[mem.UserID]
 		if len(set) == 0 {
@@ -376,7 +409,45 @@ func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
 			ReadBy:   &readBy,
 			MediaURL: h.mediaURL,
 		})}
+
+		// The conversation record is PER MEMBER — a direct's name and
+		// first_unread_seq are the reader's — so it is built here, while the
+		// viewer-independent user frames are shared from above.
+		var intro []wire.ServerFrame
+		if introduce {
+			if row, ok := fm.Conversations[mem.UserID]; ok {
+				intro = append(intro, wire.ServerConversationFrame{Conversation: wireview.Conversation(row)})
+				intro = append(intro, users...)
+			} else {
+				// UNREACHABLE, AND THE MESSAGE STILL GOES. The rows were read
+				// from the same snapshot and over the same member list as this
+				// message, so a member without one would be the store
+				// contradicting itself within one transaction.
+				//
+				// If it ever does happen, the frame the client is OWED is the
+				// message: withholding it to protect an introduction would hold
+				// back a delivered message, which is the one thing this file's
+				// header forbids, and /sync still carries the conversation
+				// record exactly as it did for every message before this
+				// ticket. So this degrades to the old behaviour and says so,
+				// loudly enough to find.
+				h.logger.Warn("no conversation record for a member on a first message; delivering the message alone",
+					"conversation_id", fm.Message.ConversationID, "user_id", mem.UserID)
+			}
+		}
+
 		for s := range set {
+			// ORDER ON THE OUTBOX IS ORDER ON THE WIRE: one queue per session,
+			// drained by one goroutine, so enqueuing the record before the
+			// message is what puts it in front of the message. A sever between
+			// the two (a full outbox) takes the session out of the index and
+			// the message with it — the session is closed, which is one of this
+			// package's three endings, and the client catches up on reconnect.
+			for _, f := range intro {
+				if h.enqueueLocked(s, f) {
+					records++
+				}
+			}
 			if h.enqueueLocked(s, frame) {
 				n++
 			}
@@ -385,7 +456,8 @@ func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
 	h.mu.Unlock()
 	h.logger.Debug("fan-out",
 		"conversation_id", fm.Message.ConversationID, "seq", fm.Message.Seq,
-		"log_seq", fm.Message.LogSeq, "sessions", n)
+		"log_seq", fm.Message.LogSeq, "sessions", n,
+		"introduced", introduce, "records", records)
 }
 
 // onReadNotify is CANT-92's re-emission: a MarkRead receipt that advanced the
