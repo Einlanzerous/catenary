@@ -291,13 +291,33 @@ func TestThePayloadIsNowhereNearTheCap(t *testing.T) {
 			"supposed to be ids only", len(encoded))
 	}
 	t.Logf("widest payload: %d bytes of %d (%s)", len(encoded), NotifyPayloadMax, encoded)
+
+	// CANT-92's receipt shape, at ITS widest: two more ids-worth of bytes
+	// (UserID's uuid, plus Before and After at Seq's own maximum) than the
+	// message shape above, and still nowhere near the cap for the same
+	// reason — every field here is a fixed-width id or ordinal.
+	widestUser := uuid.Max
+	widestReceipt := NotifyPayload{ConversationID: uuid.Max, UserID: &widestUser, Before: seqMax, After: seqMax}
+	encodedReceipt, err := widestReceipt.Encode()
+	if err != nil {
+		t.Fatalf("the widest legal receipt payload does not encode: %v", err)
+	}
+	if len(encodedReceipt) >= NotifyPayloadMax {
+		t.Fatalf("the widest receipt payload is %d bytes, at or over the %d limit", len(encodedReceipt), NotifyPayloadMax)
+	}
+	if len(encodedReceipt) > NotifyPayloadMax/10 {
+		t.Errorf("the receipt payload is %d bytes, more than a tenth of the cap — it is "+
+			"supposed to be ids only", len(encodedReceipt))
+	}
+	t.Logf("widest receipt payload: %d bytes of %d (%s)", len(encodedReceipt), NotifyPayloadMax, encodedReceipt)
 }
 
 // And the cap is where Postgres says it is, which a Go constant cannot assert
 // on its own. The encoder's own refusal is unreachable through NotifyPayload —
-// two fixed-width fields cannot reach 8,000 bytes — so the half that can be
-// proved today is that the number in notify.go describes a real limit. The
-// struct guard below is what keeps the other half unreachable.
+// five fixed-width fields, on either of its two shapes, cannot reach 8,000
+// bytes — so the half that can be proved today is that the number in notify.go
+// describes a real limit. The struct guard below is what keeps the other half
+// unreachable.
 func TestPostgresRefusesAPayloadOverTheDocumentedLimit(t *testing.T) {
 	ctx, pool := freshDB(t)
 
@@ -343,7 +363,12 @@ func TestPostgresRefusesAPayloadOverTheDocumentedLimit(t *testing.T) {
 // The probe at the end is what proves the guard bites: a planted third field
 // has to make it fail, or it is asserting nothing.
 func TestTheNotifyPayloadCannotGrowAContentField(t *testing.T) {
-	const want = "ConversationID uuid.UUID, Seq int64"
+	// CANT-92 widened this from "ConversationID uuid.UUID, Seq int64" to add
+	// the receipt shape — UserID, Before, After — deliberately, per its own
+	// ticket: widen the struct rather than open a second shape on the
+	// channel. Two ids and three integers, still nothing a receiver could
+	// render without a query.
+	const want = "ConversationID uuid.UUID, Seq int64, UserID *uuid.UUID, Before int64, After int64"
 
 	got, err := notifyPayloadFields("notify.go")
 	if err != nil {

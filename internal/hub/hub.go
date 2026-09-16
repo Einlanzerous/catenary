@@ -46,6 +46,35 @@ const (
 	// it; a peer that is not will not read a close frame either.
 	outboxBound = 256
 
+	// readNotifyCap bounds how many of ONE AUTHOR's own messages CANT-92's
+	// receipt re-emission refreshes live, per receipt, newest first — a
+	// quarter of outboxBound, and that ratio is the point rather than the
+	// number.
+	//
+	// THE CAP IS BOUNDED FROM BELOW BY outboxBound, NOT CHOSEN FREELY. A
+	// first read of a room, or a new member's first receipt, can move
+	// read_seq from 0 to last_seq in one call — a 10,000-message room is a
+	// 10,000-message span on one receipt. Left uncapped, that burst competes
+	// for the same outbox ordinary live traffic shares and can fill it,
+	// severing the very author it exists to refresh (ruling 0 above). That
+	// author reconnects and catches up over a full /sync bootstrap, which
+	// serves the identical read_by a live re-emission would have — a plain
+	// page always knows the current count (CANT-26) — so a sever here buys
+	// the cap nothing it did not already have another way, at the cost of a
+	// disconnect for every session that author held open. A quarter leaves
+	// three-quarters of the outbox for the traffic that sever would have
+	// disrupted; a different fraction is fine if the reason is written down
+	// beside it, which is what this comment is doing for 64.
+	//
+	// THE REMAINDER OF A SPAN BEYOND THE CAP WAITS FOR THAT BOOTSTRAP. CANT-89
+	// established that an ordinary /sync page never re-serves a message it
+	// already carried — it pages on log_seq, and a served message is never on
+	// a later page — so nothing short of a full bootstrap (cursor 0) closes
+	// the gap for the tail this cap leaves live. DeliveryState's schema
+	// description states the same guarantee on the wire, beside the catch-up
+	// sentence CANT-89 put there.
+	readNotifyCap = 64
+
 	// loadBudget bounds the retry of a fan-out load; headBudget bounds the
 	// head read at gap. The listener has usually just reconnected when the
 	// head read runs, so the pool may still be behind it, and that gets the
@@ -83,13 +112,17 @@ type Conn interface {
 	CloseNow() error
 }
 
-// Store is the four reads and one write the hub makes. *store.Store
-// satisfies it; the hub's tests use a fake.
+// Store is the reads and writes the hub makes. *store.Store satisfies it; the
+// hub's tests use a fake.
 type Store interface {
 	MessageForFanout(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error)
 	Members(ctx context.Context, conv uuid.UUID) ([]uuid.UUID, error)
 	MarkRead(ctx context.Context, conv, user uuid.UUID, upToSeq int64) (store.ReadReceipt, error)
 	Head(ctx context.Context) (int64, error)
+	// MessagesForReadNotify is CANT-92's read behind the receipt re-emission
+	// — see OnNotify's receipt branch and MessagesForReadNotify's own
+	// comment for the cap and the author exclusion.
+	MessagesForReadNotify(ctx context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]store.ReadNotifyMessage, error)
 }
 
 // Hub is one per process.
@@ -263,12 +296,21 @@ func (h *Hub) enqueueLocked(s *session, f wire.ServerFrame) bool {
 	}
 }
 
-// OnNotify is the listener's per-notification callback: load the message
-// and every member in one snapshot, build one Message per attached member
-// through wireview, enqueue it on each of their sessions. In commit order,
-// because the listener delivers in commit order and this enqueues in
-// arrival order.
+// OnNotify is the listener's per-notification callback. Two shapes cross the
+// one channel (CANT-92's NotifyPayload) and this is where they part ways:
+// IsReceipt routes a receipt notification to onReadNotify and returns; a
+// message notification falls through to the fan-out below exactly as before.
+//
+// A message notification loads the message and every member in one snapshot,
+// builds one Message per attached member through wireview, enqueues it on
+// each of their sessions. In commit order, because the listener delivers in
+// commit order and this enqueues in arrival order.
 func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
+	if p.IsReceipt() {
+		h.onReadNotify(ctx, p)
+		return
+	}
+
 	var fm store.FanoutMessage
 	err := h.retry(ctx, loadBudget, func() error {
 		var e error
@@ -344,6 +386,100 @@ func (h *Hub) OnNotify(ctx context.Context, p store.NotifyPayload) {
 	h.logger.Debug("fan-out",
 		"conversation_id", fm.Message.ConversationID, "seq", fm.Message.Seq,
 		"log_seq", fm.Message.LogSeq, "sessions", n)
+}
+
+// onReadNotify is CANT-92's re-emission: a MarkRead receipt that advanced the
+// mark notifies (conversation_id, user_id, before, after) on the same channel
+// a message notification uses (NotifyPayload widened rather than a second
+// shape — CANT-92 decision 2), and this is where a listening instance re-reads
+// the span to find which of its own attached authors need their Message
+// refreshed.
+//
+// ONLY THE AUTHOR EVER RECEIVES ONE (CANT-90 ruling 2: the server derives the
+// word and the count, and only the author's own view of a message renders
+// either). MessagesForReadNotify already excludes the reader's own messages
+// from the span — a reader's own read_by never changes when their own read_seq
+// passes their own message, because readByExpr counts the author by identity
+// regardless — so every row this returns belongs to a DIFFERENT member, and
+// each gets exactly ONE Message, from their own point of view, the same way
+// OnNotify builds one per viewer above.
+//
+// MEMBERSHIP IS STILL READ, NEVER CACHED (package header), even though this
+// function never calls Store.Members: MessagesForReadNotify itself excludes
+// an author who is no longer a current member, in the same snapshot as
+// everything else it reads, which is what the header's rule actually asks
+// for. Without that a departed author's still-attached session would get a
+// message frame for a room they have left — messages.author_id survives a
+// departure (ON DELETE RESTRICT), so the row does not disappear with them.
+//
+// THE HUB DEDUPES NOTHING (package header). A re-emission is an ordinary
+// `message` frame carrying the row's original log_seq — unchanged by a
+// receipt, which never rewrites a message — and it passes through
+// enqueueLocked exactly like a first delivery, cap included: an author with
+// more attached devices than one gets the same frame on each, and a slow one
+// among them is severed on the same terms TestASlowConsumerIsSeveredWithout
+// BlockingTheEnqueuer proves for a first delivery.
+func (h *Hub) onReadNotify(ctx context.Context, p store.NotifyPayload) {
+	reader := *p.UserID
+	var msgs []store.ReadNotifyMessage
+	err := h.retry(ctx, loadBudget, func() error {
+		var e error
+		msgs, e = h.st.MessagesForReadNotify(ctx, p.ConversationID, reader, p.Before, p.After, readNotifyCap)
+		return e
+	})
+	switch {
+	case ctx.Err() != nil:
+		// The process is stopping, on OnNotify's own reasoning: the sessions
+		// are drained or draining, and there is nobody left to refresh.
+		h.logger.Debug("read notify abandoned on a cancelled context",
+			"conversation_id", p.ConversationID, "user_id", reader)
+		return
+	case err != nil:
+		// NOT A GAP, AND DELIBERATELY SO — unlike OnNotify's load failure,
+		// h.gap(ctx) would not fix this. A gap tells every attached session
+		// to resync from ITS OWN cursor over /sync, and CANT-89 established
+		// that a page never re-serves a message already served on an earlier
+		// one: every message in this span was served before this receipt
+		// existed, so an ordinary catch-up will never re-fetch it regardless
+		// of how many sessions are told to run one. The only thing that would
+		// is a full bootstrap, which nothing here can force. So a failure
+		// here costs exactly what the cap's own remainder costs on purpose —
+		// the affected authors see the stale read_by until they bootstrap
+		// fresh — and it is logged loud, at ERROR, because that cost should
+		// be rare rather than silent.
+		h.logger.Error("read notify fan-out failed",
+			"conversation_id", p.ConversationID, "user_id", reader, "error", err)
+		return
+	}
+
+	h.mu.Lock()
+	n := 0
+	for _, rm := range msgs {
+		set := h.sessions[rm.Message.AuthorID]
+		if len(set) == 0 {
+			continue
+		}
+		// Viewer is always the row's own author: MessagesForReadNotify
+		// already excluded every other case, so DeliveryState's own-message
+		// branch is the only one this ever reaches and viewerReadSeq is
+		// unused on that branch.
+		readBy := rm.ReadBy
+		frame := wire.ServerMessageFrame{Message: wireview.Message(rm.Message, rm.Attachments, rm.ReplySource, wireview.Viewer{
+			UserID:   rm.Message.AuthorID,
+			State:    wireview.DeliveryState(rm.Message, rm.Message.AuthorID, 0, rm.ReadBy),
+			ReadBy:   &readBy,
+			MediaURL: h.mediaURL,
+		})}
+		for s := range set {
+			if h.enqueueLocked(s, frame) {
+				n++
+			}
+		}
+	}
+	h.mu.Unlock()
+	h.logger.Debug("read receipt re-emission",
+		"conversation_id", p.ConversationID, "reader", reader,
+		"before", p.Before, "after", p.After, "messages", len(msgs), "sessions", n)
 }
 
 // OnGap is the listener's reconnect callback: some number of notifications

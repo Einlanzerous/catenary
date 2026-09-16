@@ -334,10 +334,12 @@ var sendErrorTable = []sendErrorRow{
 	{cause: ErrNoClientID, code: wire.ErrorCodeInternal, retryable: false, status: http.StatusInternalServerError},
 
 	// Same standing as the row above: `internal`, stated, and unreachable
-	// today. NotifyPayload is two fixed-width fields and cannot approach the
-	// 8,000-byte cap, so this fires only after somebody widens the struct —
-	// which is OUR bug and not the sender's, exactly as a missing client_id
-	// is. Not retryable: the identical frame encodes the identical payload.
+	// today. NotifyPayload is five fixed-width fields, on either of its two
+	// shapes (CANT-92 widened it), and none of that combination can approach
+	// the 8,000-byte cap — so this still fires only after somebody widens the
+	// struct further, which is OUR bug and not the sender's, exactly as a
+	// missing client_id is. Not retryable: the identical frame encodes the
+	// identical payload.
 	{cause: ErrNotifyTooLarge, code: wire.ErrorCodeInternal, retryable: false, status: http.StatusInternalServerError},
 
 	// `internal`, stated, and the same standing again (CANT-85). A resolver that

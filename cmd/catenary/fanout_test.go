@@ -468,6 +468,60 @@ func TestAListenerGapTellsEverySessionToResyncAndClosesNone(t *testing.T) {
 
 // --- criterion 6 -------------------------------------------------------------------
 
+// assertReceiptFrame checks one ServerReceipt's content; the caller has
+// already picked it out of whatever else arrived alongside it.
+func assertReceiptFrame(t *testing.T, f wire.ServerFrame, conv wire.Uuid, user uuid.UUID, upToSeq int64) {
+	t.Helper()
+	rc, ok := f.(wire.ServerReceipt)
+	if !ok || string(rc.UserID) != user.String() || int64(rc.UpToSeq) != upToSeq || rc.ConversationID != conv {
+		t.Errorf("frame = %T %+v, want receipt{%s, %s, %d}", f, f, conv, user, upToSeq)
+	}
+}
+
+// readsReceiptAndReEmissions reads exactly 1+wantSeqs frames from s and
+// requires exactly one ServerReceipt (returned) and one ServerMessageFrame,
+// each read, per seq in wantSeqs (CANT-92: the author's own re-emissions,
+// crossing to `read` at read_by 2 — the reader plus the author by identity).
+func readsReceiptAndReEmissions(t *testing.T, s *session, wantSeqs ...int64) wire.ServerReceipt {
+	t.Helper()
+	want := map[int64]bool{}
+	for _, seq := range wantSeqs {
+		want[seq] = true
+	}
+	var receipt *wire.ServerReceipt
+	got := map[int64]bool{}
+	for i := 0; i < 1+len(wantSeqs); i++ {
+		switch f := s.next().(type) {
+		case wire.ServerReceipt:
+			if receipt != nil {
+				t.Fatalf("%s: a second receipt arrived: %+v", s.user, f)
+			}
+			rc := f
+			receipt = &rc
+		case wire.ServerMessageFrame:
+			seq := int64(f.Message.Seq)
+			got[seq] = true
+			if f.Message.State != wire.DeliveryStateRead || f.Message.ReadBy == nil || *f.Message.ReadBy != 2 {
+				t.Errorf("%s: re-emission for seq %d = %+v, want state read, read_by 2", s.user, seq, f.Message)
+			}
+		default:
+			t.Fatalf("%s: unexpected frame %T %+v", s.user, f, f)
+		}
+	}
+	if receipt == nil {
+		t.Fatalf("%s: no receipt arrived among %d frames", s.user, 1+len(wantSeqs))
+	}
+	if len(got) != len(want) {
+		t.Fatalf("%s: re-emitted seqs = %v, want %v", s.user, got, want)
+	}
+	for seq := range want {
+		if !got[seq] {
+			t.Errorf("%s: seq %d was never re-emitted", s.user, seq)
+		}
+	}
+	return *receipt
+}
+
 func TestReadFansOutAReceiptOnlyWhenTheMarkMoves(t *testing.T) {
 	r := newRig(t)
 	ada := mkUser(r.ctx, t, r.pool, "ada", "Ada")
@@ -483,17 +537,18 @@ func TestReadFansOutAReceiptOnlyWhenTheMarkMoves(t *testing.T) {
 	}
 	convA := wire.Uuid(groupA.String())
 
+	// CANT-92: Ada authored the one message this receipt covers (seq 1), so
+	// her session ALSO gets it re-emitted with its new read_by (1 -> 2,
+	// crossing to `read`) — alongside the receipt every attached member
+	// gets. Theo authored nothing in the span, so his socket sees only the
+	// receipt, exactly as before.
 	theoS.send(wire.ClientRead{ConversationID: convA, UpToSeq: 1})
-	for _, s := range []*session{adaS, theoS} {
-		f := s.next()
-		rc, ok := f.(wire.ServerReceipt)
-		if !ok || string(rc.UserID) != theo.String() || rc.UpToSeq != 1 || rc.ConversationID != convA {
-			t.Errorf("frame = %T %+v, want receipt{A, theo, 1}", f, f)
-		}
-	}
+	assertReceiptFrame(t, theoS.next(), convA, theo, 1)
+	assertReceiptFrame(t, readsReceiptAndReEmissions(t, adaS, 1), convA, theo, 1)
 
-	// The same read again moves nothing and emits nothing. The pong proves
-	// Handle returned; the committed message is the next hub frame.
+	// The same read again moves nothing and emits nothing — not a receipt,
+	// not a re-emission. The pong proves Handle returned; the committed
+	// message is the next hub frame on both sockets.
 	theoS.send(wire.ClientRead{ConversationID: convA, UpToSeq: 1})
 	theoS.pingPong()
 	marker := r.commit(groupA, ada, "marker")
@@ -503,22 +558,22 @@ func TestReadFansOutAReceiptOnlyWhenTheMarkMoves(t *testing.T) {
 		}
 	}
 
-	// Above head: the receipt carries the clamped mark.
+	// Above head: the receipt carries the clamped mark, and CANT-92 re-emits
+	// every one of Ada's messages the clamp newly covers — seq 2 and 3 from
+	// the setup loop, plus the "marker" just committed at seq 4, all still
+	// authored by Ada.
 	theoS.send(wire.ClientRead{ConversationID: convA, UpToSeq: 999})
 	var lastSeq int64
 	if err := r.pool.QueryRow(r.ctx, `SELECT last_seq FROM conversations WHERE id = $1`, groupA).Scan(&lastSeq); err != nil {
 		t.Fatal(err)
 	}
-	for _, s := range []*session{adaS, theoS} {
-		rc, ok := s.next().(wire.ServerReceipt)
-		if !ok || int64(rc.UpToSeq) != lastSeq {
-			t.Errorf("receipt for a claim above head = %+v, want up_to_seq %d", rc, lastSeq)
-		}
-	}
+	assertReceiptFrame(t, theoS.next(), convA, theo, lastSeq)
+	assertReceiptFrame(t, readsReceiptAndReEmissions(t, adaS, 2, 3, 4), convA, theo, lastSeq)
 
 	// A non-member's read: no receipt anywhere and, under ruling 1 option 0,
-	// nothing on the sender's own session. Mallory's marker is a message in
-	// B; A's members get one in A.
+	// nothing on the sender's own session — and, on the same terms, no
+	// CANT-92 re-emission either, since a refused MarkRead never reaches the
+	// notify. Mallory's marker is a message in B; A's members get one in A.
 	mal.send(wire.ClientRead{ConversationID: convA, UpToSeq: 1})
 	mal.pingPong()
 	inB := r.commit(groupB, theo, "marker in B")

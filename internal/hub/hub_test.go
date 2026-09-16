@@ -116,12 +116,13 @@ func (p *peer) nothing(t *testing.T) {
 }
 
 type fakeStore struct {
-	fanout   func(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error)
-	members  func(ctx context.Context, conv uuid.UUID) ([]uuid.UUID, error)
-	markRead func(ctx context.Context, conv, user uuid.UUID, upToSeq int64) (store.ReadReceipt, error)
-	head     func(ctx context.Context) (int64, error)
+	fanout     func(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error)
+	members    func(ctx context.Context, conv uuid.UUID) ([]uuid.UUID, error)
+	markRead   func(ctx context.Context, conv, user uuid.UUID, upToSeq int64) (store.ReadReceipt, error)
+	head       func(ctx context.Context) (int64, error)
+	readNotify func(ctx context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]store.ReadNotifyMessage, error)
 
-	fanouts, heads atomic.Int32
+	fanouts, heads, readNotifies atomic.Int32
 }
 
 func (f *fakeStore) MessageForFanout(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error) {
@@ -137,6 +138,13 @@ func (f *fakeStore) MarkRead(ctx context.Context, conv, user uuid.UUID, upToSeq 
 func (f *fakeStore) Head(ctx context.Context) (int64, error) {
 	f.heads.Add(1)
 	return f.head(ctx)
+}
+func (f *fakeStore) MessagesForReadNotify(ctx context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]store.ReadNotifyMessage, error) {
+	f.readNotifies.Add(1)
+	if f.readNotify == nil {
+		return nil, nil
+	}
+	return f.readNotify(ctx, conv, reader, before, after, capPerAuthor)
 }
 
 // recorder keeps every log record so a test can assert on levels.
@@ -244,6 +252,29 @@ func (f *fixture) attach(user uuid.UUID) *peer {
 
 func (f *fixture) notify(seq int64) {
 	f.hub.OnNotify(context.Background(), store.NotifyPayload{ConversationID: f.conv, Seq: seq})
+}
+
+// readNotify simulates the NOTIFY a real MarkRead would have raised, on
+// CANT-92's receipt shape.
+func (f *fixture) readNotify(reader uuid.UUID, before, after int64) {
+	u := reader
+	f.hub.OnNotify(context.Background(), store.NotifyPayload{
+		ConversationID: f.conv, UserID: &u, Before: before, After: after,
+	})
+}
+
+// readNotifyMessage is one row MessagesForReadNotify might return: one of
+// Ada's own messages, at the given read_by.
+func (f *fixture) readNotifyMessage(seq, readBy int64) store.ReadNotifyMessage {
+	text := "hello"
+	cid := uuid.New()
+	return store.ReadNotifyMessage{
+		Message: store.MessageRow{
+			ID: uuid.New(), ConversationID: f.conv, AuthorID: f.ada, Seq: seq, LogSeq: seq * 10,
+			At: time.Now(), Text: &text, ClientID: &cid,
+		},
+		ReadBy: readBy,
+	}
 }
 
 func asMessage(t *testing.T, fr wire.ServerFrame) wire.Message {
@@ -545,6 +576,127 @@ func TestReadFansOutAReceiptOnlyWhenTheMarkMoved(t *testing.T) {
 	theo.nothing(t)
 	if len(mal.closedWith()) != 0 {
 		t.Error("a refused read closed the session")
+	}
+}
+
+// --- CANT-92: the receipt re-emission ---------------------------------------
+
+// A receipt notification re-emits each returned row ONLY to its own author's
+// attached sessions — every one of them, and nobody else's — carrying the
+// state and read_by MessagesForReadNotify says it now has. Theo is the
+// reader; Mallory is attached to the same conversation and gets nothing.
+func TestReadNotifyReEmitsOnlyToTheAuthorsOwnSessions(t *testing.T) {
+	f := newFixture(t)
+	ada1, ada2 := f.attach(f.ada), f.attach(f.ada)
+	theo := f.attach(f.theo)
+	mal := f.attach(f.mal)
+
+	var gotConv, gotReader uuid.UUID
+	var gotBefore, gotAfter int64
+	var gotCap int
+	f.st.readNotify = func(_ context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]store.ReadNotifyMessage, error) {
+		gotConv, gotReader, gotBefore, gotAfter, gotCap = conv, reader, before, after, capPerAuthor
+		// read_by 2: Ada (by identity) plus Theo, whose mark just passed it —
+		// crosses CANT-90's threshold, so DeliveryState must answer `read`.
+		return []store.ReadNotifyMessage{f.readNotifyMessage(4, 2), f.readNotifyMessage(5, 2)}, nil
+	}
+
+	f.readNotify(f.theo, 3, 5)
+
+	if gotConv != f.conv || gotReader != f.theo || gotBefore != 3 || gotAfter != 5 || gotCap != readNotifyCap {
+		t.Errorf("MessagesForReadNotify called with (%s, %s, %d, %d, %d), want (%s, %s, 3, 5, %d)",
+			gotConv, gotReader, gotBefore, gotAfter, gotCap, f.conv, f.theo, readNotifyCap)
+	}
+
+	for _, p := range []*peer{ada1, ada2} {
+		for _, wantSeq := range []wire.Seq{4, 5} {
+			m := asMessage(t, p.next(t))
+			if m.Seq != wantSeq || m.State != wire.DeliveryStateRead || m.ReadBy == nil || *m.ReadBy != 2 {
+				t.Errorf("ada's frame = %+v, want seq %d, state read, read_by 2", m, wantSeq)
+			}
+			// CLIENT_ID IS ECHOED TO ITS AUTHOR ONLY, and Ada is the author of
+			// her own re-emission — message.go's rule, exercised here rather
+			// than assumed.
+			if m.ClientID == nil {
+				t.Error("ada's own re-emission carries no client_id")
+			}
+		}
+	}
+	// Neither the reader nor a third attached member is the author of
+	// anything in the span: nothing arrives for either.
+	theo.nothing(t)
+	mal.nothing(t)
+}
+
+// A load failure is logged loud and is NOT a gap: OnNotify's own reasoning
+// for treating a permanent load failure as resync_required does not apply
+// here, because a resync cannot re-serve a message already on an earlier
+// /sync page (CANT-89) — see onReadNotify's own comment. So nobody is told to
+// resync and nobody is closed; the failure costs exactly what the cap's own
+// remainder costs, a stale read_by until the next bootstrap.
+func TestAReadNotifyLoadFailureIsLoggedAndIsNotAGap(t *testing.T) {
+	f := newFixture(t)
+	ada := f.attach(f.ada)
+	theo := f.attach(f.theo)
+	f.st.readNotify = func(context.Context, uuid.UUID, uuid.UUID, int64, int64, int) ([]store.ReadNotifyMessage, error) {
+		return nil, errors.New("boom")
+	}
+
+	f.readNotify(f.theo, 0, 5)
+	ada.nothing(t)
+	theo.nothing(t)
+	if len(ada.closedWith()) != 0 || ada.closedNow() != 0 || len(theo.closedWith()) != 0 || theo.closedNow() != 0 {
+		t.Error("a read notify load failure closed a session; it is not a gap")
+	}
+	errs := f.log.atLeast(slog.LevelError)
+	if len(errs) != 1 || errs[0].Message != "read notify fan-out failed" {
+		t.Errorf("log lines at ERROR = %+v, want exactly the one failure", errs)
+	}
+}
+
+// THE CAP IS THE STORE'S DECISION IN CONTENT AND THE HUB'S IN NUMBER: the hub
+// passes readNotifyCap as capPerAuthor and forwards however many rows come
+// back without truncating further. A span at exactly the cap for one author
+// enqueues every one of them and does not sever that author's session — 64 is
+// a quarter of outboxBound (256), so there is headroom to spare. Which rows
+// are the newest is MessagesForReadNotify's own claim, proved against real
+// Postgres in internal/store; this proves the hub does not lose or drop any
+// of what the store already narrowed down to.
+func TestReadNotifyForwardsExactlyTheCapWithoutSeveringTheAuthor(t *testing.T) {
+	f := newFixture(t)
+	ada := f.attach(f.ada)
+
+	rows := make([]store.ReadNotifyMessage, readNotifyCap)
+	for i := range rows {
+		// Newest first, as the store's own ordering promises: seq counts down
+		// from the cap so the highest seq is rows[0].
+		rows[i] = f.readNotifyMessage(int64(readNotifyCap-i), 2)
+	}
+	f.st.readNotify = func(context.Context, uuid.UUID, uuid.UUID, int64, int64, int) ([]store.ReadNotifyMessage, error) {
+		return rows, nil
+	}
+
+	f.readNotify(f.theo, 0, int64(readNotifyCap))
+
+	seen := map[wire.Seq]bool{}
+	for i := 0; i < readNotifyCap; i++ {
+		m := asMessage(t, ada.next(t))
+		seen[m.Seq] = true
+	}
+	if len(seen) != readNotifyCap {
+		t.Errorf("ada received %d distinct messages, want exactly the cap %d", len(seen), readNotifyCap)
+	}
+	for seq := int64(1); seq <= int64(readNotifyCap); seq++ {
+		if !seen[wire.Seq(seq)] {
+			t.Errorf("seq %d never arrived", seq)
+		}
+	}
+	ada.nothing(t)
+	if n := f.hub.Attached(); n != 1 {
+		t.Errorf("attached = %d after a receipt at exactly the cap, want 1 — the author must not be severed", n)
+	}
+	if len(ada.closedWith()) != 0 || ada.closedNow() != 0 {
+		t.Error("the author's session was closed by a receipt exactly at the cap")
 	}
 }
 

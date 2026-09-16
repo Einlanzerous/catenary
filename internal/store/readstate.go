@@ -226,6 +226,36 @@ func (s *Store) markRead(ctx context.Context, conv, user uuid.UUID, upToSeq int6
 		if _, err := newMetadataBump().member(conv, user).apply(ctx, tx); err != nil {
 			return ReadReceipt{}, err
 		}
+
+		// CANT-92 — the receipt notify, INSIDE this transaction and LAST
+		// before commit, on CANT-86's reasoning for the send path's own
+		// notify at messages.go position 12: a notification that can exist
+		// without this write, or the reverse, is exactly what that placement
+		// rules out. Raised anywhere else it is a second write that can
+		// succeed without the mark moving, or the reverse.
+		//
+		// GATED ON THE SAME `after > before` AS THE BUMP ABOVE, and for the
+		// same reason: a duplicate or out-of-order receipt must put nothing
+		// on the wire, and that includes this channel, not only the
+		// member-facing ServerReceipt the hub broadcasts separately.
+		//
+		// The payload is CANT-92's decision 2 — NotifyPayload widened rather
+		// than a second shape on the channel — and carries only what a
+		// receiving instance needs to find the span itself:
+		// (conversation_id, user_id, before, after) identifies seq IN
+		// (before, after], the messages whose read_by just changed for
+		// `user`. The messages themselves travel through wireview.Message,
+		// built by the hub once it has re-read them (CANT-92's
+		// MessagesForReadNotify) — ids only cross here, on the same
+		// NotifyChannel a message notification uses.
+		u := user
+		payload, err := NotifyPayload{ConversationID: conv, UserID: &u, Before: before, After: after}.Encode()
+		if err != nil {
+			return ReadReceipt{}, fmt.Errorf("store: mark read: notify: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, NotifyChannel, payload); err != nil {
+			return ReadReceipt{}, fmt.Errorf("store: mark read: notify: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {

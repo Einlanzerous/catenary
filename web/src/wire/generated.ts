@@ -226,12 +226,15 @@ const asConversationKind = (v: unknown, p: string): ConversationKind => {
 // is not refreshed by catching up. (1) On a message you wrote, `state` and `read_by`
 // are as of the page or frame that carried it; the socket re-emits the message to you
 // when another member's receipt moves the count, so a connected client tracks it and a
-// client that was offline sees the old fraction until it bootstraps. (2) On a message
-// you did NOT write, `state` is as of your own device's last page — your other
-// devices' receipts do not refresh it, so a thread you read on your phone still reads
-// `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the exception and
-// is refreshed on every page that carries the conversation, which a receipt from any
-// of your own devices now causes.
+// client that was offline sees the old fraction until it bootstraps. THE RE-EMISSION
+// IS CAPPED: a receipt whose span covers more of your own messages than the cap
+// re-emits only the newest ones in it, live; the rest of the span is not lost, it is
+// simply not refreshed until your next full bootstrap, the same as if you had been
+// offline. (2) On a message you did NOT write, `state` is as of your own device's last
+// page — your other devices' receipts do not refresh it, so a thread you read on your
+// phone still reads `delivered` on your laptop. (3) `Conversation.first_unread_seq` is
+// the exception and is refreshed on every page that carries the conversation, which a
+// receipt from any of your own devices now causes.
 // CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
 // Message > DeliveryState. A value this schema version does not know decodes to the
 // sentinel `unknown` and is reported once; the server refuses it. Every switch over
@@ -973,8 +976,12 @@ export function encodeServerAck(v: ServerAck): Record<string, unknown> {
 // Carries the WHOLE message, deliberately. IDEA-23 is explicit that this must not
 // degrade into a ping that makes the client go and fetch: that doubles latency on
 // every message in the steady state. The internal Postgres NOTIFY payload between
-// server instances is the thing that carries only (conversation_id, seq) under its
-// 8000-byte cap — that is a different layer and never appears on this wire.
+// server instances is a different layer and never appears on this wire — it carries
+// only ids (conversation_id, seq) for a first delivery, or (conversation_id, user_id,
+// before, after) for a receipt's live re-emission of this same frame, either way under
+// its 8000-byte cap. A re-emission is this frame again, with an updated state and
+// read_by and the row's original log_seq; nothing distinguishes it from a first
+// delivery except that a client has seen its id before.
 export interface ServerMessageFrame {
   readonly type: "message"
   message: Message
