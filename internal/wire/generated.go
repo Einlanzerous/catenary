@@ -558,13 +558,14 @@ func (l *ClientFrameList) decode(b []byte, p string) error {
 // `message` frame that is the FIRST delivery of a message to this session arrives in
 // ascending `log_seq`. AN INTRODUCTION SITS OUTSIDE THIS GUARANTEE: a `conversation`
 // or `user` frame (CANT-113) carries no `log_seq` of its own, so ascending order is
-// not defined between introductions, but each still arrives immediately before, on the
-// same session, the `message` frame whose first delivery it introduces. A `message`
-// frame for an id the client already holds is a re-emission — a changed `read_by`
-// (CANT-92) — and the later record is authoritative. THE DEDUPE KEY IS THE MESSAGE ID,
-// NEVER `log_seq`: a re-emission carries the message's original `log_seq`, so a client
-// that discarded frames at or below a `log_seq` it had seen would discard the refresh.
-// No frame in this union moves the client's cursor (CANT-24 ruling 5).
+// not defined between introductions, but each still arrives in the run of frames
+// immediately preceding, on the same session, the `message` frame whose first delivery
+// it introduces. A `message` frame for an id the client already holds is a re-emission
+// — a changed `read_by` (CANT-92) — and the later record is authoritative. THE DEDUPE
+// KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the message's original
+// `log_seq`, so a client that discarded frames at or below a `log_seq` it had seen
+// would discard the refresh. No frame in this union moves the client's cursor (CANT-24
+// ruling 5).
 type ServerFrame interface {
 	isServerFrame()
 	// WireTag returns the discriminator value this member carries.
@@ -2449,7 +2450,7 @@ func (ServerResyncRequired) isServerFrame() {}
 // its own instance, so a device attached to a different instance still learns the mark
 // at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` now
 // carries `conversation` and `user` frames introducing a conversation and its users on
-// a first message (CANT-113), but nothing emits them yet — CANT-114, which this ticket
+// a first message (CANT-113), but nothing emits them yet — CANT-114, which CANT-113
 // blocks, owns that. Until it lands, `/sync` is the general path and the only one that
 // carries conversations and users; in wire version 1 it is also the resume.
 type SyncResponse struct {
