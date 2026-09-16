@@ -259,12 +259,15 @@ func checkConversationKind(v ConversationKind, p string) error {
 // is not refreshed by catching up. (1) On a message you wrote, `state` and `read_by`
 // are as of the page or frame that carried it; the socket re-emits the message to you
 // when another member's receipt moves the count, so a connected client tracks it and a
-// client that was offline sees the old fraction until it bootstraps. (2) On a message
-// you did NOT write, `state` is as of your own device's last page — your other
-// devices' receipts do not refresh it, so a thread you read on your phone still reads
-// `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the exception and
-// is refreshed on every page that carries the conversation, which a receipt from any
-// of your own devices now causes.
+// client that was offline sees the old fraction until it bootstraps. THE RE-EMISSION
+// IS CAPPED: a receipt whose span covers more of your own messages than the cap
+// re-emits only the newest ones in it, live; the rest of the span is not lost, it is
+// simply not refreshed until your next full bootstrap, the same as if you had been
+// offline. (2) On a message you did NOT write, `state` is as of your own device's last
+// page — your other devices' receipts do not refresh it, so a thread you read on your
+// phone still reads `delivered` on your laptop. (3) `Conversation.first_unread_seq` is
+// the exception and is refreshed on every page that carries the conversation, which a
+// receipt from any of your own devices now causes.
 type DeliveryState string
 
 const (

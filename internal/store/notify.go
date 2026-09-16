@@ -46,11 +46,11 @@ const NotifyChannel = "catenary_message"
 // 0} and be delivered as a message notification for the nil conversation at
 // seq 0 — which is worse than an error, because nothing anywhere would say so.
 //
-// It also leaves two things alone that were not this ticket's to settle. The
-// AST guard over NotifyPayload's field list stands untouched, so the ids-only
-// guarantee is not renegotiated in passing. And CANT-92 still has to decide,
-// for its receipt fan-out, whether to widen that struct or add a payload type —
-// this sets a precedent it may follow and settles nothing on its behalf.
+// It also left one thing alone that was not this ticket's to settle: the AST
+// guard over NotifyPayload's field list, so the ids-only guarantee was not
+// renegotiated in passing. CANT-92 later settled the question this comment
+// deferred — widen NotifyPayload rather than add a second payload type — and
+// the guard's `want` moved with it; see NotifyPayload below.
 const RevocationChannel = "catenary_device_revoked"
 
 // NotifyPayloadMax is Postgres's own limit on a NOTIFY payload.
@@ -63,6 +63,19 @@ const RevocationChannel = "catenary_device_revoked"
 const NotifyPayloadMax = 8000
 
 // NotifyPayload is what crosses between instances. IDS ONLY — never content.
+// TWO SHAPES, ONE STRUCT, on CANT-92's decision: a message notification is
+// (conversation_id, seq); a receipt notification (CANT-92) is
+// (conversation_id, user_id, before, after). One struct rather than a second
+// payload type on the same channel — two shapes on one channel is a second
+// thing to keep in step, which is the whole premise this project is built
+// against, and the ids-only guard below covers both without a second copy of
+// itself.
+//
+// UserID IS THE DISCRIMINATOR: IsReceipt reports whether it is set. No
+// message notification ever sets it, and every receipt notification names the
+// member whose mark moved. Seq is meaningless on a receipt (omitted rather
+// than zero, since a real message seq is never zero — CANT-14's ordinals are
+// dense from 1) and Before/After are meaningless on a message.
 //
 // (conversation_id, seq) identifies a message exactly: UNIQUE (conversation_id,
 // seq) is the constraint the whole thread ordering hangs off. So a receiver has
@@ -73,14 +86,33 @@ const NotifyPayloadMax = 8000
 // exactly what D1's honesty about what the server can see would have to be
 // rewritten to admit.
 //
+// (conversation_id, user_id, before, after) identifies exactly the messages a
+// receipt changed the read_by of: seq IN (before, after] in that conversation,
+// per MarkRead's own comment. A receiving instance re-reads that span itself
+// — internal/hub's MessagesForReadNotify — rather than being handed anything
+// it could render without a query, on the same reasoning as the message half.
+//
 // The field names are spelled out rather than shortened to `c` and `s`. The
-// encoded payload is around seventy bytes either way, under one percent of the
+// encoded payload is under a hundred bytes either way, a small fraction of the
 // cap, so the saving is imaginary and the cost is a human reading a notify in a
 // log and having to guess.
 type NotifyPayload struct {
 	ConversationID uuid.UUID `json:"conversation_id"`
-	Seq            int64     `json:"seq"`
+
+	// Seq identifies one message. Absent on a receipt notification.
+	Seq int64 `json:"seq,omitempty"`
+
+	// UserID, Before and After are CANT-92's receipt notification: the member
+	// whose mark moved, and the span seq IN (before, after] whose read_by
+	// changed for them. Absent, together, on a message notification.
+	UserID *uuid.UUID `json:"user_id,omitempty"`
+	Before int64      `json:"before,omitempty"`
+	After  int64      `json:"after,omitempty"`
 }
+
+// IsReceipt reports whether this is CANT-92's receipt shape rather than a
+// message notification. UserID is the discriminator — see the type comment.
+func (p NotifyPayload) IsReceipt() bool { return p.UserID != nil }
 
 // RevocationPayload says which credentials stopped being live. IDS ONLY, on
 // exactly the same terms as NotifyPayload, and guarded the same way.
