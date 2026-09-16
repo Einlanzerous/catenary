@@ -486,12 +486,15 @@ sealed class ClientFrame {
 
 /// Anything the server may send over the socket. ORDERING, AND IT IS NORMATIVE: every
 /// `message` frame that is the FIRST delivery of a message to this session arrives in
-/// ascending `log_seq`. A `message` frame for an id the client already holds is a
-/// re-emission — a changed `read_by` (CANT-92) — and the later record is authoritative.
-/// THE DEDUPE KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the
-/// message's original `log_seq`, so a client that discarded frames at or below a
-/// `log_seq` it had seen would discard the refresh. No frame in this union moves the
-/// client's cursor (CANT-24 ruling 5).
+/// ascending `log_seq`. AN INTRODUCTION SITS OUTSIDE THIS GUARANTEE: a `conversation`
+/// or `user` frame (CANT-113) carries no `log_seq` of its own, so ascending order is
+/// not defined between introductions, but each still arrives immediately before, on the
+/// same session, the `message` frame whose first delivery it introduces. A `message`
+/// frame for an id the client already holds is a re-emission — a changed `read_by`
+/// (CANT-92) — and the later record is authoritative. THE DEDUPE KEY IS THE MESSAGE ID,
+/// NEVER `log_seq`: a re-emission carries the message's original `log_seq`, so a client
+/// that discarded frames at or below a `log_seq` it had seen would discard the refresh.
+/// No frame in this union moves the client's cursor (CANT-24 ruling 5).
 sealed class ServerFrame {
   /// The wire tag for this frame.
   String get type;
@@ -507,6 +510,8 @@ sealed class ServerFrame {
       case "ping": return Ping.fromJson(o, p);
       case "pong": return Pong.fromJson(o, p);
       case "ack": return ServerAck.fromJson(o, p);
+      case "conversation": return ServerConversationFrame.fromJson(o, p);
+      case "user": return ServerUserFrame.fromJson(o, p);
       case "message": return ServerMessageFrame.fromJson(o, p);
       case "receipt": return ServerReceipt.fromJson(o, p);
       case "typing": return ServerTyping.fromJson(o, p);
@@ -1311,6 +1316,71 @@ final class ServerAck implements ServerFrame {
   });
 }
 
+/// Introduces a conversation, wrapping the existing `Conversation` record. Emitted to
+/// every attached member session when a conversation's FIRST MESSAGE is delivered,
+/// IMMEDIATELY BEFORE THAT `message` FRAME ON THE SAME SESSION, carrying the same
+/// record `/sync` serves, as of the fan-out's snapshot. A RECORD FOR AN ID THE CLIENT
+/// ALREADY HOLDS REPLACES IT. The introduction over-fires by design, and a second
+/// record is not a change signal. NOT A FRESHNESS CHANNEL. A later rename, membership
+/// change or `muted` change is not re-served here — only at the next catch-up. MOVES NO
+/// CURSOR, like every frame in this union, and MAY ARRIVE BEFORE `ready`.
+final class ServerConversationFrame implements ServerFrame {
+  const ServerConversationFrame({
+    required this.conversation,
+  });
+
+  @override
+  String get type => "conversation";
+
+  final Conversation conversation;
+
+  factory ServerConversationFrame.fromJson(Object? v, [String p = "ServerConversationFrame"]) {
+    final o = _obj(v, p);
+    return ServerConversationFrame(
+      conversation: o["conversation"] == null ? _bad('${p}.conversation', 'required field is missing') : Conversation.fromJson(o["conversation"], '${p}.conversation'),
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() => _compact({
+    "type": "conversation",
+    "conversation": conversation.toJson(),
+  });
+}
+
+/// Introduces a user referenced by a conversation's first message, wrapping the
+/// existing `User` record. Emitted to every attached member session when a
+/// conversation's FIRST MESSAGE is delivered, IMMEDIATELY BEFORE THAT `message` FRAME
+/// ON THE SAME SESSION, carrying the same record `/sync` serves, as of the fan-out's
+/// snapshot. A RECORD FOR AN ID THE CLIENT ALREADY HOLDS REPLACES IT. The introduction
+/// over-fires by design, and a second record is not a change signal. NOT A FRESHNESS
+/// CHANNEL. A later rename, membership change or `muted` change is not re-served here —
+/// only at the next catch-up. MOVES NO CURSOR, like every frame in this union, and MAY
+/// ARRIVE BEFORE `ready`.
+final class ServerUserFrame implements ServerFrame {
+  const ServerUserFrame({
+    required this.user,
+  });
+
+  @override
+  String get type => "user";
+
+  final User user;
+
+  factory ServerUserFrame.fromJson(Object? v, [String p = "ServerUserFrame"]) {
+    final o = _obj(v, p);
+    return ServerUserFrame(
+      user: o["user"] == null ? _bad('${p}.user', 'required field is missing') : User.fromJson(o["user"], '${p}.user'),
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() => _compact({
+    "type": "user",
+    "user": user.toJson(),
+  });
+}
+
 /// Carries the WHOLE message, deliberately. IDEA-23 is explicit that this must not
 /// degrade into a ping that makes the client go and fetch: that doubles latency on
 /// every message in the steady state. The internal Postgres NOTIFY payload between
@@ -1580,10 +1650,11 @@ final class ServerResyncRequired implements ServerFrame {
 /// to every attached session of every member with no exclusion (CANT-107), the origin
 /// user's own other devices included — but a `Hub` holds only the sessions attached to
 /// its own instance, so a device attached to a different instance still learns the mark
-/// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` does not
-/// yet introduce a conversation or its users on a first message — CANT-113, which this
-/// ticket blocks, owns that. Until it lands, `/sync` is the general path and the only
-/// one that carries conversations and users; in wire version 1 it is also the resume.
+/// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` now
+/// carries `conversation` and `user` frames introducing a conversation and its users on
+/// a first message (CANT-113), but nothing emits them yet — CANT-114, which this ticket
+/// blocks, owns that. Until it lands, `/sync` is the general path and the only one that
+/// carries conversations and users; in wire version 1 it is also the resume.
 final class SyncResponse {
   const SyncResponse({
     required this.logSeq,
@@ -1962,6 +2033,8 @@ const Map<String, WireCodec> codecs = {
   "OutboundAttachment": WireCodec(OutboundAttachment.fromJson, _encOutboundAttachment),
   "ClientSend": WireCodec(ClientSend.fromJson, _encClientSend),
   "ServerAck": WireCodec(ServerAck.fromJson, _encServerAck),
+  "ServerConversationFrame": WireCodec(ServerConversationFrame.fromJson, _encServerConversationFrame),
+  "ServerUserFrame": WireCodec(ServerUserFrame.fromJson, _encServerUserFrame),
   "ServerMessageFrame": WireCodec(ServerMessageFrame.fromJson, _encServerMessageFrame),
   "ServerReceipt": WireCodec(ServerReceipt.fromJson, _encServerReceipt),
   "ClientRead": WireCodec(ClientRead.fromJson, _encClientRead),
@@ -1996,6 +2069,8 @@ Map<String, dynamic> _encPong(Object v) => (v as Pong).toJson();
 Map<String, dynamic> _encOutboundAttachment(Object v) => (v as OutboundAttachment).toJson();
 Map<String, dynamic> _encClientSend(Object v) => (v as ClientSend).toJson();
 Map<String, dynamic> _encServerAck(Object v) => (v as ServerAck).toJson();
+Map<String, dynamic> _encServerConversationFrame(Object v) => (v as ServerConversationFrame).toJson();
+Map<String, dynamic> _encServerUserFrame(Object v) => (v as ServerUserFrame).toJson();
 Map<String, dynamic> _encServerMessageFrame(Object v) => (v as ServerMessageFrame).toJson();
 Map<String, dynamic> _encServerReceipt(Object v) => (v as ServerReceipt).toJson();
 Map<String, dynamic> _encClientRead(Object v) => (v as ClientRead).toJson();

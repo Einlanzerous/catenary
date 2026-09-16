@@ -350,6 +350,14 @@
       "kind": "derived",
       "note": "The union discriminator. Set by the codec, never stored."
     },
+    "ServerConversationFrame.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
+    "ServerUserFrame.type": {
+      "kind": "derived",
+      "note": "The union discriminator. Set by the codec, never stored."
+    },
     "ServerReceipt.type": {
       "kind": "derived",
       "note": "The union discriminator. Set by the codec, never stored."
@@ -502,6 +510,14 @@
     "ServerMessageFrame.message": {
       "kind": "derived",
       "note": "Composed from Message's own mappings."
+    },
+    "ServerConversationFrame.conversation": {
+      "kind": "derived",
+      "note": "Composed from Conversation's own mappings."
+    },
+    "ServerUserFrame.user": {
+      "kind": "derived",
+      "note": "Composed from User's own mappings."
     },
     "ServerReceipt.conversation_id": {
       "kind": "derived",

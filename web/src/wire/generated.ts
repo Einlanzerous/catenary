@@ -977,6 +977,63 @@ export function encodeServerAck(v: ServerAck): Record<string, unknown> {
   })
 }
 
+// Introduces a conversation, wrapping the existing `Conversation` record. Emitted to
+// every attached member session when a conversation's FIRST MESSAGE is delivered,
+// IMMEDIATELY BEFORE THAT `message` FRAME ON THE SAME SESSION, carrying the same
+// record `/sync` serves, as of the fan-out's snapshot. A RECORD FOR AN ID THE CLIENT
+// ALREADY HOLDS REPLACES IT. The introduction over-fires by design, and a second
+// record is not a change signal. NOT A FRESHNESS CHANNEL. A later rename, membership
+// change or `muted` change is not re-served here — only at the next catch-up. MOVES NO
+// CURSOR, like every frame in this union, and MAY ARRIVE BEFORE `ready`.
+export interface ServerConversationFrame {
+  readonly type: "conversation"
+  conversation: Conversation
+}
+
+export function decodeServerConversationFrame(v: unknown, p = "ServerConversationFrame"): ServerConversationFrame {
+  const o = asObj(v, p)
+  return {
+    type: "conversation",
+    conversation: o["conversation"] === undefined || o["conversation"] === null ? bad(`${p}.conversation`, 'required field is missing') : decodeConversation(o["conversation"], `${p}.conversation`),
+  }
+}
+
+export function encodeServerConversationFrame(v: ServerConversationFrame): Record<string, unknown> {
+  return compact({
+    "type": "conversation",
+    "conversation": encodeConversation(v.conversation),
+  })
+}
+
+// Introduces a user referenced by a conversation's first message, wrapping the
+// existing `User` record. Emitted to every attached member session when a
+// conversation's FIRST MESSAGE is delivered, IMMEDIATELY BEFORE THAT `message` FRAME
+// ON THE SAME SESSION, carrying the same record `/sync` serves, as of the fan-out's
+// snapshot. A RECORD FOR AN ID THE CLIENT ALREADY HOLDS REPLACES IT. The introduction
+// over-fires by design, and a second record is not a change signal. NOT A FRESHNESS
+// CHANNEL. A later rename, membership change or `muted` change is not re-served here —
+// only at the next catch-up. MOVES NO CURSOR, like every frame in this union, and MAY
+// ARRIVE BEFORE `ready`.
+export interface ServerUserFrame {
+  readonly type: "user"
+  user: User
+}
+
+export function decodeServerUserFrame(v: unknown, p = "ServerUserFrame"): ServerUserFrame {
+  const o = asObj(v, p)
+  return {
+    type: "user",
+    user: o["user"] === undefined || o["user"] === null ? bad(`${p}.user`, 'required field is missing') : decodeUser(o["user"], `${p}.user`),
+  }
+}
+
+export function encodeServerUserFrame(v: ServerUserFrame): Record<string, unknown> {
+  return compact({
+    "type": "user",
+    "user": encodeUser(v.user),
+  })
+}
+
 // Carries the WHOLE message, deliberately. IDEA-23 is explicit that this must not
 // degrade into a ping that makes the client go and fetch: that doubles latency on
 // every message in the steady state. The internal Postgres NOTIFY payload between
@@ -1198,10 +1255,11 @@ export function encodeServerResyncRequired(v: ServerResyncRequired): Record<stri
 // to every attached session of every member with no exclusion (CANT-107), the origin
 // user's own other devices included — but a `Hub` holds only the sessions attached to
 // its own instance, so a device attached to a different instance still learns the mark
-// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` does not
-// yet introduce a conversation or its users on a first message — CANT-113, which this
-// ticket blocks, owns that. Until it lands, `/sync` is the general path and the only
-// one that carries conversations and users; in wire version 1 it is also the resume.
+// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` now
+// carries `conversation` and `user` frames introducing a conversation and its users on
+// a first message (CANT-113), but nothing emits them yet — CANT-114, which this ticket
+// blocks, owns that. Until it lands, `/sync` is the general path and the only one that
+// carries conversations and users; in wire version 1 it is also the resume.
 export interface SyncResponse {
   // The cursor to send on the NEXT call. Always the caller's new high-water mark — not
   // the server's head, which may be further along when `has_more` is true. Deriving this
@@ -1565,13 +1623,16 @@ export function encodeClientFrame(v: ClientFrame): Record<string, unknown> {
 
 // Anything the server may send over the socket. ORDERING, AND IT IS NORMATIVE: every
 // `message` frame that is the FIRST delivery of a message to this session arrives in
-// ascending `log_seq`. A `message` frame for an id the client already holds is a
-// re-emission — a changed `read_by` (CANT-92) — and the later record is authoritative.
-// THE DEDUPE KEY IS THE MESSAGE ID, NEVER `log_seq`: a re-emission carries the
-// message's original `log_seq`, so a client that discarded frames at or below a
-// `log_seq` it had seen would discard the refresh. No frame in this union moves the
-// client's cursor (CANT-24 ruling 5).
-export type ServerFrame = ServerReady | Ping | Pong | ServerAck | ServerMessageFrame | ServerReceipt | ServerTyping | ServerError | ServerResyncRequired
+// ascending `log_seq`. AN INTRODUCTION SITS OUTSIDE THIS GUARANTEE: a `conversation`
+// or `user` frame (CANT-113) carries no `log_seq` of its own, so ascending order is
+// not defined between introductions, but each still arrives immediately before, on the
+// same session, the `message` frame whose first delivery it introduces. A `message`
+// frame for an id the client already holds is a re-emission — a changed `read_by`
+// (CANT-92) — and the later record is authoritative. THE DEDUPE KEY IS THE MESSAGE ID,
+// NEVER `log_seq`: a re-emission carries the message's original `log_seq`, so a client
+// that discarded frames at or below a `log_seq` it had seen would discard the refresh.
+// No frame in this union moves the client's cursor (CANT-24 ruling 5).
+export type ServerFrame = ServerReady | Ping | Pong | ServerAck | ServerConversationFrame | ServerUserFrame | ServerMessageFrame | ServerReceipt | ServerTyping | ServerError | ServerResyncRequired
 
 // Decode a ServerFrame. Returns null for an unrecognised "type", which callers MUST
 // treat as "ignore this frame and carry on" rather than as an error — that is what
@@ -1583,6 +1644,8 @@ export function decodeServerFrame(v: unknown, p = "ServerFrame"): ServerFrame | 
     case "ping": return decodePing(o, p)
     case "pong": return decodePong(o, p)
     case "ack": return decodeServerAck(o, p)
+    case "conversation": return decodeServerConversationFrame(o, p)
+    case "user": return decodeServerUserFrame(o, p)
     case "message": return decodeServerMessageFrame(o, p)
     case "receipt": return decodeServerReceipt(o, p)
     case "typing": return decodeServerTyping(o, p)
@@ -1598,6 +1661,8 @@ export function encodeServerFrame(v: ServerFrame): Record<string, unknown> {
     case "ping": return encodePing(v as Ping)
     case "pong": return encodePong(v as Pong)
     case "ack": return encodeServerAck(v as ServerAck)
+    case "conversation": return encodeServerConversationFrame(v as ServerConversationFrame)
+    case "user": return encodeServerUserFrame(v as ServerUserFrame)
     case "message": return encodeServerMessageFrame(v as ServerMessageFrame)
     case "receipt": return encodeServerReceipt(v as ServerReceipt)
     case "typing": return encodeServerTyping(v as ServerTyping)
@@ -1628,6 +1693,8 @@ export const codecs: Record<string, WireCodec> = {
   OutboundAttachment: { decode: (v) => decodeOutboundAttachment(v), encode: (v) => encodeOutboundAttachment(v as OutboundAttachment) },
   ClientSend: { decode: (v) => decodeClientSend(v), encode: (v) => encodeClientSend(v as ClientSend) },
   ServerAck: { decode: (v) => decodeServerAck(v), encode: (v) => encodeServerAck(v as ServerAck) },
+  ServerConversationFrame: { decode: (v) => decodeServerConversationFrame(v), encode: (v) => encodeServerConversationFrame(v as ServerConversationFrame) },
+  ServerUserFrame: { decode: (v) => decodeServerUserFrame(v), encode: (v) => encodeServerUserFrame(v as ServerUserFrame) },
   ServerMessageFrame: { decode: (v) => decodeServerMessageFrame(v), encode: (v) => encodeServerMessageFrame(v as ServerMessageFrame) },
   ServerReceipt: { decode: (v) => decodeServerReceipt(v), encode: (v) => encodeServerReceipt(v as ServerReceipt) },
   ClientRead: { decode: (v) => decodeClientRead(v), encode: (v) => encodeClientRead(v as ClientRead) },
