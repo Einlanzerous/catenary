@@ -230,15 +230,58 @@ func (s *session) next() wire.ServerFrame {
 	return wsRead(ctx, s.t, s.conn)
 }
 
-// message reads the next frame and requires it to be a `message`.
+// message reads the next frame and requires it to be a `message`, TOLERATING
+// the introduction records that precede a conversation's first one (CANT-114).
+//
+// IT HOLDS EVERY RECORD IT SKIPS TO THE MESSAGE'S OWN CONVERSATION, so the
+// marker technique above keeps its teeth: a `conversation` record for a room
+// this reader should never have heard of fails here, exactly as the message
+// that would have followed it does. A test that is ABOUT the introduction
+// reads the frames raw, through conversationFrame and userFrame.
 func (s *session) message() wire.Message {
 	s.t.Helper()
-	f := s.next()
-	m, ok := f.(wire.ServerMessageFrame)
-	if !ok {
-		s.t.Fatalf("next frame = %T %+v, want message", f, f)
+	var records []wire.Uuid
+	for {
+		f := s.next()
+		switch v := f.(type) {
+		case wire.ServerMessageFrame:
+			for _, id := range records {
+				if id != v.Message.ConversationID {
+					s.t.Fatalf("a conversation record for %s arrived ahead of a message in %s", id, v.Message.ConversationID)
+				}
+			}
+			return v.Message
+		case wire.ServerConversationFrame:
+			records = append(records, v.Conversation.ID)
+		case wire.ServerUserFrame:
+			// A user record carries no conversation of its own; it is bounded
+			// by the conversation record it follows.
+		default:
+			s.t.Fatalf("next frame = %T %+v, want message", f, f)
+		}
 	}
-	return m.Message
+}
+
+// conversationFrame and userFrame read ONE frame each and require the
+// introduction records, in the order the hub enqueued them.
+func (s *session) conversationFrame() wire.Conversation {
+	s.t.Helper()
+	f := s.next()
+	c, ok := f.(wire.ServerConversationFrame)
+	if !ok {
+		s.t.Fatalf("next frame = %T %+v, want a conversation record", f, f)
+	}
+	return c.Conversation
+}
+
+func (s *session) userFrame() wire.User {
+	s.t.Helper()
+	f := s.next()
+	u, ok := f.(wire.ServerUserFrame)
+	if !ok {
+		s.t.Fatalf("next frame = %T %+v, want a user record", f, f)
+	}
+	return u.User
 }
 
 // pingPong proves the session's read goroutine has finished everything
@@ -326,6 +369,10 @@ func TestAMessageReachesEveryAttachedMemberAndNobodyElse(t *testing.T) {
 		case wire.ServerMessageFrame:
 			m := f.Message
 			own = &m
+		case wire.ServerConversationFrame, wire.ServerUserFrame:
+			// This is groupA's FIRST message, so it is introduced (CANT-114).
+			// The order is asserted by that ticket's own tests; this one is
+			// about the message and its ack.
 		default:
 			t.Fatalf("unexpected frame on the author's session: %T", f)
 		}
@@ -761,5 +808,159 @@ func TestACancelledServeClosesEverySessionWith1001(t *testing.T) {
 	}
 	if lines := log.atLeast(slog.LevelWarn); len(lines) != 0 {
 		t.Errorf("lines at WARN or above on an ordinary shutdown: %v", lines)
+	}
+}
+
+// --- CANT-114: criteria 11, 13 and 16 -------------------------------------------
+
+// wireJSON renders a wire value the way a client receives it, so two records
+// are compared as the bytes that cross the wire rather than as Go structs.
+func wireJSON(t *testing.T, v any) string {
+	t.Helper()
+	raw, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	return string(raw)
+}
+
+// syncConversation is the record GET /sync serves this device for one
+// conversation — the record the introduction claims to be carrying.
+func (r *rig) syncConversation(token string, id uuid.UUID) wire.Conversation {
+	r.t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/sync?after=0", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	code, body := do(r.t, r.d.router, req)
+	if code != http.StatusOK {
+		r.t.Fatalf("GET /sync = %d: %s", code, body)
+	}
+	var page wire.SyncResponse
+	if err := json.Unmarshal(body, &page); err != nil {
+		r.t.Fatalf("sync page: %v", err)
+	}
+	for _, c := range page.Conversations {
+		if string(c.ID) == id.String() {
+			return c
+		}
+	}
+	r.t.Fatalf("/sync carried no record for %s: %s", id, body)
+	return wire.Conversation{}
+}
+
+// CRITERION 11 and 13, over real sockets against Postgres through the router
+// setup() builds. On a conversation's FIRST message every attached member
+// session reads the `conversation` record, then that conversation's `user`
+// records, then the `message` — in that order, on that one session. A
+// non-member's session reads none of the three. A SECOND message into the same
+// conversation introduces nothing.
+func TestAFirstMessageIntroducesTheConversationAndItsUsers(t *testing.T) {
+	r := newRig(t)
+	ada := mkUser(r.ctx, t, r.pool, "ada", "Ada")
+	theo := mkUser(r.ctx, t, r.pool, "theo", "Theo")
+	mallory := mkUser(r.ctx, t, r.pool, "mallory", "Mallory")
+	groupA := mkGroup(r.ctx, t, r.pool, "A", ada, theo)
+	groupB := mkGroup(r.ctx, t, r.pool, "B", theo, mallory)
+
+	adaS, theoS := r.open(ada, "laptop"), r.open(theo, "phone")
+	mal := r.open(mallory, "laptop")
+
+	first := r.commit(groupA, ada, "the first message in A")
+	for _, s := range []*session{adaS, theoS} {
+		c := s.conversationFrame()
+		if string(c.ID) != groupA.String() || c.Name != "A" || c.MemberCount != 2 || int64(c.HeadSeq) != first.Seq {
+			t.Errorf("%s: conversation record = %+v, want A at seq %d with 2 members", s.user, c, first.Seq)
+		}
+		names := map[string]string{}
+		for i := 0; i < 2; i++ {
+			u := s.userFrame()
+			names[string(u.ID)] = u.Name
+		}
+		if len(names) != 2 || names[ada.String()] != "Ada" || names[theo.String()] != "Theo" {
+			t.Errorf("%s: user records = %v, want Ada and Theo", s.user, names)
+		}
+		f := s.next()
+		m, ok := f.(wire.ServerMessageFrame)
+		if !ok || string(m.Message.ID) != first.ID.String() {
+			t.Errorf("%s: the frame after the records = %T %+v, want the message they introduce", s.user, f, f)
+		}
+	}
+
+	// CRITERION 13: the gate is the ordinal, so the next message is alone.
+	second := r.commit(groupA, ada, "the second message in A")
+	for _, s := range []*session{adaS, theoS} {
+		f := s.next()
+		m, ok := f.(wire.ServerMessageFrame)
+		if !ok || string(m.Message.ID) != second.ID.String() {
+			t.Errorf("%s: frame = %T %+v, want the second message with no record in front of it", s.user, f, f)
+		}
+	}
+
+	// THE MARKER, and the non-member half of criterion 11. Mallory is in B with
+	// Theo and never in A. B's own first message introduces B to her, and it is
+	// delivered by an OnNotify that ran strictly after both of A's — so
+	// anything A produced for her would already have arrived.
+	marker := r.commit(groupB, theo, "the first message in B")
+	if c := mal.conversationFrame(); string(c.ID) != groupB.String() {
+		t.Fatalf("mallory's first frame = the record for %s, want B — a record from A reached a non-member", c.ID)
+	}
+	mal.userFrame()
+	mal.userFrame()
+	if m := mal.message(); string(m.ID) != marker.ID.String() {
+		t.Errorf("mallory's frame = %+v, want B's first message", m)
+	}
+	theoS.message() // Theo is in B as well; drain B's introduction and message.
+}
+
+// CRITERION 16 — the over-fire, asserted rather than assumed. A session that
+// ALREADY holds the conversation is introduced to it again on its first
+// message, and the record is the same one /sync serves, so a client that
+// replaces by id changes nothing by applying it. That is the stated price of
+// the hub holding no per-session state.
+//
+// It also proves criterion 12 end to end: one statement, and the direct is
+// named for the OTHER member on each of the two sockets.
+func TestASessionThatAlreadyHoldsTheConversationIsIntroducedAgain(t *testing.T) {
+	r := newRig(t)
+	ada := mkUser(r.ctx, t, r.pool, "ada", "Ada")
+	theo := mkUser(r.ctx, t, r.pool, "theo", "Theo")
+
+	// CANT-75's find-or-create: the conversation exists with no messages in it,
+	// and its metadata marker moved, so /sync carries it before anything is
+	// sent — which is what makes "already holds it" true here.
+	direct, err := r.st.FindOrCreateDirect(r.ctx, ada, "theo")
+	if err != nil {
+		t.Fatalf("find-or-create direct: %v", err)
+	}
+
+	theoEnrolled := r.enroll(theo, "phone")
+	theoS := openAt(t, r.ctx, r.base, theoEnrolled, theo)
+	adaEnrolled := r.enroll(ada, "laptop")
+	adaS := openAt(t, r.ctx, r.base, adaEnrolled, ada)
+
+	held := r.syncConversation(string(theoEnrolled.AccessToken), direct.ID)
+	if held.Name != "Ada" {
+		t.Fatalf("/sync names theo's direct %q, want Ada", held.Name)
+	}
+
+	first := r.commit(direct.ID, ada, "hello")
+
+	got := theoS.conversationFrame()
+	want := r.syncConversation(string(theoEnrolled.AccessToken), direct.ID)
+	if wireJSON(t, got) != wireJSON(t, want) {
+		t.Errorf("the introduction record = %s, want the record /sync serves for the same id %s",
+			wireJSON(t, got), wireJSON(t, want))
+	}
+	if got.Name != "Ada" {
+		t.Errorf("theo's introduction names the direct %q, want Ada", got.Name)
+	}
+	theoS.userFrame()
+	theoS.userFrame()
+	if m := theoS.message(); string(m.ID) != first.ID.String() {
+		t.Errorf("theo's frame after the records = %+v, want %s", m, first.ID)
+	}
+
+	adaC := adaS.conversationFrame()
+	if adaC.ID != got.ID || adaC.Name != "Theo" {
+		t.Errorf("ada's introduction = %+v, want %s named Theo — the statement named it for both members from one side", adaC, direct.ID)
 	}
 }
