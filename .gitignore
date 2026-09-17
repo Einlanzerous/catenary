@@ -27,3 +27,7 @@ spike/r3-whisper/audio/
 # Firebase console in a minute, and per the house rule the copy of record
 # lives in Signet. E7 (CANT-51) needs the production one, not this probe's.
 spike/r2-push/app/android/app/google-services.json
+
+# A Cloudflare Access service token was left here once (CANT-23). It now lives
+# in ~/.config/catenary/, and this line makes a stray copy unstageable.
+/service-account
