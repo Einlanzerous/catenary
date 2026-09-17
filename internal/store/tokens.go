@@ -8,11 +8,13 @@ package store
 // before this ticket existed, and a recorded ruling settled the BOT token. All
 // four are minted here, in one encoding, and verified through one seam.
 //
-// WHAT IS NOT HERE. The refresh-for-access exchange is a sub-task of CANT-29
-// filed review_mode: full (ruling 5), so that rotation gets the same
-// line-by-line read as the reuse detection built over it. Its wire types are
-// generated from the schema already; its handler and its conditional write are
-// not in this file. The columns it writes — family_id, replaced_by — are.
+// WHERE THE EXCHANGE IS. The refresh-for-access rotation is a sub-task of
+// CANT-29 filed review_mode: full (ruling 5), so that it gets the same
+// line-by-line read as the reuse detection built over it. It landed in
+// refresh.go beside this file: RotateRefresh owns the conditional write and the
+// four doors it closes atomically, and insertRefresh there is the one INSERT
+// both paths share. The columns it writes — family_id, replaced_by — are
+// declared in 0007 with the rest.
 
 import (
 	"context"
@@ -460,18 +462,12 @@ func (s *Store) RedeemEnrollment(ctx context.Context, presented, deviceName stri
 // because CANT-29 runs it at the moment it has just decided something is
 // wrong, and a walk is a loop that can be interrupted half-done.
 func issueRefresh(ctx context.Context, tx pgx.Tx, deviceID uuid.UUID, now time.Time) (IssuedToken, error) {
-	plaintext, hash, err := MintToken()
-	if err != nil {
-		return IssuedToken{}, err
-	}
+	// ITS OWN FAMILY, LITERALLY: one id, passed as both the row's id and its
+	// family_id. CANT-97's rotation carries that value forward rather than
+	// minting a new one, and the INSERT itself lives in refresh.go so the two
+	// paths cannot come to disagree about a column.
 	id := uuid.New()
-	expires := now.Add(RefreshTokenLifetime)
-	if _, err := tx.Exec(ctx, `
-		INSERT INTO refresh_tokens (id, device_id, token_hash, family_id, expires_at)
-		VALUES ($1, $2, $3, $1, $4)`, id, deviceID, hash, expires); err != nil {
-		return IssuedToken{}, fmt.Errorf("store: issue refresh token: %w", err)
-	}
-	return IssuedToken{Plaintext: plaintext, ExpiresAt: expires}, nil
+	return insertRefresh(ctx, tx, id, deviceID, id, now)
 }
 
 // issueAccess writes one access token. device is nil for a bot, and 0007's

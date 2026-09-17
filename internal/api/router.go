@@ -88,6 +88,15 @@ type Deps struct {
 	// only claim is the string it was given.
 	Enroll func(ctx context.Context, token, deviceName string) (store.Enrollment, error)
 
+	// Refresh serves POST /refresh. Nil means the route is not registered.
+	//
+	// THE SECOND ROUTE THAT TAKES A CREDENTIAL FROM AN UNIDENTIFIED CALLER, and
+	// it is separate from CallerID for the same reason Enroll is: the caller
+	// presenting a refresh token has no access token to be identified by, which
+	// is the whole situation it is trying to get out of. store.RotateRefresh
+	// resolves the device FROM the token — CANT-97.
+	Refresh func(ctx context.Context, token string) (store.Rotated, error)
+
 	// The socket. Authenticate, Hello and Send together register GET /ws; if
 	// any is nil the route does not exist — the same safe absence as CallerID,
 	// for the same reason. CANT-22.
@@ -242,6 +251,14 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("POST /enroll", enrollHandler(d))
 	}
 
+	// CANT-97. Registered on its own seam rather than with Enroll: the two
+	// routes mint credentials from different starting points and a deployment
+	// that wired one without the other should get the safe absence rather than
+	// a route backed by nothing.
+	if d.Refresh != nil {
+		mux.HandleFunc("POST /refresh", refreshHandler(d))
+	}
+
 	// CANT-75. Both need a full Caller (device or bot), and the send route
 	// additionally needs the fan-out read to build its response — see
 	// Deps.Caller and Deps.MessageForFanout.
@@ -384,6 +401,69 @@ func enrollHandler(d Deps) http.HandlerFunc {
 			AccessExpiresAt:  wire.Timestamp(enrollment.Access.ExpiresAt.UTC().Format(wireview.TimeLayout)),
 			RefreshToken:     wire.Token(enrollment.Refresh.Plaintext),
 			RefreshExpiresAt: wire.Timestamp(enrollment.Refresh.ExpiresAt.UTC().Format(wireview.TimeLayout)),
+		})
+	}
+}
+
+// maxRefreshBody bounds what an unauthenticated caller may post here.
+//
+// The body is one short string — shorter than /enroll's, which also carries a
+// device name — and the reasoning is the same: this route takes a credential
+// from anybody who can reach it and has no rate limiter in front of it, so it
+// must not read what it was sent before deciding it did not like it.
+const maxRefreshBody = 4 << 10
+
+// refreshHandler serves POST /refresh: a device exchanging its refresh token
+// for the next pair.
+//
+// THE DEVICE IS IDENTIFIED BY THE TOKEN RATHER THAN ALONGSIDE IT. RefreshRequest
+// carries exactly one field, deliberately: a request that named its own device
+// id would assert something the credential already proves, and the two could
+// disagree. There is nothing to reconcile here because there is nothing to
+// reconcile it against.
+//
+// ONE REFUSAL SHAPE, exactly as POST /enroll has, and for the same reason.
+// Unknown token, already rotated, expired, revoked device, deactivated
+// account — all of them are this same 401 with this same body, which is the
+// same body GET /sync writes. The store logs all five apart, with the ids that
+// resolve and never the token; the response distinguishes nothing, because a
+// credential route with no limiter in front of it would otherwise be an oracle
+// for which tokens once existed and which accounts do.
+//
+// A MALFORMED REQUEST IS A 400 AND NOT PART OF THAT RULE — it says nothing
+// about whether a credential exists.
+func refreshHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req wire.RefreshRequest
+		// The GENERATED decoder, so the token's encoding is checked here by the
+		// same rule the TypeScript and Dart clients check it by: a padded or
+		// truncated credential is refused as malformed rather than looked up.
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRefreshBody)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{
+				"error": "refresh request is not a valid RefreshRequest"})
+			return
+		}
+
+		rotated, err := d.Refresh(r.Context(), string(req.RefreshToken))
+		switch {
+		case errors.Is(err, store.ErrUnauthorized):
+			// THE SAME BODY /enroll AND /sync WRITE, deliberately identical.
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		case err != nil:
+			// Nothing to log but the failure: the store has already recorded
+			// the refusal with the ids that resolved, and naming the token here
+			// would put a live credential in the service log.
+			d.Logger.ErrorContext(r.Context(), "refresh failed", "error", err)
+			writeJSON(w, http.StatusInternalServerError, serverError(err, "refresh failed"))
+			return
+		}
+
+		writeJSON(w, http.StatusOK, wire.RefreshResponse{
+			AccessToken:      wire.Token(rotated.Access.Plaintext),
+			AccessExpiresAt:  wire.Timestamp(rotated.Access.ExpiresAt.UTC().Format(wireview.TimeLayout)),
+			RefreshToken:     wire.Token(rotated.Refresh.Plaintext),
+			RefreshExpiresAt: wire.Timestamp(rotated.Refresh.ExpiresAt.UTC().Format(wireview.TimeLayout)),
 		})
 	}
 }
