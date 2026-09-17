@@ -98,11 +98,23 @@ const (
 	// above any configured message bound and far below anything that would
 	// trouble the process.
 	defaultMaxFrameBytes = 256 << 10
-)
 
-// helloTimeout is how long an accepted socket has to say hello. A variable
-// rather than a constant so a test can shorten it; nothing else writes it.
-var helloTimeout = 10 * time.Second
+	// DefaultHelloTimeout is how long an accepted socket has to say hello when
+	// Deps carries no override: a socket that authenticated and then says
+	// nothing is holding a goroutine for nobody.
+	//
+	// A CONSTANT, AND DELIBERATELY (CANT-115). This was a package-level `var`
+	// so a test could shorten it, and the write raced an EARLIER test's server
+	// goroutine still reading it inside awaitHello. `go test -race` finds that
+	// only when the package runs unfiltered — a `-run` filter removes the
+	// second participant and the race cannot occur — so it read as an
+	// intermittent flake belonging to nobody. Nothing in the shipped binary
+	// ever wrote it, so the fix removes the shared mutable knob rather than
+	// synchronising it: the deadline is per-server on Deps.HelloTimeout, the
+	// same zero-means-default convention MaxFrameBytes and the heartbeat dial
+	// already follow.
+	DefaultHelloTimeout = 10 * time.Second
+)
 
 // statusHeartbeatTimeout is CANT-23's own severance code: RFC 6455 §7.4.2's
 // private-use range (3000-4999) lets each distinct reason a session ends
@@ -340,9 +352,16 @@ func serveSession(ctx context.Context, d Deps, conn *websocket.Conn, caller stor
 	logger := d.Logger.With("user_id", caller.UserID, "device_id", caller.DeviceID)
 
 	// THE HELLO. The first known frame must be it, and it must arrive within
-	// helloTimeout: a socket that authenticated and then says nothing is
-	// holding a goroutine for nobody.
-	hello, ok := awaitHello(ctx, conn, logger)
+	// the hello deadline: a socket that authenticated and then says nothing is
+	// holding a goroutine for nobody. Zero means Deps carries no override, so
+	// the default stands — the same convention MaxFrameBytes and the deployed
+	// dial below already follow, and the reason the deadline is read here per
+	// session rather than from a package variable a test can write (CANT-115).
+	helloTimeout := d.HelloTimeout
+	if helloTimeout <= 0 {
+		helloTimeout = DefaultHelloTimeout
+	}
+	hello, ok := awaitHello(ctx, conn, logger, helloTimeout)
 	if !ok {
 		return
 	}
@@ -446,7 +465,7 @@ func serveSession(ctx context.Context, d Deps, conn *websocket.Conn, caller stor
 
 	// THE HEARTBEAT CLOCK STARTS HERE, AND NOWHERE EARLIER (CANT-24's "What
 	// CANT-102 inherits", docs/decisions/cant-24-resume.md). A session that
-	// takes the whole of helloTimeout to say hello is not a session this
+	// takes the whole of the hello deadline to say hello is not a session this
 	// watchdog has an opinion about yet — only a `ready`'d session can go
 	// quiet on a clock it was never told about.
 	watchdog := startHeartbeatWatchdog(conn, heartbeatWindow(heartbeatInterval, missedPongLimit))
@@ -458,14 +477,19 @@ func serveSession(ctx context.Context, d Deps, conn *websocket.Conn, caller stor
 // awaitHello reads until the first known frame and requires it to be a hello.
 // Unknown frame types are ignored, as the schema says every decoder must; a
 // known frame that is not a hello is a protocol error and closes the socket.
-func awaitHello(ctx context.Context, conn *websocket.Conn, logger *slog.Logger) (wire.ClientHello, bool) {
+//
+// timeout is the caller's already-resolved deadline — serveSession merges
+// Deps.HelloTimeout with DefaultHelloTimeout once per session, so this
+// function reads no package state and two servers in one test binary can hold
+// two different deadlines without sharing a variable (CANT-115).
+func awaitHello(ctx context.Context, conn *websocket.Conn, logger *slog.Logger, timeout time.Duration) (wire.ClientHello, bool) {
 	// A TIMER AND A CLOSE HANDSHAKE, not a context deadline. coder/websocket
 	// closes the whole connection when a Read's context expires, which leaves
 	// the client with a bare EOF and no close frame saying why. Closing from a
 	// timer instead sends the 1008 the client can log, and unblocks the read
 	// below with the peer's echo of it.
 	var timedOut atomic.Bool
-	timer := time.AfterFunc(helloTimeout, func() {
+	timer := time.AfterFunc(timeout, func() {
 		timedOut.Store(true)
 		closeWith(conn, websocket.StatusPolicyViolation, "hello expected")
 	})

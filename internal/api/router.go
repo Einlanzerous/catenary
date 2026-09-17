@@ -159,6 +159,24 @@ type Deps struct {
 	// MaxFrameBytes bounds one inbound socket frame. Zero means the default.
 	MaxFrameBytes int64
 
+	// HelloTimeout is how long an accepted socket has to say hello before the
+	// door closes it with 1008. Zero means DefaultHelloTimeout — the same
+	// zero-means-default convention MaxFrameBytes above already follows.
+	//
+	// PER-SERVER RATHER THAN PACKAGE-LEVEL, AND THAT IS THE WHOLE POINT
+	// (CANT-115). This deadline used to be a package `var` that two tests
+	// wrote to shorten or lengthen it, and the write raced an earlier test's
+	// httptest server goroutine still reading it inside awaitHello. No
+	// shipped code path ever wrote it, and none can now: serveSession is the
+	// only reader and it resolves this field once per session, so two servers
+	// in one binary hold two deadlines without sharing anything.
+	//
+	// NOT WIRED TO AN ENVIRONMENT VARIABLE, deliberately. Unlike the
+	// heartbeat dial this is never announced on `ready` and no client derives
+	// anything from it, so there is nothing for an operator to keep in sync;
+	// cmd/catenary leaves it zero and takes the default.
+	HelloTimeout time.Duration
+
 	// HeartbeatIntervalSec and MissedPongLimit are CANT-23's deployed dial:
 	// announced verbatim on `ready` as heartbeat_interval_sec /
 	// missed_pong_limit, and what the session's own severance watchdog
