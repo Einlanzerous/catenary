@@ -33,6 +33,33 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+// ReuseGraceWindow is how long after a rotation a presentation of the spent
+// token is read as an echo rather than as a replay.
+//
+// A CONSTANT RATHER THAN CONFIG, on exactly the terms CANT-28's three lifetimes
+// get: this is a security posture a human picked, and an environment variable
+// here would be a way to widen the window without anybody re-reading the
+// argument for it.
+//
+// IT IS SIZED FOR CONCURRENT IN-FLIGHT REQUESTS AND FOR NOTHING LONGER. A phone
+// waking up dispatches two refreshes within milliseconds of each other; the
+// loser's presentation arrives just after the winner commits, the client
+// already holds the winner's pair, and nothing is wrong. That is the false
+// positive this window exists for, and CANT-97's own concurrency test is
+// exactly its shape. It is NOT sized for a network retry minutes later: a
+// working device's next refresh is a quarter of an hour away, so a theft's
+// victim presenting their stale token falls outside this by three orders of
+// magnitude.
+//
+// THE EXPOSURE IT BUYS, STATED RATHER THAN LEFT TO BE FOUND. An attacker who
+// replays a stolen token within ten seconds of the victim's own rotation
+// escapes family invalidation. They still get a 401 and the spent token still
+// buys them nothing — what they escape is the DETECTION. That is the trade and
+// it is the right way round: the alternative invalidates a real person's family
+// every time their phone wakes up, and a detector that fires on ordinary
+// traffic is one that gets turned off.
+const ReuseGraceWindow = 10 * time.Second
+
 // Rotated is one exchange's result: the next pair, and who it belongs to.
 //
 // Both tokens are new. A response that returned the presented refresh token
@@ -180,12 +207,17 @@ func (s *Store) RotateRefresh(ctx context.Context, presented string) (Rotated, e
 		tokenID, newID, now).Scan(&rotated)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
-		// One refusal to the caller, and the rollback takes the successor with
-		// it. WHICH door closed is read back afterwards and written to the log
-		// only — CANT-28 declines a rate limiter on the credential routes and
-		// names visibility as what stands in for it, which is worth nothing if
-		// every refusal logs the same sentence.
-		s.logRotationRefusal(ctx, tx, tokenID, familyID, deviceID, userID)
+		// ROLLED BACK EXPLICITLY, AND BEFORE ANYTHING ELSE. The ordering is
+		// load-bearing rather than tidy: this transaction is holding the
+		// uncommitted successor row insertRefresh wrote above, and CANT-29's
+		// invalidation below revokes a whole family. Doing both in this
+		// transaction and committing would mint a brand-new live token INTO the
+		// family it had just revoked — the one outcome an invalidation must not
+		// produce. The deferred Rollback would fire eventually, but eventually
+		// is after the work below, and that work has to reason about committed
+		// state rather than about this transaction's own insert.
+		_ = tx.Rollback(ctx)
+		s.refusalOutcome(ctx, tokenID, familyID, deviceID, userID)
 		return Rotated{}, ErrUnauthorized
 	case err != nil:
 		return Rotated{}, fmt.Errorf("store: rotate refresh: mark replaced: %w", err)
@@ -205,49 +237,60 @@ func (s *Store) RotateRefresh(ctx context.Context, presented string) (Rotated, e
 	return Rotated{UserID: userID, DeviceID: deviceID, Access: access, Refresh: refresh}, nil
 }
 
-// logRotationRefusal names the door that closed, AFTER the write has already
-// refused.
+// refusalOutcome decides what a refused rotation MEANS, and it is the whole of
+// CANT-29.
 //
-// A DIAGNOSTIC AND NOT A DECISION, which is the whole reason it runs second.
-// Deciding here would put the doors in two places and let them disagree; by
-// reading only once the update has declined, this cannot change an outcome
-// however wrong it is.
+// IT RUNS AFTER THE ROTATION TRANSACTION HAS ROLLED BACK, ON THE POOL. Both
+// halves matter. The rollback has discarded the successor row, so nothing here
+// can commit a credential into a family it is about to revoke. And a fresh read
+// sees COMMITTED state, which is the only state worth reasoning about: the
+// winner of a race has necessarily committed already, because the conditional
+// update declined only once that commit landed.
 //
-// IT TAKES A NEW SNAPSHOT, AND THAT DECIDES WHAT IT CAN AND CANNOT SAY. This
-// is a new statement, and under READ COMMITTED a new statement reads a new
-// snapshot — so it sees whatever committed while the update was blocked,
-// the winner's own `replaced_by` included. An earlier version of this comment
-// claimed it saw the same snapshot the update refused against; it does not,
-// and that is precisely why it sees the winner's write. Found in review.
+// IT IS STILL NOT A SECOND DOOR. The rotation was refused by one statement and
+// stays refused; nothing below can turn a refusal into a success. What it adds
+// is what the refusal MEANT, which is a different question with a different
+// answer for the caller (always the same 401) and for the account (sometimes an
+// invalidated family).
 //
-// SO A LOST RACE AND A REPLAY ARE INDISTINGUISHABLE HERE, and both log
-// `token already rotated`. A waking phone's second in-flight request, a client
-// retrying after a response was lost in flight, and a stolen token presented a
-// second time all arrive at the same row in the same state — `replaced_by` set
-// by somebody — and nothing in the row separates them.
+// THE DISTINGUISHER IS TIME, BECAUSE THE ROW HAS NOTHING ELSE. `replaced_by`
+// being set means the token was spent — by a replay, by the loser of a race, or
+// by a client retrying after a lost response — and the row cannot separate
+// them. What separates them is WHEN: a race is milliseconds, a working device's
+// next refresh is fifteen minutes. So the successor's `issued_at` dates the
+// rotation and ReuseGraceWindow draws the line. See that constant for the
+// exposure this buys and why it is the right way round.
 //
-// THAT MATTERS TO CANT-29 RATHER THAN HERE. All three are the same 401 to the
-// caller, which is the rule this route exists to keep. But CANT-29 invalidates
-// a FAMILY on a replay, and its own description names the cost of getting it
-// wrong: "a legitimate double-refresh invalidates a real person's family and
-// forces a re-authentication that looks exactly like the incident it is meant
-// to report". It needs a distinguisher of its own — this branch is not one,
-// and the refresh-token row alone cannot supply one.
-func (s *Store) logRotationRefusal(ctx context.Context, tx pgx.Tx, tokenID, familyID, deviceID, userID uuid.UUID) {
+// CHAIN DEPTH WAS CONSIDERED AND IS WRONG HERE, recorded so it is not
+// rediscovered as an improvement. "Invalidate only if the successor has itself
+// been rotated" needs no constant and misses the primary threat: an attacker
+// who uses a stolen token FIRST leaves the successor unrotated, so the victim's
+// later presentation reads as benign and the attacker keeps the family.
+func (s *Store) refusalOutcome(ctx context.Context, tokenID, familyID, deviceID, userID uuid.UUID) {
 	var (
 		replacedBy    *uuid.UUID
 		tokenRevoked  *time.Time
 		expiresAt     time.Time
 		deviceRevoked *time.Time
 		deactivated   *time.Time
+		rotatedAt     *time.Time
 	)
-	if err := tx.QueryRow(ctx, `
-		SELECT r.replaced_by, r.revoked_at, r.expires_at, d.revoked_at, u.deactivated_at
+	// THE SUCCESSOR'S issued_at IS THE MOMENT THIS TOKEN WAS ROTATED, and there
+	// is no `replaced_at` column because there does not need to be. The join is
+	// safe by construction: `refresh_tokens.replaced_by` is ON DELETE RESTRICT,
+	// so a chain cannot be broken in the middle and the row a replaced token
+	// names always exists — schema_test.go calls that constraint "precisely the
+	// evidence CANT-29's reuse detection reads".
+	if err := s.pool.QueryRow(ctx, `
+		SELECT r.replaced_by, r.revoked_at, r.expires_at,
+		       d.revoked_at, u.deactivated_at, succ.issued_at
 		  FROM refresh_tokens r
 		  JOIN devices d ON d.id = r.device_id
 		  JOIN users u ON u.id = d.user_id
+		  LEFT JOIN refresh_tokens succ ON succ.id = r.replaced_by
 		 WHERE r.id = $1`, tokenID).
-		Scan(&replacedBy, &tokenRevoked, &expiresAt, &deviceRevoked, &deactivated); err != nil {
+		Scan(&replacedBy, &tokenRevoked, &expiresAt, &deviceRevoked,
+			&deactivated, &rotatedAt); err != nil {
 		// The refusal still stands; only its explanation is missing. Logged as
 		// such rather than swallowed, because a refusal nobody can account for
 		// is the one worth finding in a log.
@@ -256,22 +299,22 @@ func (s *Store) logRotationRefusal(ctx context.Context, tx pgx.Tx, tokenID, fami
 		return
 	}
 
-	// THE DEFAULT IS EFFECTIVELY UNREACHABLE, and it is labelled honestly rather
-	// than removed. Reaching it needs the row visible with every door open,
-	// which cannot follow this update declining: the update only declines after
-	// a winner has COMMITTED, and the read above sees that commit. It used to
-	// read `lost the rotation race`, which is the one thing it can never be. If
-	// this ever appears in a log, something changed the row in a way nothing in
-	// this schema does, and the answer is to find out what rather than to trust
-	// the label.
+	if replacedBy != nil {
+		s.spentTokenOutcome(ctx, tokenID, familyID, deviceID, userID, rotatedAt)
+		return
+	}
+
+	// EVERY OTHER DOOR IS A REFUSAL AND NOT AN INCIDENT. A revoked, expired or
+	// deactivated credential is somebody's account being administered or a
+	// device falling out of use; none of them is evidence that a token was
+	// copied, and none of them invalidates anything.
+	//
+	// THE DEFAULT IS EFFECTIVELY UNREACHABLE and is labelled honestly rather
+	// than removed: reaching it needs the row visible with every door open,
+	// which cannot follow this update declining. If it ever appears in a log,
+	// something changed the row in a way nothing in this schema does.
 	reason := "refused, and the row names no reason"
 	switch {
-	case replacedBy != nil:
-		// A REPLAY, A LOST RACE, OR A RETRY AFTER A LOST RESPONSE. They are the
-		// same row in the same state and this cannot tell them apart — see the
-		// doc comment. The family is named because CANT-29's invalidation is one
-		// predicate over this column, NOT because this has identified a replay.
-		reason = "token already rotated"
 	case tokenRevoked != nil:
 		reason = "token revoked"
 	case !expiresAt.After(ServerTime()):
@@ -283,6 +326,171 @@ func (s *Store) logRotationRefusal(ctx context.Context, tx pgx.Tx, tokenID, fami
 	}
 	s.logger.WarnContext(ctx, "refresh refused", "reason", reason,
 		"token_id", tokenID, "family_id", familyID, "device_id", deviceID, "user_id", userID)
+}
+
+// spentTokenOutcome answers the one question this ticket exists for: was that a
+// replay, or an echo of a rotation that already worked?
+func (s *Store) spentTokenOutcome(ctx context.Context, tokenID, familyID, deviceID, userID uuid.UUID, rotatedAt *time.Time) {
+	// UNDATEABLE MEANS TREAT IT AS A REPLAY, and the bias is deliberate. The
+	// RESTRICT on replaced_by makes this unreachable, so arriving here means the
+	// schema's own guarantee has failed — and the safe reading of "a spent token
+	// was presented and I cannot tell you when it was spent" is the incident,
+	// not the echo. Logged as its own reason so it is never mistaken for an
+	// ordinary detection.
+	if rotatedAt == nil {
+		s.logger.ErrorContext(ctx, "refresh replay suspected; the rotation could not be dated",
+			"token_id", tokenID, "family_id", familyID, "device_id", deviceID, "user_id", userID)
+		s.invalidateFamily(ctx, familyID, deviceID, userID, "rotation could not be dated")
+		return
+	}
+
+	if age := ServerTime().Sub(*rotatedAt); age < ReuseGraceWindow {
+		// THE ECHO. The rotation this token lost to happened moments ago, so the
+		// client that is holding the winner's pair and the client that sent this
+		// are overwhelmingly the same client. Refused — single use still holds,
+		// and the caller gets the same 401 as everything else — but nothing is
+		// invalidated and no incident is reported.
+		s.logger.WarnContext(ctx, "refresh refused", "reason", "token already rotated, within the reuse grace window",
+			"token_id", tokenID, "family_id", familyID, "device_id", deviceID, "user_id", userID,
+			"rotated_age_ms", age.Milliseconds(), "grace_window_ms", ReuseGraceWindow.Milliseconds())
+		return
+	}
+
+	s.invalidateFamily(ctx, familyID, deviceID, userID, "a spent refresh token was presented after the grace window")
+}
+
+// invalidateFamily revokes a whole refresh chain, everything that chain
+// currently buys, and the device behind it — in one transaction, publishing the
+// revocation that severs the live socket.
+//
+// ALL FOUR WRITES OR NONE, AND THE NOTIFY INSIDE THEM. This is CANT-18's ruling
+// 2 applied a third time, on RevokeDevice's own argument: Postgres delivers a
+// NOTIFY at commit, so a notification cannot exist without its cause or the
+// reverse. A partially-applied invalidation is the worst possible state — a
+// family revoked while the device keeps its access token, or a device revoked
+// while nobody is told to sever its socket.
+//
+// WHY THE ACCESS TOKENS AND THE DEVICE, AND NOT JUST THE FAMILY. The `Done
+// when` says the legitimate device is "forced to re-authenticate rather than
+// silently continuing", and a family-only revocation does not deliver that: the
+// device's current access token keeps working for the rest of its fifteen
+// minutes, and under CANT-28 ruling 2 its live socket outlives the token
+// entirely. Revoking the access tokens closes the request path; setting
+// devices.revoked_at is what makes every other mechanism agree — Authenticate
+// refuses it, DeadDevices names it, and CANT-30's gap re-check reaches the same
+// verdict as the notification does.
+//
+// A FAMILY IS ONE DEVICE'S, which is what makes the device write correct rather
+// than collateral: a family begins at one enrollment and every rotation carries
+// the same device_id forward, so "this family" and "this device's credentials"
+// are the same set.
+//
+// IDEMPOTENT ON R6'S TERMS, AND THE GUARDS ALONE DO NOT BUY IT. The `IS NULL`
+// predicates make the three WRITES idempotent; they say nothing about the
+// NOTIFY, and a second replay against an already-invalidated family would
+// otherwise publish a revocation for a device that was severed the first time.
+// So the device write doubles as the gate, exactly as RevokeDevice's does: it
+// RETURNS the row it changed, and no transition means no publish.
+//
+// THE LOG KEYS ON SOMETHING WIDER THAN THE NOTIFY, deliberately. A device can
+// already be revoked — by an earlier replay, or by an administrator revoking a
+// lost phone — while its refresh family is still live, and revoking that family
+// IS an invalidation worth recording even though its sockets were severed long
+// ago. So the incident line fires when anything changed, and a replay that
+// changed nothing still gets a line of its own rather than silence: somebody
+// presenting a stolen token repeatedly is worth seeing.
+//
+// THE ERROR IS LOGGED AND NOT RETURNED. Its caller is a refusal path that has
+// already decided the answer is 401, and there is no outcome it could change.
+// What must not happen is silence: an invalidation that failed leaves an
+// attacker holding a live family, which is the exact condition this ticket
+// exists to end.
+func (s *Store) invalidateFamily(ctx context.Context, familyID, deviceID, userID uuid.UUID, why string) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "family invalidation failed", "stage", "begin",
+			"family_id", familyID, "device_id", deviceID, "user_id", userID, "error", err)
+		return
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	fam, err := tx.Exec(ctx, `
+		UPDATE refresh_tokens SET revoked_at = now()
+		 WHERE family_id = $1 AND revoked_at IS NULL`, familyID)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "family invalidation failed", "stage", "refresh_tokens",
+			"family_id", familyID, "device_id", deviceID, "user_id", userID, "error", err)
+		return
+	}
+	acc, err := tx.Exec(ctx, `
+		UPDATE access_tokens SET revoked_at = now()
+		 WHERE device_id = $1 AND revoked_at IS NULL`, deviceID)
+	if err != nil {
+		s.logger.ErrorContext(ctx, "family invalidation failed", "stage", "access_tokens",
+			"family_id", familyID, "device_id", deviceID, "user_id", userID, "error", err)
+		return
+	}
+	// THE DEVICE WRITE IS ALSO THE IDEMPOTENCE GATE — see the doc comment. It
+	// returns the row it changed so that "already revoked" is a fact this
+	// function holds rather than one it assumes from the other two counts.
+	var severed bool
+	var changedDevice uuid.UUID
+	err = tx.QueryRow(ctx, `
+		UPDATE devices SET revoked_at = now()
+		 WHERE id = $1 AND revoked_at IS NULL
+		 RETURNING id`, deviceID).Scan(&changedDevice)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// Already revoked, so CANT-30 severed whatever sockets it had the first
+		// time and there is nobody left to tell.
+		severed = false
+	case err != nil:
+		s.logger.ErrorContext(ctx, "family invalidation failed", "stage", "devices",
+			"family_id", familyID, "device_id", deviceID, "user_id", userID, "error", err)
+		return
+	default:
+		severed = true
+	}
+
+	if severed {
+		payload, err := RevocationPayload{DeviceID: &deviceID}.Encode()
+		if err != nil {
+			s.logger.ErrorContext(ctx, "family invalidation failed", "stage", "payload",
+				"family_id", familyID, "device_id", deviceID, "user_id", userID, "error", err)
+			return
+		}
+		if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, RevocationChannel, payload); err != nil {
+			s.logger.ErrorContext(ctx, "family invalidation failed", "stage", "notify",
+				"family_id", familyID, "device_id", deviceID, "user_id", userID, "error", err)
+			return
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		s.logger.ErrorContext(ctx, "family invalidation failed", "stage", "commit",
+			"family_id", familyID, "device_id", deviceID, "user_id", userID, "error", err)
+		return
+	}
+
+	if fam.RowsAffected() == 0 && acc.RowsAffected() == 0 && !severed {
+		// NOTHING LEFT TO INVALIDATE, AND NOT SILENT. A repeat replay against a
+		// family that is already gone is not a fresh incident — nothing changed
+		// and nothing was severed — but it is somebody presenting a stolen
+		// token again, which is worth a line.
+		s.logger.WarnContext(ctx, "refresh replay against an already-invalidated family",
+			"why", why, "family_id", familyID, "device_id", deviceID, "user_id", userID)
+		return
+	}
+
+	// THE EVENT, RECORDED. At ERROR rather than WARN, and deliberately: every
+	// other refusal in this file is somebody's credential being ordinary, and
+	// this one is the only line in the service that says a token was copied.
+	// Ids and counts, never the token — the same rule every credential log here
+	// follows.
+	s.logger.ErrorContext(ctx, "refresh token replayed; family invalidated",
+		"why", why, "family_id", familyID, "device_id", deviceID, "user_id", userID,
+		"refresh_tokens_revoked", fam.RowsAffected(), "access_tokens_revoked", acc.RowsAffected(),
+		"socket_severed", severed, "grace_window_ms", ReuseGraceWindow.Milliseconds())
 }
 
 // insertRefresh writes one refresh token into a family.

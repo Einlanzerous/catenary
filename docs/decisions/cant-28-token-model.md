@@ -65,7 +65,9 @@ The rotation write is specified here and implemented there, as a **conditional u
 2. `UPDATE refresh_tokens SET replaced_by = $new WHERE id = $presented AND replaced_by IS NULL AND revoked_at IS NULL RETURNING id`;
 3. zero rows means somebody else rotated first — roll back, and the row from step 1 goes with it.
 
-Under READ COMMITTED the losing `UPDATE` blocks on the winner's row lock, re-evaluates its `WHERE` against the committed version, and matches nothing. That is the whole of the atomicity, and it is what makes two in-flight requests from a waking phone produce one new pair and one refusal rather than a forked family. **A replay is then exactly a presentation whose conditional update returns zero rows against a row that already has `replaced_by` set** — so CANT-29's detection is a query over rows this ticket's shape guarantees, not a restructuring.
+Under READ COMMITTED the losing `UPDATE` blocks on the winner's row lock, re-evaluates its `WHERE` against the committed version, and matches nothing. That is the whole of the atomicity, and it is what makes two in-flight requests from a waking phone produce one new pair and one refusal rather than a forked family.
+
+**This paragraph used to end by calling the zero-row result a replay signal, and that was wrong** — corrected here rather than left, because it is the sentence CANT-29 would have planned from. Zero rows against a row that already carries `replaced_by` is a **superset** of replay: the loser of the very race described above lands in it, and so does a client retrying after a response was lost in flight. Nothing in the row separates the three. CANT-29 supplies the distinguisher the row cannot — see `docs/decisions/cant-29-reuse-detection.md`.
 
 No index on `family_id`: the column has to exist now because adding it later rewrites a table of live credentials, but the index belongs to the ticket whose query needs it.
 

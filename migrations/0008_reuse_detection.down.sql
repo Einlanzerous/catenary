@@ -1,0 +1,31 @@
+-- Both indexes go; neither carried data, so this is a clean reverse.
+--
+-- `IF EXISTS`, AND IT IS NOT DEFENSIVE PADDING. This is the FIRST migration
+-- here whose down drops an object that a LOWER migration's down also removes:
+-- every other index in this schema is created by the same migration that
+-- creates its table (0001, 0002, 0003, 0007), so their downs drop the table and
+-- the index goes with it and a standalone DROP INDEX never arises. These two
+-- sit on tables 0001 and 0007 own, so `0003 down` — or any path that drops
+-- those tables — takes them and leaves this migration's own down facing an
+-- index that is already gone.
+--
+-- Without the guard that is not a tidy no-op, it is a hard failure that bricks
+-- the whole test database: every package's fixture begins by migrating DOWN to
+-- zero, so one unremovable migration fails `freshDB` for packages that have
+-- nothing to do with this ticket. That is observed rather than theorised — it
+-- happened here, and cost five red steps in `verify.sh` that all reported this
+-- one error.
+--
+-- THE UP STAYS STRICT, deliberately, so nobody "fixes" it to match. A CREATE
+-- INDEX here only runs when 0008 is not recorded as applied, and an index that
+-- already exists in that state means something raced or something hand-edited
+-- the schema — which is a signal worth failing on rather than absorbing.
+--
+-- The rows reuse detection WROTE — `refresh_tokens.revoked_at`,
+-- `access_tokens.revoked_at`, `devices.revoked_at` — are deliberately NOT
+-- reversed here, and could not honestly be. They are columns 0001 and 0007
+-- already own, a revocation is a fact about a credential rather than a fact
+-- about this migration, and "un-revoke every credential a replay invalidated"
+-- is the one thing a rollback must never do.
+DROP INDEX IF EXISTS access_tokens_device_id_idx;
+DROP INDEX IF EXISTS refresh_tokens_family_id_idx;
