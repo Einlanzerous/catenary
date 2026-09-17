@@ -566,11 +566,11 @@ func TestTheFirstKnownFrameMustBeAHello(t *testing.T) {
 
 func TestASilentSocketIsClosedAtTheHelloDeadline(t *testing.T) {
 	s := newStubs(t)
-	srv := serve(t, s.deps())
-
-	prev := helloTimeout
-	helloTimeout = 200 * time.Millisecond
-	t.Cleanup(func() { helloTimeout = prev })
+	d := s.deps()
+	// PER SERVER, NOT PER PACKAGE (CANT-115). This was a write to a package
+	// variable that an earlier test's server goroutine was still reading.
+	d.HelloTimeout = 200 * time.Millisecond
+	srv := serve(t, d)
 
 	conn, _, err := dial(t, srv, subprotocolV1, tokenProto(s.token))
 	if err != nil {
@@ -578,6 +578,39 @@ func TestASilentSocketIsClosedAtTheHelloDeadline(t *testing.T) {
 	}
 	if reason := expectClose(t, conn, websocket.StatusPolicyViolation); !strings.Contains(reason, "hello") {
 		t.Errorf("close reason %q does not say what was expected", reason)
+	}
+}
+
+// Deps carrying no deadline falls back to the exported default — the same
+// zero-means-default MaxFrameBytes and the heartbeat dial already follow.
+//
+// THIS IS THE READ SIDE OF CANT-115's RACE, and the reason it is worth a test
+// rather than a comment. The deadline is resolved per session out of Deps, so
+// the 200 ms the test above needs belongs to that server alone: it cannot
+// reach this server's goroutine however the two interleave, which is exactly
+// what a package-level variable could not promise.
+func TestTheHelloDeadlineFallsBackToTheDefaultWhenUnconfigured(t *testing.T) {
+	s := newStubs(t)
+	d := s.deps()
+	if d.HelloTimeout != 0 {
+		t.Fatalf("stub Deps carries a hello deadline (%s); this test is about the zero value", d.HelloTimeout)
+	}
+	srv := serve(t, d)
+
+	conn, _, err := dial(t, srv, subprotocolV1, tokenProto(s.token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+
+	// Well past the 200 ms the deadline test sets on its own server, and far
+	// short of DefaultHelloTimeout. A socket still open here is one holding
+	// its own deadline rather than a deadline the package shares.
+	time.Sleep(time.Second)
+
+	sendText(t, conn, helloFor(s, nil))
+	if _, ok := readServerWithin(t, conn, 5*time.Second).(wire.ServerReady); !ok {
+		t.Error("a hello a second after accept was not answered with ready; the default deadline did not stand")
 	}
 }
 
@@ -903,12 +936,13 @@ func TestHeartbeatClockDoesNotStartBeforeReady(t *testing.T) {
 	d := s.deps()
 	d.HeartbeatIntervalSec = testHeartbeatInterval
 	d.MissedPongLimit = testHeartbeatLimit
-	srv := serve(t, d)
 
 	window := testHeartbeatWindow()
-	prev := helloTimeout
-	helloTimeout = window + 5*time.Second // long enough to hold the socket open past the window below
-	t.Cleanup(func() { helloTimeout = prev })
+	// Long enough to hold the socket open past the window below, and set on
+	// this server alone (CANT-115) rather than on a variable every other
+	// server in the binary is reading.
+	d.HelloTimeout = window + 5*time.Second
+	srv := serve(t, d)
 
 	conn, _, err := dial(t, srv, subprotocolV1, tokenProto(s.token))
 	if err != nil {
