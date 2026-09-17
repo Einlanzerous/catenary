@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.8.0](https://github.com/Einlanzerous/catenary/compare/v0.7.0...v0.8.0) (2026-09-17)
+
+
+### Features
+
+* CANT-30 — sever a revoked device's live socket, immediately ([#63](https://github.com/Einlanzerous/catenary/issues/63)) ([03f00e4](https://github.com/Einlanzerous/catenary/commit/03f00e49079648da28c8cdabed9e81736e99b5e3))
+* CANT-97 — POST /refresh, the rotating exchange ahead of reuse detection ([#62](https://github.com/Einlanzerous/catenary/issues/62)) ([b99eaf3](https://github.com/Einlanzerous/catenary/commit/b99eaf38cb5b9e8abe5a8970499a12c4f981054f))
+
+
+### Maintenance
+
+* ignore a stray /service-account credential file ([04e1a14](https://github.com/Einlanzerous/catenary/commit/04e1a14ba422816799b86ffb3575a5a0d3e916cf))
+
 ## [0.7.0](https://github.com/Einlanzerous/catenary/compare/v0.6.0...v0.7.0) (2026-09-17)
 
 
