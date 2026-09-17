@@ -443,6 +443,48 @@ func TestTheOtherRefusalsNeverInvalidateAFamily(t *testing.T) {
 	}
 }
 
+// THE INVALIDATION MUST OUTLIVE THE REQUEST THAT TRIGGERED IT.
+//
+// The context reaching refusalOutcome is the caller's — router.go passes
+// r.Context() — and Go cancels it the moment the client's connection closes.
+// The refusal is already decided by then, so cancellation cannot change what
+// the caller is told; what it could do is kill the invalidation, letting
+// somebody present a stolen token, hang up, and leave the family live at will —
+// confirming the token is spent without ever tripping the detector.
+//
+// CALLED DIRECTLY RATHER THAN THROUGH RotateRefresh, deliberately. A context
+// cancelled before that call fails at pool.Begin long before any detection
+// happens, so there would be nothing to observe; the detachment belongs to the
+// function that owns it, and this hands it the dead context on purpose.
+func TestAnInvalidationSurvivesACancelledCallerContext(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	e := enrolled(ctx, t, st, pool, "ada")
+	if _, err := st.RotateRefresh(ctx, e.Refresh.Plaintext); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	backdateRotation(ctx, t, pool, e.DeviceID, ReuseGraceWindow+time.Minute)
+
+	var tokenID, familyID uuid.UUID
+	if err := pool.QueryRow(ctx, `
+		SELECT id, family_id FROM refresh_tokens
+		 WHERE device_id = $1 AND id = family_id`, e.DeviceID).Scan(&tokenID, &familyID); err != nil {
+		t.Fatal(err)
+	}
+
+	dead, cancel := context.WithCancel(ctx)
+	cancel()
+	st.refusalOutcome(dead, tokenID, familyID, e.DeviceID, e.UserID)
+
+	after := readFamilyState(ctx, t, pool, e.DeviceID)
+	if !after.deviceRevoked || after.refreshRevoked != after.refreshRows {
+		t.Errorf("the family survived a replay whose caller had hung up: %+v.\n"+
+			"The refusal is already decided by that point, so nothing about the caller's "+
+			"lifetime should reach this — and if it does, a prober can confirm a stolen token "+
+			"is spent and keep the family alive, repeatably", after)
+	}
+}
+
 // A refused replay must leave no successor behind. The rotation transaction is
 // rolled back BEFORE invalidation precisely so the family being revoked cannot
 // simultaneously acquire a brand-new live token.

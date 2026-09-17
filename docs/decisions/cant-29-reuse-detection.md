@@ -14,7 +14,7 @@ CANT-97 made rotation single-use: presenting a spent refresh token fails the con
 | **a lost race** | a waking phone with two in-flight refreshes; the loser presents a token the winner already spent | ordinary, and CANT-97's own concurrency test is this shape |
 | **a lost response** | the server rotated, the response never arrived, the client retries | ordinary on a mobile network |
 
-Nothing in the row separates them. Invalidating on all three logs a real person out every time their phone wakes up and reports an incident that did not happen — which is the failure CANT-29's own description names: *"a legitimate double-refresh invalidates a real person's family and forces a re-authentication that looks exactly like the incident it is meant to report"*.
+Nothing in the row separates them. Invalidating on all three logs a real person out every time their phone wakes up and reports an incident that did not happen — the failure **CANT-97's criterion 1** names, carried there verbatim from CANT-28's plan: *"a legitimate double-refresh invalidates a real person's family and forces a re-authentication that looks exactly like the incident it is meant to report"*. (Attribution corrected in review: the sentence is CANT-97's, not CANT-29's, and had been propagating as the latter since CANT-97.)
 
 ## The decision: a short grace window
 
@@ -23,6 +23,10 @@ Nothing in the row separates them. Invalidating on all three logs a real person 
 **Time is the only distinguisher available, and it is a good one.** A race is milliseconds; a working device's next refresh is fifteen minutes away, so a theft's victim presents their stale token three orders of magnitude outside the window.
 
 **The rotation is dated from the successor's `issued_at`, and there is no new column.** `refresh_tokens.replaced_by` is `ON DELETE RESTRICT`, so a chain cannot be broken in the middle and the row a spent token names always exists — `internal/store/schema_test.go` already calls that constraint *"precisely the evidence CANT-29's reuse detection reads"*.
+
+**The age is subtracted by Postgres, not by the application,** and that was a correction found in review. `issued_at` is stamped by the database (`DEFAULT now()` in 0007; `insertRefresh` does not write the column) while `ServerTime()` is `time.Now()` in the service, so subtracting one from the other made the whole discrimination a comparison across two hosts' clocks against a ten-second threshold. A database more than ten seconds ahead makes every age negative, every presentation an echo, and **the detector silently off** — with every test still green, because CI shares one clock between the runner and its Postgres service. `now()` is transaction-start time on both sides, so a slow winner spends part of the loser's budget; at milliseconds against ten seconds that is noise, and it is written down so it is not rediscovered as a bug.
+
+**The invalidation is detached from the request that triggered it.** The context reaching this path is the caller's, and Go cancels it when the client's connection closes. The refusal is already decided by then, so cancellation cannot change what the caller is told — but it could kill the invalidation, letting somebody present a stolen token, hang up, and leave the family live at will. `context.WithoutCancel` with a bounded timeout, the shape `notify.go` already uses.
 
 ### The exposure this buys, stated rather than left to be found
 

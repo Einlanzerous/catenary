@@ -1,20 +1,26 @@
 -- Both indexes go; neither carried data, so this is a clean reverse.
 --
--- `IF EXISTS`, AND IT IS NOT DEFENSIVE PADDING. This is the FIRST migration
--- here whose down drops an object that a LOWER migration's down also removes:
--- every other index in this schema is created by the same migration that
--- creates its table (0001, 0002, 0003, 0007), so their downs drop the table and
--- the index goes with it and a standalone DROP INDEX never arises. These two
--- sit on tables 0001 and 0007 own, so `0003 down` — or any path that drops
--- those tables — takes them and leaves this migration's own down facing an
--- index that is already gone.
+-- `IF EXISTS`, AND THE REASON IS A STATE RATHER THAN A SEQUENCE. An earlier
+-- version of this comment blamed `0003 down`, which is wrong and was corrected
+-- in review: both tables are created by 0007, `0003_messages.down.sql` drops
+-- only log_counter, attachments and messages, and MigrateDown rolls back
+-- applied versions in DESCENDING order, so this down always runs before
+-- 0007's DROP TABLE. That path cannot happen.
 --
--- Without the guard that is not a tidy no-op, it is a hard failure that bricks
--- the whole test database: every package's fixture begins by migrating DOWN to
--- zero, so one unremovable migration fails `freshDB` for packages that have
--- nothing to do with this ticket. That is observed rather than theorised — it
--- happened here, and cost five red steps in `verify.sh` that all reported this
--- one error.
+-- WHAT DOES HAPPEN IS A DATABASE RECORDED AT 0008 WHOSE INDEXES ARE ABSENT, and
+-- it is observed rather than theorised. Two processes migrating one database
+-- interleave: one reads the applied set before 0008 exists, the other applies
+-- 0008, and the first then rolls back 0007 — dropping the token tables, and
+-- these indexes with them — while 0008's bookkeeping row, which it never knew
+-- about, survives. The timestamps make it unmistakable: 0008's row was stamped
+-- nineteen seconds BEFORE 0001-0007's.
+--
+-- Bare, that state is not a tidy no-op. Every package's fixture begins by
+-- migrating DOWN to zero, so one unremovable migration fails `freshDB` for
+-- packages with nothing to do with this ticket — five red steps in `verify.sh`,
+-- all reporting this one error. The guard makes the down survivable against a
+-- schema something else already cleared, which is what a test database that is
+-- migrated down thousands of times actually needs.
 --
 -- THE UP STAYS STRICT, deliberately, so nobody "fixes" it to match. A CREATE
 -- INDEX here only runs when 0008 is not recorded as applied, and an index that

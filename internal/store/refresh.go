@@ -6,22 +6,22 @@ package store
 // the same line-by-line read as the reuse detection built over it. The columns
 // were landed there and written by nothing; this is what writes them.
 //
-// WHAT IS NOT HERE, AND IS NOT FORGOTTEN. A replay — a second presentation of a
-// token that already has `replaced_by` — is REFUSED here and does not yet
-// invalidate its family. That is CANT-29's, by its own `Done when`: "a replayed
-// refresh invalidates the family, not the request".
+// CANT-29 IS ALSO HERE NOW: a replayed refresh invalidates its whole family
+// rather than just the request. refusalOutcome is where a refusal is turned
+// into a meaning, and invalidateFamily is what a replay costs.
 //
-// WHAT THIS HANDS THAT TICKET IS THE SHAPE, NOT A DETECTOR. A replay is a
-// presentation whose conditional update returns zero rows against a row that
-// already carries `replaced_by` — and so is a benign double-refresh from a
-// waking phone, and so is a client retrying after a response was lost in
-// flight. The zero-row branch is a SUPERSET of replay and its other members are
-// ordinary, so CANT-29 needs a distinguisher of its own; logRotationRefusal
-// says why the row alone cannot be one. An earlier version of this comment
-// called that branch "exactly the state its detection reasons over", which
-// invited the exact mistake CANT-29's own description warns about — invalidating
-// a real person's family on a legitimate double-refresh, and reporting it as
-// the incident it is meant to detect.
+// THE ZERO-ROW RESULT IS A SUPERSET OF REPLAY, which is the difficulty the
+// whole of CANT-29 is about. A presentation whose conditional update returns
+// zero rows against a row that already carries `replaced_by` is a replay — and
+// so is a benign double-refresh from a waking phone, and so is a client
+// retrying after a response was lost in flight. Nothing in the row separates
+// them, so the distinguisher is TIME: see ReuseGraceWindow, and
+// docs/decisions/cant-29-reuse-detection.md for the decision and its exposure.
+//
+// An earlier version of this comment called that branch "exactly the state its
+// detection reasons over", which invited exactly the mistake CANT-97's
+// criterion 1 warns about — invalidating a real person's family on a legitimate
+// double-refresh, and reporting it as the incident it is meant to detect.
 
 import (
 	"context"
@@ -58,7 +58,27 @@ import (
 // it is the right way round: the alternative invalidates a real person's family
 // every time their phone wakes up, and a detector that fires on ordinary
 // traffic is one that gets turned off.
+// THE AGE IT IS COMPARED AGAINST IS COMPUTED BY POSTGRES, NOT BY THIS PROCESS,
+// and that is a correction rather than a detail (found in review on #64).
+// `issued_at` is stamped by the database — insertRefresh does not write that
+// column, so it comes from 0007's `DEFAULT now()` — while ServerTime() is
+// time.Now() in the application. Subtracting one from the other made this
+// ticket's entire discrimination a comparison across two hosts' clocks against
+// a ten-second threshold: a database more than ten seconds ahead makes every
+// age negative, every presentation an echo, and the detector silently off,
+// with every test still green because CI shares one clock between the runner
+// and its Postgres service. refusalOutcome therefore asks the database for the
+// age directly.
+//
+// `now()` IS TRANSACTION-START TIME on both sides, so a slow winner spends part
+// of the loser's budget. At milliseconds against ten seconds that is noise, and
+// it is named here so it is not rediscovered as a bug.
 const ReuseGraceWindow = 10 * time.Second
+
+// refusalOutcomeBudget bounds the work a refusal triggers once it has been
+// detached from the caller's context. Five seconds, matching the only other
+// WithoutCancel in this package (notify.go's connection close).
+const refusalOutcomeBudget = 5 * time.Second
 
 // Rotated is one exchange's result: the next pair, and who it belongs to.
 //
@@ -267,13 +287,30 @@ func (s *Store) RotateRefresh(ctx context.Context, presented string) (Rotated, e
 // who uses a stolen token FIRST leaves the successor unrotated, so the victim's
 // later presentation reads as benign and the attacker keeps the family.
 func (s *Store) refusalOutcome(ctx context.Context, tokenID, familyID, deviceID, userID uuid.UUID) {
+	// DETACHED FROM THE CALLER'S CONTEXT, AND BOUNDED. Found in review on #64.
+	// The context that arrives here is the REQUEST's — router.go passes
+	// r.Context() — and Go cancels that the moment the client's connection
+	// closes. The refusal has already been decided by the time this runs, so
+	// cancellation can no longer affect what the caller is told; what it CAN do
+	// is kill the invalidation. A prober could then present a stolen token,
+	// hang up, and leave the family live at will — learning the token is spent
+	// without ever tripping the detector, which is precisely the state
+	// invalidateFamily's comment says must not happen. The same path would fire
+	// benignly every time a mobile client timed out on a late retry.
+	//
+	// WithoutCancel with a timeout over it, which is the shape notify.go
+	// already uses for the same reason: the caller's lifetime is the wrong one
+	// for work the caller does not own.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refusalOutcomeBudget)
+	defer cancel()
+
 	var (
 		replacedBy    *uuid.UUID
 		tokenRevoked  *time.Time
 		expiresAt     time.Time
 		deviceRevoked *time.Time
 		deactivated   *time.Time
-		rotatedAt     *time.Time
+		rotatedAgeSec *float64
 	)
 	// THE SUCCESSOR'S issued_at IS THE MOMENT THIS TOKEN WAS ROTATED, and there
 	// is no `replaced_at` column because there does not need to be. The join is
@@ -281,16 +318,21 @@ func (s *Store) refusalOutcome(ctx context.Context, tokenID, familyID, deviceID,
 	// so a chain cannot be broken in the middle and the row a replaced token
 	// names always exists — schema_test.go calls that constraint "precisely the
 	// evidence CANT-29's reuse detection reads".
+	//
+	// THE AGE IS SUBTRACTED IN SQL, so both sides of it come from the database's
+	// clock. Returning the bare timestamp for Go to subtract against its own
+	// clock is what made this a cross-host comparison; see ReuseGraceWindow.
 	if err := s.pool.QueryRow(ctx, `
 		SELECT r.replaced_by, r.revoked_at, r.expires_at,
-		       d.revoked_at, u.deactivated_at, succ.issued_at
+		       d.revoked_at, u.deactivated_at,
+		       EXTRACT(EPOCH FROM (now() - succ.issued_at))::float8
 		  FROM refresh_tokens r
 		  JOIN devices d ON d.id = r.device_id
 		  JOIN users u ON u.id = d.user_id
 		  LEFT JOIN refresh_tokens succ ON succ.id = r.replaced_by
 		 WHERE r.id = $1`, tokenID).
 		Scan(&replacedBy, &tokenRevoked, &expiresAt, &deviceRevoked,
-			&deactivated, &rotatedAt); err != nil {
+			&deactivated, &rotatedAgeSec); err != nil {
 		// The refusal still stands; only its explanation is missing. Logged as
 		// such rather than swallowed, because a refusal nobody can account for
 		// is the one worth finding in a log.
@@ -300,7 +342,7 @@ func (s *Store) refusalOutcome(ctx context.Context, tokenID, familyID, deviceID,
 	}
 
 	if replacedBy != nil {
-		s.spentTokenOutcome(ctx, tokenID, familyID, deviceID, userID, rotatedAt)
+		s.spentTokenOutcome(ctx, tokenID, familyID, deviceID, userID, rotatedAgeSec)
 		return
 	}
 
@@ -330,21 +372,21 @@ func (s *Store) refusalOutcome(ctx context.Context, tokenID, familyID, deviceID,
 
 // spentTokenOutcome answers the one question this ticket exists for: was that a
 // replay, or an echo of a rotation that already worked?
-func (s *Store) spentTokenOutcome(ctx context.Context, tokenID, familyID, deviceID, userID uuid.UUID, rotatedAt *time.Time) {
+func (s *Store) spentTokenOutcome(ctx context.Context, tokenID, familyID, deviceID, userID uuid.UUID, rotatedAgeSec *float64) {
 	// UNDATEABLE MEANS TREAT IT AS A REPLAY, and the bias is deliberate. The
 	// RESTRICT on replaced_by makes this unreachable, so arriving here means the
 	// schema's own guarantee has failed — and the safe reading of "a spent token
 	// was presented and I cannot tell you when it was spent" is the incident,
 	// not the echo. Logged as its own reason so it is never mistaken for an
 	// ordinary detection.
-	if rotatedAt == nil {
+	if rotatedAgeSec == nil {
 		s.logger.ErrorContext(ctx, "refresh replay suspected; the rotation could not be dated",
 			"token_id", tokenID, "family_id", familyID, "device_id", deviceID, "user_id", userID)
 		s.invalidateFamily(ctx, familyID, deviceID, userID, "rotation could not be dated")
 		return
 	}
 
-	if age := ServerTime().Sub(*rotatedAt); age < ReuseGraceWindow {
+	if age := time.Duration(*rotatedAgeSec * float64(time.Second)); age < ReuseGraceWindow {
 		// THE ECHO. The rotation this token lost to happened moments ago, so the
 		// client that is holding the winner's pair and the client that sent this
 		// are overwhelmingly the same client. Refused — single use still holds,
@@ -384,6 +426,17 @@ func (s *Store) spentTokenOutcome(ctx context.Context, tokenID, familyID, device
 // than collateral: a family begins at one enrollment and every rotation carries
 // the same device_id forward, so "this family" and "this device's credentials"
 // are the same set.
+//
+// THE DEVICE WRITE IS ALSO NOT REDUNDANT, AND MUST NOT BE REMOVED AS SUCH. The
+// family UPDATE takes its snapshot at statement start; if it blocks on a row
+// lock held by a concurrent legitimate rotation, Postgres re-checks only the
+// locked row on unblock rather than re-scanning, so a successor that
+// transaction committed in the meantime is invisible to it and survives
+// unrevoked. Nothing exploitable follows — `devices.revoked_at` is set in this
+// same transaction, and RotateRefresh's `d.revoked_at IS NULL` door refuses
+// that survivor — but "the whole family" is guaranteed by the device write
+// rather than by the family predicate alone, and the tests' "no unrevoked rows"
+// property holds in the sequential case.
 //
 // IDEMPOTENT ON R6'S TERMS, AND THE GUARDS ALONE DO NOT BUY IT. The `IS NULL`
 // predicates make the three WRITES idempotent; they say nothing about the
