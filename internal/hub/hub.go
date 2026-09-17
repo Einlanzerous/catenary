@@ -101,7 +101,32 @@ const (
 	// membersTimeout bounds the member read a detach may need to emit an
 	// updated typing list; detach has no caller context to inherit.
 	membersTimeout = 2 * time.Second
+
+	// revokeBudget bounds the re-check a revocation gap runs. The listener has
+	// usually just reconnected, so the pool may still be behind it — the same
+	// reasoning headBudget gets, and the same number.
+	revokeBudget = 5 * time.Second
 )
+
+// StatusRevoked is CANT-30's severance code: the credential behind this
+// session stopped being live while the session was open.
+//
+// ITS OWN CODE, IN RFC 6455's PRIVATE RANGE, on the convention
+// `internal/api/socket.go` states for 4000 — each distinct reason a session
+// ends carries its own, so that a reader of a close-code histogram can tell
+// them apart. Folding this into 1008 would work for a client and would make a
+// mid-session revocation indistinguishable from a refused handshake in
+// `client.Stats.CloseStatuses`, which is exactly the telemetry that would show
+// revocation working.
+//
+// IT IS THE FIRST CODE IN THE TERMINAL BUCKET, and that is the point of it.
+// CANT-35's table puts 1001, 1012, 4000 and an abnormal closure in
+// "reconnect with backoff"; 1008 is "do not retry the same handshake, fix the
+// credential first". This belongs with 1008: the device has been revoked, the
+// door will refuse its next upgrade whatever it presents, and a client that
+// reconnects on a timer is the failure CANT-31 names — "a revoked device
+// reconnecting forever". A client MUST NOT treat this as a transient drop.
+const StatusRevoked websocket.StatusCode = 4001
 
 // Conn is what the hub needs of a session. api.Session satisfies it through a
 // wrapper at the composition root (its UserID and DeviceID are exported
@@ -134,6 +159,9 @@ type Store interface {
 	// — see OnNotify's receipt branch and MessagesForReadNotify's own
 	// comment for the cap and the author exclusion.
 	MessagesForReadNotify(ctx context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]store.ReadNotifyMessage, error)
+	// RevokedDevices is CANT-30's gap re-check: of the devices this instance
+	// holds sessions for, which no longer authenticate. See OnRevocationGap.
+	RevokedDevices(ctx context.Context, deviceIDs []uuid.UUID) ([]uuid.UUID, error)
 }
 
 // Hub is one per process.
@@ -607,6 +635,170 @@ func (h *Hub) gap(ctx context.Context) {
 	}
 	h.mu.Unlock()
 	h.logger.Warn("listener gap", "sessions_notified", n, "head", head)
+}
+
+// OnRevocation is the revocation listener's per-notification callback: a
+// credential stopped being live, so every session on this instance that it
+// authorized is closed at once.
+//
+// THIS IS WHAT "IMMEDIATELY RATHER THAN AT ITS NEXT RECONNECT" MEANS. Under
+// CANT-28 ruling 2 a socket is authorized once at accept and outlives the
+// access token that opened it, so nothing about a revocation reaches a live
+// session by itself — `store.Authenticate` guards the next REQUEST, and a
+// session that is already streaming makes no further requests. Without this
+// callback a revoked phone keeps receiving every message in every room it was
+// in until it happens to drop, which is not what the person who clicked the
+// button believes they did.
+//
+// THE SUBJECT IS A DEVICE OR A USER, matching RevocationPayload. A device
+// revocation closes that device's sessions and leaves the person's other
+// devices alone — "the other devices are untouched" is in this ticket's own
+// `Done when`. A user revocation closes all of them, which is the deactivated
+// account the payload has carried a field for since CANT-28 and which
+// CANT-33's connector surface will one day publish.
+//
+// Close, not CloseNow: the peer is alive and the status is the point, exactly
+// as the drain and the head-unreadable sever already argue. Collected under
+// the lock and closed OUTSIDE it, in a goroutine each, because a close
+// handshake waits for the peer's echo and this runs on the listener goroutine
+// that serialises delivery for every session on the instance.
+func (h *Hub) OnRevocation(ctx context.Context, p store.RevocationPayload) {
+	if p.DeviceID == nil && p.UserID == nil {
+		// Something NOTIFYed on the channel with neither subject set. Not
+		// fatal — anything may notify on a channel name — but nothing here can
+		// act on it, and a silent return would hide a publisher that is wrong.
+		h.logger.Warn("revocation with no subject", "channel", store.RevocationChannel)
+		return
+	}
+
+	h.mu.Lock()
+	var doomed []*session
+	switch {
+	case p.UserID != nil:
+		// Every session this account holds, on every device.
+		for s := range h.sessions[*p.UserID] {
+			doomed = append(doomed, s)
+		}
+		fallthrough
+	default:
+		if p.DeviceID != nil {
+			// Indexed by user, so the device is found by walking. The set is
+			// one instance's attached sessions, and a revocation is rare.
+			for _, set := range h.sessions {
+				for s := range set {
+					if s.conn.DeviceID() == *p.DeviceID {
+						doomed = append(doomed, s)
+					}
+				}
+			}
+		}
+	}
+	// Removed from the index under the same lock that found them, so nothing
+	// enqueues to a session that is on its way out.
+	for _, s := range doomed {
+		h.removeLocked(s)
+	}
+	n := h.count
+	h.mu.Unlock()
+
+	for _, s := range doomed {
+		go func(s *session) { _ = s.conn.Close(StatusRevoked, "credential revoked") }(s)
+	}
+	h.logger.Info("sessions severed by revocation",
+		"device_id", p.DeviceID, "user_id", p.UserID,
+		"sessions_severed", len(doomed), "sessions", n)
+}
+
+// OnRevocationGap is the revocation listener's reconnect callback, and it is
+// not optional detail.
+//
+// A REVOCATION HAS NO CURSOR, so unlike the message path there is nothing to
+// replay. Postgres queues nothing for a disconnected listener, so every
+// revocation raised while this listener was down is gone with no record of how
+// many — and each one is a session this instance is still serving. The only
+// thing that closes that hole is asking the database about the sessions this
+// instance actually holds, which is what store.RevokedDevices does.
+//
+// Synchronous on the listener goroutine, as notify.go requires, and it never
+// waits on anything that listener has to deliver.
+func (h *Hub) OnRevocationGap(ctx context.Context) {
+	h.mu.Lock()
+	byDevice := map[uuid.UUID][]*session{}
+	var all []*session
+	for _, set := range h.sessions {
+		for s := range set {
+			d := s.conn.DeviceID()
+			byDevice[d] = append(byDevice[d], s)
+			all = append(all, s)
+		}
+	}
+	h.mu.Unlock()
+	if len(all) == 0 {
+		return
+	}
+
+	ids := make([]uuid.UUID, 0, len(byDevice))
+	for d := range byDevice {
+		ids = append(ids, d)
+	}
+
+	var revoked []uuid.UUID
+	err := h.retry(ctx, revokeBudget, func() error {
+		var e error
+		revoked, e = h.st.RevokedDevices(ctx, ids)
+		return e
+	})
+	if ctx.Err() != nil {
+		h.logger.Debug("revocation gap abandoned on a cancelled context")
+		return
+	}
+	if err != nil {
+		// THE RE-CHECK IS THE ONLY THING THAT KNEW, so a failure here leaves
+		// this instance unable to say whether any of its sessions is revoked.
+		// Every one of them is closed rather than kept: the door re-runs
+		// store.Authenticate on the next upgrade, which refuses a revoked
+		// device and a deactivated account, so a reconnect turns an unknown
+		// back into a known state. That is the same trade the head-unreadable
+		// sever already makes.
+		//
+		// 1012 AND NOT StatusRevoked, WHICH WOULD BE THE BUG. These sessions
+		// are not known to be revoked — most of them certainly are not — and
+		// StatusRevoked is terminal by CANT-35's table. Telling every healthy
+		// client on the instance never to reconnect would turn a transient
+		// database failure into a permanent outage for all of them.
+		h.mu.Lock()
+		for _, s := range all {
+			h.removeLocked(s)
+		}
+		h.mu.Unlock()
+		for _, s := range all {
+			go func(s *session) {
+				_ = s.conn.Close(websocket.StatusServiceRestart, "revocation state unreadable after a listener gap")
+			}(s)
+		}
+		h.logger.Error("revoked-device re-check failed after a gap; sessions severed for reconnect",
+			"sessions_severed", len(all), "error", err)
+		return
+	}
+
+	h.mu.Lock()
+	var doomed []*session
+	for _, d := range revoked {
+		doomed = append(doomed, byDevice[d]...)
+	}
+	for _, s := range doomed {
+		h.removeLocked(s)
+	}
+	h.mu.Unlock()
+	for _, s := range doomed {
+		go func(s *session) { _ = s.conn.Close(StatusRevoked, "credential revoked") }(s)
+	}
+	if len(doomed) > 0 {
+		h.logger.Warn("revocation gap: sessions severed on re-check",
+			"checked", len(ids), "revoked", len(revoked), "sessions_severed", len(doomed))
+		return
+	}
+	h.logger.Debug("revocation gap: nothing to sever", "checked", len(ids))
 }
 
 // retry runs op until it succeeds, fails permanently, spends its budget, or

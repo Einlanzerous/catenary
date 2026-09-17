@@ -121,8 +121,11 @@ type fakeStore struct {
 	markRead   func(ctx context.Context, conv, user uuid.UUID, upToSeq int64) (store.ReadReceipt, error)
 	head       func(ctx context.Context) (int64, error)
 	readNotify func(ctx context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]store.ReadNotifyMessage, error)
+	// revokedDevices is CANT-30's gap re-check. Nil answers "none of them",
+	// which is the right default for every test that is not about revocation.
+	revokedDevices func(ctx context.Context, deviceIDs []uuid.UUID) ([]uuid.UUID, error)
 
-	fanouts, heads, readNotifies atomic.Int32
+	fanouts, heads, readNotifies, revokeChecks atomic.Int32
 }
 
 func (f *fakeStore) MessageForFanout(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error) {
@@ -145,6 +148,13 @@ func (f *fakeStore) MessagesForReadNotify(ctx context.Context, conv, reader uuid
 		return nil, nil
 	}
 	return f.readNotify(ctx, conv, reader, before, after, capPerAuthor)
+}
+func (f *fakeStore) RevokedDevices(ctx context.Context, deviceIDs []uuid.UUID) ([]uuid.UUID, error) {
+	f.revokeChecks.Add(1)
+	if f.revokedDevices == nil {
+		return nil, nil
+	}
+	return f.revokedDevices(ctx, deviceIDs)
 }
 
 // recorder keeps every log record so a test can assert on levels.
