@@ -9,9 +9,19 @@ package store
 // WHAT IS NOT HERE, AND IS NOT FORGOTTEN. A replay — a second presentation of a
 // token that already has `replaced_by` — is REFUSED here and does not yet
 // invalidate its family. That is CANT-29's, by its own `Done when`: "a replayed
-// refresh invalidates the family, not the request". The seam it needs is the
-// zero-row branch of the conditional update below, which is exactly the state
-// its detection reasons over.
+// refresh invalidates the family, not the request".
+//
+// WHAT THIS HANDS THAT TICKET IS THE SHAPE, NOT A DETECTOR. A replay is a
+// presentation whose conditional update returns zero rows against a row that
+// already carries `replaced_by` — and so is a benign double-refresh from a
+// waking phone, and so is a client retrying after a response was lost in
+// flight. The zero-row branch is a SUPERSET of replay and its other members are
+// ordinary, so CANT-29 needs a distinguisher of its own; logRotationRefusal
+// says why the row alone cannot be one. An earlier version of this comment
+// called that branch "exactly the state its detection reasons over", which
+// invited the exact mistake CANT-29's own description warns about — invalidating
+// a real person's family on a legitimate double-refresh, and reporting it as
+// the incident it is meant to detect.
 
 import (
 	"context"
@@ -201,14 +211,28 @@ func (s *Store) RotateRefresh(ctx context.Context, presented string) (Rotated, e
 // A DIAGNOSTIC AND NOT A DECISION, which is the whole reason it runs second.
 // Deciding here would put the doors in two places and let them disagree; by
 // reading only once the update has declined, this cannot change an outcome
-// however wrong it is. It runs inside the same transaction, before the
-// rollback, so it sees the same snapshot the update just refused against.
+// however wrong it is.
 //
-// `lost the rotation race` is the DEFAULT rather than a case, and that is
-// deliberate: if every visible door is open, the row changed under this
-// transaction between the update and this read, which is a waking phone's
-// second in-flight request and the one cause with nothing in the row to name
-// it by.
+// IT TAKES A NEW SNAPSHOT, AND THAT DECIDES WHAT IT CAN AND CANNOT SAY. This
+// is a new statement, and under READ COMMITTED a new statement reads a new
+// snapshot — so it sees whatever committed while the update was blocked,
+// the winner's own `replaced_by` included. An earlier version of this comment
+// claimed it saw the same snapshot the update refused against; it does not,
+// and that is precisely why it sees the winner's write. Found in review.
+//
+// SO A LOST RACE AND A REPLAY ARE INDISTINGUISHABLE HERE, and both log
+// `token already rotated`. A waking phone's second in-flight request, a client
+// retrying after a response was lost in flight, and a stolen token presented a
+// second time all arrive at the same row in the same state — `replaced_by` set
+// by somebody — and nothing in the row separates them.
+//
+// THAT MATTERS TO CANT-29 RATHER THAN HERE. All three are the same 401 to the
+// caller, which is the rule this route exists to keep. But CANT-29 invalidates
+// a FAMILY on a replay, and its own description names the cost of getting it
+// wrong: "a legitimate double-refresh invalidates a real person's family and
+// forces a re-authentication that looks exactly like the incident it is meant
+// to report". It needs a distinguisher of its own — this branch is not one,
+// and the refresh-token row alone cannot supply one.
 func (s *Store) logRotationRefusal(ctx context.Context, tx pgx.Tx, tokenID, familyID, deviceID, userID uuid.UUID) {
 	var (
 		replacedBy    *uuid.UUID
@@ -232,11 +256,21 @@ func (s *Store) logRotationRefusal(ctx context.Context, tx pgx.Tx, tokenID, fami
 		return
 	}
 
-	reason := "lost the rotation race"
+	// THE DEFAULT IS EFFECTIVELY UNREACHABLE, and it is labelled honestly rather
+	// than removed. Reaching it needs the row visible with every door open,
+	// which cannot follow this update declining: the update only declines after
+	// a winner has COMMITTED, and the read above sees that commit. It used to
+	// read `lost the rotation race`, which is the one thing it can never be. If
+	// this ever appears in a log, something changed the row in a way nothing in
+	// this schema does, and the answer is to find out what rather than to trust
+	// the label.
+	reason := "refused, and the row names no reason"
 	switch {
 	case replacedBy != nil:
-		// THE REPLAY, AND THE ONE CANT-29 IS WAITING FOR. The family is named
-		// because that ticket's invalidation is one predicate over this column.
+		// A REPLAY, A LOST RACE, OR A RETRY AFTER A LOST RESPONSE. They are the
+		// same row in the same state and this cannot tell them apart — see the
+		// doc comment. The family is named because CANT-29's invalidation is one
+		// predicate over this column, NOT because this has identified a replay.
 		reason = "token already rotated"
 	case tokenRevoked != nil:
 		reason = "token revoked"
