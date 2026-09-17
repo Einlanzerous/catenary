@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.7.0](https://github.com/Einlanzerous/catenary/compare/v0.6.0...v0.7.0) (2026-09-17)
+
+
+### Features
+
+* CANT-109 — soakrig against a deployed server: Access headers, provision, a stricter idle ([#53](https://github.com/Einlanzerous/catenary/issues/53)) ([c720a4d](https://github.com/Einlanzerous/catenary/commit/c720a4d416d44d18664488e7a0ca58e8c3caec1b))
+* CANT-113 — the conversation and user frames on ServerFrame ([#58](https://github.com/Einlanzerous/catenary/issues/58)) ([ab4ac5f](https://github.com/Einlanzerous/catenary/commit/ab4ac5fe970313705f2b9a03db54882adefc6436))
+* CANT-114 — the hub introduces a conversation and its users before the first message ([#59](https://github.com/Einlanzerous/catenary/issues/59)) ([6943b2b](https://github.com/Einlanzerous/catenary/commit/6943b2b6b95f54ff1ebdb4c0df85700c47c8d718))
+* CANT-92 — receipt re-emission, the wire's live read-state refresh ([#55](https://github.com/Einlanzerous/catenary/issues/55)) ([8541567](https://github.com/Einlanzerous/catenary/commit/8541567989085c0bb8896daf71909963f2d6ca36))
+
+
+### Bug Fixes
+
+* CANT-111 — correct three stale wire-text clauses and regenerate ([#56](https://github.com/Einlanzerous/catenary/issues/56)) ([93bb636](https://github.com/Einlanzerous/catenary/commit/93bb636dfada813ce21183289bdf2a17a40232eb))
+* CANT-115 — the hello deadline is per-server, not a package variable ([#60](https://github.com/Einlanzerous/catenary/issues/60)) ([dc328d5](https://github.com/Einlanzerous/catenary/commit/dc328d5e965f0558f06865e7525ed0c4e41e03ed))
+
 ## [0.6.0](https://github.com/Einlanzerous/catenary/compare/v0.5.0...v0.6.0) (2026-09-14)
 
 
