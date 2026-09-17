@@ -349,3 +349,53 @@ func (s *Store) Head(ctx context.Context) (int64, error) {
 	}
 	return head, nil
 }
+
+// DeadDevices answers "which of these devices no longer authenticate", and is
+// CANT-30's answer both to a gap in the revocation channel and to the window
+// between the door authenticating a device and the hub indexing its session.
+//
+// NAMED FOR THE QUESTION, NOT FOR ONE OF ITS TWO ANSWERS. It was briefly
+// `RevokedDevices`, which reads as `devices.revoked_at` alone — the exact
+// misreading this query exists to correct, and a name that would invite the
+// next caller to reach for the column instead of the function.
+//
+// IT EXISTS BECAUSE A REVOCATION HAS NO CURSOR. The message path answers a
+// missed notification by resyncing from `log_seq` — every message is still
+// there to be re-read. A revocation is an edge, not a row: Postgres queues
+// nothing for a disconnected listener (notify.go is emphatic), so a revocation
+// raised while an instance's listener was down is gone with no record that it
+// happened, and that instance would keep serving a severed device's socket
+// forever. There is no cursor to replay, so the only thing that closes the hole
+// is asking the database about the sessions this instance actually holds.
+//
+// BOTH SUBJECTS, IN ONE QUERY. RevocationPayload's subject is a device OR a
+// user, and the same is true here: a session dies when its own device is
+// revoked, and equally when the ACCOUNT behind it is deactivated. Asking only
+// about devices.revoked_at would leave a disabled person's socket streaming —
+// which is the gap CANT-28's decision record states is real and open, and this
+// is the half of it the hub can close.
+//
+// The set is per-instance and small — one session per attached device — so this
+// is one indexed `= ANY` over a handful of ids rather than a scan.
+func (s *Store) DeadDevices(ctx context.Context, deviceIDs []uuid.UUID) ([]uuid.UUID, error) {
+	// No sessions, no question. An empty `= ANY` is a valid query and a
+	// pointless round trip on an instance that is holding nothing.
+	if len(deviceIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+		SELECT d.id
+		  FROM devices d
+		  JOIN users u ON u.id = d.user_id
+		 WHERE d.id = ANY($1)
+		   AND (d.revoked_at IS NOT NULL OR u.deactivated_at IS NOT NULL)
+		 ORDER BY d.id`, deviceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("store: dead devices: %w", err)
+	}
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("store: dead devices: collect: %w", err)
+	}
+	return ids, nil
+}

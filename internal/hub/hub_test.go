@@ -121,8 +121,13 @@ type fakeStore struct {
 	markRead   func(ctx context.Context, conv, user uuid.UUID, upToSeq int64) (store.ReadReceipt, error)
 	head       func(ctx context.Context) (int64, error)
 	readNotify func(ctx context.Context, conv, reader uuid.UUID, before, after int64, capPerAuthor int) ([]store.ReadNotifyMessage, error)
+	// deadDevices is CANT-30's liveness read, asked by the gap re-check and by
+	// every attach. Nil answers "none of them", which is the right default for
+	// every test that is not about revocation — including the attach re-check,
+	// which every fixture now runs.
+	deadDevices func(ctx context.Context, deviceIDs []uuid.UUID) ([]uuid.UUID, error)
 
-	fanouts, heads, readNotifies atomic.Int32
+	fanouts, heads, readNotifies, deadChecks atomic.Int32
 }
 
 func (f *fakeStore) MessageForFanout(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error) {
@@ -145,6 +150,13 @@ func (f *fakeStore) MessagesForReadNotify(ctx context.Context, conv, reader uuid
 		return nil, nil
 	}
 	return f.readNotify(ctx, conv, reader, before, after, capPerAuthor)
+}
+func (f *fakeStore) DeadDevices(ctx context.Context, deviceIDs []uuid.UUID) ([]uuid.UUID, error) {
+	f.deadChecks.Add(1)
+	if f.deadDevices == nil {
+		return nil, nil
+	}
+	return f.deadDevices(ctx, deviceIDs)
 }
 
 // recorder keeps every log record so a test can assert on levels.

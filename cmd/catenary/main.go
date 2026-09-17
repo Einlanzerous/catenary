@@ -186,6 +186,13 @@ type deps struct {
 	// context it owns.
 	hub      *hub.Hub
 	listener *store.Listener[store.NotifyPayload]
+
+	// revocations is the SECOND listener, on its own channel and its own
+	// payload (CANT-28 ruling 7, CANT-30). Two channels rather than one
+	// discriminated shape, because a revocation and a message decode
+	// DIFFERENTLY on a parse failure rather than erroring — notify.go carries
+	// the whole argument. Run and stopped exactly as `listener` is.
+	revocations *store.Listener[store.RevocationPayload]
 }
 
 // setup is the composition root. Every dependency is constructed here and
@@ -232,6 +239,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var handleFn func(context.Context, *api.Session, wire.ClientFrame)
 	var h *hub.Hub
 	var listener *store.Listener[store.NotifyPayload]
+	var revocations *store.Listener[store.RevocationPayload]
 	if st != nil {
 		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 			return serveSync(ctx, st, viewer, after, limit)
@@ -288,14 +296,24 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			DSN: cfg.DatabaseURL, Channel: store.NotifyChannel, Logger: logger,
 			OnNotify: h.OnNotify, OnGap: h.OnGap,
 		}
+		// CANT-30. Its own connection, as every Listener has: LISTEN registers
+		// against a session, so two channels on one connection would share a
+		// reconnect and a gap between two consumers whose gaps mean different
+		// things — one resyncs from a cursor, and this one has no cursor to
+		// resync from.
+		revocations = &store.Listener[store.RevocationPayload]{
+			DSN: cfg.DatabaseURL, Channel: store.RevocationChannel, Logger: logger,
+			OnNotify: h.OnRevocation, OnGap: h.OnRevocationGap,
+		}
 	}
 
 	return deps{
-		cfg:      cfg,
-		logger:   logger,
-		store:    st,
-		hub:      h,
-		listener: listener,
+		cfg:         cfg,
+		logger:      logger,
+		store:       st,
+		hub:         h,
+		listener:    listener,
+		revocations: revocations,
 		router: api.NewRouter(api.Deps{
 			Logger:   logger,
 			DB:       db,
@@ -519,6 +537,20 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 	} else {
 		close(listenerDone)
 	}
+	// CANT-30's second listener, on the SAME context and the same terms. It
+	// must outlive the signal by the length of the drain for the same reason
+	// the first does, and more sharply: a revocation raised while sessions are
+	// still being served is still a session that has to be severed, and the
+	// drain is exactly when an operator is most likely to be revoking things.
+	revocationsDone := make(chan struct{})
+	if d.revocations != nil {
+		go func() {
+			defer close(revocationsDone)
+			_ = d.revocations.Run(listenerCtx)
+		}()
+	} else {
+		close(revocationsDone)
+	}
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -563,6 +595,7 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 
 	stopListener()
 	<-listenerDone
+	<-revocationsDone
 
 	if srvErr != nil {
 		return fmt.Errorf("shutdown: %w", srvErr)
