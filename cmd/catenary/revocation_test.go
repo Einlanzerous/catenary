@@ -23,6 +23,7 @@ package main
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -192,5 +193,66 @@ func TestSetupWiresTheRevocationListener(t *testing.T) {
 	// so a change to it is deliberate.
 	if hub.StatusRevoked != websocket.StatusCode(4001) {
 		t.Errorf("StatusRevoked = %d, want 4001 — CANT-35's table names it", int(hub.StatusRevoked))
+	}
+}
+
+// The window between the door and the index, through the REAL door.
+//
+// Found by the reviewer on PR #63. The socket is accepted and authenticated,
+// and the device is revoked while `awaitHello` is still blocking — so there is
+// no session in the hub for a notification to find, and Postgres queues
+// nothing for the listener to pick up later.
+//
+// NO REVOCATION LISTENER RUNS IN THIS TEST, deliberately. `runRevocations` is
+// not called, so the notification reaches nobody at all. The only thing that
+// can close this socket is the re-check the hub runs when the session is
+// finally indexed — which is exactly the claim under test, and a test that
+// left the listener running could pass on the notification instead and prove
+// nothing about the window.
+func TestADeviceRevokedWhileTheSocketWasStillInTheDoorIsSeveredAtAttach(t *testing.T) {
+	r := newRig(t)
+
+	ada := mkUser(r.ctx, t, r.pool, "ada", "Ada Lovelace")
+	cred := r.enroll(ada, "Pixel 8 Pro")
+
+	dctx, cancel := context.WithTimeout(r.ctx, 10*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(dctx, "ws"+strings.TrimPrefix(r.base, "http")+"/ws",
+		&websocket.DialOptions{
+			Subprotocols: []string{"catenary.v1", "catenary.token." + string(cred.AccessToken)},
+		})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.CloseNow() })
+
+	// Authenticated and accepted, and the hub has never heard of it: the door
+	// is inside awaitHello. Without this the test could pass against a build
+	// where the session had already attached and OnRevocation did the work.
+	if n := r.d.hub.Attached(); n != 0 {
+		t.Fatalf("precondition: %d sessions attached before the hello, want 0", n)
+	}
+
+	if _, err := r.st.RevokeDevice(r.ctx, deviceID(t, cred.DeviceID)); err != nil {
+		t.Fatalf("revoke: %v", err)
+	}
+
+	// Now the hello arrives, and the session is indexed for the first time.
+	wsSend(r.ctx, t, conn, wire.ClientHello{WireVersion: wire.WireVersion, DeviceID: cred.DeviceID})
+
+	readCtx, readCancel := context.WithTimeout(r.ctx, 10*time.Second)
+	defer readCancel()
+	for {
+		if _, _, err := conn.Read(readCtx); err != nil {
+			if got := websocket.CloseStatus(err); got != hub.StatusRevoked {
+				t.Fatalf("the socket closed with %d, want %d (StatusRevoked). A device revoked "+
+					"while the door held the socket is invisible to OnRevocation, the "+
+					"notification is never redelivered, and nothing else would ever notice",
+					got, hub.StatusRevoked)
+			}
+			return
+		}
+		// `ready` can win the race with the sever. Keep reading until the close
+		// rather than asserting on the first frame, which would be a flake.
 	}
 }

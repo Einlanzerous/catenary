@@ -137,7 +137,9 @@ func TestARevocationGapSeversOnlyTheSessionsTheDatabaseSaysAreDead(t *testing.T)
 
 	var asked []uuid.UUID
 	dead := phone.DeviceID()
-	f.st.revokedDevices = func(_ context.Context, ids []uuid.UUID) ([]uuid.UUID, error) {
+	// Set AFTER the attaches, so the attach re-check each of them ran answered
+	// "nothing is dead" and only the gap's own call reaches this.
+	f.st.deadDevices = func(_ context.Context, ids []uuid.UUID) ([]uuid.UUID, error) {
 		asked = append([]uuid.UUID(nil), ids...)
 		return []uuid.UUID{dead}, nil
 	}
@@ -165,7 +167,7 @@ func TestARevocationGapThatCannotBeReadSeversForReconnectAndNotAsRevoked(t *test
 	ada := f.attach(f.ada)
 	theo := f.attach(f.theo)
 
-	f.st.revokedDevices = func(context.Context, []uuid.UUID) ([]uuid.UUID, error) {
+	f.st.deadDevices = func(context.Context, []uuid.UUID) ([]uuid.UUID, error) {
 		return nil, errors.New("the database is not answering")
 	}
 
@@ -202,7 +204,102 @@ func TestARevocationGapThatCannotBeReadSeversForReconnectAndNotAsRevoked(t *test
 func TestARevocationGapWithNoSessionsAsksTheDatabaseNothing(t *testing.T) {
 	f := newFixture(t)
 	f.hub.OnRevocationGap(context.Background())
-	if n := f.st.revokeChecks.Load(); n != 0 {
+	if n := f.st.deadChecks.Load(); n != 0 {
 		t.Errorf("the re-check ran %d times with no sessions attached, want 0", n)
+	}
+}
+
+// --- the window between the door and the index -------------------------------
+//
+// Found by the reviewer on PR #63. OnRevocation is edge-triggered and can only
+// close what is in the index when the notification arrives; the door holds a
+// socket for up to the hello timeout before attaching it. A revocation landing
+// in that window severs nothing, is not queued, and never comes again.
+
+func TestASessionWhoseCredentialDiedInTheDoorIsSeveredAtAttach(t *testing.T) {
+	f := newFixture(t)
+	// Everything asked about is dead. The peer's device id is minted inside
+	// attach, so the fake answers the QUESTION rather than a particular id.
+	f.st.deadDevices = func(_ context.Context, ids []uuid.UUID) ([]uuid.UUID, error) {
+		return ids, nil
+	}
+
+	p := f.attach(f.ada)
+
+	if n := f.hub.Attached(); n != 0 {
+		t.Errorf("%d sessions attached, want 0. A device revoked between the door and the "+
+			"index streams for the life of the socket — which is the exact sentence "+
+			"OnRevocation's own comment says this feature exists to prevent", n)
+	}
+	waitClosed(t, p, StatusRevoked)
+	if n := f.st.deadChecks.Load(); n != 1 {
+		t.Errorf("the attach re-check ran %d times, want exactly 1 per attach", n)
+	}
+}
+
+func TestALiveDeviceAttachesNormallyAndIsCheckedExactlyOnce(t *testing.T) {
+	f := newFixture(t)
+	p := f.attach(f.ada)
+
+	if n := f.hub.Attached(); n != 1 {
+		t.Fatalf("%d sessions attached, want 1", n)
+	}
+	stillOpen(t, p)
+	// One indexed read per socket open, and no more: this is on the path of
+	// every connection.
+	if n := f.st.deadChecks.Load(); n != 1 {
+		t.Errorf("the attach re-check ran %d times for one attach, want exactly 1", n)
+	}
+}
+
+// THE ASYMMETRY WITH THE GAP, AND IT IS DELIBERATE. A failed re-check HERE
+// allows the session; a failed re-check at a gap severs everything. The door
+// authenticated this device seconds ago, so the exposure is one hello timeout,
+// while refusing on a failed read would turn a momentary database blip into
+// "nobody can open a socket at all".
+func TestAFailedAttachReCheckAllowsTheSessionAndSaysSo(t *testing.T) {
+	f := newFixture(t)
+	f.st.deadDevices = func(context.Context, []uuid.UUID) ([]uuid.UUID, error) {
+		return nil, errors.New("the database is not answering")
+	}
+
+	p := f.attach(f.ada)
+
+	if n := f.hub.Attached(); n != 1 {
+		t.Errorf("%d sessions attached, want 1 — a database blip must not stop every socket "+
+			"in the estate from opening", n)
+	}
+	stillOpen(t, p)
+	var warned bool
+	for _, rec := range f.log.atLeast(0) {
+		if rec.Message == "attach liveness re-check failed; session allowed" {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Error("a failed attach re-check was silent; a persistent failure would have to be " +
+			"inferred rather than read")
+	}
+}
+
+// A payload carrying BOTH subjects names each session once. CANT-33's
+// deprovision is the natural producer — revoking a person's device and
+// deactivating their account is one action.
+func TestAPayloadCarryingBothSubjectsSeversEachSessionOnce(t *testing.T) {
+	f := newFixture(t)
+	p := f.attach(f.ada)
+	ada := f.ada
+	device := p.DeviceID()
+
+	f.hub.OnRevocation(context.Background(), store.RevocationPayload{UserID: &ada, DeviceID: &device})
+
+	if n := f.hub.Attached(); n != 0 {
+		t.Errorf("%d sessions attached, want 0", n)
+	}
+	waitClosed(t, p, StatusRevoked)
+	if n := len(p.closedWith()); n != 1 {
+		t.Errorf("the session was closed %d times, want 1. removeLocked is idempotent so the "+
+			"COUNT stays right either way — it is sessions_severed, the telemetry this feature "+
+			"is read through, that a double match quietly inflates", n)
 	}
 }
