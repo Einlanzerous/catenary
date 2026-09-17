@@ -1651,11 +1651,14 @@ final class ServerResyncRequired implements ServerFrame {
 /// to every attached session of every member with no exclusion (CANT-107), the origin
 /// user's own other devices included — but a `Hub` holds only the sessions attached to
 /// its own instance, so a device attached to a different instance still learns the mark
-/// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` now
-/// carries `conversation` and `user` frames introducing a conversation and its users on
-/// a first message (CANT-113), but nothing emits them yet — CANT-114, which CANT-113
-/// blocks, owns that. Until it lands, `/sync` is the general path and the only one that
-/// carries conversations and users; in wire version 1 it is also the resume.
+/// at its next `/sync`, from the member marker `MarkRead` bumps. `ServerFrame` carries
+/// `conversation` and `user` frames (CANT-113) and the hub EMITS them (CANT-114): a
+/// conversation and its members are introduced on that conversation's FIRST message,
+/// immediately before that `message` frame on the same session, so a live client is
+/// never handed a message naming a conversation it has never held. That is an
+/// INTRODUCTION AND NOT A FRESHNESS CHANNEL — every LATER change to a conversation or a
+/// user record reaches a client only on its next `/sync`, so this response remains the
+/// general path for both records, and in wire version 1 it is also the resume.
 final class SyncResponse {
   const SyncResponse({
     required this.logSeq,

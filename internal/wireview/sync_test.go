@@ -214,7 +214,7 @@ func TestYourOwnMessageIsNeverDelivered(t *testing.T) {
 // The `omitempty` on a *string means absent is reachable at all; this asserts
 // the mapper actually takes it.
 func TestAnEmptyDerivationLeavesInitialsAbsent(t *testing.T) {
-	got := user(store.UserRow{ID: mustUUID(t, nadiaID), DisplayName: "!!!"})
+	got := User(store.UserRow{ID: mustUUID(t, nadiaID), DisplayName: "!!!"})
 	if got.Initials != nil {
 		t.Fatalf("initials = %q, want absent — minLength: 1 has no empty member", *got.Initials)
 	}
@@ -231,7 +231,7 @@ func TestAnEmptyDerivationLeavesInitialsAbsent(t *testing.T) {
 
 	// And the ordinary case still carries it, so the guard above cannot pass by
 	// dropping initials for everyone.
-	with := user(store.UserRow{ID: mustUUID(t, theoID), DisplayName: "Nadia Ruiz"})
+	with := User(store.UserRow{ID: mustUUID(t, theoID), DisplayName: "Nadia Ruiz"})
 	if with.Initials == nil || *with.Initials != "NR" {
 		t.Errorf("initials = %v, want NR", with.Initials)
 	}

@@ -460,32 +460,126 @@ func (s *Store) loadUsers(ctx context.Context, tx pgx.Tx, viewer uuid.UUID, afte
 // ServerTime is the timestamp a SyncResponse carries, read at serve time.
 func ServerTime() time.Time { return time.Now().UTC() }
 
-// conversationRowOne reads ONE conversation as viewer sees it — the same
-// shape loadConversations builds for a page, without that query's marker OR
-// clause, because the caller already knows exactly which row it wants and
-// why. CANT-75's find-or-create is the first caller: having just created or
-// found a direct conversation, it needs the identical row the client sees on
-// /sync, and a second, looser query here is a second place the two could
-// answer differently for the same conversation.
+// conversationRowPerViewer is the per-viewer conversation row — the same shape
+// loadConversations builds for a page, without that query's marker OR clause,
+// because both callers below already know exactly which conversation they want
+// and why.
+//
+// IT CORRELATES ON `cm` RATHER THAN ON A VIEWER BIND, and that is a correction
+// rather than a tidy-up (CANT-114). Both per-reader parts of this row follow
+// the MEMBERSHIP ROW, not a parameter: first_unread_seq already did, through
+// firstUnreadSeqExpr, and the other-member name of a direct now does too. The
+// `$2` that used to sit in the subquery and on the join was harmless while
+// conversationRowOne was the only caller — CANT-75 asks for exactly one
+// reader's row — and wrong the moment one statement had to answer for every
+// member at once: a two-member direct would have been named for BOTH members
+// from whichever side was bound, so each of them would have been introduced to
+// a conversation named after themselves.
+//
+// cm.user_id LEADS THE SELECT LIST so the batched caller can key the rows it
+// gets back by member. The single-viewer caller scans it and discards it, which
+// is what it costs for the two statements to be one text rather than two that
+// can drift.
+const conversationRowPerViewer = `
+	SELECT cm.user_id,
+	       c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
+	       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
+	       ` + firstUnreadSeqExpr + `,
+	       (SELECT u.display_name FROM conversation_members o
+	          JOIN users u ON u.id = o.user_id
+	         WHERE o.conversation_id = c.id AND o.user_id <> cm.user_id
+	         ORDER BY u.display_name LIMIT 1)
+	  FROM conversations c
+	  JOIN conversation_members cm
+	    ON cm.conversation_id = c.id`
+
+// scanConversationRow reads one row of conversationRowPerViewer: the member the
+// row is for, and the conversation as that member sees it. One scan list for
+// one select list, so a column added to the text above has exactly one place to
+// be read.
+func scanConversationRow(r interface{ Scan(...any) error }) (uuid.UUID, ConversationRow, error) {
+	var viewer uuid.UUID
+	var c ConversationRow
+	err := r.Scan(&viewer, &c.ID, &c.Kind, &c.Name, &c.LastSeq, &c.RetentionDays, &c.Muted, &c.ReadSeq,
+		&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberName)
+	return viewer, c, err
+}
+
+// conversationRowsForMembers reads the conversation once FOR EVERY CURRENT
+// MEMBER — conversationRowPerViewer with no viewer bind at all, so the one
+// statement answers for each of them from their own side. CANT-114's
+// introduction is the caller: the hub has to hand every attached member the
+// record that member would have seen on /sync, and the alternative to this is a
+// round trip per member inside a fan-out that runs on the goroutine serialising
+// delivery for the whole instance.
+//
+// Runs on tx, so the rows come from the caller's own snapshot — for
+// MessageForFanout that is the REPEATABLE READ snapshot the message and the
+// member list were read in, which is what makes "the conversation as its
+// members saw it at this message" a sentence that is true.
+func (s *Store) conversationRowsForMembers(ctx context.Context, tx pgx.Tx, id uuid.UUID) (map[uuid.UUID]ConversationRow, error) {
+	rows, err := tx.Query(ctx, conversationRowPerViewer+`
+		 WHERE c.id = $1
+		 ORDER BY cm.user_id`, id)
+	if err != nil {
+		return nil, fmt.Errorf("store: conversation rows: %w", err)
+	}
+	defer rows.Close()
+	out := map[uuid.UUID]ConversationRow{}
+	for rows.Next() {
+		viewer, c, err := scanConversationRow(rows)
+		if err != nil {
+			return nil, fmt.Errorf("store: scan conversation row: %w", err)
+		}
+		out[viewer] = c
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: conversation rows: %w", err)
+	}
+	return out, nil
+}
+
+// memberUsers reads every current member's user record, for the same
+// introduction: a client being told about a conversation it has never held
+// needs the names behind its member ids in the same breath, or it has an
+// author_id it cannot render. Viewer-independent — a display name is the same
+// for everyone — so this is one list rather than one per member.
+//
+// Ordered by id, like every other list this package returns, so a caller that
+// does not sort is still deterministic.
+func (s *Store) memberUsers(ctx context.Context, tx pgx.Tx, conv uuid.UUID) ([]UserRow, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT u.id, u.display_name
+		  FROM users u
+		  JOIN conversation_members cm ON cm.user_id = u.id
+		 WHERE cm.conversation_id = $1
+		 ORDER BY u.id`, conv)
+	if err != nil {
+		return nil, fmt.Errorf("store: member users: %w", err)
+	}
+	users, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (UserRow, error) {
+		var u UserRow
+		err := r.Scan(&u.ID, &u.DisplayName)
+		return u, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: member users: collect: %w", err)
+	}
+	return users, nil
+}
+
+// conversationRowOne reads ONE conversation as viewer sees it — the
+// SINGLE-VIEWER CASE of conversationRowPerViewer, narrowing the membership join
+// to that one member and nothing else. CANT-75's find-or-create is its caller:
+// having just created or found a direct conversation, it needs the identical
+// row the client sees on /sync, and a second, looser query here is a second
+// place the two could answer differently for the same conversation.
 //
 // Runs on tx so a caller that just wrote inside one transaction reads its own
 // write rather than waiting for it to commit.
 func (s *Store) conversationRowOne(ctx context.Context, tx pgx.Tx, id, viewer uuid.UUID) (ConversationRow, error) {
-	var c ConversationRow
-	err := tx.QueryRow(ctx, `
-		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
-		       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
-		       `+firstUnreadSeqExpr+`,
-		       (SELECT u.display_name FROM conversation_members o
-		          JOIN users u ON u.id = o.user_id
-		         WHERE o.conversation_id = c.id AND o.user_id <> $2
-		         ORDER BY u.display_name LIMIT 1)
-		  FROM conversations c
-		  JOIN conversation_members cm
-		    ON cm.conversation_id = c.id AND cm.user_id = $2
-		 WHERE c.id = $1`, id, viewer).
-		Scan(&c.ID, &c.Kind, &c.Name, &c.LastSeq, &c.RetentionDays, &c.Muted, &c.ReadSeq,
-			&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberName)
+	_, c, err := scanConversationRow(tx.QueryRow(ctx, conversationRowPerViewer+`
+		 WHERE c.id = $1 AND cm.user_id = $2`, id, viewer))
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Either id does not exist or viewer is not a member — not_a_member
 		// leaks nothing more than conversation_not_found already does for a

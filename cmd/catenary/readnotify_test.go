@@ -34,6 +34,11 @@ func sendAndAwaitOwn(t *testing.T, s *session, conv uuid.UUID, text string) wire
 		case wire.ServerMessageFrame:
 			m := f.Message
 			own = &m
+		case wire.ServerConversationFrame, wire.ServerUserFrame:
+			// A conversation's FIRST message introduces it, to its author's own
+			// session as much as anyone else's (CANT-114). The re-emission path
+			// below carries no records — that is CANT-114's gate, and the
+			// classified reads further down would fail on one if it did.
 		default:
 			t.Fatalf("unexpected frame on the author's own socket: %T", f)
 		}
