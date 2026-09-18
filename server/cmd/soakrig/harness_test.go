@@ -74,9 +74,41 @@ func TestClassify(t *testing.T) {
 			want: VerdictServerFailure,
 		},
 		{
-			name: "steady traffic sent but nothing was acked is a server failure, even with every comparison clean",
+			// CANT-119 added SendRefusals to this case rather than to the rule
+			// it asserts. "Nothing was acked" only means "the server refused
+			// every send" when the server actually ANSWERED — which is what
+			// debugRejectAllSends produces, and what this case describes.
+			name: "steady traffic sent but nothing was acked, the server refusing, is a server failure",
 			rep: Report{N: 1, ComparisonsRun: 1,
-				Phases:  []PhaseReport{{Name: steadyTrafficPhase, MessagesSent: 40, MessagesAcked: 0}},
+				Phases: []PhaseReport{{Name: steadyTrafficPhase, MessagesSent: 40, MessagesAcked: 0,
+					SendErrors: 40, SendRefusals: 40}},
+				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
+			want: VerdictServerFailure,
+		},
+		{
+			// THE CANT-119 CASE. Identical counters except for who answered:
+			// every send failed on this rig's own per-send deadline and the
+			// server answered none of them. That is the instrument being
+			// unsure, not a finding — and it is what was reported in CI as
+			// verdict=server_failure, failing the handover gate for a loaded
+			// runner. steadyTraffic records a harness error for it, so the run
+			// still fails, but as the harness rather than as the server.
+			name: "steady traffic sent, none acked, and NO refusal from the server is a harness failure",
+			rep: Report{N: 1, ComparisonsRun: 1,
+				HarnessErrors: []string{"steady traffic: all 40 sends failed and the server answered none of them"},
+				Phases: []PhaseReport{{Name: steadyTrafficPhase, MessagesSent: 40, MessagesAcked: 0,
+					SendErrors: 40, SendTimeouts: 40}},
+				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
+			want: VerdictHarnessFailure,
+		},
+		{
+			// The mixed case, and the reason the rule is "> 0" rather than a
+			// ratio: ONE real answer is evidence about the server that no
+			// amount of harness-side noise explains away.
+			name: "a single refusal among timeouts still makes an all-unacked steady phase a server failure",
+			rep: Report{N: 1, ComparisonsRun: 1,
+				Phases: []PhaseReport{{Name: steadyTrafficPhase, MessagesSent: 40, MessagesAcked: 0,
+					SendErrors: 40, SendRefusals: 1, SendTimeouts: 39}},
 				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
 			want: VerdictServerFailure,
 		},
