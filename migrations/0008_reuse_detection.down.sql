@@ -1,0 +1,37 @@
+-- Both indexes go; neither carried data, so this is a clean reverse.
+--
+-- `IF EXISTS`, AND THE REASON IS A STATE RATHER THAN A SEQUENCE. An earlier
+-- version of this comment blamed `0003 down`, which is wrong and was corrected
+-- in review: both tables are created by 0007, `0003_messages.down.sql` drops
+-- only log_counter, attachments and messages, and MigrateDown rolls back
+-- applied versions in DESCENDING order, so this down always runs before
+-- 0007's DROP TABLE. That path cannot happen.
+--
+-- WHAT DOES HAPPEN IS A DATABASE RECORDED AT 0008 WHOSE INDEXES ARE ABSENT, and
+-- it is observed rather than theorised. Two processes migrating one database
+-- interleave: one reads the applied set before 0008 exists, the other applies
+-- 0008, and the first then rolls back 0007 — dropping the token tables, and
+-- these indexes with them — while 0008's bookkeeping row, which it never knew
+-- about, survives. The timestamps make it unmistakable: 0008's row was stamped
+-- nineteen seconds BEFORE 0001-0007's.
+--
+-- Bare, that state is not a tidy no-op. Every package's fixture begins by
+-- migrating DOWN to zero, so one unremovable migration fails `freshDB` for
+-- packages with nothing to do with this ticket — five red steps in `verify.sh`,
+-- all reporting this one error. The guard makes the down survivable against a
+-- schema something else already cleared, which is what a test database that is
+-- migrated down thousands of times actually needs.
+--
+-- THE UP STAYS STRICT, deliberately, so nobody "fixes" it to match. A CREATE
+-- INDEX here only runs when 0008 is not recorded as applied, and an index that
+-- already exists in that state means something raced or something hand-edited
+-- the schema — which is a signal worth failing on rather than absorbing.
+--
+-- The rows reuse detection WROTE — `refresh_tokens.revoked_at`,
+-- `access_tokens.revoked_at`, `devices.revoked_at` — are deliberately NOT
+-- reversed here, and could not honestly be. They are columns 0001 and 0007
+-- already own, a revocation is a fact about a credential rather than a fact
+-- about this migration, and "un-revoke every credential a replay invalidated"
+-- is the one thing a rollback must never do.
+DROP INDEX IF EXISTS access_tokens_device_id_idx;
+DROP INDEX IF EXISTS refresh_tokens_family_id_idx;

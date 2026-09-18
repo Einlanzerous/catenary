@@ -88,6 +88,10 @@ Chronicle's routers file records hitting exactly this.
 
 Until all three, a public router would put a service that holds everyone's messages on the open 443 either unauthenticated or with an undetectable credential replay.
 
+**All three have landed.** CANT-22 (the socket door and its handshake), CANT-28 (the credential model, and `GET /sync` turned on behind it) and CANT-29 (reuse detection: a replayed refresh token invalidates the whole family, revokes what it buys, severs the live socket and records the event). The condition this section states — *"the endpoint authenticates with something Access cannot express"* — is met, and a credential replay is no longer undetectable.
+
+**That unblocks the decision; it does not make it.** Standing a public router up is an operator's call and wants its own read of what is exposed, including the one thing reuse detection deliberately does not catch: a replay landing within CANT-29's ten-second grace window escapes invalidation, which is the trade that keeps a waking phone's two in-flight refreshes from logging a real person out. `docs/decisions/cant-29-reuse-detection.md` carries the reasoning and the exposure.
+
 **Every router on the `internal` entrypoint carries `cf-access-jwt`** (SERV-106),
 and adding one requires a matching `CF_ACCESS_AUD_MAP` entry on the guard —
 `check-edge-auth.sh` fails a gated host with no AUD entry rather than serving it
