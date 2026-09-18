@@ -597,6 +597,34 @@
       "column": "name",
       "note": "What the device list calls this install. Required rather than defaulted, because a revocation list is unusable if the rows do not say which phone they are."
     },
+    "Device.id": {
+      "kind": "column",
+      "table": "devices",
+      "column": "id",
+      "note": "The same id EnrollResponse.device_id hands the install at enrollment, and what a revocation names."
+    },
+    "Device.name": {
+      "kind": "column",
+      "table": "devices",
+      "column": "name",
+      "note": "The value EnrollRequest.device_name wrote. NOT NULL, and enrollment refuses an empty one, so the wire field is required without needing a length bound of its own — the bound is MaxDeviceNameBytes, a server policy."
+    },
+    "Device.created_at": {
+      "kind": "column",
+      "table": "devices",
+      "column": "created_at",
+      "note": "The only ordering a device list has. devices.last_seen_at is deliberately NOT on the wire: nothing writes that column, and a list claiming \"never\" against every row would be worse than one that does not claim to know."
+    },
+    "Device.revoked_at": {
+      "kind": "column",
+      "table": "devices",
+      "column": "revoked_at",
+      "note": "Absent on the wire means live. OPTIONAL rather than required precisely because the column is nullable, so there is nothing here for a required_via or a nullable_because to reconcile."
+    },
+    "DeviceListResponse.devices": {
+      "kind": "derived",
+      "note": "The caller's own devices, read per request and scoped to their account by the credential rather than by anything in the request. Derived rather than a column for the same reason SyncResponse.messages is: it is a page assembled at serve time, not a stored array."
+    },
     "EnrollResponse.user_id": {
       "kind": "column",
       "table": "users",

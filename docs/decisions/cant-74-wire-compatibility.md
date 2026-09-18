@@ -15,7 +15,7 @@ The policy itself is in the wire schema's header (`schema/catenary.wire.v1.schem
 
 ## What the tree now enforces
 
-Direction is computed from two named root lists in the generator — server roots `ServerFrame`, `SyncResponse`, `EnrollResponse`, `RefreshResponse`; client roots `ClientFrame`, `EnrollRequest`, `RefreshRequest`. On today's schema:
+Direction is computed from two named root lists in the generator — `SERVER_ROOTS` and `CLIENT_ROOTS` in `schema/codegen/generate.mjs`, deliberately not re-listed here: a copied enumeration is the drift this file's preamble refuses, and this sentence had already gone stale on two client roots before CANT-117 added a server one. `node schema/codegen/generate.mjs --classify` prints the current split, and `generate.test.mjs` pins it. On today's schema:
 
 | enum | treatment |
 |---|---|

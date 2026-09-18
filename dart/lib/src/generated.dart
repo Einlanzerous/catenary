@@ -1934,6 +1934,96 @@ final class RefreshResponse {
   });
 }
 
+/// One device on an account, as its owner sees it.
+///
+/// REVOKED DEVICES ARE IN THE LIST, and that is deliberate. A device row is never
+/// deleted — `devices.revoked_at` is a column precisely so that "was this device ever
+/// revoked, and when?" can be answered afterwards — so hiding revoked rows would
+/// discard the history the column exists to keep. A client renders them as revoked
+/// rather than omitting them.
+///
+/// NO CREDENTIAL APPEARS HERE. A device is identified by its id; its tokens are never
+/// served, listed or counted.
+final class Device {
+  const Device({
+    required this.id,
+    required this.name,
+    required this.createdAt,
+    this.revokedAt,
+  });
+
+  /// This install's identity, minted at enrollment and stable for its life. It is what
+  /// `ClientHello.device_id` carries and what a revocation names, so it is also what a
+  /// client sends back to revoke one.
+  final Uuid id;
+
+  /// What this install called itself at enrollment — the `device_name` on
+  /// `EnrollRequest`. A revocation list is unusable if the rows do not say which phone
+  /// they are, which is why `devices.name` is NOT NULL and why enrollment refuses an
+  /// empty one.
+  ///
+  /// NOT LENGTH-BOUNDED HERE, on the same reasoning `EnrollRequest.device_name` records
+  /// for the identical value: the bound is `MaxDeviceNameBytes`, a server policy free to
+  /// change without touching this schema, and not a protocol invariant every generated
+  /// decoder should enforce forever.
+  final String name;
+
+  /// When this device enrolled. The only ordering a device list has — there is
+  /// deliberately no `last_seen_at` on the wire, because nothing writes that column and a
+  /// list showing "never" against every row would be worse than one that does not claim
+  /// to know. Adding it later is additive and needs no version bump.
+  final Timestamp createdAt;
+
+  /// When this device was revoked, or ABSENT if it is still live. Absent-means-live
+  /// rather than a `revoked` boolean, because the moment is what a person reading the
+  /// list actually wants and a boolean would throw it away.
+  final Timestamp? revokedAt;
+
+  factory Device.fromJson(Object? v, [String p = "Device"]) {
+    final o = _obj(v, p);
+    return Device(
+      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _asUuid(o["id"], '${p}.id'),
+      name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : _str(o["name"], '${p}.name'),
+      createdAt: o["created_at"] == null ? _bad('${p}.created_at', 'required field is missing') : _asTimestamp(o["created_at"], '${p}.created_at'),
+      revokedAt: o["revoked_at"] == null ? null : _asTimestamp(o["revoked_at"], '${p}.revoked_at'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "id": id,
+    "name": name,
+    "created_at": createdAt,
+    "revoked_at": revokedAt == null ? null : revokedAt!,
+  });
+}
+
+/// `GET /devices` — the caller's own devices.
+///
+/// EMPTY IS AN ORDINARY ANSWER, not an error. A bot has no device and never enrolls
+/// one, so a bot token gets `{"devices": []}` rather than a refusal — a caller with
+/// nothing to list is a different thing from a caller who may not look.
+final class DeviceListResponse {
+  const DeviceListResponse({
+    required this.devices,
+  });
+
+  /// Every device on the CALLER'S OWN account, oldest first, revoked ones included. Never
+  /// another account's: this is a self-service surface and the caller's identity comes
+  /// from the credential, never from anything in the request.
+  final List<Device> devices;
+
+  factory DeviceListResponse.fromJson(Object? v, [String p = "DeviceListResponse"]) {
+    final o = _obj(v, p);
+    return DeviceListResponse(
+      devices: o["devices"] == null ? _bad('${p}.devices', 'required field is missing') : [for (final (i, x) in _arr(o["devices"], '${p}.devices').indexed) Device.fromJson(x, '${p}.devices[${i}]')],
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "devices": [for (final x in devices) x.toJson()],
+  });
+}
+
 /// `POST /conversations/{id}/messages` — the write path for a caller with no socket: a
 /// bot, an agent, a cron job. A THIN BODY OVER ClientSend AND DELIBERATELY NOT
 /// ClientSend ITSELF: `type` is a frame-union discriminator this request does not need,
@@ -2053,6 +2143,8 @@ const Map<String, WireCodec> codecs = {
   "EnrollResponse": WireCodec(EnrollResponse.fromJson, _encEnrollResponse),
   "RefreshRequest": WireCodec(RefreshRequest.fromJson, _encRefreshRequest),
   "RefreshResponse": WireCodec(RefreshResponse.fromJson, _encRefreshResponse),
+  "Device": WireCodec(Device.fromJson, _encDevice),
+  "DeviceListResponse": WireCodec(DeviceListResponse.fromJson, _encDeviceListResponse),
   "MessageSendRequest": WireCodec(MessageSendRequest.fromJson, _encMessageSendRequest),
   "DirectConversationRequest": WireCodec(DirectConversationRequest.fromJson, _encDirectConversationRequest),
 };
@@ -2089,6 +2181,8 @@ Map<String, dynamic> _encEnrollRequest(Object v) => (v as EnrollRequest).toJson(
 Map<String, dynamic> _encEnrollResponse(Object v) => (v as EnrollResponse).toJson();
 Map<String, dynamic> _encRefreshRequest(Object v) => (v as RefreshRequest).toJson();
 Map<String, dynamic> _encRefreshResponse(Object v) => (v as RefreshResponse).toJson();
+Map<String, dynamic> _encDevice(Object v) => (v as Device).toJson();
+Map<String, dynamic> _encDeviceListResponse(Object v) => (v as DeviceListResponse).toJson();
 Map<String, dynamic> _encMessageSendRequest(Object v) => (v as MessageSendRequest).toJson();
 Map<String, dynamic> _encDirectConversationRequest(Object v) => (v as DirectConversationRequest).toJson();
 
