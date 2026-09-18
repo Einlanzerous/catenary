@@ -84,6 +84,50 @@ func TestBotCreatePrintsTheTokenAloneOnStdoutAndItAuthenticates(t *testing.T) {
 	}
 }
 
+// THE WIRING TEST, and it exists because the one above structurally cannot see
+// the defect it is named for.
+//
+// The test above calls botCreate with the store authFixture builds, and that
+// store carries slog.DiscardHandler — which is exactly the line a stdout-logger
+// bug lives on. So its two assertions, right as they are, are pointed one layer
+// too low: they pass whether runBot logs to stdout or stderr. This one drives
+// runBot itself, which loads config and builds its own logger, and therefore
+// sees what an operator sees.
+//
+// It is deliberately NOT given a tuned logger. Everything about the wiring is
+// the subject.
+func TestRunBotKeepsLogOutputOffStdout(t *testing.T) {
+	dsn := os.Getenv("CATENARY_TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("CATENARY_TEST_DATABASE_URL not set; skipping database test")
+	}
+	// Reset the schema the way every other cmd test does; the fixture's store
+	// and router are unused here because runBot builds its own.
+	authFixture(t)
+	t.Setenv("CATENARY_DATABASE_URL", dsn)
+
+	out, err := capturedStdout(t, func() error {
+		return runBot([]string{"create", "argosy", "Argosy"})
+	})
+	if err != nil {
+		t.Fatalf("runBot create: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("stdout carried %d lines, want exactly 1. A log line here means "+
+			"`catenary bot create argosy > token` writes JSON into the file ahead of the "+
+			"credential, and what gets piped into Signet is not a credential:\n%s", len(lines), out)
+	}
+	// A slog JSON record starts with '{'; a token never does.
+	if strings.HasPrefix(lines[0], "{") {
+		t.Fatalf("stdout carried a log record rather than the token: %q", lines[0])
+	}
+	if lines[0] == "" {
+		t.Fatal("stdout carried no token")
+	}
+}
+
 // Minting is not revoking: a rotation needs a window in which both credentials
 // work, or it is an outage.
 func TestBotTokenMintsASecondCredentialWithoutEndingTheFirst(t *testing.T) {

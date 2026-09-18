@@ -22,6 +22,8 @@ import (
 	"syscall"
 	"text/tabwriter"
 
+	"github.com/google/uuid"
+
 	"github.com/magos/catenary/internal/config"
 	"github.com/magos/catenary/internal/store"
 )
@@ -46,7 +48,15 @@ func runBot(args []string) error {
 	if err != nil {
 		return err
 	}
-	logger := cfg.Logger(os.Stdout)
+	// STDERR, NOT STDOUT, AND THIS SUBCOMMAND IS THE REASON. runServe and
+	// runMigrate log to stdout because that is where a service's logs belong and
+	// what Dozzle and Datadog read. Here stdout is reserved for the credential:
+	// CreateBot and IssueBotToken both log at Info, and the defaults are
+	// level=info format=json, so a stdout logger writes two JSON lines into
+	// `catenary bot create argosy > token` ahead of the token — and the file
+	// piped into Signet is then not a credential. None of this subcommand's
+	// output is a server log anybody collects from stdout.
+	logger := cfg.Logger(os.Stderr)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -149,8 +159,8 @@ func botToken(ctx context.Context, st *store.Store, args []string) error {
 // token and nothing else in the file, so it can be piped straight into Signet
 // without a human copying it out of prose — and a credential that a human has
 // to select with a mouse is a credential that ends up in a scrollback buffer.
-func printToken(handle string, id any, issued store.IssuedToken) {
-	fmt.Fprintf(os.Stderr, "bot %s (%v)\n", handle, id)
+func printToken(handle string, id uuid.UUID, issued store.IssuedToken) {
+	fmt.Fprintf(os.Stderr, "bot %s (%s)\n", handle, id)
 	fmt.Fprintf(os.Stderr, "the token is shown ONCE and is not recoverable — store it in Signet now\n")
 	if issued.ExpiresAt.IsZero() {
 		fmt.Fprintf(os.Stderr, "it does not expire; end it with `catenary bot revoke %s`\n", handle)

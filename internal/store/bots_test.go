@@ -254,7 +254,7 @@ func TestABotTokenCannotBeRotated(t *testing.T) {
 	if _, err := st.Authenticate(ctx, token.Plaintext); err != nil {
 		t.Errorf("the bot token stopped working after a refused rotation: %v", err)
 	}
-	if n := countRows(ctx, t, pool, `SELECT count(*) FROM refresh_tokens WHERE id IS NOT NULL`); n != 0 {
+	if n := countRows(ctx, t, pool, `SELECT count(*) FROM refresh_tokens`); n != 0 {
 		t.Errorf("%d refresh tokens exist after a bot tried to rotate, want 0", n)
 	}
 }
