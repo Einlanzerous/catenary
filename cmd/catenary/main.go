@@ -78,6 +78,8 @@ func run(args []string) error {
 		return runServe(args[1:])
 	case "migrate":
 		return runMigrate(args[1:])
+	case "bot":
+		return runBot(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -102,8 +104,18 @@ usage:
   catenary migrate status   list applied versions
   catenary version          print the build version and commit
 
+  catenary bot create <handle> [name]  create a service account, print its token
+  catenary bot token <handle>          mint a fresh token for an existing bot
+  catenary bot list                    list service accounts and live credentials
+  catenary bot revoke <handle>         revoke every live token a bot holds
+
 Migrations are embedded and applied automatically on serve. The subcommand
 exists for the cases where that is the wrong moment: a rollback, and looking.
+
+A bot token is printed ONCE, to stdout, and cannot be recovered afterwards;
+everything else the bot subcommand prints goes to stderr, so the redirect
+  catenary bot create argosy > token
+captures the credential and nothing else.
 
 configuration is env-only, CATENARY_-prefixed. There are no config files.
 
