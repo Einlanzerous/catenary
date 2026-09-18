@@ -2847,6 +2847,132 @@ func (v *RefreshResponse) decode(b []byte, p string) error {
 	return nil
 }
 
+// One device on an account, as its owner sees it.
+//
+// REVOKED DEVICES ARE IN THE LIST, and that is deliberate. A device row is never
+// deleted — `devices.revoked_at` is a column precisely so that "was this device ever
+// revoked, and when?" can be answered afterwards — so hiding revoked rows would
+// discard the history the column exists to keep. A client renders them as revoked
+// rather than omitting them.
+//
+// NO CREDENTIAL APPEARS HERE. A device is identified by its id; its tokens are never
+// served, listed or counted.
+type Device struct {
+	// This install's identity, minted at enrollment and stable for its life. It is what
+	// `ClientHello.device_id` carries and what a revocation names, so it is also what a
+	// client sends back to revoke one.
+	ID Uuid `json:"id"`
+	// What this install called itself at enrollment — the `device_name` on
+	// `EnrollRequest`. A revocation list is unusable if the rows do not say which phone
+	// they are, which is why `devices.name` is NOT NULL and why enrollment refuses an
+	// empty one.
+	//
+	// NOT LENGTH-BOUNDED HERE, on the same reasoning `EnrollRequest.device_name` records
+	// for the identical value: the bound is `MaxDeviceNameBytes`, a server policy free to
+	// change without touching this schema, and not a protocol invariant every generated
+	// decoder should enforce forever.
+	Name string `json:"name"`
+	// When this device enrolled. The only ordering a device list has — there is
+	// deliberately no `last_seen_at` on the wire, because nothing writes that column and a
+	// list showing "never" against every row would be worse than one that does not claim
+	// to know. Adding it later is additive and needs no version bump.
+	CreatedAt Timestamp `json:"created_at"`
+	// When this device was revoked, or ABSENT if it is still live. Absent-means-live
+	// rather than a `revoked` boolean, because the moment is what a person reading the
+	// list actually wants and a boolean would throw it away.
+	RevokedAt *Timestamp `json:"revoked_at,omitempty"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a Device: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *Device) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "Device")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *Device) decode(b []byte, p string) error {
+	var s struct {
+		ID        *Uuid      `json:"id"`
+		Name      *string    `json:"name"`
+		CreatedAt *Timestamp `json:"created_at"`
+		RevokedAt *Timestamp `json:"revoked_at"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out Device
+	if s.ID == nil {
+		return badf(p+".id", "required field is missing")
+	}
+	out.ID = *s.ID
+	if s.Name == nil {
+		return badf(p+".name", "required field is missing")
+	}
+	out.Name = *s.Name
+	if s.CreatedAt == nil {
+		return badf(p+".created_at", "required field is missing")
+	}
+	out.CreatedAt = *s.CreatedAt
+	if s.RevokedAt != nil {
+		out.RevokedAt = s.RevokedAt
+	}
+	if err := checkUuid(out.ID, p+".id"); err != nil {
+		return err
+	}
+	if err := checkTimestamp(out.CreatedAt, p+".created_at"); err != nil {
+		return err
+	}
+	if out.RevokedAt != nil {
+		if err := checkTimestamp(*out.RevokedAt, p+".revoked_at"); err != nil {
+			return err
+		}
+	}
+	*v = out
+	return nil
+}
+
+// `GET /devices` — the caller's own devices.
+//
+// EMPTY IS AN ORDINARY ANSWER, not an error. A bot has no device and never enrolls
+// one, so a bot token gets `{"devices": []}` rather than a refusal — a caller with
+// nothing to list is a different thing from a caller who may not look.
+type DeviceListResponse struct {
+	// Every device on the CALLER'S OWN account, oldest first, revoked ones included. Never
+	// another account's: this is a self-service surface and the caller's identity comes
+	// from the credential, never from anything in the request.
+	Devices []Device `json:"devices"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a DeviceListResponse: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *DeviceListResponse) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "DeviceListResponse")
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type.
+func (v *DeviceListResponse) decode(b []byte, p string) error {
+	var s struct {
+		Devices *[]json.RawMessage `json:"devices"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out DeviceListResponse
+	if s.Devices == nil {
+		return badf(p+".devices", "required field is missing")
+	}
+	out.Devices = make([]Device, len(*s.Devices))
+	for i, raw := range *s.Devices {
+		if err := out.Devices[i].decode(raw, fmt.Sprintf("%s[%d]", p+".devices", i)); err != nil {
+			return err
+		}
+	}
+	*v = out
+	return nil
+}
+
 // `POST /conversations/{id}/messages` — the write path for a caller with no socket: a
 // bot, an agent, a cron job. A THIN BODY OVER ClientSend AND DELIBERATELY NOT
 // ClientSend ITSELF: `type` is a frame-union discriminator this request does not need,
@@ -3336,6 +3462,18 @@ func DecodeNamed(name string, b []byte) (any, error) {
 	case "RefreshResponse":
 		var v RefreshResponse
 		if err := v.decode(b, "RefreshResponse"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "Device":
+		var v Device
+		if err := v.decode(b, "Device"); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "DeviceListResponse":
+		var v DeviceListResponse
+		if err := v.decode(b, "DeviceListResponse"); err != nil {
 			return nil, err
 		}
 		return v, nil

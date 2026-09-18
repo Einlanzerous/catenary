@@ -97,6 +97,19 @@ type Deps struct {
 	// resolves the device FROM the token — CANT-97.
 	Refresh func(ctx context.Context, token string) (store.Rotated, error)
 
+	// Devices and RevokeOwnDevice are CANT-117's self-service surface. Both
+	// take the caller's own user id and nothing from the request chooses it —
+	// there is no user id in either path, query or body — so neither can be
+	// pointed at another account.
+	//
+	// RevokeOwnDevice IS store.RevokeOwnDevice AND NEVER store.RevokeDevice.
+	// The latter takes a device id alone and is the ADMINISTRATIVE revoke R6's
+	// Deprovision needs; wiring it here would let anyone revoke a stranger's
+	// phone with nothing but its id. The ownership predicate lives in the
+	// store's WHERE clause, so this package decides nothing.
+	Devices         func(ctx context.Context, viewer uuid.UUID) ([]store.DeviceRow, error)
+	RevokeOwnDevice func(ctx context.Context, viewer, deviceID uuid.UUID) (bool, error)
+
 	// The socket. Authenticate, Hello and Send together register GET /ws; if
 	// any is nil the route does not exist — the same safe absence as CallerID,
 	// for the same reason. CANT-22.
@@ -257,6 +270,16 @@ func NewRouter(d Deps) http.Handler {
 	// a route backed by nothing.
 	if d.Refresh != nil {
 		mux.HandleFunc("POST /refresh", refreshHandler(d))
+	}
+
+	// CANT-117. Each on its own seam AND on CallerID, which is what scopes them
+	// to one account: the safe absence is a route that does not exist rather
+	// than one that cannot say whose devices it is serving.
+	if d.Devices != nil && d.CallerID != nil {
+		mux.HandleFunc("GET /devices", devicesHandler(d))
+	}
+	if d.RevokeOwnDevice != nil && d.CallerID != nil {
+		mux.HandleFunc("POST /devices/{id}/revoke", revokeDeviceHandler(d))
 	}
 
 	// CANT-75. Both need a full Caller (device or bot), and the send route

@@ -1050,6 +1050,51 @@
       },
       "description": "`POST /refresh` — the next pair. THE REFRESH TOKEN IS ALWAYS NEW: this exchange rotates, so a client that keeps presenting the one it started with is refused on its second call. A response that returned the same refresh token would be a non-rotating credential wearing a rotating one's name, which is the shape CANT-28 exists to rule out."
     },
+    "Device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "created_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "This install's identity, minted at enrollment and stable for its life. It is what `ClientHello.device_id` carries and what a revocation names, so it is also what a client sends back to revoke one."
+        },
+        "name": {
+          "type": "string",
+          "description": "What this install called itself at enrollment — the `device_name` on `EnrollRequest`. A revocation list is unusable if the rows do not say which phone they are, which is why `devices.name` is NOT NULL and why enrollment refuses an empty one.\n\nNOT LENGTH-BOUNDED HERE, on the same reasoning `EnrollRequest.device_name` records for the identical value: the bound is `MaxDeviceNameBytes`, a server policy free to change without touching this schema, and not a protocol invariant every generated decoder should enforce forever."
+        },
+        "created_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When this device enrolled. The only ordering a device list has — there is deliberately no `last_seen_at` on the wire, because nothing writes that column and a list showing \"never\" against every row would be worse than one that does not claim to know. Adding it later is additive and needs no version bump."
+        },
+        "revoked_at": {
+          "$ref": "#/$defs/Timestamp",
+          "description": "When this device was revoked, or ABSENT if it is still live. Absent-means-live rather than a `revoked` boolean, because the moment is what a person reading the list actually wants and a boolean would throw it away."
+        }
+      },
+      "description": "One device on an account, as its owner sees it.\n\nREVOKED DEVICES ARE IN THE LIST, and that is deliberate. A device row is never deleted — `devices.revoked_at` is a column precisely so that \"was this device ever revoked, and when?\" can be answered afterwards — so hiding revoked rows would discard the history the column exists to keep. A client renders them as revoked rather than omitting them.\n\nNO CREDENTIAL APPEARS HERE. A device is identified by its id; its tokens are never served, listed or counted."
+    },
+    "DeviceListResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "devices"
+      ],
+      "properties": {
+        "devices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Device"
+          },
+          "description": "Every device on the CALLER'S OWN account, oldest first, revoked ones included. Never another account's: this is a self-service surface and the caller's identity comes from the credential, never from anything in the request."
+        }
+      },
+      "description": "`GET /devices` — the caller's own devices.\n\nEMPTY IS AN ORDINARY ANSWER, not an error. A bot has no device and never enrolls one, so a bot token gets `{\"devices\": []}` rather than a refusal — a caller with nothing to list is a different thing from a caller who may not look."
+    },
     "MessageSendRequest": {
       "type": "object",
       "additionalProperties": false,

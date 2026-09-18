@@ -578,20 +578,137 @@ func (s *Store) RevokeDevice(ctx context.Context, deviceID uuid.UUID) (bool, err
 		return false, fmt.Errorf("store: revoke device: %w", err)
 	}
 
-	payload, err := RevocationPayload{DeviceID: &deviceID}.Encode()
-	if err != nil {
-		// Loud rather than silent. A revocation that committed without its
-		// notification would leave a severed device holding a live socket, and
-		// the person who clicked the button would have no way to know.
-		return false, fmt.Errorf("store: revoke device: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, RevocationChannel, payload); err != nil {
-		return false, fmt.Errorf("store: revoke device: notify: %w", err)
+	if err := publishRevocation(ctx, tx, deviceID); err != nil {
+		return false, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return false, fmt.Errorf("store: commit: %w", err)
 	}
 	s.logger.InfoContext(ctx, "device revoked", "device_id", deviceID, "user_id", userID)
+	return true, nil
+}
+
+// publishRevocation is the notify half of a device revocation, shared by the
+// two revocations in this file.
+//
+// IT TAKES THE TRANSACTION RATHER THAN THE POOL, and that is the whole point of
+// it being a function. The property CANT-18's ruling 2 asks for is that the
+// notification cannot exist without its cause or the reverse, and a helper that
+// took a pool could be called outside the transaction — or after the commit —
+// with nothing in the signature to say so. Taking `tx` makes the property the
+// only thing a caller can express.
+//
+// refresh.go's invalidateFamily is a third publisher and still has its own
+// copy; it is a fourth write in a longer transaction and predates this helper,
+// so it is named here rather than quietly left out.
+func publishRevocation(ctx context.Context, tx pgx.Tx, deviceID uuid.UUID) error {
+	payload, err := RevocationPayload{DeviceID: &deviceID}.Encode()
+	if err != nil {
+		// Loud rather than silent. A revocation that committed without its
+		// notification would leave a severed device holding a live socket, and
+		// the person who clicked the button would have no way to know.
+		return fmt.Errorf("store: revoke device: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, RevocationChannel, payload); err != nil {
+		return fmt.Errorf("store: revoke device: notify: %w", err)
+	}
+	return nil
+}
+
+// DeviceRow is one device as its owner sees it — CANT-117.
+//
+// NO CREDENTIAL AND NO user_id. A device list is served to the person who owns
+// it, who already knows whose it is, and the tokens hanging off a device are
+// never served, listed or counted. RevokedAt is nil for a live device, which is
+// the encoding the wire uses too: absent means live.
+//
+// last_seen_at IS DELIBERATELY ABSENT. The column exists in 0001 and nothing
+// writes it, so carrying it here would put "never" against every row and invite
+// a client to render it.
+type DeviceRow struct {
+	ID        uuid.UUID
+	Name      string
+	CreatedAt time.Time
+	RevokedAt *time.Time
+}
+
+// DevicesFor lists one account's devices, oldest first, revoked ones included.
+//
+// SCOPED BY THE CALLER'S OWN id, WHICH IS NOT A PARAMETER THE REQUEST SUPPLIES.
+// The route reads it from the credential; nothing a caller sends chooses whose
+// devices come back. That is the difference between a self-service surface and
+// an admin one, and it is enforced here rather than in a handler for the reason
+// Authenticate's own comment gives: a rule enforced in a handler is a rule
+// enforced in two of three handlers a quarter from now.
+//
+// REVOKED ROWS ARE RETURNED. A device row is never deleted — revocation is a
+// column precisely so "was this device ever revoked, and when?" survives — so
+// filtering them here would discard the history the column exists to keep, and
+// the wire's own Device description says a client renders them rather than
+// omitting them.
+func (s *Store) DevicesFor(ctx context.Context, userID uuid.UUID) ([]DeviceRow, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT id, name, created_at, revoked_at
+		  FROM devices
+		 WHERE user_id = $1
+		 ORDER BY created_at, id`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: devices for: %w", err)
+	}
+	out, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (DeviceRow, error) {
+		var d DeviceRow
+		err := r.Scan(&d.ID, &d.Name, &d.CreatedAt, &d.RevokedAt)
+		return d, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("store: devices for: collect: %w", err)
+	}
+	return out, nil
+}
+
+// RevokeOwnDevice is RevokeDevice scoped to one account: a person revoking
+// their own phone.
+//
+// THE OWNERSHIP PREDICATE IS IN THE WRITE, NOT IN A HANDLER. RevokeDevice takes
+// a device id alone and is the ADMINISTRATIVE revoke — R6's Deprovision fans
+// out over somebody else's devices and must, so that shape is correct and stays.
+// What must not happen is a self-service route over it, because a device id is
+// all anyone would need to revoke a stranger's phone. Scoping it here means the
+// authorization cannot be forgotten by a second caller.
+//
+// NOT YOURS, UNKNOWN, AND ALREADY REVOKED ARE ONE ANSWER — false, with no error
+// — and that is deliberate rather than lazy. Distinguishing them would turn this
+// route into an oracle for which device ids exist on other accounts, which is
+// the same reasoning CANT-28 gives for one refusal shape on the credential
+// routes. It also keeps R6's idempotence: a retry finding its work done is
+// success.
+func (s *Store) RevokeOwnDevice(ctx context.Context, userID, deviceID uuid.UUID) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("store: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var revoked uuid.UUID
+	err = tx.QueryRow(ctx, `
+		UPDATE devices SET revoked_at = now()
+		 WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL
+		 RETURNING id`, deviceID, userID).Scan(&revoked)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return false, nil
+	case err != nil:
+		return false, fmt.Errorf("store: revoke own device: %w", err)
+	}
+
+	if err := publishRevocation(ctx, tx, deviceID); err != nil {
+		return false, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("store: commit: %w", err)
+	}
+	s.logger.InfoContext(ctx, "device revoked by its owner", "device_id", deviceID, "user_id", userID)
 	return true, nil
 }

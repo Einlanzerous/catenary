@@ -1500,6 +1500,86 @@ export function encodeRefreshResponse(v: RefreshResponse): Record<string, unknow
   })
 }
 
+// One device on an account, as its owner sees it.
+//
+// REVOKED DEVICES ARE IN THE LIST, and that is deliberate. A device row is never
+// deleted — `devices.revoked_at` is a column precisely so that "was this device ever
+// revoked, and when?" can be answered afterwards — so hiding revoked rows would
+// discard the history the column exists to keep. A client renders them as revoked
+// rather than omitting them.
+//
+// NO CREDENTIAL APPEARS HERE. A device is identified by its id; its tokens are never
+// served, listed or counted.
+export interface Device {
+  // This install's identity, minted at enrollment and stable for its life. It is what
+  // `ClientHello.device_id` carries and what a revocation names, so it is also what a
+  // client sends back to revoke one.
+  id: Uuid
+  // What this install called itself at enrollment — the `device_name` on
+  // `EnrollRequest`. A revocation list is unusable if the rows do not say which phone
+  // they are, which is why `devices.name` is NOT NULL and why enrollment refuses an
+  // empty one.
+  //
+  // NOT LENGTH-BOUNDED HERE, on the same reasoning `EnrollRequest.device_name` records
+  // for the identical value: the bound is `MaxDeviceNameBytes`, a server policy free to
+  // change without touching this schema, and not a protocol invariant every generated
+  // decoder should enforce forever.
+  name: string
+  // When this device enrolled. The only ordering a device list has — there is
+  // deliberately no `last_seen_at` on the wire, because nothing writes that column and a
+  // list showing "never" against every row would be worse than one that does not claim
+  // to know. Adding it later is additive and needs no version bump.
+  createdAt: Timestamp
+  // When this device was revoked, or ABSENT if it is still live. Absent-means-live
+  // rather than a `revoked` boolean, because the moment is what a person reading the
+  // list actually wants and a boolean would throw it away.
+  revokedAt?: Timestamp
+}
+
+export function decodeDevice(v: unknown, p = "Device"): Device {
+  const o = asObj(v, p)
+  return {
+    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asUuid(o["id"], `${p}.id`),
+    name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : asStr(o["name"], `${p}.name`),
+    createdAt: o["created_at"] === undefined || o["created_at"] === null ? bad(`${p}.created_at`, 'required field is missing') : asTimestamp(o["created_at"], `${p}.created_at`),
+    revokedAt: o["revoked_at"] === undefined || o["revoked_at"] === null ? undefined : asTimestamp(o["revoked_at"], `${p}.revoked_at`),
+  }
+}
+
+export function encodeDevice(v: Device): Record<string, unknown> {
+  return compact({
+    "id": v.id,
+    "name": v.name,
+    "created_at": v.createdAt,
+    "revoked_at": v.revokedAt === undefined ? undefined : v.revokedAt,
+  })
+}
+
+// `GET /devices` — the caller's own devices.
+//
+// EMPTY IS AN ORDINARY ANSWER, not an error. A bot has no device and never enrolls
+// one, so a bot token gets `{"devices": []}` rather than a refusal — a caller with
+// nothing to list is a different thing from a caller who may not look.
+export interface DeviceListResponse {
+  // Every device on the CALLER'S OWN account, oldest first, revoked ones included. Never
+  // another account's: this is a self-service surface and the caller's identity comes
+  // from the credential, never from anything in the request.
+  devices: Device[]
+}
+
+export function decodeDeviceListResponse(v: unknown, p = "DeviceListResponse"): DeviceListResponse {
+  const o = asObj(v, p)
+  return {
+    devices: o["devices"] === undefined || o["devices"] === null ? bad(`${p}.devices`, 'required field is missing') : asArray(o["devices"], `${p}.devices`).map((x, i) => decodeDevice(x, `${p}.devices[${i}]`)),
+  }
+}
+
+export function encodeDeviceListResponse(v: DeviceListResponse): Record<string, unknown> {
+  return compact({
+    "devices": v.devices.map((x) => encodeDevice(x)),
+  })
+}
+
 // `POST /conversations/{id}/messages` — the write path for a caller with no socket: a
 // bot, an agent, a cron job. A THIN BODY OVER ClientSend AND DELIBERATELY NOT
 // ClientSend ITSELF: `type` is a frame-union discriminator this request does not need,
@@ -1713,6 +1793,8 @@ export const codecs: Record<string, WireCodec> = {
   EnrollResponse: { decode: (v) => decodeEnrollResponse(v), encode: (v) => encodeEnrollResponse(v as EnrollResponse) },
   RefreshRequest: { decode: (v) => decodeRefreshRequest(v), encode: (v) => encodeRefreshRequest(v as RefreshRequest) },
   RefreshResponse: { decode: (v) => decodeRefreshResponse(v), encode: (v) => encodeRefreshResponse(v as RefreshResponse) },
+  Device: { decode: (v) => decodeDevice(v), encode: (v) => encodeDevice(v as Device) },
+  DeviceListResponse: { decode: (v) => decodeDeviceListResponse(v), encode: (v) => encodeDeviceListResponse(v as DeviceListResponse) },
   MessageSendRequest: { decode: (v) => decodeMessageSendRequest(v), encode: (v) => encodeMessageSendRequest(v as MessageSendRequest) },
   DirectConversationRequest: { decode: (v) => decodeDirectConversationRequest(v), encode: (v) => encodeDirectConversationRequest(v as DirectConversationRequest) },
 }

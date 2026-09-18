@@ -223,6 +223,10 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	// CANT-97: the rotating exchange. Off the same condition as the rest — a
 	// store — because it resolves the device from the token it is handed.
 	var refreshFn func(context.Context, string) (store.Rotated, error)
+	// CANT-117: the self-service device surface. Scoped by the caller's own id,
+	// which is why the revoke seam is RevokeOwnDevice and not RevokeDevice.
+	var devicesFn func(context.Context, uuid.UUID) ([]store.DeviceRow, error)
+	var revokeOwnDeviceFn func(context.Context, uuid.UUID, uuid.UUID) (bool, error)
 	// CANT-22: the socket's three seams, all off the same condition. The
 	// upgrade calls the SAME Authenticate the REST adapter above calls — one
 	// seam, two transports, so a revoked device is refused at both doors by
@@ -263,6 +267,8 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		}
 		enrollFn = st.RedeemEnrollment
 		refreshFn = st.RotateRefresh
+		devicesFn = st.DevicesFor
+		revokeOwnDeviceFn = st.RevokeOwnDevice
 		authenticateFn = st.Authenticate
 		helloFn = st.Hello
 		sendFn = st.SendMessage
@@ -325,8 +331,11 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			CallerID: callerID,
 			Enroll:   enrollFn,
 			Refresh:  refreshFn,
-			Version:  buildVersion(),
-			Commit:   commit,
+
+			Devices:         devicesFn,
+			RevokeOwnDevice: revokeOwnDeviceFn,
+			Version:         buildVersion(),
+			Commit:          commit,
 
 			Authenticate:  authenticateFn,
 			Hello:         helloFn,

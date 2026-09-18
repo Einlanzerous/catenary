@@ -1327,6 +1327,50 @@
         "name": "𝐀 Lovelace",
         "initials": "𝐀L"
       }
+    },
+    {
+      "name": "device_list_response",
+      "kind": "DeviceListResponse",
+      "expect": "roundtrip",
+      "why": "CANT-117. Both shapes of a device in one page: a live one with `revoked_at` ABSENT, and a revoked one carrying the moment. Absent-means-live is the whole encoding — a decoder that emitted null for the live device would make `absent` and `null` two states, which the conventions forbid — and revoked rows are IN the list because a device row is never deleted and the column exists so that \"was this ever revoked, and when?\" survives.",
+      "json": {
+        "devices": [
+          {
+            "id": "d1e2f3a4-b5c6-4d7e-8f9a-0b1c2d3e4f5a",
+            "name": "Pixel 8 Pro",
+            "created_at": "2026-08-01T09:14:22.000Z"
+          },
+          {
+            "id": "e2f3a4b5-c6d7-4e8f-9a0b-1c2d3e4f5a6b",
+            "name": "Framework 13",
+            "created_at": "2026-09-03T18:40:05.500Z",
+            "revoked_at": "2026-09-12T11:02:47.318Z"
+          }
+        ]
+      }
+    },
+    {
+      "name": "device_list_response_empty",
+      "kind": "DeviceListResponse",
+      "expect": "roundtrip",
+      "why": "A bot has no device and never enrolls one, so this is its ordinary answer rather than a refusal. It also pins the empty array: `devices` is required, so an empty page must encode as `[]` and never as null or absent — the same property an empty SyncResponse page has to hold, and the one a `nil` slice in Go silently breaks.",
+      "json": {
+        "devices": []
+      }
+    },
+    {
+      "name": "reject_device_without_created_at",
+      "kind": "DeviceListResponse",
+      "expect": "reject",
+      "why": "`created_at` is required and is the only ordering the list has. A device that omitted it would sort arbitrarily in one client and not another, which is exactly the two-implementation divergence the vectors exist to catch — so every decoder must refuse the page rather than render a device with no date.",
+      "json": {
+        "devices": [
+          {
+            "id": "f3a4b5c6-d7e8-4f9a-ab0c-2d3e4f5a6b7c",
+            "name": "Pixel 8 Pro"
+          }
+        ]
+      }
     }
   ]
 }
