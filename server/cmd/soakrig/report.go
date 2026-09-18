@@ -73,13 +73,30 @@ type Report struct {
 }
 
 // PhaseReport is one phase's own counters.
+//
+// SendRefusals and SendTimeouts PARTITION SendErrors by who answered, and
+// CANT-119 is why they exist. classify's "sent > 0, acked == 0" arm could not
+// otherwise tell a server that refused every send — a finding for a person —
+// from a loaded CI runner where every send hit the harness's own per-send
+// deadline. Both look identical through SendErrors alone, and the second was
+// reported as `verdict=server_failure`, which is the handover gate going red
+// for something that is not a regression.
 type PhaseReport struct {
 	Name          string
 	Duration      time.Duration
 	MessagesSent  int
 	MessagesAcked int
 	SendErrors    int
-	Reconnects    int
+
+	// SendRefusals counts only failures where the SERVER answered — an error
+	// frame off the ack channel, or a write the socket itself rejected.
+	SendRefusals int
+	// SendTimeouts counts failures that are this rig's own condition: the
+	// per-send deadline expiring, no socket open, the session ending
+	// underneath. Never evidence about the server.
+	SendTimeouts int
+
+	Reconnects int
 }
 
 // ClientReport is one client's own outcome. Every index 0..N-1 has an entry,
@@ -175,7 +192,15 @@ func classify(rep *Report) Verdict {
 		}
 	}
 	for _, p := range rep.Phases {
-		if p.Name == steadyTrafficPhase && p.MessagesSent > 0 && p.MessagesAcked == 0 {
+		// SendRefusals > 0 IS THE ADDITION, and CANT-119 is why. "Sent
+		// something, acked none of it" is a finding only when the server
+		// actually answered at least once — which is what debugRejectAllSends
+		// produces, and what this arm was built to catch. Every send failing
+		// on the harness's OWN deadline, with the server never answering at
+		// all, is the instrument being unsure; steadyTraffic records a harness
+		// error for exactly that case, so it still fails the run, but as
+		// harness_failure rather than as a regression somebody has to chase.
+		if p.Name == steadyTrafficPhase && p.MessagesSent > 0 && p.MessagesAcked == 0 && p.SendRefusals > 0 {
 			return VerdictServerFailure
 		}
 	}
@@ -234,8 +259,9 @@ func printReport(w io.Writer, rep Report) {
 
 	fmt.Fprintf(w, "\nphases:\n")
 	for _, p := range rep.Phases {
-		fmt.Fprintf(w, "  %-22s duration=%-9s sent=%-5d acked=%-5d send_errors=%-4d reconnects=%d\n",
-			p.Name, p.Duration.Round(100*time.Millisecond), p.MessagesSent, p.MessagesAcked, p.SendErrors, p.Reconnects)
+		fmt.Fprintf(w, "  %-22s duration=%-9s sent=%-5d acked=%-5d send_errors=%-4d (refused=%-4d timed_out=%-4d) reconnects=%d\n",
+			p.Name, p.Duration.Round(100*time.Millisecond), p.MessagesSent, p.MessagesAcked,
+			p.SendErrors, p.SendRefusals, p.SendTimeouts, p.Reconnects)
 	}
 	fmt.Fprintf(w, "missing at restart (R1's \"something to lose\"): %d\n", rep.MissingAtRestart)
 

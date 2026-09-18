@@ -180,8 +180,23 @@ func TestIdleAgainstALocalServer(t *testing.T) {
 		if rep.Dials != 1 || rep.Readys != 1 {
 			t.Errorf("dials=%d readys=%d, want exactly 1 each for a clean run", rep.Dials, rep.Readys)
 		}
-		if len(rep.CloseStatuses) != 0 {
-			t.Errorf("close statuses = %v, want none", rep.CloseStatuses)
+		// NOT `want none`, and CANT-119 is why. This run ends by its own
+		// context expiring, which aborts the in-flight read, and client.go
+		// records that as CloseStatuses[-1] — a session that opened and ended
+		// with no close frame. That artifact used to fail this subtest
+		// intermittently on a loaded machine.
+		//
+		// THE DISCRIMINATOR IS THE WATCH, NOT THE CODE. The same -1 bucket
+		// means a real severance in the subtest below, where the watch fired
+		// during the run; here the watch never fired, so anything in this map
+		// arrived after the window closed. A real close CODE would still be
+		// anomalous — a context deadline cannot produce one, it takes a peer
+		// sending a close frame — so that stays a failure.
+		for code, n := range rep.CloseStatuses {
+			if code != -1 {
+				t.Errorf("close status %d x%d — a real close code means a peer closed the socket, "+
+					"not that the run's own context ended", code, n)
+			}
 		}
 	})
 

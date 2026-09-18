@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"sync"
@@ -22,6 +23,32 @@ const (
 	stormPhase         = "reconnect storm"
 	killPhase          = "kill -9 and restart"
 )
+
+// sendWasRefused reports whether a failed send was the SERVER answering.
+//
+// CANT-119. Only a real answer counts: an error frame off the ack channel, or
+// a write the socket itself rejected. Everything else — this rig's own
+// per-send deadline expiring, no socket open, the session ending underneath —
+// is the harness's condition rather than the server's, and classify must not
+// read a run of those as "the server refused every send".
+//
+// DELIBERATELY CONSERVATIVE, and the asymmetry is the point: anything
+// unrecognised counts as NOT a refusal. A new error shape therefore downgrades
+// a run to harness_failure — the instrument is unsure — rather than
+// manufacturing a finding for a person to chase. The opposite default would
+// reintroduce exactly the bug this function exists to fix.
+func sendWasRefused(err error) bool {
+	switch {
+	case err == nil:
+		return false
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		return false
+	case errors.Is(err, client.ErrNotConnected), errors.Is(err, client.ErrSessionEnded),
+		errors.Is(err, client.ErrKilled), errors.Is(err, client.ErrSendInFlight):
+		return false
+	}
+	return true
+}
 
 // jitter spreads N clients' sends instead of a thundering herd every tick:
 // +/- 20% of d, uniformly. A non-positive d is returned unchanged.
@@ -44,7 +71,9 @@ func jitter(d time.Duration) time.Duration {
 // decides whether anything was actually lost.
 func (h *harness) steadyTraffic(ctx context.Context, clients []*soakClient, room uuid.UUID) PhaseReport {
 	start := time.Now()
-	var sent, acked, errs int64
+	// refusals and timeouts partition errs. CANT-119: classify reads refusals,
+	// because only a server that ANSWERED is evidence about the server.
+	var sent, acked, errs, refusals, timeouts int64
 
 	// debugRejectAllSends targets a conversation none of the clients belong
 	// to, so the real server refuses every send — the counter-proof for
@@ -79,6 +108,11 @@ func (h *harness) steadyTraffic(ctx context.Context, clients []*soakClient, room
 				scancel()
 				if err != nil {
 					atomic.AddInt64(&errs, 1)
+					if sendWasRefused(err) {
+						atomic.AddInt64(&refusals, 1)
+					} else {
+						atomic.AddInt64(&timeouts, 1)
+					}
 					continue
 				}
 				atomic.AddInt64(&acked, 1)
@@ -96,9 +130,21 @@ func (h *harness) steadyTraffic(ctx context.Context, clients []*soakClient, room
 		h.harnessError("steady traffic sent zero messages — no client was ever ready to send")
 	}
 
+	// THE OTHER HALF OF THE SAME RULE, added by CANT-119. Every send failed and
+	// the server answered none of them: that is this rig running out of time on
+	// a loaded machine, not a server refusing traffic. Recorded as a harness
+	// error so the run still fails — it proved nothing — but as harness_failure
+	// rather than as the server_failure classify would otherwise return, which
+	// is a finding somebody would go looking for and never find.
+	if sent > 0 && acked == 0 && refusals == 0 {
+		h.harnessError("steady traffic: all %d sends failed and the server answered none of them "+
+			"(%d timed out or found no socket) — inconclusive, not a finding about the server", sent, timeouts)
+	}
+
 	h.awaitAllCaughtUp(ctx, clients, steadyTrafficPhase)
 	return PhaseReport{Name: steadyTrafficPhase, Duration: time.Since(start),
-		MessagesSent: int(sent), MessagesAcked: int(acked), SendErrors: int(errs)}
+		MessagesSent: int(sent), MessagesAcked: int(acked), SendErrors: int(errs),
+		SendRefusals: int(refusals), SendTimeouts: int(timeouts)}
 }
 
 // reconnectStorm is phase two: cfg.StormRounds rounds of severing EVERY

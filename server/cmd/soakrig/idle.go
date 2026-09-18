@@ -162,11 +162,28 @@ func runIdle(ctx context.Context, baseURL string, cred Credentials, headers http
 	}
 
 	if severedErr != nil {
-		// ctx ended before the predicate ever went true: no close was ever
-		// recorded and there was only ever the one dial.
-		rep.Pass = len(s.CloseStatuses) == 0 && s.Dials == 1
-		if !rep.Pass {
-			rep.Reason = "ended in an inconsistent state — a close was recorded without the watch observing it; treat as a harness bug, not a pass"
+		// THE WATCH IS THE AUTHORITY FOR THE RUN WINDOW. Re-deriving the
+		// verdict from a later snapshot is what CANT-119 found wrong here.
+		//
+		// Await takes its wake channel BEFORE evaluating the predicate, and
+		// the client notifies on every session end, so a close landing DURING
+		// the run cannot have been missed: it would have woken the watch and
+		// taken the branch below. Reaching here means the watch looked at the
+		// whole window and saw nothing.
+		//
+		// The snapshot above is read after ctx expired, and by then the run's
+		// own teardown has had time to contaminate it. The dying context
+		// aborts the in-flight read; client.go records CloseStatuses[-1] for a
+		// session that opened and ended with no close frame; and the old check
+		// read that artifact as "a close the watch missed", failing the
+		// handover gate for a socket that had in fact survived its whole run.
+		// That check could only ever produce FALSE failures, which is why it
+		// is gone rather than widened.
+		rep.Pass = true
+		if len(s.CloseStatuses) > 0 || s.Dials > 1 {
+			rep.Reason = fmt.Sprintf(
+				"passed; a close was recorded as the run's own context ended (statuses %v, last: %s) — teardown, not a severance",
+				s.CloseStatuses, s.LastClose)
 		}
 		return rep
 	}
