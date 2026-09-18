@@ -32,22 +32,24 @@ const (
 // is the harness's condition rather than the server's, and classify must not
 // read a run of those as "the server refused every send".
 //
-// DELIBERATELY CONSERVATIVE, and the asymmetry is the point: anything
-// unrecognised counts as NOT a refusal. A new error shape therefore downgrades
-// a run to harness_failure — the instrument is unsure — rather than
-// manufacturing a finding for a person to chase. The opposite default would
-// reintroduce exactly the bug this function exists to fix.
+// DENY BY DEFAULT, and it is stated as one positive match rather than a list
+// of exclusions BECAUSE THE FIRST VERSION OF THIS FUNCTION GOT IT BACKWARDS.
+// That version enumerated the harness-side errors and fell through to `return
+// true`, which meant anything unrecognised was counted as the server
+// answering — the exact inverse of the rule this comment claimed, and a way
+// back to the false server_failure this ticket exists to remove. A
+// json.Marshal failure in client.write, or a bare conn.Write error during the
+// storm and kill phases, are neither sentinels nor server answers, and both
+// would have been scored as refusals.
+//
+// *client.SendError is set in exactly one place — client.go:717, from an
+// `error` frame naming the send's client_id — so it IS the server answering,
+// and errors.As is the whole test. Everything else, named or not, is this
+// rig's own condition and leaves the run classified as harness_failure: the
+// instrument is unsure, which is the honest verdict when nobody answered.
 func sendWasRefused(err error) bool {
-	switch {
-	case err == nil:
-		return false
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
-		return false
-	case errors.Is(err, client.ErrNotConnected), errors.Is(err, client.ErrSessionEnded),
-		errors.Is(err, client.ErrKilled), errors.Is(err, client.ErrSendInFlight):
-		return false
-	}
-	return true
+	var refused *client.SendError
+	return errors.As(err, &refused)
 }
 
 // jitter spreads N clients' sends instead of a thundering herd every tick:
