@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.0](https://github.com/Einlanzerous/catenary/compare/v0.8.0...v0.9.0) (2026-09-18)
+
+
+### Features
+
+* CANT-117 — the device list and the scoped revoke, as a generated wire type ([#65](https://github.com/Einlanzerous/catenary/issues/65)) ([7e58c56](https://github.com/Einlanzerous/catenary/commit/7e58c56d3c8f6ad590e01c9fa3f626652baa2b12))
+* CANT-73 — service accounts and bot tokens, minted and ended from the CLI ([#66](https://github.com/Einlanzerous/catenary/issues/66)) ([2ae5b5e](https://github.com/Einlanzerous/catenary/commit/2ae5b5e4a772a4573fa5eb99ed767d2488e9705f))
+
+
+### Bug Fixes
+
+* CANT-119 — the soak harness fails the handover gate for its own timing, not the server's ([#67](https://github.com/Einlanzerous/catenary/issues/67)) ([5053015](https://github.com/Einlanzerous/catenary/commit/5053015ee6b0c26b3f447d871e3b04c008738db7))
+
 ## [0.8.0](https://github.com/Einlanzerous/catenary/compare/v0.7.0...v0.8.0) (2026-09-17)
 
 
