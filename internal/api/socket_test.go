@@ -576,8 +576,28 @@ func TestASilentSocketIsClosedAtTheHelloDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if reason := expectClose(t, conn, websocket.StatusPolicyViolation); !strings.Contains(reason, "hello") {
+	// ITS OWN CODE, AND NOT 1008 (CANT-122). This is the one transient close
+	// among the sites that used to share a bare 1008; the other five are
+	// client bugs, and CANT-31's record makes a bare 1008 terminal on the
+	// strength of this one no longer being among them. expectClose compares
+	// the status exactly, so reverting awaitHello to StatusPolicyViolation
+	// fails here rather than in a client that has stopped reconnecting.
+	if reason := expectClose(t, conn, statusHelloTimeout); !strings.Contains(reason, "hello") {
 		t.Errorf("close reason %q does not say what was expected", reason)
+	}
+}
+
+// The number is the contract: it is written into CANT-31's record and onto
+// CANT-35 and CANT-42, and two client implementations switch on it. A renumber
+// here without those three is the divergence the record exists to prevent.
+func TestTheHelloTimeoutCodeIsTheRecordedOne(t *testing.T) {
+	if statusHelloTimeout != 4002 {
+		t.Errorf("statusHelloTimeout = %d; the record, CANT-35 and CANT-42 all say 4002", statusHelloTimeout)
+	}
+	// 4001 is hub.StatusRevoked, spelled as a number because this package does
+	// not import the hub and a test is no reason to start.
+	if statusHelloTimeout == statusHeartbeatTimeout || statusHelloTimeout == 4001 {
+		t.Errorf("statusHelloTimeout (%d) collides with another private-range code", statusHelloTimeout)
 	}
 }
 

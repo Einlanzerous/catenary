@@ -55,27 +55,31 @@ The server's half is CANT-125: a proposal colliding with a stored hash is routed
 | `1008` preceded by `error{unauthorized}` or `error{wire_version_unsupported}` | **terminal.** The two codes the door produces directly, and the two that are the client's own fault. |
 | `1008` preceded by `error{internal}` | **reconnect, at maximum backoff.** `retryable` is not consulted. |
 | `1008` preceded by an `error` carrying any other code | reconnect with backoff |
-| `1001`, `1012`, `4000`, abnormal closure, the hello-timeout code (CANT-122) | reconnect with backoff, then catch up |
+| `1001`, `1012`, `4000`, `4002`, abnormal closure | reconnect with backoff, then catch up |
 | **any close code not listed here** — `1000`, `1009`, `1011`, or one a later server adds | **reconnect with backoff** |
 
 ***Preceded by*** means the **last frame before the close, carrying no `client_id`**. An earlier `error{rate_limited}` naming some `send` does not make a later bare `1008` read as transient.
 
 **`error{internal}` is never terminal, whatever its `retryable` says.** An unclassified server failure reaches the client as `internal`, and that flag is deliberately biased toward `true`, so it cannot decide terminal — and a clearly permanent server-side fault must not stop every client at once and keep them stopped after the fix.
 
-### The six bare `1008` producers
+### The bare `1008` producers — five, since CANT-122
 
-Six sites close `1008` with **no** preceding `error` frame. `refuse()` writes a frame first, so its closes are not in this set.
+Six sites closed `1008` with **no** preceding `error` frame, and five still do. `refuse()` writes a frame first, so its closes are not in this set.
 
 | site | cause | |
 |---|---|---|
-| `socket.go:494` | hello timeout | **transient** — gets its own close code under CANT-122 |
-| `socket.go:513` | first frame was not a hello | client bug |
-| `socket.go:571` | a second hello | client bug |
-| `socket.go:743` | a malformed frame | client bug |
-| `socket.go:414` | `resume_from_log_seq` negative | client bug, decoder-unreachable |
+| `socket.go:516` | hello timeout | **transient — closes `4002` (`statusHelloTimeout`), no longer `1008`**, since CANT-122 |
+| `socket.go:535` | first frame was not a hello | client bug |
+| `socket.go:593` | a second hello | client bug |
+| `socket.go:765` | a malformed frame | client bug |
+| `socket.go:435` | `resume_from_log_seq` negative | client bug, decoder-unreachable |
 | `hub.go:953` | `up_to_seq` below 1 | client bug, decoder-unreachable |
 
-The last two are unreachable behind the generated decoder (`Seq` carries `minimum: 1`). **`unauthorized` on this door means a device mismatch only** — a bad or expired credential never reaches a socket, because it is refused with HTTP 401 at the upgrade.
+The last two are unreachable behind the generated decoder (`Seq` carries `minimum: 1`).
+
+**A bare `1008` is a client bug only against a server that carries `4002`.** One that predates CANT-122 still closes the hello timeout with a bare `1008`, so the deployed server carries it before any client applying this table points at it — `soakrig`'s `internal/client` included. A rollback past it reintroduces the hazard, and a relaunch recovers, because a protocol terminal keeps the credential (§6).
+
+**`unauthorized` on this door means a device mismatch only** — a bad or expired credential never reaches a socket, because it is refused with HTTP 401 at the upgrade.
 
 ## 5 · Terminal, by HTTP
 
