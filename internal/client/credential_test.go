@@ -84,6 +84,62 @@ func TestRotateKeepsTheDeviceAndNeedsACredential(t *testing.T) {
 	}
 }
 
+// Half a pair is never persisted, by either door. One without its refresh
+// token works until the access token expires and then cannot be refreshed.
+func TestNeitherDoorPersistsHalfAPair(t *testing.T) {
+	for name, cred := range map[string]Credential{
+		"no refresh token": {DeviceID: "d", AccessToken: "a"},
+		"no access token":  {DeviceID: "d", RefreshToken: "r"},
+		"no device":        {AccessToken: "a", RefreshToken: "r"},
+	} {
+		if err := NewJournal().Enroll(cred); err == nil {
+			t.Errorf("Enroll accepted a credential with %s", name)
+		}
+	}
+
+	j := enrolledJournal(t, "enrolled")
+	held, _ := j.Credential()
+	for name, edit := range map[string]func(*Credential){
+		"no refresh token": func(c *Credential) { c.RefreshToken = "" },
+		"no access token":  func(c *Credential) { c.AccessToken = "" },
+	} {
+		next := held
+		edit(&next)
+		if err := j.Rotate(next); err == nil {
+			t.Errorf("Rotate accepted a pair with %s", name)
+		}
+		if got, _ := j.Credential(); got != held {
+			t.Errorf("a refused Rotate (%s) changed the credential", name)
+		}
+	}
+}
+
+// The layout is restated here rather than imported, so it is pinned to the
+// generated pattern: what the wire decoder accepts parses, and what it refuses
+// does not become durable state.
+func TestTheTimestampLayoutIsTheWiresOwn(t *testing.T) {
+	pattern := wire.TimestampPattern
+	for _, ts := range []string{
+		"2026-09-19T21:05:06.371Z",      // the wire's shape
+		"2026-09-19T21:05:06Z",          // no milliseconds
+		"2026-09-19T21:05:06.371507Z",   // microseconds
+		"2026-09-19T21:05:06.371+01:00", // an offset
+		"2026-09-19T21:05:06.371+00:00", // even a zero offset
+	} {
+		_, err := time.Parse(wireTimestampLayout, ts)
+		if wireOK, parsed := pattern.MatchString(ts), err == nil; wireOK != parsed {
+			t.Errorf("%q: the wire pattern says %v, the layout says %v", ts, wireOK, parsed)
+		}
+	}
+	e := wire.EnrollResponse{
+		DeviceID: "d", AccessToken: "a", RefreshToken: "r",
+		AccessExpiresAt: "2026-09-19T21:05:06.371+01:00", RefreshExpiresAt: "2026-09-19T21:05:06.371Z",
+	}
+	if _, err := CredentialFromEnroll(e); err == nil {
+		t.Error("CredentialFromEnroll accepted an offset timestamp the wire decoder refuses")
+	}
+}
+
 // Obligation 4's wipe discards the message store a stale cursor invalidated.
 // The credential is not part of that, and a client that lost it on a wipe
 // would turn a server rollback into a re-enrollment for every device.

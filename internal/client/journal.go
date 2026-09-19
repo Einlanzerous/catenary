@@ -29,15 +29,25 @@ type Credential struct {
 	RefreshExpiresAt time.Time
 }
 
-// CredentialFromEnroll is the pair POST /enroll minted, as durable state.
-// The wire's timestamps are RFC 3339 by the schema's own pattern, so a parse
-// failure here is a server that broke the contract, not an input to tolerate.
+// wireTimestampLayout is the ONE shape internal/wire's TimestampPattern
+// accepts: RFC 3339 with exactly three fractional digits and a literal Z. It
+// is deliberately not time.RFC3339, which is a superset — an offset timestamp
+// the generated decoder refuses would otherwise become durable state here.
+// Restated rather than imported from internal/wireview, as soakrig's
+// credentials.go does, so the client does not take on that package's
+// dependency surface; TestTheTimestampLayoutIsTheWiresOwn pins it to the
+// pattern itself.
+const wireTimestampLayout = "2006-01-02T15:04:05.000Z"
+
+// CredentialFromEnroll is the pair POST /enroll minted, as durable state. A
+// parse failure here is a server that broke the contract, not an input to
+// tolerate.
 func CredentialFromEnroll(e wire.EnrollResponse) (Credential, error) {
-	accessExp, err := time.Parse(time.RFC3339, string(e.AccessExpiresAt))
+	accessExp, err := time.Parse(wireTimestampLayout, string(e.AccessExpiresAt))
 	if err != nil {
 		return Credential{}, fmt.Errorf("client: access_expires_at %q: %w", e.AccessExpiresAt, err)
 	}
-	refreshExp, err := time.Parse(time.RFC3339, string(e.RefreshExpiresAt))
+	refreshExp, err := time.Parse(wireTimestampLayout, string(e.RefreshExpiresAt))
 	if err != nil {
 		return Credential{}, fmt.Errorf("client: refresh_expires_at %q: %w", e.RefreshExpiresAt, err)
 	}
@@ -55,6 +65,8 @@ var (
 	ErrCredentialHeld = errors.New("client: the journal already holds a credential")
 	// ErrCredentialDevice is a rotation naming a different device.
 	ErrCredentialDevice = errors.New("client: a rotation cannot change the device")
+
+	errCredentialIncomplete = errors.New("client: a credential needs a DeviceID, an AccessToken and a RefreshToken")
 )
 
 // Journal is the client's DURABLE state: the credential, the messages,
@@ -134,8 +146,8 @@ func NewJournal() *Journal {
 // held pair may be a rotation ahead of the one the caller has, and overwriting
 // it with an older one is the spent-token restart this type exists to prevent.
 func (j *Journal) Enroll(cred Credential) error {
-	if cred.DeviceID == "" || cred.AccessToken == "" {
-		return errors.New("client: a credential needs a DeviceID and an AccessToken")
+	if cred.DeviceID == "" || cred.AccessToken == "" || cred.RefreshToken == "" {
+		return errCredentialIncomplete
 	}
 	j.credMu.Lock()
 	defer j.credMu.Unlock()
@@ -161,8 +173,11 @@ func (j *Journal) Rotate(next Credential) error {
 		return ErrNoCredential
 	case next.DeviceID != j.credential.DeviceID:
 		return ErrCredentialDevice
-	case next.AccessToken == "":
-		return errors.New("client: a rotation needs an AccessToken")
+	case next.AccessToken == "" || next.RefreshToken == "":
+		// BOTH HALVES. A pair persisted without its refresh token connects
+		// until the access token expires and then cannot refresh at all —
+		// which is a re-enrollment, not a retry.
+		return errCredentialIncomplete
 	}
 	j.credential = next
 	return nil
