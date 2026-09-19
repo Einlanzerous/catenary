@@ -129,6 +129,10 @@ type Faults struct {
 	// SkipWipe breaks obligation 4: on `ready.log_seq` below the cursor the
 	// client re-syncs from 0 and keeps its store and its (monotonic) cursor.
 	SkipWipe bool
+	// RefreshUnlocked breaks record §2's single-flight: a refresh neither
+	// takes the Journal's lock nor waits behind anyone holding it, so
+	// concurrent refreshers each present the same refresh token.
+	RefreshUnlocked bool
 }
 
 // Config is everything a Client needs that is not durable. BaseURL and an
@@ -175,6 +179,22 @@ type Config struct {
 	// 5 s.
 	BackoffMin, BackoffMax time.Duration
 
+	// Refresh turns on CANT-31's record §1: a proactive refresh before a dial
+	// whenever less than max(60 s, ⅓ of the served lifetime) remains, and a
+	// reactive one — single-flight, then ONE retry — on Catenary's own 401
+	// from /sync.
+	//
+	// OFF BY DEFAULT, AND THE RIGS LEAVE IT OFF (CANT-31 criterion 39). Until
+	// the proposed-successor exchange lands (CANT-125, CANT-126), a rotation
+	// whose response is lost — and a harness that kills clients loses them on
+	// purpose — leaves the client holding a spent token, and presenting that
+	// outside the grace window revokes the device. Against the deployed
+	// server that is a real device, revoked by a test.
+	Refresh bool
+	// Now is the device's wall clock. Nil means time.Now. It exists so a test
+	// can be a device whose clock is wrong, or one that slept.
+	Now func() time.Time
+
 	Faults Faults
 }
 
@@ -194,6 +214,13 @@ type Stats struct {
 	PingsSent        int
 	PongsReceived    int
 	HeartbeatSevers  int // sockets this client severed for unanswered pings
+	// Refreshes counts rotations THIS client performed and persisted.
+	// RefreshesSkipped counts the times it took the single-flight lock and
+	// found the pair already rotated by someone else — the outcome that
+	// lock exists to produce.
+	Refreshes        int
+	RefreshesSkipped int
+	RefreshErrors    int
 	Undecodable      int
 	LastRTT          time.Duration
 	LastClose        string
@@ -387,6 +414,13 @@ func (c *Client) Run(ctx context.Context) error {
 		// goroutine issues its /sync now, beside the upgrade, rather than a
 		// round trip later on `ready` — which is still a trigger of its own,
 		// so the page that ends catch-up is one requested after it.
+		//
+		// AND THE PROACTIVE REFRESH COMES BEFORE BOTH (CANT-124), so neither
+		// the upgrade nor the /sync beside it presents a pair known to be
+		// about to die.
+		if err := c.RefreshIfDue(ctx); err != nil {
+			c.log.Info("proactive refresh failed; dialing with the held pair", "error", err)
+		}
 		c.mu.Lock()
 		c.stats.Dials++
 		c.connecting = true
@@ -1025,8 +1059,30 @@ func (c *Client) catchUp(ctx context.Context) error {
 	}
 }
 
-// fetch is one GET /sync, decoded by the generated validating decoder.
+// fetch is one GET /sync — and, when Catenary refuses the pair it carried, one
+// refresh and ONE retry (CANT-124, record §1's reactive half).
+//
+// ONCE, NOT A LOOP. A second 401 on a pair that was just minted is not
+// staleness and another refresh will not cure it; it goes back to catch-up's
+// own backoff as the failure it is. This is the path that makes REST work on
+// a live socket: the session was authorized once at accept and outlives its
+// access token (CANT-28 ruling 2), so a catch-up an hour into a socket's life
+// always meets an expired token, and the socket itself must not notice.
 func (c *Client) fetch(ctx context.Context, after int64) (wire.SyncResponse, error) {
+	used := c.credential()
+	page, err := c.fetchWith(ctx, after, used)
+	if !errors.Is(err, errUnauthorized) || !c.cfg.Refresh {
+		return page, err
+	}
+	if rerr := c.refreshAfter401(ctx, used); rerr != nil {
+		return wire.SyncResponse{}, fmt.Errorf("%w; then %w", err, rerr)
+	}
+	return c.fetchWith(ctx, after, c.credential())
+}
+
+// fetchWith is one GET /sync carrying cred, decoded by the generated
+// validating decoder.
+func (c *Client) fetchWith(ctx context.Context, after int64, cred Credential) (wire.SyncResponse, error) {
 	c.mu.Lock()
 	if c.connecting {
 		c.stats.SyncsBeforeReady++
@@ -1043,7 +1099,7 @@ func (c *Client) fetch(ctx context.Context, after int64) (wire.SyncResponse, err
 	if err != nil {
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.credential().AccessToken)
+	req.Header.Set("Authorization", "Bearer "+cred.AccessToken)
 	// ADDED, NOT SET: Authorization above is the request's own credential,
 	// and ExtraHeaders (CANT-109) is a separate, additive set — Cloudflare
 	// Access's two headers sit beside it, never replacing it.
@@ -1060,6 +1116,9 @@ func (c *Client) fetch(ctx context.Context, after int64) (wire.SyncResponse, err
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxSyncBody))
 	if err != nil {
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: read: %w", err)
+	}
+	if isCatenaryUnauthorized(resp.StatusCode, body) {
+		return wire.SyncResponse{}, fmt.Errorf("client: sync: %w", errUnauthorized)
 	}
 	if resp.StatusCode != http.StatusOK {
 		if len(body) > 256 {
