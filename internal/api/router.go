@@ -182,8 +182,9 @@ type Deps struct {
 	MaxFrameBytes int64
 
 	// HelloTimeout is how long an accepted socket has to say hello before the
-	// door closes it with 4002 (statusHelloTimeout). Zero means DefaultHelloTimeout — the same
-	// zero-means-default convention MaxFrameBytes above already follows.
+	// door closes it with 4002 (statusHelloTimeout). Zero means
+	// DefaultHelloTimeout — the same zero-means-default convention
+	// MaxFrameBytes above already follows.
 	//
 	// PER-SERVER RATHER THAN PACKAGE-LEVEL, AND THAT IS THE WHOLE POINT
 	// (CANT-115). This deadline used to be a package `var` that two tests

@@ -207,9 +207,9 @@ type Stats struct {
 	// names. Keyed by int rather than websocket.StatusCode so a caller
 	// outside this package (CANT-27's harness) reads it without importing
 	// coder/websocket. CANT-35's table is what every code here means: 1001
-	// drain, 1012 head-unreadable, 4000 heartbeat timeout, -1 abnormal — all
-	// four the same "reconnect with backoff" bucket this client already
-	// treats them as.
+	// drain, 1012 head-unreadable, 4000 heartbeat timeout, 4002 hello timeout
+	// (CANT-122), -1 abnormal — all five the same "reconnect with backoff"
+	// bucket this client already treats them as.
 	CloseStatuses map[int]int
 }
 
