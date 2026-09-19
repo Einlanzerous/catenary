@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/Einlanzerous/catenary/compare/v0.9.0...v0.10.0) (2026-09-19)
+
+
+### Features
+
+* CANT-121 — the client's credential is durable state, not configuration ([#72](https://github.com/Einlanzerous/catenary/issues/72)) ([afdf201](https://github.com/Einlanzerous/catenary/commit/afdf20110acbad43b6fc1b4b6a6125d5b5c162e1))
+* CANT-122 — the hello timeout closes 4002, so a bare 1008 means a client bug ([#70](https://github.com/Einlanzerous/catenary/issues/70)) ([b0d95d3](https://github.com/Einlanzerous/catenary/commit/b0d95d33753b909e371ff287def32bfed07a069c))
+
 ## [0.9.0](https://github.com/Einlanzerous/catenary/compare/v0.8.0...v0.9.0) (2026-09-18)
 
 
