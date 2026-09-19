@@ -54,6 +54,11 @@ const wireTimestampLayout = "2006-01-02T15:04:05.000Z"
 // CredentialFromEnroll is the pair POST /enroll minted, as durable state. A
 // parse failure here is a server that broke the contract, not an input to
 // tolerate.
+//
+// THE BODY ALONE CARRIES NO CLOCK. A caller holding the HTTP response should
+// use Enroll, or follow this with Credential.WithServerDate, so the pair
+// knows its offset and its issue time; this form is for a caller that never
+// had a response to read — a rig enrolling through the store.
 func CredentialFromEnroll(e wire.EnrollResponse) (Credential, error) {
 	accessExp, err := time.Parse(wireTimestampLayout, string(e.AccessExpiresAt))
 	if err != nil {

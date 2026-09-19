@@ -242,3 +242,58 @@ func TestClientsSharingACredentialProduceOneRotation(t *testing.T) {
 		t.Errorf("the seventh client refreshed %d times; the offset learned by the rotation should have told it the pair is fresh", s.Refreshes)
 	}
 }
+
+// THE FIRST PAIR LEARNS ITS CLOCK AT ENROLLMENT (record §1: "on the /refresh
+// and /enroll responses"). The device is an hour slow. Enrolled over HTTP, its
+// pair carries the offset and the issue time, so the proactive check is live
+// from the first dial and works to a third of the real fifteen minutes — not
+// to the floor, and not to a clock that says the pair has an hour left.
+func TestTheFirstPairLearnsItsClockAtEnrollment(t *testing.T) {
+	k := newKillRig(t, nil)
+	cs := k.cast()
+	issued, err := k.st.IssueEnrollmentToken(k.ctx, cs.theo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slow := func() time.Time { return time.Now().Add(-time.Hour) }
+	cred, err := client.Enroll(k.ctx, client.Config{BaseURL: k.base(), Now: slow}, issued.Plaintext, "theo's phone")
+	if err != nil {
+		t.Fatalf("enroll over HTTP: %v", err)
+	}
+	if cred.ClockOffset < 59*time.Minute || cred.ClockOffset > 61*time.Minute {
+		t.Errorf("the enrolled pair's offset is %s, want about +1h", cred.ClockOffset)
+	}
+	if d := time.Since(cred.AccessIssuedAt); d < -5*time.Second || d > 5*time.Second {
+		t.Errorf("the enrolled pair says it was issued %s ago, want now on the server's clock", d)
+	}
+
+	at := func(sinceIssue time.Duration) func() time.Time {
+		return func() time.Time { return slow().Add(sinceIssue) }
+	}
+	for _, tc := range []struct {
+		name  string
+		cred  client.Credential
+		clock func() time.Time
+		want  int
+	}{
+		{"nine minutes in — six left, outside the last third: not due", cred, at(9 * time.Minute), 0},
+		{"negative control — the body-only pair, eleven minutes in: the slow clock and the floor say not due",
+			func() client.Credential { c := cred; c.ClockOffset, c.AccessIssuedAt = 0, time.Time{}; return c }(), at(11 * time.Minute), 0},
+		{"eleven minutes in — four left, inside the last third: due, and it rotates", cred, at(11 * time.Minute), 1},
+	} {
+		j := client.NewJournal()
+		if err := j.Enroll(tc.cred); err != nil {
+			t.Fatal(err)
+		}
+		c := k.refreshingClient(wire.EnrollResponse{}, j, true, tc.clock, false)
+		if err := c.RefreshIfDue(k.ctx); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := c.Status().Refreshes; got != tc.want {
+			t.Errorf("%s: %d refreshes, want %d", tc.name, got, tc.want)
+		}
+	}
+	if tokens, revoked, dead := k.deviceHealth(cred.DeviceID); tokens != 2 || revoked != 0 || dead {
+		t.Errorf("the device holds %d refresh tokens, %d revoked, device revoked=%v; want 2, 0, false", tokens, revoked, dead)
+	}
+}
