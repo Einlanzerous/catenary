@@ -127,6 +127,27 @@ const (
 // bucket 1001 and 1012 are already in.
 const statusHeartbeatTimeout websocket.StatusCode = 4000
 
+// statusHelloTimeout is the hello deadline's own code (CANT-122, CANT-31
+// ruling 5), the next private-use number after 4000 and hub.StatusRevoked's
+// 4001. It used to be a bare 1008, and that made a bare 1008 unclassifiable:
+// of the six sites that close 1008 with no preceding `error` frame, five are
+// client bugs and this was the one that is not — a socket that went quiet
+// between the upgrade and its hello is a slow or stalled network, and the
+// same client on the same build gets in on its next attempt. With this code
+// carved out, a bare 1008 means only "client bug", which is what lets
+// CANT-31's record make it terminal.
+//
+// RECONNECT WITH BACKOFF, the bucket 1001, 1012 and 4000 are already in. A
+// client that predates this code still does the right thing with it, because
+// the recorded default for a close code nobody listed is also reconnect.
+//
+// THE DEPLOYED SERVER CARRIES THIS BEFORE ANY CLIENT APPLIES THE RULE.
+// Against a server that still says 1008 here, a client treating a bare 1008
+// as terminal stops on a transient stall. A rollback past this commit
+// reintroduces that, and a relaunch recovers from it, because a protocol
+// terminal keeps the stored credential.
+const statusHelloTimeout websocket.StatusCode = 4002
+
 // heartbeatWindow is how long a session may go without a `ping` before this
 // server severs it, derived from the exact numbers `ready` announced.
 //
@@ -486,12 +507,13 @@ func awaitHello(ctx context.Context, conn *websocket.Conn, logger *slog.Logger, 
 	// A TIMER AND A CLOSE HANDSHAKE, not a context deadline. coder/websocket
 	// closes the whole connection when a Read's context expires, which leaves
 	// the client with a bare EOF and no close frame saying why. Closing from a
-	// timer instead sends the 1008 the client can log, and unblocks the read
-	// below with the peer's echo of it.
+	// timer instead sends a status the client can log and act on — its own,
+	// statusHelloTimeout, and not the 1008 the two client-bug closes below
+	// share — and unblocks the read below with the peer's echo of it.
 	var timedOut atomic.Bool
 	timer := time.AfterFunc(timeout, func() {
 		timedOut.Store(true)
-		closeWith(conn, websocket.StatusPolicyViolation, "hello expected")
+		closeWith(conn, statusHelloTimeout, "hello expected")
 	})
 	defer timer.Stop()
 
