@@ -477,8 +477,24 @@ func (k *killRig) client(dev wire.EnrollResponse, j *client.Journal, faults clie
 // test ends, or until the test kills it.
 func runClient(t *testing.T, ctx context.Context, base string, dev wire.EnrollResponse, j *client.Journal, faults client.Faults) *client.Client {
 	t.Helper()
+	// A FIRST RUN ENROLLS THE JOURNAL; A RESTART DOES NOT (CANT-121). Every
+	// restart in these tests passes the same `dev` it started with, and on a
+	// journal that already holds a credential that argument is ignored — the
+	// journal's pair may be a rotation ahead of it.
+	if j == nil {
+		j = client.NewJournal()
+	}
+	if _, held := j.Credential(); !held {
+		cred, err := client.CredentialFromEnroll(dev)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := j.Enroll(cred); err != nil {
+			t.Fatal(err)
+		}
+	}
 	c, err := client.New(client.Config{
-		BaseURL: base, AccessToken: string(dev.AccessToken), DeviceID: dev.DeviceID,
+		BaseURL:    base,
 		ClientInfo: "cant-102-test", Journal: j, Faults: faults,
 		BackoffMin: 20 * time.Millisecond, BackoffMax: 250 * time.Millisecond,
 	})

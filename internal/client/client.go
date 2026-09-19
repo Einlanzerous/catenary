@@ -131,22 +131,23 @@ type Faults struct {
 	SkipWipe bool
 }
 
-// Config is everything a Client needs. BaseURL, AccessToken and DeviceID are
-// required; everything else has a default.
+// Config is everything a Client needs that is not durable. BaseURL and an
+// enrolled Journal are required; everything else has a default.
+//
+// THERE IS NO CREDENTIAL HERE, deliberately (CANT-121). It lives in the
+// Journal, because it changes — every refresh rotates it — and a restart that
+// could be handed one through Config would be handed the enrollment-time pair,
+// which after a rotation is the spent one. See Journal.credential.
 type Config struct {
 	// BaseURL is the server's origin, http:// or https://, e.g.
 	// https://catenary.example.org. /ws and /sync are appended.
 	BaseURL string
-	// AccessToken rides on the upgrade as `catenary.token.<token>` and on
-	// /sync as a bearer.
-	AccessToken string
-	// DeviceID is the device the token was minted for; the hello must name it.
-	DeviceID wire.Uuid
 	// ClientInfo goes on the hello for the server's log. Never parsed.
 	ClientInfo string
 
-	// Journal is the durable state. Nil means a fresh one. Pass the journal
-	// of a killed client to restart it.
+	// Journal is the durable state, and it must already hold a credential:
+	// NewJournal then Journal.Enroll for a first run, the journal of a killed
+	// client to restart it.
 	Journal *Journal
 
 	// HTTPClient carries both /sync and the upgrade. Nil means a plain
@@ -277,8 +278,14 @@ type sendResult struct {
 
 // New builds a client. It does nothing until Run.
 func New(cfg Config) (*Client, error) {
-	if cfg.BaseURL == "" || cfg.AccessToken == "" || cfg.DeviceID == "" {
-		return nil, errors.New("client: BaseURL, AccessToken and DeviceID are required")
+	if cfg.BaseURL == "" {
+		return nil, errors.New("client: BaseURL is required")
+	}
+	if cfg.Journal == nil {
+		return nil, ErrNoCredential
+	}
+	if _, ok := cfg.Journal.Credential(); !ok {
+		return nil, ErrNoCredential
 	}
 	u, err := url.Parse(strings.TrimRight(cfg.BaseURL, "/"))
 	if err != nil {
@@ -308,9 +315,6 @@ func New(cfg Config) (*Client, error) {
 		waiters:    map[wire.Uuid]chan sendResult{},
 		changed:    make(chan struct{}),
 	}
-	if c.j == nil {
-		c.j = NewJournal()
-	}
 	if c.log == nil {
 		c.log = slog.New(slog.DiscardHandler)
 	}
@@ -331,6 +335,26 @@ func New(cfg Config) (*Client, error) {
 
 // Journal is the client's durable state, for a restart after Kill.
 func (c *Client) Journal() *Journal { return c.j }
+
+// credential is the pair to present NOW. It is re-read from the Journal at
+// every use and never cached on the Client, so a rotation written by this
+// client or by another context sharing the store is what the next dial and
+// the next /sync carry. New guarantees there is one, and nothing removes it.
+func (c *Client) credential() Credential {
+	cred, _ := c.j.Credential()
+	return cred
+}
+
+// rotate is Journal.Rotate behind the Kill guard: nothing a killed client had
+// in flight reaches the Journal, and a refresh response is no exception.
+func (c *Client) rotate(next Credential) error {
+	c.j.mu.Lock()
+	defer c.j.mu.Unlock()
+	if c.killed.Load() {
+		return ErrKilled
+	}
+	return c.j.Rotate(next)
+}
 
 // Run connects, keeps the socket alive with the announced heartbeat,
 // reconnects with backoff when it drops, and runs catch-up on every trigger,
@@ -607,7 +631,7 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 	conn, resp, err := websocket.Dial(dctx, c.wsURL, &websocket.DialOptions{
 		HTTPClient:   c.http,
 		HTTPHeader:   c.cfg.ExtraHeaders,
-		Subprotocols: []string{subprotocolV1, tokenSubprotocolPrefix + c.cfg.AccessToken},
+		Subprotocols: []string{subprotocolV1, tokenSubprotocolPrefix + c.credential().AccessToken},
 	})
 	cancel()
 	if err != nil {
@@ -644,7 +668,7 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 	c.j.mu.Unlock()
 	info := c.cfg.ClientInfo
 	hello := wire.ClientHello{
-		WireVersion: wire.WireVersion, DeviceID: c.cfg.DeviceID,
+		WireVersion: wire.WireVersion, DeviceID: c.credential().DeviceID,
 		ResumeFromLogSeq: resume, ClientInfo: &info,
 	}
 	if err := c.write(sctx, conn, hello); err != nil {
@@ -1019,7 +1043,7 @@ func (c *Client) fetch(ctx context.Context, after int64) (wire.SyncResponse, err
 	if err != nil {
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: %w", err)
 	}
-	req.Header.Set("Authorization", "Bearer "+c.cfg.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+c.credential().AccessToken)
 	// ADDED, NOT SET: Authorization above is the request's own credential,
 	// and ExtraHeaders (CANT-109) is a separate, additive set — Cloudflare
 	// Access's two headers sit beside it, never replacing it.
