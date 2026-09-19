@@ -60,7 +60,7 @@ The server's half is CANT-125: a proposal colliding with a stored hash is routed
 | `1001`, `1012`, `4000`, `4002`, abnormal closure | reconnect with backoff, then catch up |
 | **any close code not listed here** — `1000`, `1009`, `1011`, or one a later server adds | **reconnect with backoff** |
 
-***Preceded by*** means the **last frame before the close, carrying no `client_id`**. An earlier `error{rate_limited}` naming some `send` does not make a later bare `1008` read as transient.
+***Preceded by*** means the **last frame before the close, carrying no `client_id`**. An earlier `error{rate_limited}` naming some `send` does not make a later bare `1008` read as transient. **Every frame clears it** — one the client cannot decode or does not recognise included — so an `error` followed by anything at all no longer precedes the close.
 
 **`error{internal}` is never terminal, whatever its `retryable` says.** An unclassified server failure reaches the client as `internal`, and that flag is deliberately biased toward `true`, so it cannot decide terminal — and a clearly permanent server-side fault must not stop every client at once and keep them stopped after the fix.
 
@@ -92,6 +92,7 @@ The last two are unreachable behind the generated decoder (`Seq` carries `minimu
 | 401 on `/refresh` that did not come from Catenary — a proxy, an expired Access session in front | **not terminal** |
 | 401 on `/refresh` for a credential another context already rotated | **not terminal.** Re-read the persisted credential before concluding anything. |
 | `/refresh` answers `503`, another 5xx, or a network error | an unknown outcome — §3 |
+| 401 on the WebSocket **upgrade** | **not an input.** A browser cannot see it, so no client may act on it: reconnect with backoff, and let the `/sync` beside the dial decide |
 
 The deployed path runs through `cf-access-jwt` and `cf-access-guard`, so a 401 from a hop in front says nothing about the Catenary credential. **`refresh_expires_at` having passed is not by itself terminal** — that would be a terminal decision taken on the device clock with no round trip.
 

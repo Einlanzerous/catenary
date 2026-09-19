@@ -183,6 +183,26 @@ func (j *Journal) Enroll(cred Credential) error {
 	return nil
 }
 
+// Reenroll replaces the held credential with a NEW enrollment's — a different
+// device, as far as the server is concerned — and keeps the local store. It is
+// the only thing that ends a credential terminal (CANT-31's record §6), and
+// the only door through which a held pair is replaced by one that did not
+// descend from it; Enroll refuses and Rotate keeps the device precisely so
+// that this cannot happen by accident. The caller is a person re-enrolling a
+// device the server has stopped recognising.
+func (j *Journal) Reenroll(cred Credential) error {
+	if cred.DeviceID == "" || cred.AccessToken == "" || cred.RefreshToken == "" {
+		return errCredentialIncomplete
+	}
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	if !j.hasCredential {
+		return ErrNoCredential
+	}
+	j.credential = cred
+	return nil
+}
+
 // Rotate replaces the held pair with the one a refresh returned. The device
 // stays the same; everything else is whatever the server said.
 //

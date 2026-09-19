@@ -133,6 +133,22 @@ type Faults struct {
 	// takes the Journal's lock nor waits behind anyone holding it, so
 	// concurrent refreshers each present the same refresh token.
 	RefreshUnlocked bool
+
+	// NeverTerminal removes CANT-123's terminal branch: every close
+	// reconnects and a refused refresh is retried, as before that ticket.
+	// AlwaysTerminal makes it unconditional: any session that ends, ends the
+	// client. They are the two negative controls for record §4, one in each
+	// direction.
+	NeverTerminal  bool
+	AlwaysTerminal bool
+
+	// HelloInstead, when set, is written in place of the hello — a frame
+	// that is not a hello, or a hello naming the wrong device or wire
+	// version. AfterReady, when set, is written once, straight after `ready`
+	// — a second hello, or bytes that are not a frame at all. Both exist so
+	// the REAL server can be made to produce each close record §4 lists.
+	HelloInstead []byte
+	AfterReady   []byte
 }
 
 // Config is everything a Client needs that is not durable. BaseURL and an
@@ -243,6 +259,11 @@ type Stats struct {
 
 // Status is a point-in-time view of a Client.
 type Status struct {
+	// Terminal names which terminal state the client is in, if any, and the
+	// observation that put it there (CANT-123). A client that is merely
+	// between dials — however long its backoff has grown — is NotTerminal.
+	Terminal Terminal
+
 	Stats
 	Connected         bool // a socket is open
 	Ready             bool // and has received `ready`
@@ -293,6 +314,7 @@ type Client struct {
 	outstanding map[string]time.Time
 	waiters     map[wire.Uuid]chan sendResult
 	stats       Stats
+	terminal    Terminal
 
 	nmu     sync.Mutex
 	changed chan struct{}
@@ -396,6 +418,12 @@ func (c *Client) Run(ctx context.Context) error {
 	case c.killed.Load():
 		c.mu.Unlock()
 		return ErrKilled
+	case c.terminal.Kind != NotTerminal:
+		// A terminal client does not run again. A relaunch is a NEW Client
+		// over the same Journal (record §6), not this one retried.
+		term := c.terminal
+		c.mu.Unlock()
+		return &TerminalError{term}
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	c.running, c.cancel = true, cancel
@@ -429,7 +457,7 @@ func (c *Client) Run(ctx context.Context) error {
 		c.wakeCatchUp()
 		c.notify()
 
-		opened, readied, err := c.session(ctx)
+		opened, readied, preceding, err := c.session(ctx)
 		c.mu.Lock()
 		if err != nil {
 			c.stats.LastClose = err.Error()
@@ -449,8 +477,31 @@ func (c *Client) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			break
 		}
+
+		// RECORD §4: WHAT THIS CLOSE MEANS (CANT-123). Only a session that
+		// opened has a close to read — a dial that failed, a 401 on the
+		// upgrade included, reconnects, and the /sync beside it is what finds
+		// out whether the credential is gone (§5, in refresh).
+		verdict := reconnect
+		if opened {
+			var why string
+			verdict, why = classifyClose(websocket.CloseStatus(err), preceding)
+			switch {
+			case c.cfg.Faults.NeverTerminal:
+				verdict = reconnect
+			case c.cfg.Faults.AlwaysTerminal:
+				verdict, why = stopProtocolFailure, "fault: every close is terminal"
+			}
+			if verdict == stopProtocolFailure {
+				c.stop(Terminal{Kind: TerminalProtocol, Reason: why})
+				break
+			}
+		}
 		if readied {
 			backoff = c.backoffMin
+		}
+		if verdict == reconnectAtMaximum {
+			backoff = c.backoffMax
 		}
 		c.log.Info("session ended; reconnecting", "error", err, "backoff", backoff)
 		select {
@@ -470,7 +521,31 @@ func (c *Client) Run(ctx context.Context) error {
 	if c.killed.Load() {
 		return ErrKilled
 	}
+	c.mu.Lock()
+	term := c.terminal
+	c.mu.Unlock()
+	if term.Kind != NotTerminal {
+		return &TerminalError{term}
+	}
 	return ctx.Err()
+}
+
+// stop puts the client in a terminal state and ends Run. The first terminal
+// wins: a close code and a refused refresh can race, and the one that was
+// observed first is the one Status goes on naming. Nothing is deleted — not
+// the credential, not the local store.
+func (c *Client) stop(t Terminal) {
+	c.mu.Lock()
+	if c.terminal.Kind == NotTerminal {
+		c.terminal = t
+	}
+	cancel := c.cancel
+	c.mu.Unlock()
+	c.log.Warn("terminal: this client will not reconnect", "kind", t.Kind.String(), "reason", t.Reason)
+	if cancel != nil {
+		cancel()
+	}
+	c.notify()
 }
 
 // Kill is `kill -9`: the client stops at once, with no close handshake, and
@@ -582,6 +657,7 @@ func (c *Client) Status() Status {
 		HeartbeatInterval: c.interval,
 		MissedPongLimit:   c.missedLimit,
 		CaughtUp:          c.gen == c.doneGen,
+		Terminal:          c.terminal,
 	}
 	// s.Stats is a value copy of c.stats, but a map field copies its header,
 	// not its contents: without this clone, s.CloseStatuses would still alias
@@ -656,7 +732,7 @@ func (c *Client) wakeCatchUp() {
 // status at all (Stats.DialErrors already counts it, and CANT-27's review
 // found it double-counted into CloseStatuses' -1 bucket before this).
 // readied reports whether it got as far as `ready`.
-func (c *Client) session(ctx context.Context) (opened, readied bool, err error) {
+func (c *Client) session(ctx context.Context) (opened, readied bool, preceding *wire.ServerError, err error) {
 	dctx, cancel := context.WithTimeout(ctx, dialTimeout)
 	// HTTPHeader RIDES ON THE UPGRADE REQUEST ITSELF (CANT-109): a nil map
 	// here is safe — coder/websocket substitutes an empty http.Header before
@@ -673,9 +749,9 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 		c.stats.DialErrors++
 		c.mu.Unlock()
 		if resp != nil {
-			return false, false, fmt.Errorf("client: dial: %s: %w", resp.Status, err)
+			return false, false, nil, fmt.Errorf("client: dial: %s: %w", resp.Status, err)
 		}
-		return false, false, fmt.Errorf("client: dial: %w", err)
+		return false, false, nil, fmt.Errorf("client: dial: %w", err)
 	}
 	conn.SetReadLimit(maxFrameBytes)
 
@@ -683,7 +759,7 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 	defer scancel()
 	if c.killed.Load() {
 		_ = conn.CloseNow()
-		return true, false, ErrKilled
+		return true, false, nil, ErrKilled
 	}
 
 	// THE HELLO IS WRITTEN BEFORE THE SOCKET IS PUBLISHED. The server closes
@@ -705,9 +781,14 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 		WireVersion: wire.WireVersion, DeviceID: c.credential().DeviceID,
 		ResumeFromLogSeq: resume, ClientInfo: &info,
 	}
-	if err := c.write(sctx, conn, hello); err != nil {
+	if raw := c.cfg.Faults.HelloInstead; raw != nil {
+		err = conn.Write(sctx, websocket.MessageText, raw)
+	} else {
+		err = c.write(sctx, conn, hello)
+	}
+	if err != nil {
 		_ = conn.CloseNow()
-		return true, false, fmt.Errorf("client: hello: %w", err)
+		return true, false, nil, fmt.Errorf("client: hello: %w", err)
 	}
 
 	c.mu.Lock()
@@ -719,17 +800,21 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 	// behind it. One that lands before this point has also cancelled ctx,
 	// which ends a hello write still in flight.
 	if c.killed.Load() {
-		return true, false, ErrKilled
+		return true, false, nil, ErrKilled
 	}
 	if ctx.Err() != nil {
-		return true, false, ctx.Err()
+		return true, false, nil, ctx.Err()
 	}
 
 	for {
 		_, data, err := conn.Read(sctx)
 		if err != nil {
-			return true, readied, fmt.Errorf("client: read: %w", err)
+			return true, readied, preceding, fmt.Errorf("client: read: %w", err)
 		}
+		// EVERY FRAME CLEARS IT, and only a session-level `error` sets it
+		// again below: record §4's *preceded by* is the LAST frame before
+		// the close, carrying no client_id.
+		preceding = nil
 		f, err := wire.DecodeServerFrame(data)
 		if err != nil {
 			c.mu.Lock()
@@ -746,6 +831,9 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 			readied = true
 			c.onReady(v)
 			go c.heartbeat(sctx, conn, time.Duration(v.HeartbeatIntervalSec)*time.Second, int(v.MissedPongLimit))
+			if raw := c.cfg.Faults.AfterReady; raw != nil {
+				_ = conn.Write(sctx, websocket.MessageText, raw)
+			}
 		case wire.Ping:
 			_ = c.write(sctx, conn, wire.Pong{ID: v.ID})
 		case wire.Pong:
@@ -774,6 +862,7 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, err error) 
 			if v.ClientID != nil {
 				c.answer(*v.ClientID, sendResult{err: &SendError{Frame: v}})
 			} else {
+				preceding = &v
 				c.log.Warn("server error", "code", v.Code, "message", v.Message)
 			}
 		}
