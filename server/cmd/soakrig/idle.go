@@ -85,8 +85,19 @@ func runIdle(ctx context.Context, baseURL string, cred Credentials, headers http
 		defer cancel()
 	}
 
+	// The credential file is this rig's durable copy and the journal is the
+	// client's; `idle` never refreshes (CANT-31 criterion 39), so the pair in
+	// the file is never a rotation behind the one the server holds.
+	j := client.NewJournal()
+	if err := j.Enroll(client.Credential{
+		DeviceID:    cred.DeviceID,
+		AccessToken: cred.AccessToken, AccessExpiresAt: cred.AccessExpiresAt,
+		RefreshToken: cred.RefreshToken, RefreshExpiresAt: cred.RefreshExpiresAt,
+	}); err != nil {
+		return idleReport{Reason: fmt.Sprintf("enroll the journal: %v", err)}
+	}
 	c, err := client.New(client.Config{
-		BaseURL: baseURL, AccessToken: cred.AccessToken, DeviceID: cred.DeviceID,
+		BaseURL: baseURL, Journal: j,
 		ClientInfo: clientInfo, Logger: logger, ExtraHeaders: headers,
 	})
 	if err != nil {

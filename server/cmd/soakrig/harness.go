@@ -159,8 +159,17 @@ func (h *harness) buildClients(provisioned []provisionedClient, rep *Report) []*
 			continue
 		}
 		j := client.NewJournal()
+		cred, err := client.CredentialFromEnroll(p.enroll)
+		if err == nil {
+			err = j.Enroll(cred)
+		}
+		if err != nil {
+			h.harnessError("enroll client %d's journal (%s): %v", p.index, p.name, err)
+			rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, ProvisionError: err.Error()}
+			continue
+		}
 		c, err := client.New(client.Config{
-			BaseURL: h.baseURL, AccessToken: string(p.enroll.AccessToken), DeviceID: p.enroll.DeviceID,
+			BaseURL:    h.baseURL,
 			ClientInfo: "cant-27-soakrig", Journal: j,
 			Faults:     h.cfg.debugFaults[p.index],
 			BackoffMin: 100 * time.Millisecond, BackoffMax: 2 * time.Second,

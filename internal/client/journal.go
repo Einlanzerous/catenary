@@ -1,14 +1,65 @@
 package client
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/magos/catenary/internal/wire"
 )
 
-// Journal is the client's DURABLE state: the messages, conversations and users
-// it holds, the cursor, and the evidence log of which messages it counted.
+// Credential is what a device holds to get back in: the pair POST /enroll
+// minted, or the pair the latest POST /refresh rotated it into. It is durable
+// state and lives in the Journal, never in Config (CANT-121) — see
+// Journal.credential for why that distinction is the whole ticket.
+type Credential struct {
+	// DeviceID is the device the pair was minted for; the hello must name it.
+	// A rotation never changes it.
+	DeviceID wire.Uuid
+	// AccessToken rides on the upgrade as `catenary.token.<token>` and on
+	// /sync as a bearer.
+	AccessToken     string
+	AccessExpiresAt time.Time
+	// RefreshToken is single-use: presenting it rotates the pair, and
+	// presenting it a second time outside the grace window invalidates the
+	// family and revokes the device (CANT-29).
+	RefreshToken     string
+	RefreshExpiresAt time.Time
+}
+
+// CredentialFromEnroll is the pair POST /enroll minted, as durable state.
+// The wire's timestamps are RFC 3339 by the schema's own pattern, so a parse
+// failure here is a server that broke the contract, not an input to tolerate.
+func CredentialFromEnroll(e wire.EnrollResponse) (Credential, error) {
+	accessExp, err := time.Parse(time.RFC3339, string(e.AccessExpiresAt))
+	if err != nil {
+		return Credential{}, fmt.Errorf("client: access_expires_at %q: %w", e.AccessExpiresAt, err)
+	}
+	refreshExp, err := time.Parse(time.RFC3339, string(e.RefreshExpiresAt))
+	if err != nil {
+		return Credential{}, fmt.Errorf("client: refresh_expires_at %q: %w", e.RefreshExpiresAt, err)
+	}
+	return Credential{
+		DeviceID:    e.DeviceID,
+		AccessToken: string(e.AccessToken), AccessExpiresAt: accessExp,
+		RefreshToken: string(e.RefreshToken), RefreshExpiresAt: refreshExp,
+	}, nil
+}
+
+var (
+	// ErrNoCredential is New over a journal nobody enrolled.
+	ErrNoCredential = errors.New("client: the journal holds no credential")
+	// ErrCredentialHeld is Enroll over a journal that already holds one.
+	ErrCredentialHeld = errors.New("client: the journal already holds a credential")
+	// ErrCredentialDevice is a rotation naming a different device.
+	ErrCredentialDevice = errors.New("client: a rotation cannot change the device")
+)
+
+// Journal is the client's DURABLE state: the credential, the messages,
+// conversations and users it holds, the cursor, and the evidence log of which
+// messages it counted.
 //
 // It outlives a Client. A kill abandons the Client and keeps the Journal, and a
 // restart is a new Client over the same Journal — which is what a process that
@@ -25,6 +76,32 @@ import (
 // transaction or an fsync, and proving it there is CANT-35's and CANT-42's.
 type Journal struct {
 	mu sync.Mutex
+
+	// credential is the pair this device currently holds.
+	//
+	// HERE AND NOT IN Config, BECAUSE A REFRESH TOKEN IS SINGLE-USE (CANT-121).
+	// A restart is a new Client over this Journal, built by a caller that
+	// still has the enrollment response in hand. While the credential was a
+	// Config field that caller passed the enrollment-time pair again, which
+	// after one rotation is the SPENT pair — and presenting a spent refresh
+	// token outside the grace window is what reuse detection exists to catch,
+	// so the reference client would revoke its own device by restarting.
+	// Config has no credential field at all now, so a restart cannot present
+	// anything but what is written here.
+	//
+	// NOT CLEARED BY A WIPE. resetLocked is obligation 4's discard of the
+	// message store; the credential is not part of what a stale cursor
+	// invalidates, and CANT-31's record (§6) has nothing delete it at all —
+	// not a wipe, and not a terminal state.
+	//
+	// UNDER ITS OWN LOCK, credMu, and not mu. The credential is read on the
+	// way INTO a dial and a /sync, and mu is held across a whole page apply;
+	// it is also not part of obligation 1's transaction — no message is
+	// rendered against it. Lock order is mu then credMu, and only
+	// Client.rotate takes both, for the Kill guard.
+	credMu        sync.Mutex
+	credential    Credential
+	hasCredential bool
 
 	cursor    int64
 	hasCursor bool
@@ -52,8 +129,55 @@ func NewJournal() *Journal {
 	return j
 }
 
+// Enroll seeds a journal with the pair POST /enroll minted, once. A journal
+// that already holds a credential refuses, and that refusal is the point: the
+// held pair may be a rotation ahead of the one the caller has, and overwriting
+// it with an older one is the spent-token restart this type exists to prevent.
+func (j *Journal) Enroll(cred Credential) error {
+	if cred.DeviceID == "" || cred.AccessToken == "" {
+		return errors.New("client: a credential needs a DeviceID and an AccessToken")
+	}
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	if j.hasCredential {
+		return ErrCredentialHeld
+	}
+	j.credential, j.hasCredential = cred, true
+	return nil
+}
+
+// Rotate replaces the held pair with the one a refresh returned. The device
+// stays the same; everything else is whatever the server said.
+//
+// It is on the Journal, not only the Client, because a credential is shared by
+// every context that holds this store and not by one process — CANT-31's
+// record §2. A Client's own rotations go through Client.rotate, which adds the
+// Kill guard every other journal write has.
+func (j *Journal) Rotate(next Credential) error {
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	switch {
+	case !j.hasCredential:
+		return ErrNoCredential
+	case next.DeviceID != j.credential.DeviceID:
+		return ErrCredentialDevice
+	case next.AccessToken == "":
+		return errors.New("client: a rotation needs an AccessToken")
+	}
+	j.credential = next
+	return nil
+}
+
+// Credential is the pair currently held, and whether there is one.
+func (j *Journal) Credential() (Credential, bool) {
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	return j.credential, j.hasCredential
+}
+
 // resetLocked is obligation 4's wipe: messages, conversations, users and the
-// cursor, all of them. The caller holds mu and bumps wipes.
+// cursor, all of them — and NOT the credential (see Journal.credential). The
+// caller holds mu and bumps wipes.
 func (j *Journal) resetLocked() {
 	j.cursor, j.hasCursor = 0, false
 	j.messages = map[wire.Uuid]wire.Message{}
