@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -27,6 +28,17 @@ type Credential struct {
 	// family and revokes the device (CANT-29).
 	RefreshToken     string
 	RefreshExpiresAt time.Time
+
+	// AccessIssuedAt and ClockOffset are what CANT-31's record §1 has
+	// persisted WITH the credential (CANT-124): when the server says it
+	// issued this pair — the response's HTTP `Date` — and how far the device's
+	// wall clock stood from the server's at that moment (server minus device).
+	// Together they let a cold start read AccessExpiresAt correctly on a
+	// device whose clock is wrong, without a round trip. Both are zero for a
+	// pair that did not arrive over HTTP; see refreshThreshold and refreshDue
+	// for what zero means to each. Set by Credential.WithServerDate.
+	AccessIssuedAt time.Time
+	ClockOffset    time.Duration
 }
 
 // wireTimestampLayout is the ONE shape internal/wire's TimestampPattern
@@ -115,6 +127,14 @@ type Journal struct {
 	credential    Credential
 	hasCredential bool
 
+	// refreshing is the single-flight lock of CANT-31's record §2: at most one
+	// refresh in flight PER CREDENTIAL, which means per store and not per
+	// Client — two Clients over one Journal are two tabs over one origin's
+	// storage. On real storage this is a Web Lock or a SQLite transaction. A
+	// one-slot channel rather than a mutex, because it is held across an HTTP
+	// round trip and a waiter must be able to give up when its context ends.
+	refreshing chan struct{}
+
 	cursor    int64
 	hasCursor bool
 
@@ -136,7 +156,7 @@ type Journal struct {
 
 // NewJournal returns an empty journal: no cursor, nothing held.
 func NewJournal() *Journal {
-	j := &Journal{}
+	j := &Journal{refreshing: make(chan struct{}, 1)}
 	j.resetLocked()
 	return j
 }
@@ -181,6 +201,18 @@ func (j *Journal) Rotate(next Credential) error {
 	}
 	j.credential = next
 	return nil
+}
+
+// lockRefresh takes the single-flight lock, or gives up with ctx. The caller
+// re-reads the credential AFTER this returns and before deciding anything:
+// whoever held the lock may have rotated it.
+func (j *Journal) lockRefresh(ctx context.Context) (release func(), err error) {
+	select {
+	case j.refreshing <- struct{}{}:
+		return func() { <-j.refreshing }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // Credential is the pair currently held, and whether there is one.
