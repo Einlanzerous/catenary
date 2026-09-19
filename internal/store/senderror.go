@@ -425,6 +425,26 @@ func internalSendError(err error) *SendError {
 // cancellation until its budget is spent.
 func IsTransient(err error) bool { return isTransient(err) }
 
+// IsInternalCode reports whether a code READ OFF THE WIRE is `internal`. It is
+// the door for a reader, as SendErrorFor is the door for a producer (CANT-123,
+// asked and settled 2026-09-19).
+//
+// The guard in errorcode_guard_test.go bans naming a send code anywhere but
+// this file, comparisons included, because a handler comparing codes is making
+// the table's decision a second time. A CLIENT comparing one is not deciding
+// anything — the server already did — but the guard cannot tell the two apart,
+// and teaching it to would cost it the bluntness that makes it worth having.
+// CANT-31's record §4 has every client treat a close preceded by
+// error{internal} differently from every other code (reconnect at maximum
+// backoff, and never terminal, because isTransient below biases `retryable`
+// toward true), so the reference client has to ask. It asks here, and the
+// constant stays named in one file.
+//
+// One code, not a general CodeIs(a, b): a reader that needed to distinguish
+// two SEND codes from each other would be a real second decision, and should
+// meet the guard.
+func IsInternalCode(code wire.ErrorCode) bool { return code == wire.ErrorCodeInternal }
+
 // isTransient reports whether re-running the identical statement could
 // plausibly succeed.
 //

@@ -15,6 +15,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/wire"
 )
 
@@ -112,10 +113,14 @@ func classifyClose(status websocket.StatusCode, preceding *wire.ServerError) (cl
 		if preceding == nil {
 			return stopProtocolFailure, "close 1008, bare: the server could not accept what this client wrote"
 		}
-		switch preceding.Code {
-		case wire.ErrorCodeUnauthorized, wire.ErrorCodeWireVersionUnsupported:
+		switch {
+		case preceding.Code == wire.ErrorCodeUnauthorized, preceding.Code == wire.ErrorCodeWireVersionUnsupported:
 			return stopProtocolFailure, fmt.Sprintf("close 1008 after error{%s}", preceding.Code)
-		case wire.ErrorCodeInternal:
+		case store.IsInternalCode(preceding.Code):
+			// ASKED OF THE STORE, NOT NAMED HERE: CANT-83's guard keeps every
+			// send code's name in senderror.go, and this is the door it
+			// leaves a reader.
+			//
 			// `retryable` IS NOT CONSULTED. An unclassified server failure
 			// arrives as `internal` with that flag biased toward true, and a
 			// clearly permanent server fault must not stop every client at
