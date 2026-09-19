@@ -23,6 +23,8 @@ Built by **CANT-120** (this file), **CANT-121**, **CANT-122**, **CANT-123**, **C
 
 **The anchor is the wall clock, corrected by the `Date` offset.** Capture the offset between the HTTP `Date` header and the device wall clock on the `/refresh` and `/enroll` responses — at the moment the expiry is learned — and persist it with the credential. Use it to interpret `access_expires_at`. Never schedule on a monotonic clock: Go's stops on suspend, `performance.now()` is unspecified across browsers, and only Android's `elapsedRealtime()` counts sleep. In Go, `Round(0)` strips the monotonic reading. `ServerReady.server_time` is **not** the anchor — it arrives after the upgrade, which is after the decision that needs it.
 
+**Three edges of that, settled by the reference client (CANT-124) so the other two do not each pick.** The *served lifetime* is measured on the server's clock at both ends — `access_expires_at` minus the `Date` of the response that served it — so a wrong device clock cannot stretch it. **A pair whose issue time was never learned gets the 60 s floor**, not a guessed lifetime. **A `/refresh` response with no usable `Date` keeps the offset the device already had**: the offset describes the device's clock, not one pair, and a stale correction is a better guess than none.
+
 **Reactive, and not optional.** On any Catenary `/sync` 401: single-flight refresh, then retry **once** — not a loop. A browser `WebSocket` never exposes a failed upgrade's HTTP status (a 401 surfaces as `error` then `close 1006`), so the reactive path is the only way a TypeScript client can learn its token is stale, and it is the safety net for every error the proactive check makes.
 
 ## 2 · Single-flight, per credential — not per process
