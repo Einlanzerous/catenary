@@ -66,8 +66,8 @@ func TestNoFrameCanPrecedeTheHello(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 
-	j := NewJournal()
-	c, err := New(Config{BaseURL: srv.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()), Journal: j})
+	j := enrolledJournal(t, "token")
+	c, err := New(Config{BaseURL: srv.URL, Journal: j})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,7 +148,7 @@ func TestSeverEndsTheSessionWithoutStoppingRun(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c, err := New(Config{
-		BaseURL: srv.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+		BaseURL: srv.URL, Journal: enrolledJournal(t, "token"),
 		BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
 	})
 	if err != nil {
@@ -167,7 +167,7 @@ func TestSeverEndsTheSessionWithoutStoppingRun(t *testing.T) {
 	// A Sever with nothing open is a documented no-op; proved here rather
 	// than assumed, since a panic on a nil conn would fail every other test
 	// that never calls it.
-	idle, err := New(Config{BaseURL: srv.URL, AccessToken: "unused", DeviceID: wire.Uuid(uuid.NewString())})
+	idle, err := New(Config{BaseURL: srv.URL, Journal: enrolledJournal(t, "unused")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestCloseStatusesRecordsTheCodeAndAbnormalClosures(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c, err := New(Config{
-		BaseURL: srv.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+		BaseURL: srv.URL, Journal: enrolledJournal(t, "token"),
 		BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
 	})
 	if err != nil {
@@ -247,7 +247,7 @@ func TestDialFailuresDoNotReachCloseStatuses(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	c, err := New(Config{
-		BaseURL: srv.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+		BaseURL: srv.URL, Journal: enrolledJournal(t, "token"),
 		BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
 	})
 	if err != nil {
@@ -344,7 +344,7 @@ func TestExtraHeadersReachHTTPAndTheUpgrade(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c, err := New(Config{
-				BaseURL: gate.URL, AccessToken: "token", DeviceID: wire.Uuid(uuid.NewString()),
+				BaseURL: gate.URL, Journal: enrolledJournal(t, "token"),
 				ExtraHeaders: tc.headers, BackoffMin: 5 * time.Millisecond, BackoffMax: 20 * time.Millisecond,
 			})
 			if err != nil {
