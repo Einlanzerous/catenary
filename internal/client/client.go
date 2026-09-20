@@ -134,6 +134,16 @@ type Faults struct {
 	// concurrent refreshers each present the same refresh token.
 	RefreshUnlocked bool
 
+	// NoChain breaks record §3: a proposal is minted and sent but never
+	// written down, and a refresh presents the held token whatever came
+	// before — CANT-124's client, with a proposal it forgets. One lost
+	// response then leaves it presenting a spent token.
+	NoChain bool
+	// ProposeAfresh breaks §3's other half: a token presented again gets a
+	// newly minted proposal instead of the one it was first presented with,
+	// so a delayed original and its retry race to two different successors.
+	ProposeAfresh bool
+
 	// NeverTerminal removes CANT-123's terminal branch: every close
 	// reconnects and a refused refresh is retried, as before that ticket.
 	// AlwaysTerminal makes it unconditional: any session that ends, ends the
@@ -200,13 +210,17 @@ type Config struct {
 	// reactive one — single-flight, then ONE retry — on Catenary's own 401
 	// from /sync.
 	//
-	// OFF BY DEFAULT, AND THE RIGS LEAVE IT OFF (CANT-31 criterion 39). Until
-	// the proposed-successor exchange lands (CANT-125, CANT-126), a rotation
-	// whose response is lost — and a harness that kills clients loses them on
-	// purpose — leaves the client holding a spent token, and presenting that
-	// outside the grace window revokes the device. Against the deployed
-	// server that is a real device, revoked by a test.
+	// OFF BY DEFAULT, AND THE RIGS LEAVE IT OFF (CANT-31 criterion 39). The
+	// hazard that rule was written against — a rotation whose response is
+	// lost, which a harness that kills clients produces on purpose, leaving a
+	// client to present a spent token and revoke a real device — is what the
+	// proposed-successor exchange closes (CANT-125, CANT-126). The criterion
+	// stands regardless: a rig measures reconnects, and a refresh is not one.
 	Refresh bool
+	// Rand is where a proposed successor's 32 bytes come from. Nil means
+	// crypto/rand, and nothing but a test has a reason to say otherwise: it
+	// exists so a test can be a device whose generator repeats itself.
+	Rand io.Reader
 	// Now is the device's wall clock. Nil means time.Now. It exists so a test
 	// can be a device whose clock is wrong, or one that slept.
 	Now func() time.Time
@@ -237,6 +251,9 @@ type Stats struct {
 	Refreshes        int
 	RefreshesSkipped int
 	RefreshErrors    int
+	// RefreshWalkBacks counts Catenary's 401s that were NOT terminal: a token
+	// other than the oldest was refused, and the walk stepped back (CANT-126).
+	RefreshWalkBacks int
 	Undecodable      int
 	LastRTT          time.Duration
 	LastClose        string

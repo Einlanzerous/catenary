@@ -75,6 +75,16 @@ func CredentialFromEnroll(e wire.EnrollResponse) (Credential, error) {
 	}, nil
 }
 
+// ChainLink is one refresh this device sent: the token it presented, and the
+// successor it proposed. THE PROPOSAL IS THE ONE THE TOKEN WAS FIRST PRESENTED
+// WITH, and a token presented again carries it again — a second proposal for
+// one token would let two requests race to two different successors, where one
+// proposal makes the loser collide with the winner and be told so.
+type ChainLink struct {
+	Token    string
+	Proposal string
+}
+
 var (
 	// ErrNoCredential is New over a journal nobody enrolled.
 	ErrNoCredential = errors.New("client: the journal holds no credential")
@@ -126,11 +136,29 @@ type Journal struct {
 	// UNDER ITS OWN LOCK, credMu, and not mu. The credential is read on the
 	// way INTO a dial and a /sync, and mu is held across a whole page apply;
 	// it is also not part of obligation 1's transaction — no message is
-	// rendered against it. Lock order is mu then credMu, and only
-	// Client.rotate takes both, for the Kill guard.
+	// rendered against it. Lock order is mu then credMu, and the two that
+	// take both are Client.rotate and Client.propose, each for the Kill
+	// guard.
 	credMu        sync.Mutex
 	credential    Credential
 	hasCredential bool
+
+	// chain is every refresh this device has sent and not yet seen answered:
+	// CANT-31's record §3, and the reason a lost response no longer costs a
+	// device (CANT-126). Empty whenever the last refresh was answered.
+	//
+	// THE INVARIANT: chain[0].Token is credential.RefreshToken, and every
+	// later link's Token is the link before it's Proposal. So it reads, oldest
+	// first, as "the token the server last CONFIRMED, then each successor this
+	// device proposed for it" — and any of them may be the live one, because a
+	// rotation can commit without its response arriving.
+	//
+	// UNDER credMu, WITH THE CREDENTIAL IT EXTENDS, and written BEFORE the
+	// request that makes it true is sent. A proposal that exists only in the
+	// memory of the process that sent it is lost with that process, and then
+	// the server holds a successor nobody knows: the device can present only a
+	// token that is spent, which outside the grace window is a replay.
+	chain []ChainLink
 
 	// refreshing is the single-flight lock of CANT-31's record §2: at most one
 	// refresh in flight PER CREDENTIAL, which means per store and not per
@@ -199,7 +227,8 @@ func (j *Journal) Reenroll(cred Credential) error {
 	if !j.hasCredential {
 		return ErrNoCredential
 	}
-	j.credential = cred
+	// The chain was the OLD device's, and none of it means anything now.
+	j.credential, j.chain = cred, nil
 	return nil
 }
 
@@ -224,8 +253,82 @@ func (j *Journal) Rotate(next Credential) error {
 		// which is a re-enrollment, not a retry.
 		return errCredentialIncomplete
 	}
-	j.credential = next
+	// AN ANSWER COLLAPSES THE CHAIN. The server has said which token is the
+	// device's now, so every link — the ones below it, which are spent, and
+	// any above it, which never came to exist — is history.
+	j.credential, j.chain = next, nil
 	return nil
+}
+
+// Chain is every refresh sent and not yet answered, oldest first. Empty
+// whenever the last refresh was answered. A copy.
+func (j *Journal) Chain() []ChainLink {
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	return append([]ChainLink(nil), j.chain...)
+}
+
+// propose is PERSIST BEFORE SEND: it returns the successor to present token
+// with, and that answer is durable before the caller has it.
+//
+// A token already in the chain gets THE PROPOSAL IT WAS FIRST PRESENTED WITH,
+// and mint is not called. Otherwise token must be the chain's newest — the
+// held refresh token when the chain is empty, the last proposal when it is not
+// — and a new link is minted and appended for it.
+//
+// ok=false is THE CHAIN MOVED: token is nowhere in it and is not its newest,
+// because some other context rotated the credential since the caller read it.
+// Nothing is written, and the caller concludes nothing about token (record §5:
+// re-read the persisted credential before concluding anything).
+//
+// replace is the 503 `fresh_proposal` answer, and the ONE exception to reusing
+// the original: the server has said token is unspent and its proposal can
+// never commit, so the link gets a new one. Everything newer than it goes,
+// because it descended from a successor that was never made.
+func (j *Journal) propose(token string, replace bool, mint func() (string, error)) (proposal string, ok bool, err error) {
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	if !j.hasCredential {
+		return "", false, ErrNoCredential
+	}
+	for i, l := range j.chain {
+		if l.Token != token {
+			continue
+		}
+		if !replace {
+			return l.Proposal, true, nil
+		}
+		if proposal, err = mint(); err != nil {
+			return "", false, err
+		}
+		j.chain = append(j.chain[:i:i], ChainLink{Token: token, Proposal: proposal})
+		return proposal, true, nil
+	}
+	newest := j.credential.RefreshToken
+	if n := len(j.chain); n > 0 {
+		newest = j.chain[n-1].Proposal
+	}
+	if token != newest {
+		return "", false, nil
+	}
+	if proposal, err = mint(); err != nil {
+		return "", false, err
+	}
+	j.chain = append(j.chain, ChainLink{Token: token, Proposal: proposal})
+	return proposal, true, nil
+}
+
+// older is the token presented BEFORE token, and false when token is the
+// oldest — the one the server last confirmed — or is not in the chain at all.
+func (j *Journal) older(token string) (string, bool) {
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	for i, l := range j.chain {
+		if l.Token == token && i > 0 {
+			return j.chain[i-1].Token, true
+		}
+	}
+	return "", false
 }
 
 // lockRefresh takes the single-flight lock, or gives up with ctx. The caller

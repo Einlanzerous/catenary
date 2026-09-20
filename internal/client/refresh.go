@@ -6,15 +6,23 @@ package client
 // the record's and are implemented twice more, in TypeScript (CANT-35) and in
 // Dart (CANT-42); where this file and the record disagree, fix the record
 // first and then all three.
+//
+// CANT-126 adds §3, the client half of the proposed-successor exchange: every
+// refresh proposes its own successor and writes that down before it is sent,
+// so a rotation whose response never arrives is one the device can still find.
+// See exchange.
 
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/magos/catenary/internal/wire"
@@ -28,6 +36,25 @@ const (
 	// maxRefreshBody bounds its response: two 43-character tokens and two
 	// timestamps, with room to spare for an error body worth logging.
 	maxRefreshBody = 16 << 10
+
+	// proposalBytes is what the server's own tokens are made of: 32 bytes from
+	// a CSPRNG, which base64url without padding renders as the wire's
+	// 43-character Token. Restated rather than imported from internal/store,
+	// for wireTimestampLayout's reason; TestAProposalIsAWireToken pins it to
+	// the generated decoder.
+	proposalBytes = 32
+	// maxFreshProposals bounds how often one refresh answers `fresh_proposal`
+	// with another proposal. One collision is a reused secret; four in a row
+	// is a generator that cannot be trusted, or a server that says this to
+	// everything, and neither is cured by a fifth.
+	maxFreshProposals = 3
+	// maxRetryAfter caps the wait a `fresh_proposal` asks for. The single-
+	// flight lock is held across it.
+	maxRetryAfter = 5 * time.Second
+	// walkSlack is how many requests one refresh may send beyond one per link.
+	// The walk is downward and ends; the slack is for the answers that send it
+	// back up (`present_proposal`) or round again (`fresh_proposal`).
+	walkSlack = 8
 )
 
 // errUnauthorized is a 401 that is Catenary's OWN — the body is
@@ -35,6 +62,29 @@ const (
 // through cf-access-jwt and cf-access-guard) says nothing about the Catenary
 // credential, is not this error, and never triggers a refresh.
 var errUnauthorized = errors.New("client: unauthorized")
+
+var (
+	// errPresentProposal is the 503 `present_proposal`: the rotation being
+	// asked for ALREADY COMMITTED, moments ago, and the proposal is the
+	// device's refresh token now. Sending the same request again is the one
+	// wrong answer — past the grace window those bytes are a replay.
+	errPresentProposal = errors.New("client: refresh: already rotated into the proposal")
+	// errChainMoved is a refresh that found the persisted credential rotated
+	// underneath it by a context that does not share the lock. Not a failure:
+	// what is there now is what the caller uses.
+	errChainMoved = errors.New("client: refresh: the persisted credential moved")
+	// errWalkExhausted is a walk the server kept redirecting. Not terminal.
+	errWalkExhausted = errors.New("client: refresh: gave up after too many answers that settled nothing")
+)
+
+// freshProposalError is the 503 `fresh_proposal`: the presented token is STILL
+// GOOD and its proposal can never commit, because it collides with a token the
+// server already stores. Same token, a newly minted proposal, after `after`.
+type freshProposalError struct{ after time.Duration }
+
+func (e *freshProposalError) Error() string {
+	return "client: refresh: the proposal collided with a stored token"
+}
 
 // isCatenaryUnauthorized reports whether a response is Catenary's own 401.
 func isCatenaryUnauthorized(status int, body []byte) bool {
@@ -152,7 +202,13 @@ func (c *Client) refresh(ctx context.Context, stillNeeded func(held Credential) 
 		return nil
 	}
 
-	next, err := c.postRefresh(ctx, held)
+	next, err := c.exchange(ctx, held)
+	if errors.Is(err, errChainMoved) {
+		c.mu.Lock()
+		c.stats.RefreshesSkipped++
+		c.mu.Unlock()
+		return nil
+	}
 	if errors.Is(err, errUnauthorized) {
 		return c.refused(held, err)
 	}
@@ -212,9 +268,133 @@ func (c *Client) refused(presented Credential, err error) error {
 	return &TerminalError{won}
 }
 
-// postRefresh is one POST /refresh, presenting held's refresh token.
-func (c *Client) postRefresh(ctx context.Context, held Credential) (Credential, error) {
-	body, err := json.Marshal(wire.RefreshRequest{RefreshToken: wire.Token(held.RefreshToken)})
+// exchange is record §3: WHEN THE OUTCOME OF A REFRESH IS UNKNOWN, WALK THE
+// CHAIN. It returns the pair the server answered with, errUnauthorized when
+// Catenary refused the OLDEST token — the only refusal that can mean the
+// credential is gone, and refused decides whether it does — and any other
+// error for an attempt that settled nothing.
+//
+// A rotation can commit and its response never arrive: the request was the
+// only one there ever was, so single-flight cannot help, and the device is
+// left holding a token that may be spent without knowing its successor. So the
+// device CHOOSES the successor, and Journal.propose makes that choice durable
+// before the request leaves. After a lost response the successor is a string
+// it already has.
+//
+// NEWEST FIRST. The chain's last proposal is the newest token that can exist,
+// so that is what is presented, with a newly minted proposal of its own. If
+// the lost rotation committed it is live and this is an ordinary refresh. If
+// it did not, the server has never heard of it and says 401 — which costs
+// nothing, because a token that never existed belongs to no family and
+// revokes none. The other order is the fatal one: a spent token presented
+// outside the grace window is a replay, and a replay revokes the device.
+//
+// ONE STEP BACK PER 401, REUSING THE ORIGINAL PROPOSAL. Catenary's own 401
+// for a token that is not the oldest means only "not that one": step to the
+// token before it and present it with the proposal it was FIRST presented
+// with. If that first request is still on its way, the two now race to the
+// SAME successor, and the loser collides and is told `present_proposal`
+// instead of being refused as a replay. A 401 that is NOT Catenary's — a hop
+// in front — is not an answer about any token and never steps the walk: it
+// ends the attempt like any other unknown outcome.
+//
+// THE CHAIN GROWS BY ONE LINK FOR EVERY ATTEMPT THAT SETTLES NOTHING, and it
+// is cleared by the first answer (Journal.Rotate). Nothing shorter is safe —
+// each link is a token that may be live — so a device that goes on attempting
+// refreshes into a dead network comes back to a walk as long as its absence.
+// The record does not bound that and neither does this; it is CANT-127's.
+func (c *Client) exchange(ctx context.Context, held Credential) (Credential, error) {
+	chain := c.j.Chain()
+	token := held.RefreshToken
+	if n := len(chain); n > 0 && !c.cfg.Faults.NoChain {
+		token = chain[n-1].Proposal
+	}
+	replace, collisions := false, 0
+	for steps := len(chain) + walkSlack; steps > 0; steps-- {
+		proposal, ok, err := c.propose(token, replace)
+		if err != nil {
+			return Credential{}, err
+		}
+		if !ok {
+			return Credential{}, errChainMoved
+		}
+		replace = false
+
+		next, err := c.postRefresh(ctx, held, token, proposal)
+		var collided *freshProposalError
+		switch {
+		case err == nil:
+			// THE RESPONSE'S refresh_token, NEVER THE PROPOSAL ON FAITH. A
+			// server that predates the field ignores it and mints its own.
+			return next, nil
+		case errors.Is(err, errUnauthorized):
+			older, ok := c.j.older(token)
+			if !ok {
+				return Credential{}, err
+			}
+			c.mu.Lock()
+			c.stats.RefreshWalkBacks++
+			c.mu.Unlock()
+			token = older
+		case errors.Is(err, errPresentProposal):
+			// STOP PRESENTING THAT TOKEN. Its proposal is the newest token
+			// now; if this walk already has a link for it, that link's
+			// original proposal goes with it.
+			token = proposal
+		case errors.As(err, &collided):
+			if collisions++; collisions > maxFreshProposals {
+				return Credential{}, err
+			}
+			select {
+			case <-time.After(min(collided.after, maxRetryAfter)):
+			case <-ctx.Done():
+				return Credential{}, ctx.Err()
+			}
+			replace = true
+		default:
+			return Credential{}, err
+		}
+	}
+	return Credential{}, errWalkExhausted
+}
+
+// propose is Journal.propose behind the Kill guard, as rotate is Journal.Rotate
+// behind it: a client killed before its proposal was written sends nothing.
+func (c *Client) propose(token string, replace bool) (proposal string, ok bool, err error) {
+	if c.cfg.Faults.NoChain {
+		proposal, err = c.mintProposal()
+		return proposal, err == nil, err
+	}
+	c.j.mu.Lock()
+	defer c.j.mu.Unlock()
+	if c.killed.Load() {
+		return "", false, ErrKilled
+	}
+	return c.j.propose(token, replace || c.cfg.Faults.ProposeAfresh, c.mintProposal)
+}
+
+// mintProposal is a successor secret: 32 CSPRNG bytes in the wire's Token
+// shape, exactly as the server mints its own, and NEVER DERIVED FROM ANYTHING
+// — not the token it succeeds, not a counter, not the clock. It is a bearer
+// credential from the moment the server stores its hash.
+func (c *Client) mintProposal() (string, error) {
+	src := c.cfg.Rand
+	if src == nil {
+		src = rand.Reader
+	}
+	raw := make([]byte, proposalBytes)
+	if _, err := io.ReadFull(src, raw); err != nil {
+		return "", fmt.Errorf("client: refresh: mint a proposal: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
+}
+
+// postRefresh is one POST /refresh: token, presented with proposal. held is
+// the confirmed pair, for the two things a rotation keeps — the device, and
+// the clock offset when the response carries no Date.
+func (c *Client) postRefresh(ctx context.Context, held Credential, token, proposal string) (Credential, error) {
+	proposed := wire.Token(proposal)
+	body, err := json.Marshal(wire.RefreshRequest{RefreshToken: wire.Token(token), ProposedRefreshToken: &proposed})
 	if err != nil {
 		return Credential{}, fmt.Errorf("client: refresh: %w", err)
 	}
@@ -243,6 +423,22 @@ func (c *Client) postRefresh(ctx context.Context, held Credential) (Credential, 
 	switch {
 	case isCatenaryUnauthorized(resp.StatusCode, raw):
 		return Credential{}, fmt.Errorf("client: refresh: %w", errUnauthorized)
+	case resp.StatusCode == http.StatusServiceUnavailable:
+		// `retry` SAYS WHICH, and the two ask for opposite things (record §5).
+		// A 503 without one the client recognises — a proxy's, or a value a
+		// later server adds — is an unknown outcome and falls through.
+		var e struct {
+			Retry string `json:"retry"`
+		}
+		_ = json.Unmarshal(raw, &e)
+		switch e.Retry {
+		case "present_proposal":
+			return Credential{}, errPresentProposal
+		case "fresh_proposal":
+			secs, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
+			return Credential{}, &freshProposalError{after: time.Duration(max(secs, 0)) * time.Second}
+		}
+		fallthrough
 	case resp.StatusCode != http.StatusOK:
 		if len(raw) > 256 {
 			raw = raw[:256]

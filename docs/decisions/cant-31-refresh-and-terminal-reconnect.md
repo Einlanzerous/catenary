@@ -46,6 +46,8 @@ A refresh whose response is lost leaves the client unable to tell whether the ro
 
 The persisted state therefore holds the chain, not a single pair. The response's `refresh_token` is **authoritative — never P**: a server that predates the field ignores the proposal and mints its own.
 
+**Five edges of that, settled by the reference client (CANT-126) so the other two do not each pick.** **The newest token is the chain's last proposal, which has never been presented**: presenting it means minting and persisting a new link first, so the chain grows by one link for every attempt that settles nothing — and nothing yet bounds it (CANT-127). **Only Catenary's own 401 steps the walk back.** Any other non-answer, a 401 from a hop in front included, ends the attempt where it stands, and the next attempt starts from the newest token again. **A 200 collapses the chain** to the token it returned, at whichever link it arrived. **`present_proposal` moves the walk forward**: the proposal is presented next, with its own original proposal if it already has a link. **`fresh_proposal` is the one exception to reusing the original**: that link's proposal is replaced, every newer link is dropped, and the replacements are bounded — a server that says it to everything is an unknown outcome, not a loop.
+
 The server's half is CANT-125: a proposal colliding with a stored hash is routed on how the presented token relates to the colliding row, and only a genuine spent-token presentation reaches reuse detection.
 
 ## 4 · Terminal, by close code
@@ -124,4 +126,5 @@ Retrying a send across any of these events is safe on the server's side: `client
 - **The outbox state machine**, including §7's obligation — CANT-36 and CANT-42.
 - **Cross-client convergence**, the only mechanical check that the two clients agree — CANT-46.
 - **A user-revocation publisher** — CANT-33. The hub's `UserID` branch exists and is tested; nothing writes `users.deactivated_at` yet. §4's `4001` row is written for both subjects now so it is not retrofitted.
+- **A bound on the chain's length** — CANT-127. §3 as written has none, and an offline device's chain grows with its absence.
 - **`ReuseGraceWindow`** stays as CANT-29 set it, and this plan adds no second window beside it.

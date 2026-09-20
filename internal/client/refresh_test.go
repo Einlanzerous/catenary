@@ -472,8 +472,14 @@ func TestARefreshWithNoDateKeepsTheOffset(t *testing.T) {
 // due at the same moment. One refreshes; seven wait, re-read, and skip.
 //
 // The negative control runs the same eight with the lock faulted out, and the
-// server is shown the same refresh token more than once — which outside the
-// grace window is a replay, and a replay revokes the device.
+// server is asked to rotate more than once. SINCE CANT-126 IT COUNTS REQUESTS,
+// NOT PRESENTATIONS OF refresh-0, because which token an unlocked refresher
+// presents now depends on when it arrives. One that reads the chain before
+// anybody has written a link presents refresh-0 — with the SAME proposal the
+// first was given, which is the design working. One that reads it afterwards
+// finds that link and presents the newest token instead. Either way the
+// server was asked again for a pair already being rotated, and that is what
+// the lock prevents.
 func TestEightClientsOverOneCredentialRefreshItOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -525,8 +531,14 @@ func TestEightClientsOverOneCredentialRefreshItOnce(t *testing.T) {
 				if len(presented) != 1 || presented["refresh-0"] != 1 {
 					t.Errorf("refresh tokens presented %v, want refresh-0 exactly once", presented)
 				}
-			case presented["refresh-0"] < 2:
-				t.Errorf("with the lock faulted out refresh-0 was presented %d times; the control shows nothing", presented["refresh-0"])
+			default:
+				var asked int
+				for _, n := range presented {
+					asked += n
+				}
+				if asked < 2 {
+					t.Errorf("with the lock faulted out the server was asked to rotate %d times (%v); the control shows nothing", asked, presented)
+				}
 			}
 		})
 	}
