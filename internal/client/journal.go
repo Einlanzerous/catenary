@@ -160,6 +160,23 @@ type Journal struct {
 	// token that is spent, which outside the grace window is a replay.
 	chain []ChainLink
 
+	// lastSent is CANT-127's `last_sent_at`: the device wall-clock time at
+	// which the chain's NEWEST LINK WAS WRITTEN, which is before that link's
+	// request left. It is what bounds the chain (record §3) — both suppressors
+	// are read off it — and it is the only stamp that survives a kill, because
+	// a process killed mid-request never gets to record an outcome.
+	//
+	// WRITTEN BY THE SAME credMu SECTION THAT MINTS THE LINK (propose, through
+	// its mint callback) and CLEARED WITH THE CHAIN (Rotate, Reenroll). So a
+	// link never exists without a stamp, and an answer takes both away.
+	//
+	// ZERO IS ABSENT, and so is a value in the future: a journal written before
+	// CANT-127 has a chain and no stamp, and a device whose clock was set
+	// backwards has one it cannot have written. Both read the same way
+	// everywhere (Client.stamp), because the worst a wrong clock may cost is
+	// one early attempt.
+	lastSent time.Time
+
 	// refreshing is the single-flight lock of CANT-31's record §2: at most one
 	// refresh in flight PER CREDENTIAL, which means per store and not per
 	// Client — two Clients over one Journal are two tabs over one origin's
@@ -227,8 +244,9 @@ func (j *Journal) Reenroll(cred Credential) error {
 	if !j.hasCredential {
 		return ErrNoCredential
 	}
-	// The chain was the OLD device's, and none of it means anything now.
-	j.credential, j.chain = cred, nil
+	// The chain was the OLD device's, and none of it means anything now — nor
+	// does the stamp that bounded it (CANT-127).
+	j.credential, j.chain, j.lastSent = cred, nil, time.Time{}
 	return nil
 }
 
@@ -255,8 +273,9 @@ func (j *Journal) Rotate(next Credential) error {
 	}
 	// AN ANSWER COLLAPSES THE CHAIN. The server has said which token is the
 	// device's now, so every link — the ones below it, which are spent, and
-	// any above it, which never came to exist — is history.
-	j.credential, j.chain = next, nil
+	// any above it, which never came to exist — is history. The stamp goes with
+	// it (CANT-127): a settled credential is not held by anything.
+	j.credential, j.chain, j.lastSent = next, nil, time.Time{}
 	return nil
 }
 
@@ -267,6 +286,31 @@ func (j *Journal) Chain() []ChainLink {
 	defer j.credMu.Unlock()
 	return append([]ChainLink(nil), j.chain...)
 }
+
+// chainLen is len(Chain) without the copy, for the suppressors that read it on
+// every dial and every frame (CANT-127).
+func (j *Journal) chainLen() int {
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	return len(j.chain)
+}
+
+// LastSent is CANT-127's `last_sent_at` — when the chain's newest link was
+// written, which is before its request left — and whether there is one. A
+// journal written before CANT-127, and one whose chain has been collapsed by an
+// answer, both report false.
+func (j *Journal) LastSent() (time.Time, bool) {
+	j.credMu.Lock()
+	defer j.credMu.Unlock()
+	return j.lastSent, !j.lastSent.IsZero()
+}
+
+// stampLocked records CANT-127's `last_sent_at`. THE CALLER HOLDS credMu, and
+// there is exactly one: propose's mint callback, which runs inside propose's
+// own critical section (see propose). Written there and nowhere else, so the
+// stamp and the link it belongs to land in one section and no other context can
+// observe one without the other.
+func (j *Journal) stampLocked(now time.Time) { j.lastSent = now }
 
 // propose is PERSIST BEFORE SEND: it returns the successor to present token
 // with, and that answer is durable before the caller has it.
@@ -285,6 +329,13 @@ func (j *Journal) Chain() []ChainLink {
 // the original: the server has said token is unspent and its proposal can
 // never commit, so the link gets a new one. Everything newer than it goes,
 // because it descended from a successor that was never made.
+//
+// CANT-127'S STAMP RIDES WITH THE MINT. mint is called UNDER credMu and ONLY
+// when a link is actually being written — the append at the end, or a replace —
+// never on the path that hands back a token's original proposal. So a mint that
+// records `last_sent_at` (Client.stampingMint does, through stampLocked) writes
+// it in the same critical section as the link itself, and there is no path that
+// writes a link without stamping it or stamps without writing one.
 func (j *Journal) propose(token string, replace bool, mint func() (string, error)) (proposal string, ok bool, err error) {
 	j.credMu.Lock()
 	defer j.credMu.Unlock()

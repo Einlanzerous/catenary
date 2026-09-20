@@ -151,10 +151,16 @@ func refreshDue(cr Credential, deviceNow time.Time) bool {
 	return cr.AccessExpiresAt.Sub(serverNow) < refreshThreshold(cr)
 }
 
-// RefreshIfDue is the PROACTIVE half. Run calls it before every dial — and
-// therefore before the /sync that goes out beside the upgrade, which is pulled
-// after it — and a caller may call it on its own clock too: waking from a
-// suspend is the obvious moment. It does nothing unless Config.Refresh is set.
+// RefreshIfDue is the PROACTIVE half, as a HOST calls it: waking from a suspend
+// is the obvious moment. It does nothing unless Config.Refresh is set.
+//
+// AN EXPLICIT REFRESH IS NEVER HELD (CANT-127). Run's own pre-dial call goes
+// through refreshDueWhenAllowed, which stands down while the credential is
+// unsettled and Catenary has not answered; this one is an unconditional "do it
+// now" and costs one link if it settles nothing — so a host that calls it in a
+// loop over a dead network reproduces exactly the growth CANT-127 closes, and
+// owns that. What is bounded there is the attempts the client makes on its OWN
+// initiative, because those are the ones that repeat without anybody deciding to.
 //
 // Run logs a failure and dials anyway with the pair it has: if that pair
 // really is dead, the reactive half finds out.
@@ -162,14 +168,30 @@ func (c *Client) RefreshIfDue(ctx context.Context) error {
 	if !c.cfg.Refresh || !refreshDue(c.credential(), c.wallNow()) {
 		return nil
 	}
-	return c.refresh(ctx, func(held Credential) bool { return refreshDue(held, c.wallNow()) })
+	return c.refresh(ctx, func(held Credential) refreshNeed {
+		if refreshDue(held, c.wallNow()) {
+			return refreshNeeded
+		}
+		return refreshNotNeeded
+	})
 }
 
 // refreshAfter401 is the REACTIVE half: the pair `used` was just refused by
 // Catenary. It refreshes unless some other context has already replaced that
 // pair, in which case the replacement is simply what the retry carries.
+//
+// FETCH IS ITS ONLY CALLER, so this is one of the two automatic call sites, and
+// it goes through refreshWhenAllowed — CANT-127's suppressors sit at those two
+// and nowhere else. The gate cannot refuse it (Catenary's own 401 on /sync is
+// itself a response later than the stamp, so the gate is open by construction);
+// the backoff can, and then fetch hands back the 401 it already had.
 func (c *Client) refreshAfter401(ctx context.Context, used Credential) error {
-	return c.refresh(ctx, func(held Credential) bool { return held.AccessToken == used.AccessToken })
+	return c.refreshWhenAllowed(ctx, func(held Credential) refreshNeed {
+		if held.AccessToken == used.AccessToken {
+			return refreshNeeded
+		}
+		return refreshNotNeeded
+	})
 }
 
 // refresh is SINGLE-FLIGHT PER CREDENTIAL, NOT PER PROCESS (record §2).
@@ -185,7 +207,13 @@ func (c *Client) refreshAfter401(ctx context.Context, used Credential) error {
 // PERSIST BEFORE USE. The rotated pair is in the Journal before the lock is
 // released and before anything presents it — CANT-24 obligation 1's persist
 // before render, applied to a credential.
-func (c *Client) refresh(ctx context.Context, stillNeeded func(held Credential) bool) error {
+//
+// stillNeeded ANSWERS THREE WAYS SINCE CANT-127, because a bool cannot say
+// HELD: an automatic caller's closure re-checks the suppressors here, under the
+// lock, where another context's failed attempt has already moved the chain and
+// its stamp. Held is reported as errRefreshHeld and is neither a skip nor a
+// failure.
+func (c *Client) refresh(ctx context.Context, stillNeeded func(held Credential) refreshNeed) error {
 	if !c.cfg.Faults.RefreshUnlocked {
 		release, err := c.j.lockRefresh(ctx)
 		if err != nil {
@@ -195,11 +223,14 @@ func (c *Client) refresh(ctx context.Context, stillNeeded func(held Credential) 
 	}
 
 	held := c.credential()
-	if !stillNeeded(held) {
+	switch stillNeeded(held) {
+	case refreshNotNeeded:
 		c.mu.Lock()
 		c.stats.RefreshesSkipped++
 		c.mu.Unlock()
 		return nil
+	case refreshHeld:
+		return errRefreshHeld
 	}
 
 	next, err := c.exchange(ctx, held)
@@ -300,9 +331,13 @@ func (c *Client) refused(presented Credential, err error) error {
 //
 // THE CHAIN GROWS BY ONE LINK FOR EVERY ATTEMPT THAT SETTLES NOTHING, and it
 // is cleared by the first answer (Journal.Rotate). Nothing shorter is safe —
-// each link is a token that may be live — so a device that goes on attempting
-// refreshes into a dead network comes back to a walk as long as its absence.
-// The record does not bound that and neither does this; it is CANT-127's.
+// each link is a token that may be live.
+//
+// WHAT BOUNDS IT IS NOT HERE. This function sends exactly what it is asked to
+// send; how OFTEN the client asks on its own initiative is bounded by CANT-127's
+// two suppressors at the automatic call sites (hold.go, record §3), which is
+// why a device that spends a night in a dead network comes back to one link
+// rather than to a walk as long as its absence.
 func (c *Client) exchange(ctx context.Context, held Credential) (Credential, error) {
 	chain := c.j.Chain()
 	token := held.RefreshToken
@@ -370,7 +405,30 @@ func (c *Client) propose(token string, replace bool) (proposal string, ok bool, 
 	if c.killed.Load() {
 		return "", false, ErrKilled
 	}
-	return c.j.propose(token, replace || c.cfg.Faults.ProposeAfresh, c.mintProposal)
+	return c.j.propose(token, replace || c.cfg.Faults.ProposeAfresh, c.stampingMint)
+}
+
+// stampingMint mints a proposal AND records CANT-127's `last_sent_at` with it.
+//
+// IT IS HANDED TO Journal.propose, which calls it under the Journal's credMu and
+// ONLY when it is about to write a new link — so the stamp and the link land in
+// one critical section, which is what "written by the same write that mints the
+// link, before the request leaves" means. There is no path here that writes a
+// link without stamping it, and a walk-back that re-presents an older token with
+// its original proposal mints nothing and moves nothing: the stamp is the time
+// the NEWEST link was written, and one attempt writes at most one.
+//
+// The clock is the device's wall clock, read at the write. A stamp in the future
+// — the clock set backwards afterwards — is read as absent (Client.stamp).
+func (c *Client) stampingMint() (string, error) {
+	proposal, err := c.mintProposal()
+	if err != nil {
+		// NOTHING IS WRITTEN AND NOTHING IS STAMPED. A generator that cannot
+		// fill 32 bytes sends no request, so there is no send to record.
+		return "", err
+	}
+	c.j.stampLocked(c.wallNow())
+	return proposal, nil
 }
 
 // mintProposal is a successor secret: 32 CSPRNG bytes in the wire's Token
