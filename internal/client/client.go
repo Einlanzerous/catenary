@@ -449,6 +449,12 @@ func (c *Client) Run(ctx context.Context) error {
 		if err := c.RefreshIfDue(ctx); err != nil {
 			c.log.Info("proactive refresh failed; dialing with the held pair", "error", err)
 		}
+		// A refused proactive refresh may have just made the client terminal,
+		// which cancels ctx. Stop HERE, before counting a dial that would
+		// never touch the network and a dial error for it.
+		if ctx.Err() != nil {
+			break
+		}
 		c.mu.Lock()
 		c.stats.Dials++
 		c.connecting = true

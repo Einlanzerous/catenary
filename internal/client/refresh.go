@@ -202,9 +202,14 @@ func (c *Client) refused(presented Credential, err error) error {
 	if c.cfg.Faults.NeverTerminal {
 		return err
 	}
-	t := Terminal{Kind: TerminalCredential, Reason: "POST /refresh: Catenary refused the stored refresh token"}
-	c.stop(t)
-	return &TerminalError{t}
+	c.stop(Terminal{Kind: TerminalCredential, Reason: "POST /refresh: Catenary refused the stored refresh token"})
+	// THE TERMINAL THAT WON, not necessarily this one: stop keeps the first,
+	// and a close code can race a refused refresh. The error handed back and
+	// the state Status names must be the same terminal.
+	c.mu.Lock()
+	won := c.terminal
+	c.mu.Unlock()
+	return &TerminalError{won}
 }
 
 // postRefresh is one POST /refresh, presenting held's refresh token.

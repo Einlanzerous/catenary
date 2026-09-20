@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"os/exec"
@@ -115,7 +116,17 @@ func runSoak(ctx context.Context, cfg Config) Result {
 		wg.Add(1)
 		go func(sc *soakClient) {
 			defer wg.Done()
-			_ = sc.c.Run(runCtx)
+			// Run used to end only on a cancelled context or a Kill. Since
+			// CANT-123 it also ends when the client must not reconnect, and a
+			// client that stopped for THAT reason has to be named: every
+			// phase after it would otherwise read as "never caught up" with
+			// messages missing, which is a symptom and not the cause. The
+			// likeliest one here is a server that predates CANT-122's 4002,
+			// whose hello timeout is still a bare 1008.
+			var term *client.TerminalError
+			if err := sc.c.Run(runCtx); errors.As(err, &term) {
+				h.harnessError("client %d (%s) went terminal and will not reconnect: %v", sc.index, sc.name, err)
+			}
 		}(sc)
 	}
 	defer func() {

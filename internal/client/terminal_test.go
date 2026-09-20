@@ -358,3 +358,47 @@ func TestWhenARefusedRefreshIsTerminal(t *testing.T) {
 		})
 	}
 }
+
+// A TERMINAL RAISED BY THE PROACTIVE REFRESH STOPS BEFORE THE DIAL. The pair
+// is due, Catenary refuses its refresh token, and the client is terminal
+// before it has touched the network for a socket — so it counts no dial, and
+// no dial error for a dial that would only have failed on a cancelled context.
+func TestAProactiveTerminalCountsNoDial(t *testing.T) {
+	var sawSocket, sawSync bool
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		switch r.URL.Path {
+		case "/ws":
+			sawSocket = true
+		case "/sync":
+			sawSync = true
+		}
+		mu.Unlock()
+		unauthorized(w)
+	}))
+	t.Cleanup(srv.Close)
+	j := NewJournal()
+	if err := j.Enroll(Credential{
+		DeviceID: wire.Uuid(uuid.NewString()), AccessToken: padToken("access-0"), RefreshToken: padToken("refresh-0"),
+		AccessExpiresAt: time.Now().Add(10 * time.Second), // due
+	}); err != nil {
+		t.Fatal(err)
+	}
+	c, err := New(fastBackoff(Config{BaseURL: srv.URL, Journal: j, Refresh: true}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	term := terminalOf(runToEnd(t, c, 5*time.Second))
+	if term.Kind != TerminalCredential {
+		t.Fatalf("terminal %+v, want a credential terminal from the proactive refresh", term)
+	}
+	if s := c.Status(); s.Dials != 0 || s.DialErrors != 0 || s.Terminal != term {
+		t.Errorf("dials %d, dial errors %d, status terminal %+v; want 0, 0 and the terminal Run returned", s.Dials, s.DialErrors, s.Terminal)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if sawSocket || sawSync {
+		t.Errorf("a client terminal before its first dial still reached the server: ws=%v sync=%v", sawSocket, sawSync)
+	}
+}
