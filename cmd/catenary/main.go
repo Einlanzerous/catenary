@@ -234,7 +234,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var enrollFn func(context.Context, string, string) (store.Enrollment, error)
 	// CANT-97: the rotating exchange. Off the same condition as the rest — a
 	// store — because it resolves the device from the token it is handed.
-	var refreshFn func(context.Context, string) (store.Rotated, error)
+	var refreshFn func(context.Context, string, string) (store.Rotated, error)
 	// CANT-117: the self-service device surface. Scoped by the caller's own id,
 	// which is why the revoke seam is RevokeOwnDevice and not RevokeDevice.
 	var devicesFn func(context.Context, uuid.UUID) ([]store.DeviceRow, error)
@@ -278,7 +278,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			return caller.UserID, true
 		}
 		enrollFn = st.RedeemEnrollment
-		refreshFn = st.RotateRefresh
+		refreshFn = st.RotateRefreshProposing
 		devicesFn = st.DevicesFor
 		revokeOwnDeviceFn = st.RevokeOwnDevice
 		authenticateFn = st.Authenticate

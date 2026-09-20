@@ -122,6 +122,12 @@ type Store struct {
 	// WithUploadResolver said otherwise — CANT-85 Ruling 2 — so a store that
 	// nobody wired refuses attachments loudly rather than dropping them.
 	uploads UploadResolver
+
+	// collisionFault breaks routeCollision on purpose, for CANT-125's two
+	// negative controls. Zero in every Store the composition root builds:
+	// nothing outside this package's tests can set it. PER STORE, not a
+	// package variable — CANT-115 is what a shared mutable test knob costs.
+	collisionFault collisionFault
 }
 
 // New wraps an existing pool.

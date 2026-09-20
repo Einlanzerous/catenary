@@ -91,7 +91,9 @@ The last two are unreachable behind the generated decoder (`Seq` carries `minimu
 | 401 on `/refresh` — **Catenary's own** `{"code":"unauthorized"}`, **and** the stored credential is still the one presented | **terminal.** The credential is gone. |
 | 401 on `/refresh` that did not come from Catenary — a proxy, an expired Access session in front | **not terminal** |
 | 401 on `/refresh` for a credential another context already rotated | **not terminal.** Re-read the persisted credential before concluding anything. |
-| `/refresh` answers `503`, another 5xx, or a network error | an unknown outcome — §3 |
+| `/refresh` answers `503` with `"retry": "fresh_proposal"` | the token is **still good** and the proposal was not: send the **same token with a freshly minted proposal** |
+| `/refresh` answers `503` with `"retry": "present_proposal"` | the rotation **already committed**: **stop presenting that token** and present the proposal as the newest. **Never repeat the request** — past the grace window the same bytes are a replay, and the family is invalidated |
+| `/refresh` answers `503` with no `retry` the client recognises, another 5xx, or a network error | an unknown outcome — §3 |
 | 401 on the WebSocket **upgrade** | **not an input.** A browser cannot see it, so no client may act on it: reconnect with backoff, and let the `/sync` beside the dial decide |
 
 The deployed path runs through `cf-access-jwt` and `cf-access-guard`, so a 401 from a hop in front says nothing about the Catenary credential. **`refresh_expires_at` having passed is not by itself terminal** — that would be a terminal decision taken on the device clock with no round trip.

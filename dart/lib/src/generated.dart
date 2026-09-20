@@ -1858,6 +1858,7 @@ final class EnrollResponse {
 final class RefreshRequest {
   const RefreshRequest({
     required this.refreshToken,
+    this.proposedRefreshToken,
   });
 
   /// The refresh token this device last received. Presenting one that has already been
@@ -1865,15 +1866,54 @@ final class RefreshRequest {
   /// the request.
   final Token refreshToken;
 
+  /// OPTIONAL. The refresh token the client PROPOSES the server issue as this one's
+  /// successor — 32 bytes from the client's own CSPRNG in the Token encoding, generated
+  /// fresh for each refresh token and never derived from anything (CANT-31 ruling 1,
+  /// CANT-125).
+  ///
+  /// IT EXISTS FOR THE LOST RESPONSE. A rotation that commits and whose response dies on
+  /// the way back leaves the client holding a spent token and not knowing its successor.
+  /// A client that proposed the successor already knows it: it persists the proposal
+  /// before sending, and after an unknown outcome presents the proposal as its newest
+  /// token. Retrying the spent token is then safe too, provided the retry carries THE
+  /// SAME proposal — a racing commit collides on the stored hash instead of forking the
+  /// family.
+  ///
+  /// THE RESPONSE IS STILL AUTHORITATIVE. A server that honours the proposal returns it
+  /// as `refresh_token`; a server that predates this field ignores it and mints its own,
+  /// and the client adopts whatever `refresh_token` says — never its own proposal on
+  /// faith.
+  ///
+  /// A proposal that collides with a token the server already holds is answered `503`,
+  /// never `401`, and THE BODY'S `retry` SAYS WHICH OF TWO OPPOSITE THINGS TO DO.
+  /// `fresh_proposal`: the presented token is still good and the proposal was the problem
+  /// — send the same token with a newly minted proposal; `Retry-After` says when.
+  /// `present_proposal`: the presented token was ALREADY rotated into this proposal,
+  /// moments ago — stop presenting it and present the proposal, which is now the refresh
+  /// token. That answer carries no `Retry-After`, because repeating the request is the
+  /// one wrong move: once the reuse grace window passes, the same bytes are a spent token
+  /// presented late, which is a replay and invalidates the family. A `503` whose `retry`
+  /// is absent or unrecognised is an unknown outcome.
+  ///
+  /// CANT-74 DIRECTION: client-authored and additive, and safe by this schema's own
+  /// convention — unknown fields are ignored by decoders, never rejected. A server that
+  /// predates the field therefore ignores it rather than refusing the request, which is
+  /// the only order a new REQUEST field can meet an old peer in. It carries a Token and
+  /// no enum, so there is no value for the server to be closed over. `x-wire-version`
+  /// stays 1.
+  final Token? proposedRefreshToken;
+
   factory RefreshRequest.fromJson(Object? v, [String p = "RefreshRequest"]) {
     final o = _obj(v, p);
     return RefreshRequest(
       refreshToken: o["refresh_token"] == null ? _bad('${p}.refresh_token', 'required field is missing') : _asToken(o["refresh_token"], '${p}.refresh_token'),
+      proposedRefreshToken: o["proposed_refresh_token"] == null ? null : _asToken(o["proposed_refresh_token"], '${p}.proposed_refresh_token'),
     );
   }
 
   Map<String, dynamic> toJson() => _compact({
     "refresh_token": refreshToken,
+    "proposed_refresh_token": proposedRefreshToken == null ? null : proposedRefreshToken!,
   });
 }
 

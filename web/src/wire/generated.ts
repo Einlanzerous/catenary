@@ -1436,18 +1436,56 @@ export interface RefreshRequest {
   // exchanged is a replay, and CANT-29 answers it by invalidating the family rather than
   // the request.
   refreshToken: Token
+  // OPTIONAL. The refresh token the client PROPOSES the server issue as this one's
+  // successor — 32 bytes from the client's own CSPRNG in the Token encoding, generated
+  // fresh for each refresh token and never derived from anything (CANT-31 ruling 1,
+  // CANT-125).
+  //
+  // IT EXISTS FOR THE LOST RESPONSE. A rotation that commits and whose response dies on
+  // the way back leaves the client holding a spent token and not knowing its successor.
+  // A client that proposed the successor already knows it: it persists the proposal
+  // before sending, and after an unknown outcome presents the proposal as its newest
+  // token. Retrying the spent token is then safe too, provided the retry carries THE
+  // SAME proposal — a racing commit collides on the stored hash instead of forking the
+  // family.
+  //
+  // THE RESPONSE IS STILL AUTHORITATIVE. A server that honours the proposal returns it
+  // as `refresh_token`; a server that predates this field ignores it and mints its own,
+  // and the client adopts whatever `refresh_token` says — never its own proposal on
+  // faith.
+  //
+  // A proposal that collides with a token the server already holds is answered `503`,
+  // never `401`, and THE BODY'S `retry` SAYS WHICH OF TWO OPPOSITE THINGS TO DO.
+  // `fresh_proposal`: the presented token is still good and the proposal was the problem
+  // — send the same token with a newly minted proposal; `Retry-After` says when.
+  // `present_proposal`: the presented token was ALREADY rotated into this proposal,
+  // moments ago — stop presenting it and present the proposal, which is now the refresh
+  // token. That answer carries no `Retry-After`, because repeating the request is the
+  // one wrong move: once the reuse grace window passes, the same bytes are a spent token
+  // presented late, which is a replay and invalidates the family. A `503` whose `retry`
+  // is absent or unrecognised is an unknown outcome.
+  //
+  // CANT-74 DIRECTION: client-authored and additive, and safe by this schema's own
+  // convention — unknown fields are ignored by decoders, never rejected. A server that
+  // predates the field therefore ignores it rather than refusing the request, which is
+  // the only order a new REQUEST field can meet an old peer in. It carries a Token and
+  // no enum, so there is no value for the server to be closed over. `x-wire-version`
+  // stays 1.
+  proposedRefreshToken?: Token
 }
 
 export function decodeRefreshRequest(v: unknown, p = "RefreshRequest"): RefreshRequest {
   const o = asObj(v, p)
   return {
     refreshToken: o["refresh_token"] === undefined || o["refresh_token"] === null ? bad(`${p}.refresh_token`, 'required field is missing') : asToken(o["refresh_token"], `${p}.refresh_token`),
+    proposedRefreshToken: o["proposed_refresh_token"] === undefined || o["proposed_refresh_token"] === null ? undefined : asToken(o["proposed_refresh_token"], `${p}.proposed_refresh_token`),
   }
 }
 
 export function encodeRefreshRequest(v: RefreshRequest): Record<string, unknown> {
   return compact({
     "refresh_token": v.refreshToken,
+    "proposed_refresh_token": v.proposedRefreshToken === undefined ? undefined : v.proposedRefreshToken,
   })
 }
 

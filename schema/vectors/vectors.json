@@ -1071,6 +1071,36 @@
       }
     },
     {
+      "name": "refresh_request_with_proposed_successor",
+      "kind": "RefreshRequest",
+      "expect": "roundtrip",
+      "why": "The proposed successor beside the token it would replace (CANT-125). Both are Tokens and they are DIFFERENT strings: a proposal equal to the presented token would ask the server to rotate a credential into itself.",
+      "json": {
+        "refresh_token": "refresh_token_FIXTURE_not_a_real_secret____",
+        "proposed_refresh_token": "proposed_refresh_FIXTURE_not_a_real_secret_"
+      }
+    },
+    {
+      "name": "reject_refresh_request_with_a_padded_proposal",
+      "kind": "RefreshRequest",
+      "expect": "reject",
+      "why": "The proposal becomes a credential the moment the server honours it, so it is held to the same normative encoding as every other Token: 43 base64url characters, no padding. A proposal the server stored under one encoding and the client later presented under another would be a refresh token that never matches its own hash.",
+      "json": {
+        "refresh_token": "refresh_token_FIXTURE_not_a_real_secret____",
+        "proposed_refresh_token": "proposed_refresh_FIXTURE_not_a_real_secret="
+      }
+    },
+    {
+      "name": "reject_refresh_request_with_a_short_proposal",
+      "kind": "RefreshRequest",
+      "expect": "reject",
+      "why": "Thirty-two bytes is the floor. A short proposal is a guessable successor, and the server storing its hash would be the server agreeing to a weak credential because the client asked.",
+      "json": {
+        "refresh_token": "refresh_token_FIXTURE_not_a_real_secret____",
+        "proposed_refresh_token": "too_short"
+      }
+    },
+    {
       "name": "refresh_response",
       "kind": "RefreshResponse",
       "expect": "roundtrip",

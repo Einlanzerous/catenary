@@ -843,6 +843,8 @@ components:
       properties:
         refresh_token:
           "$ref": "#/components/schemas/Token"
+        proposed_refresh_token:
+          "$ref": "#/components/schemas/Token"
       description: |2-
         `POST /refresh` — exchange a refresh token for the next pair. The device is identified BY the token rather than alongside it: a request that named its own device id would be asserting something the credential already proves, and the two could disagree.
 
