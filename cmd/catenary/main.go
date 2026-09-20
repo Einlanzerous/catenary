@@ -539,6 +539,10 @@ func runServe(args []string) error {
 // behind it for the length of the drain. An upgrade that races the listen
 // socket closing attaches into a hub that has begun shutting down and is
 // closed 1001 there.
+//
+// CANT-118's credential sweep rides the listener's own context and join, on
+// the cheapest possible argument: it has no ordering claim on anything else
+// here, so it costs nothing to stop it exactly when the two listeners stop.
 func serve(ctx context.Context, d deps, ln net.Listener) error {
 	srv := &http.Server{
 		Handler: d.router,
@@ -576,6 +580,22 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 		}()
 	} else {
 		close(revocationsDone)
+	}
+
+	// CANT-118's credential sweep. A third loop on the same listenerCtx and
+	// the same terms as the two above — d.store rather than a dedicated deps
+	// field, because nothing else needs to reach it once it is running. It
+	// holds no session and severs no socket, so there is no ordering
+	// argument for it the way there is for the listener and the hub below;
+	// it only has to stop, eventually, like everything else here.
+	sweepDone := make(chan struct{})
+	if d.store != nil {
+		go func() {
+			defer close(sweepDone)
+			d.store.RunCredentialSweep(listenerCtx)
+		}()
+	} else {
+		close(sweepDone)
 	}
 
 	errCh := make(chan error, 1)
@@ -622,6 +642,7 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 	stopListener()
 	<-listenerDone
 	<-revocationsDone
+	<-sweepDone
 
 	if srvErr != nil {
 		return fmt.Errorf("shutdown: %w", srvErr)

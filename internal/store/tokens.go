@@ -81,6 +81,56 @@ const (
 	EnrollmentTokenLifetime = 7 * 24 * time.Hour
 )
 
+// SpentCredentialRetention is how long a spent access or refresh token row
+// survives, measured from its own issued_at, before CANT-118's sweep may
+// remove it. See sweep.go for the sweep itself.
+//
+// A CONSTANT RATHER THAN CONFIG, on exactly the terms ReuseGraceWindow gets in
+// refresh.go: this is a security posture a human picked, and an environment
+// variable here would be a way to widen it without anybody re-reading the
+// argument for it.
+//
+// ONE WINDOW FOR BOTH TABLES, STATED ONCE. access_tokens keeps the same
+// window a refresh row does rather than a shorter one of its own, so there is
+// one number this comment argues for rather than two, and one predicate that
+// serves both — see sweepAccessTokensOnce and sweepRefreshTokensOnce.
+//
+// THE SEVEN-DAY MARGIN OVER RefreshTokenLifetime IS NOT CLOCK TOLERANCE. Clock
+// skew at this scale is seconds, and ReuseGraceWindow already carries that
+// argument where it belongs. It exists so "what became of that credential?"
+// can still be answered for a week after the chain it belonged to died
+// naturally — the same question enrollment_tokens' redeemed_at and
+// superseded_at answer by never being deleted at all, sized down to a window
+// here because, unlike those two columns, a spent credential really does have
+// to go eventually or CANT-118's own `Done when` is not met.
+//
+// THE EXPOSURE THIS BUYS, STATED RATHER THAN LEFT TO BE FOUND — on
+// ReuseGraceWindow's own terms, because a spent refresh row is NOT audit-only
+// the way the ticket that opened this one first assumed. RotateRefreshProposing
+// looks a presented token up by token_hash FIRST; once that row is swept,
+// presenting the same plaintext again is "unknown credential" — a plain 401
+// that never reaches refusalOutcome. So this window is also the HORIZON of
+// CANT-29's reuse detection and CANT-125's routeCollision branch 3: past it, a
+// stolen token replayed a second time invalidates nothing, because there is no
+// row left for either detector to reason about.
+//
+// CONCRETELY: a thief rotates a stolen refresh token R first, into a
+// successor only the thief holds. The victim's own device comes back and
+// presents R more than this window after R was rotated — not merely after
+// the theft — and is refused either way, but if R's row has been swept the
+// thief's family is no longer revoked, because nothing records that R was
+// ever spent. Inside the window this cannot happen: R's row, still present,
+// is exactly what refusalOutcome reads to invalidate the family.
+//
+// ALSO TRUE, AND WORTH NAMING RATHER THAN DISCOVERING: once R's row is swept,
+// its hash is no longer UNIQUE-constrained against, so it becomes proposable
+// again under routeCollision branch 1 — a caller who now proposes hash(R) as
+// their OWN successor succeeds instead of colliding. That is harmless rather
+// than a second exposure: branch 1 only ever hands the proposer their own new
+// credential, never anyone else's, so the only thing a stale hash buys is not
+// colliding with a row that no longer exists.
+const SpentCredentialRetention = RefreshTokenLifetime + 7*24*time.Hour
+
 // TokenBytes is the entropy behind every credential this service issues.
 //
 // ONE LENGTH FOR ALL FOUR SHAPES. A shape-specific length would leak which
