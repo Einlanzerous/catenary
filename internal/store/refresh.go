@@ -102,7 +102,28 @@ const rotateBudget = 3 * time.Second
 // stop, re-enroll — so answering 401 to a client whose token is perfectly good,
 // or whose rotation has in fact just succeeded, would log a person out of a
 // working device. See routeCollision for the two cases that produce it.
-var ErrRefreshRetry = errors.New("store: refresh not performed; retry")
+//
+// IT IS ALWAYS ONE OF THE TWO BELOW, NEVER BARE, because the two ask the client
+// for OPPOSITE things and an answer that did not say which would be a coin
+// toss with a device on it (PR #75's review; settled 2026-09-20). Both satisfy
+// errors.Is(err, ErrRefreshRetry).
+var ErrRefreshRetry = errors.New("store: refresh not performed")
+
+var (
+	// ErrRefreshRetryFreshProposal: the presented token is STILL GOOD and the
+	// proposal was the problem. Same token, a freshly minted proposal.
+	ErrRefreshRetryFreshProposal = fmt.Errorf("%w: retry with a fresh proposal", ErrRefreshRetry)
+
+	// ErrRefreshRetryPresentProposal: the presented token was ALREADY ROTATED
+	// into the proposal, moments ago. The client must STOP presenting that
+	// token and present the proposal, which is now its refresh token.
+	//
+	// REPEATING THE REQUEST IS THE ONE WRONG MOVE. It keeps being this answer
+	// until ReuseGraceWindow passes — and then the identical bytes are a spent
+	// token presented outside the window, which is a replay, and the family is
+	// invalidated. So the handler sends no Retry-After with this one.
+	ErrRefreshRetryPresentProposal = fmt.Errorf("%w: present the proposal", ErrRefreshRetry)
+)
 
 // Rotated is one exchange's result: the next pair, and who it belongs to.
 //
@@ -169,8 +190,12 @@ func (s *Store) RotateRefresh(ctx context.Context, presented string) (Rotated, e
 }
 
 // RotateRefreshProposing is RotateRefresh with the client's PROPOSED successor
-// (CANT-31 ruling 1, CANT-125). An empty proposal is the original behaviour,
-// byte for byte: the server mints the successor.
+// (CANT-31 ruling 1, CANT-125). With an empty proposal the server mints the
+// successor as it always did, and every door and every refusal is unchanged.
+// ONE THING IS NOT: the transaction is now bounded by rotateBudget whether or
+// not there is a proposal, so a rotation blocked for longer than that fails
+// with a plain error where it used to wait. It commits nothing and the
+// client's token stays good.
 //
 // WHAT THE PROPOSAL CHANGES, AND THE ONLY THING. The successor row's
 // token_hash is hash(proposed) instead of the hash of a token minted here, and
@@ -207,8 +232,11 @@ func (s *Store) RotateRefreshProposing(ctx context.Context, presented, proposed 
 	// proposal anyway; refused here so the reason is legible, and as a retry
 	// rather than a 401 for the reason ErrRefreshRetry gives.
 	if proposed != "" && proposed == presented {
-		s.logger.WarnContext(ctx, "refresh not performed", "reason", "the proposed successor is the presented token")
-		return Rotated{}, ErrRefreshRetry
+		// DEBUG, for the reason the empty-credential case above gives: this
+		// runs before the token is looked up, so an anonymous caller can reach
+		// it with any well-formed string, on a route with no limiter.
+		s.logger.DebugContext(ctx, "refresh not performed", "reason", "the proposed successor is the presented token")
+		return Rotated{}, ErrRefreshRetryFreshProposal
 	}
 
 	// BOUNDED — see rotateBudget. The caller's context still cancels it sooner.
@@ -347,8 +375,17 @@ func (s *Store) RotateRefreshProposing(ctx context.Context, presented, proposed 
 //  1. R IS STILL LIVE — `replaced_by IS NULL`. Nothing has rotated R, so this
 //     is not a retry of anything: the client proposed a string that some other
 //     token already hashes to. A reused proposal, or a badly seeded generator.
-//     R is a healthy token and the client keeps it. ErrRefreshRetry → 503; the
-//     client mints a FRESH proposal and succeeds. THIS MUST NEVER REACH
+//     R is a healthy token and the client keeps it.
+//     ErrRefreshRetryFreshProposal → 503 `fresh_proposal`; the client mints a
+//     FRESH proposal and succeeds.
+//
+//     IT IS ALSO A LIVENESS ORACLE, and that is known rather than overlooked:
+//     a caller holding one valid refresh token can propose a candidate string
+//     and learn whether it is a stored token_hash, without spending their own
+//     token and without tripping reuse detection. Guessing 32 bytes is not
+//     feasible; what it helps is someone holding candidate strings from an old
+//     backup or a log. The WARN below names the prober's token, family, device
+//     and user, and is the only thing watching for it. THIS MUST NEVER REACH
 //     refusalOutcome — not because refusalOutcome would revoke anything (R is
 //     unspent, so it would not), but because the caller would be told 401, and
 //     a 401 here is now a logout.
@@ -357,8 +394,9 @@ func (s *Store) RotateRefreshProposing(ctx context.Context, presented, proposed 
 //     inside ReuseGraceWindow. This is the in-flight retry: the same client
 //     sent (R, P), the rotation committed, the response was lost or is still
 //     on its way, and it sent (R, P) again. The rotation it is asking for HAS
-//     HAPPENED and P is its new token. ErrRefreshRetry → 503, and the client
-//     presents P. Never a 500, and never a 401.
+//     HAPPENED and P is its new token. ErrRefreshRetryPresentProposal → 503
+//     `present_proposal`, and the client presents P. Never a 500, and never a
+//     401 — and never an invitation to send (R, P) a third time.
 //
 //  3. ANYTHING ELSE FALLS THROUGH TO refusalOutcome, UNCHANGED. R rotated into
 //     C outside the window is a copied (R, P) pair being replayed — and it
@@ -402,7 +440,7 @@ func (s *Store) routeCollision(ctx context.Context, tokenID, familyID, deviceID,
 		s.logger.WarnContext(rctx, "refresh not performed",
 			"reason", "the proposed successor collides with a stored token; the presented token is unspent",
 			"token_id", tokenID, "family_id", familyID, "device_id", deviceID, "user_id", userID)
-		return ErrRefreshRetry
+		return ErrRefreshRetryFreshProposal
 
 	case replacedBy != nil && collidingID != nil && *replacedBy == *collidingID && ageSec != nil &&
 		time.Duration(*ageSec*float64(time.Second)) < ReuseGraceWindow:
@@ -412,7 +450,7 @@ func (s *Store) routeCollision(ctx context.Context, tokenID, familyID, deviceID,
 			"device_id", deviceID, "user_id", userID,
 			"rotated_age_ms", time.Duration(*ageSec*float64(time.Second)).Milliseconds(),
 			"grace_window_ms", ReuseGraceWindow.Milliseconds())
-		return ErrRefreshRetry
+		return ErrRefreshRetryPresentProposal
 	}
 
 	s.refusalOutcome(ctx, tokenID, familyID, deviceID, userID)

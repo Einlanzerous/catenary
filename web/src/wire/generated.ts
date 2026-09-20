@@ -1455,9 +1455,15 @@ export interface RefreshRequest {
   // faith.
   //
   // A proposal that collides with a token the server already holds is answered `503`,
-  // never `401`: the presented token is still good or the rotation is already in flight,
-  // and either way the client retries — with a FRESH proposal if its token was not
-  // spent.
+  // never `401`, and THE BODY'S `retry` SAYS WHICH OF TWO OPPOSITE THINGS TO DO.
+  // `fresh_proposal`: the presented token is still good and the proposal was the problem
+  // — send the same token with a newly minted proposal; `Retry-After` says when.
+  // `present_proposal`: the presented token was ALREADY rotated into this proposal,
+  // moments ago — stop presenting it and present the proposal, which is now the refresh
+  // token. That answer carries no `Retry-After`, because repeating the request is the
+  // one wrong move: once the reuse grace window passes, the same bytes are a spent token
+  // presented late, which is a replay and invalidates the family. A `503` whose `retry`
+  // is absent or unrecognised is an unknown outcome.
   //
   // CANT-74 DIRECTION: client-authored and additive, and safe by this schema's own
   // convention — unknown fields are ignored by decoders, never rejected. A server that

@@ -83,8 +83,13 @@ func TestRetryingTheSamePairInsideTheWindowIsARetryNotARefusal(t *testing.T) {
 	}
 
 	_, err := st.RotateRefreshProposing(ctx, e.Refresh.Plaintext, p)
-	if !errors.Is(err, ErrRefreshRetry) {
-		t.Fatalf("the in-flight retry = %v, want ErrRefreshRetry", err)
+	if !errors.Is(err, ErrRefreshRetryPresentProposal) {
+		t.Fatalf("the in-flight retry = %v, want ErrRefreshRetryPresentProposal — the client must be told to stop presenting R", err)
+	}
+	// STILL THAT ANSWER A SECOND TIME, and nothing worse: inside the window a
+	// repeat is tolerated. What it must never be is an instruction.
+	if _, err := st.RotateRefreshProposing(ctx, e.Refresh.Plaintext, p); !errors.Is(err, ErrRefreshRetryPresentProposal) {
+		t.Errorf("the same retry again = %v", err)
 	}
 	after := readFamilyState(ctx, t, pool, e.DeviceID)
 	nothingRevoked(ctx, t, after, "the in-flight retry")
@@ -155,8 +160,8 @@ func TestACollidingProposalOnALiveTokenIsARetryAndTheTokenSurvives(t *testing.T)
 		"the presented token itself":          e.Refresh.Plaintext,
 	} {
 		_, err := st.RotateRefreshProposing(ctx, e.Refresh.Plaintext, colliding)
-		if !errors.Is(err, ErrRefreshRetry) {
-			t.Fatalf("%s as the proposal = %v, want ErrRefreshRetry", name, err)
+		if !errors.Is(err, ErrRefreshRetryFreshProposal) {
+			t.Fatalf("%s as the proposal = %v, want ErrRefreshRetryFreshProposal — the token is still good", name, err)
 		}
 	}
 	for who, dev := range map[string]Enrollment{"the proposer": e, "the bystander": other} {
@@ -263,8 +268,8 @@ func TestSimultaneousPresentationsOfOnePairYieldOneRotationAndRetries(t *testing
 		switch {
 		case err == nil:
 			rotated++
-		case errors.Is(err, ErrRefreshRetry):
-			retried++
+		case errors.Is(err, ErrRefreshRetryPresentProposal):
+			retried++ // each loser is told the rotation happened, and to present P
 		default:
 			t.Errorf("racer %d = %v; every loser must be a retry, never a refusal and never a failure", i, err)
 		}

@@ -289,8 +289,27 @@ func TestRefreshHonoursAProposedSuccessorAndAnswersItsRetry503(t *testing.T) {
 	if bytes.Contains(body, []byte("unauthorized")) {
 		t.Errorf("the 503's body reads as the 401's, which a client treats as terminal: %s", body)
 	}
-	if hdr.Get("Retry-After") == "" {
-		t.Error("the 503 carries no Retry-After")
+	var retry struct {
+		Retry string `json:"retry"`
+	}
+	_ = json.Unmarshal(body, &retry)
+	if retry.Retry != "present_proposal" {
+		t.Errorf("the in-flight retry's body says retry=%q, want present_proposal: %s", retry.Retry, body)
+	}
+	// NO Retry-After ON THIS ONE. Repeating the request is the one wrong move:
+	// past the grace window the same bytes are a replay and revoke the device.
+	if got := hdr.Get("Retry-After"); got != "" {
+		t.Errorf("the in-flight retry carries Retry-After %q; it must not invite the request again", got)
+	}
+
+	// THE OTHER 503 ASKS FOR THE OPPOSITE, AND SAYS SO. A proposal equal to
+	// the presented token: the token is still good, so send it again with a
+	// fresh proposal — and this one does say when.
+	code, hdr, body = post(map[string]string{"refresh_token": proposed, "proposed_refresh_token": proposed})
+	_ = json.Unmarshal(body, &retry)
+	if code != http.StatusServiceUnavailable || retry.Retry != "fresh_proposal" || hdr.Get("Retry-After") == "" {
+		t.Errorf("a bad proposal on a live token = %d retry=%q Retry-After=%q; want 503, fresh_proposal, and a Retry-After: %s",
+			code, retry.Retry, hdr.Get("Retry-After"), body)
 	}
 
 	// A proposal that is not a Token never reaches the store.

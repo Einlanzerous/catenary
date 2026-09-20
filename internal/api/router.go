@@ -480,15 +480,25 @@ func refreshHandler(d Deps) http.HandlerFunc {
 		switch {
 		case errors.Is(err, store.ErrRefreshRetry):
 			// 503, AND NEVER 401 (CANT-125). The rotation was neither performed
-			// nor refused: the proposal collided with a stored token while the
-			// presented one is still good, or this is the in-flight retry of a
-			// rotation that has just succeeded. A client treats Catenary's own
-			// 401 here as terminal (CANT-123), so 401 would log a person out of
-			// a working device; 500 would hide a condition the client recovers
-			// from by itself. The body is deliberately NOT the 401's.
-			w.Header().Set("Retry-After", "1")
-			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
-				"error": "refresh not performed; retry"})
+			// nor refused. A client treats Catenary's own 401 here as terminal
+			// (CANT-123), so 401 would log a person out of a working device;
+			// 500 would hide a condition the client recovers from by itself.
+			//
+			// `retry` SAYS WHICH OF THE TWO IT IS, because they ask for
+			// opposite things. `fresh_proposal`: the token is still good —
+			// send it again with a newly minted proposal, and Retry-After says
+			// when. `present_proposal`: the rotation ALREADY COMMITTED — stop
+			// presenting that token and present the proposal. That one carries
+			// NO Retry-After, deliberately: repeating the request is the one
+			// wrong move, and once ReuseGraceWindow passes the same bytes read
+			// as a replay and revoke the device. A client that does not
+			// recognise the value treats the 503 as an unknown outcome.
+			body := map[string]string{"error": "refresh not performed", "retry": "present_proposal"}
+			if errors.Is(err, store.ErrRefreshRetryFreshProposal) {
+				body["retry"] = "fresh_proposal"
+				w.Header().Set("Retry-After", "1")
+			}
+			writeJSON(w, http.StatusServiceUnavailable, body)
 			return
 		case errors.Is(err, store.ErrUnauthorized):
 			// THE SAME BODY /enroll AND /sync WRITE, deliberately identical.
