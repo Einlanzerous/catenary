@@ -472,11 +472,14 @@ func TestARefreshWithNoDateKeepsTheOffset(t *testing.T) {
 // due at the same moment. One refreshes; seven wait, re-read, and skip.
 //
 // The negative control runs the same eight with the lock faulted out, and the
-// server is asked to rotate more than once. SINCE CANT-126 IT IS NOT SHOWN THE
-// SAME TOKEN TWICE: an unlocked refresher finds the first one's link in the
-// shared chain and presents the newest token, not refresh-0 again — so what
-// the lock still prevents, and what the control measures, is eight clients
-// each spending a round trip on a pair one of them has already rotated.
+// server is asked to rotate more than once. SINCE CANT-126 IT COUNTS REQUESTS,
+// NOT PRESENTATIONS OF refresh-0, because which token an unlocked refresher
+// presents now depends on when it arrives. One that reads the chain before
+// anybody has written a link presents refresh-0 — with the SAME proposal the
+// first was given, which is the design working. One that reads it afterwards
+// finds that link and presents the newest token instead. Either way the
+// server was asked again for a pair already being rotated, and that is what
+// the lock prevents.
 func TestEightClientsOverOneCredentialRefreshItOnce(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

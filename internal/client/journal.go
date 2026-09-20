@@ -136,8 +136,9 @@ type Journal struct {
 	// UNDER ITS OWN LOCK, credMu, and not mu. The credential is read on the
 	// way INTO a dial and a /sync, and mu is held across a whole page apply;
 	// it is also not part of obligation 1's transaction — no message is
-	// rendered against it. Lock order is mu then credMu, and only
-	// Client.rotate takes both, for the Kill guard.
+	// rendered against it. Lock order is mu then credMu, and the two that
+	// take both are Client.rotate and Client.propose, each for the Kill
+	// guard.
 	credMu        sync.Mutex
 	credential    Credential
 	hasCredential bool
