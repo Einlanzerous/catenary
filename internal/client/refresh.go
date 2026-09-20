@@ -153,6 +153,9 @@ func (c *Client) refresh(ctx context.Context, stillNeeded func(held Credential) 
 	}
 
 	next, err := c.postRefresh(ctx, held)
+	if errors.Is(err, errUnauthorized) {
+		return c.refused(held, err)
+	}
 	if err != nil {
 		c.mu.Lock()
 		c.stats.RefreshErrors++
@@ -167,6 +170,46 @@ func (c *Client) refresh(ctx context.Context, stillNeeded func(held Credential) 
 	c.mu.Unlock()
 	c.notify()
 	return nil
+}
+
+// refused is record §5's /refresh row: Catenary's OWN 401 to the refresh token
+// `presented`. It is terminal only when BOTH qualifiers hold, and postRefresh
+// has already established the first — the body was `{"code":"unauthorized"}`,
+// so this is not a proxy or an expired Access session in front, whose 401 says
+// nothing about the Catenary credential.
+//
+// The second is checked here: THE STORED CREDENTIAL IS STILL THE ONE
+// PRESENTED. A context that does not share this lock — another process over
+// the same storage — may have rotated the pair while this request was in
+// flight, and the server then refuses the token this one sent because it is
+// spent, not because the device is gone. Re-read before concluding anything;
+// if the pair moved, the caller simply uses what is there now.
+//
+// This is how a device revoked WHILE IT WAS DISCONNECTED stops, which is the
+// common case: it never sees a close code. Its upgrade is refused with a 401,
+// the /sync beside it is refused with a 401, the reactive refresh that answers
+// that is refused here, and the client stops instead of dialing for ever.
+func (c *Client) refused(presented Credential, err error) error {
+	if now := c.credential(); now.RefreshToken != presented.RefreshToken {
+		c.mu.Lock()
+		c.stats.RefreshesSkipped++
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Lock()
+	c.stats.RefreshErrors++
+	c.mu.Unlock()
+	if c.cfg.Faults.NeverTerminal {
+		return err
+	}
+	c.stop(Terminal{Kind: TerminalCredential, Reason: "POST /refresh: Catenary refused the stored refresh token"})
+	// THE TERMINAL THAT WON, not necessarily this one: stop keeps the first,
+	// and a close code can race a refused refresh. The error handed back and
+	// the state Status names must be the same terminal.
+	c.mu.Lock()
+	won := c.terminal
+	c.mu.Unlock()
+	return &TerminalError{won}
 }
 
 // postRefresh is one POST /refresh, presenting held's refresh token.
