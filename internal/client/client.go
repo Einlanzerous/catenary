@@ -143,6 +143,13 @@ type Faults struct {
 	// newly minted proposal instead of the one it was first presented with,
 	// so a delayed original and its retry race to two different successors.
 	ProposeAfresh bool
+	// Unbounded breaks record §3's bound (CANT-127): both suppressors are off,
+	// so an automatic refresh goes out whenever one is due, however long the
+	// credential has been unsettled and whether or not Catenary has answered —
+	// which is what every client did before that ticket. Left on over a dead
+	// network it mints one link per dial, which is the measurement criterion 1
+	// is a claim against.
+	Unbounded bool
 
 	// NeverTerminal removes CANT-123's terminal branch: every close
 	// reconnects and a refused refresh is retried, as before that ticket.
@@ -254,9 +261,25 @@ type Stats struct {
 	// RefreshWalkBacks counts Catenary's 401s that were NOT terminal: a token
 	// other than the oldest was refused, and the walk stepped back (CANT-126).
 	RefreshWalkBacks int
-	Undecodable      int
-	LastRTT          time.Duration
-	LastClose        string
+	// ChainLength is how many refresh requests this device has sent and not seen
+	// answered (CANT-127): record §3's chain, and the walk it owes on return.
+	//
+	// NOT A COUNTER, AND THE ONLY NUMBER HERE THAT GOES DOWN. It is read from
+	// the Journal when Status is asked, not accumulated on the Client, because it
+	// is durable state shared with every other context over the credential — an
+	// answer collapses it to zero, whoever got the answer.
+	ChainLength int
+	// RefreshesHeldUnreachable and RefreshesHeldBackoff count the automatic
+	// refreshes CANT-127's two suppressors did not make: the gate, because
+	// Catenary has not answered this context since the last send, and the
+	// backoff, because the delay counted from that send has not elapsed. A held
+	// refresh is NEVER counted in RefreshErrors — nobody made it, so it did not
+	// fail.
+	RefreshesHeldUnreachable int
+	RefreshesHeldBackoff     int
+	Undecodable              int
+	LastRTT                  time.Duration
+	LastClose                string
 
 	// CloseStatuses counts how each session this client HELD has ended —
 	// a session that actually opened a socket, whether or not it reached
@@ -280,6 +303,11 @@ type Status struct {
 	// observation that put it there (CANT-123). A client that is merely
 	// between dials — however long its backoff has grown — is NotTerminal.
 	Terminal Terminal
+	// RefreshHold names why no automatic refresh is being made (CANT-127), and
+	// is RefreshNotHeld for a settled credential. It is a THIRD thing, beside a
+	// dial backoff that has grown to its ceiling and either terminal: the client
+	// is connecting normally and declining to spend a link it cannot afford.
+	RefreshHold RefreshHold
 
 	Stats
 	Connected         bool // a socket is open
@@ -332,6 +360,19 @@ type Client struct {
 	waiters     map[wire.Uuid]chan sendResult
 	stats       Stats
 	terminal    Terminal
+	// answeredAt is when CATENARY ITSELF last answered THIS context, on the
+	// device wall clock, and the zero value is "not yet" (CANT-127's gate; see
+	// markAnswered for what counts). Per-Client and in memory on purpose: it is
+	// this context's evidence of reachability, and a second tab's evidence is
+	// not this one's. What crosses processes is the persisted stamp it is
+	// compared against.
+	answeredAt time.Time
+	// gateKnown and gateOpen are the last gate state this context LOGGED, so
+	// the two INFO lines are one per transition rather than one per attempt.
+	// warnedLongChain is the same for the one WARN a chain past 64 links gets.
+	gateKnown       bool
+	gateOpen        bool
+	warnedLongChain bool
 
 	nmu     sync.Mutex
 	changed chan struct{}
@@ -463,7 +504,18 @@ func (c *Client) Run(ctx context.Context) error {
 		// AND THE PROACTIVE REFRESH COMES BEFORE BOTH (CANT-124), so neither
 		// the upgrade nor the /sync beside it presents a pair known to be
 		// about to die.
-		if err := c.RefreshIfDue(ctx); err != nil {
+		//
+		// NOT RefreshIfDue (CANT-127). This is an attempt the client makes on
+		// its own initiative, once per dial, so it is the one the bound is on:
+		// while the credential is unsettled it waits for Catenary to answer
+		// this context, and for the delay counted from the last send.
+		switch err := c.refreshDueWhenAllowed(ctx); {
+		case errors.Is(err, errRefreshHeld):
+			// EXPECTED, AND NOT LOGGED PER ATTEMPT. As a plain error this would
+			// be one line per dial — ~720 an hour on a dead network, which is
+			// the stream the bound exists to remove. The gate's own two INFO
+			// lines say when it closed and when it opened.
+		case err != nil:
 			c.log.Info("proactive refresh failed; dialing with the held pair", "error", err)
 		}
 		// A refused proactive refresh may have just made the client terminal,
@@ -671,6 +723,10 @@ func (c *Client) Send(ctx context.Context, f wire.ClientSend) (wire.ServerAck, e
 
 // Status is a point-in-time view.
 func (c *Client) Status() Status {
+	// BEFORE EITHER LOCK: the hold is read from the Journal and from this
+	// Client's own state, and it takes both of those locks itself. Quietly,
+	// because being asked for a status must not write a log line.
+	hold, chain := c.refreshHoldQuiet(), c.j.chainLen()
 	c.mu.Lock()
 	s := Status{
 		Stats:             c.stats,
@@ -681,7 +737,9 @@ func (c *Client) Status() Status {
 		MissedPongLimit:   c.missedLimit,
 		CaughtUp:          c.gen == c.doneGen,
 		Terminal:          c.terminal,
+		RefreshHold:       hold,
 	}
+	s.ChainLength = chain
 	// s.Stats is a value copy of c.stats, but a map field copies its header,
 	// not its contents: without this clone, s.CloseStatuses would still alias
 	// the live map and a caller reading it after unlocking could race the
@@ -846,6 +904,13 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, preceding *
 			c.log.Warn("server frame the generated decoder refuses", "error", err)
 			continue
 		}
+		// CATENARY ANSWERED THIS CONTEXT (CANT-127's gate). A frame the generated
+		// decoder ACCEPTS is Catenary's — a proxy, a captive portal or a hop in
+		// front cannot produce one — and that is true of a tag this wire version
+		// does not know (f == nil) as much as of one it does, because the decoder
+		// validated it either way. One it REFUSES is not an answer, and the
+		// continue above is before this line on purpose.
+		c.markAnswered()
 		if f == nil {
 			continue // an unknown tag: ignored, as every decoder is told to
 		}
@@ -1187,6 +1252,14 @@ func (c *Client) fetch(ctx context.Context, after int64) (wire.SyncResponse, err
 		return page, err
 	}
 	if rerr := c.refreshAfter401(ctx, used); rerr != nil {
+		// A HELD REFRESH HANDS BACK THE 401 IT ALREADY HAD, WITHOUT THE RETRY
+		// (CANT-127). Re-sending /sync now would carry the same expired pair to
+		// the same answer — a second Catenary 401 per catch-up attempt, which is
+		// a request this bound exists to remove. Catch-up's own backoff carries
+		// on from here, as it does for any failed page.
+		if errors.Is(rerr, errRefreshHeld) {
+			return wire.SyncResponse{}, err
+		}
 		return wire.SyncResponse{}, fmt.Errorf("%w; then %w", err, rerr)
 	}
 	return c.fetchWith(ctx, after, c.credential())
@@ -1230,6 +1303,11 @@ func (c *Client) fetchWith(ctx context.Context, after int64, cred Credential) (w
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: read: %w", err)
 	}
 	if isCatenaryUnauthorized(resp.StatusCode, body) {
+		// CATENARY'S OWN 401 IS CATENARY ANSWERING (CANT-127's gate), which is
+		// why the reactive half passes the gate by construction. A 401 from a hop
+		// in front does not carry that body and falls through to the status
+		// branch below, where nothing is marked.
+		c.markAnswered()
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: %w", errUnauthorized)
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -1242,5 +1320,8 @@ func (c *Client) fetchWith(ctx context.Context, after int64, cred Credential) (w
 	if err := json.Unmarshal(body, &page); err != nil {
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: decode: %w", err)
 	}
+	// A PAGE THE GENERATED DECODER ACCEPTED, and not merely a 200: a captive
+	// portal's interception page is a 200 and is not an answer from Catenary.
+	c.markAnswered()
 	return page, nil
 }
