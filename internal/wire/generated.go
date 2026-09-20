@@ -2737,6 +2737,36 @@ type RefreshRequest struct {
 	// exchanged is a replay, and CANT-29 answers it by invalidating the family rather than
 	// the request.
 	RefreshToken Token `json:"refresh_token"`
+	// OPTIONAL. The refresh token the client PROPOSES the server issue as this one's
+	// successor — 32 bytes from the client's own CSPRNG in the Token encoding, generated
+	// fresh for each refresh token and never derived from anything (CANT-31 ruling 1,
+	// CANT-125).
+	//
+	// IT EXISTS FOR THE LOST RESPONSE. A rotation that commits and whose response dies on
+	// the way back leaves the client holding a spent token and not knowing its successor.
+	// A client that proposed the successor already knows it: it persists the proposal
+	// before sending, and after an unknown outcome presents the proposal as its newest
+	// token. Retrying the spent token is then safe too, provided the retry carries THE
+	// SAME proposal — a racing commit collides on the stored hash instead of forking the
+	// family.
+	//
+	// THE RESPONSE IS STILL AUTHORITATIVE. A server that honours the proposal returns it
+	// as `refresh_token`; a server that predates this field ignores it and mints its own,
+	// and the client adopts whatever `refresh_token` says — never its own proposal on
+	// faith.
+	//
+	// A proposal that collides with a token the server already holds is answered `503`,
+	// never `401`: the presented token is still good or the rotation is already in flight,
+	// and either way the client retries — with a FRESH proposal if its token was not
+	// spent.
+	//
+	// CANT-74 DIRECTION: client-authored and additive, and safe by this schema's own
+	// convention — unknown fields are ignored by decoders, never rejected. A server that
+	// predates the field therefore ignores it rather than refusing the request, which is
+	// the only order a new REQUEST field can meet an old peer in. It carries a Token and
+	// no enum, so there is no value for the server to be closed over. `x-wire-version`
+	// stays 1.
+	ProposedRefreshToken *Token `json:"proposed_refresh_token,omitempty"`
 }
 
 // UnmarshalJSON decodes and VALIDATES a RefreshRequest: required fields must be
@@ -2749,7 +2779,8 @@ func (v *RefreshRequest) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *RefreshRequest) decode(b []byte, p string) error {
 	var s struct {
-		RefreshToken *Token `json:"refresh_token"`
+		RefreshToken         *Token `json:"refresh_token"`
+		ProposedRefreshToken *Token `json:"proposed_refresh_token"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return decodeErr(p, err)
@@ -2759,8 +2790,16 @@ func (v *RefreshRequest) decode(b []byte, p string) error {
 		return badf(p+".refresh_token", "required field is missing")
 	}
 	out.RefreshToken = *s.RefreshToken
+	if s.ProposedRefreshToken != nil {
+		out.ProposedRefreshToken = s.ProposedRefreshToken
+	}
 	if err := checkToken(out.RefreshToken, p+".refresh_token"); err != nil {
 		return err
+	}
+	if out.ProposedRefreshToken != nil {
+		if err := checkToken(*out.ProposedRefreshToken, p+".proposed_refresh_token"); err != nil {
+			return err
+		}
 	}
 	*v = out
 	return nil

@@ -95,7 +95,11 @@ type Deps struct {
 	// presenting a refresh token has no access token to be identified by, which
 	// is the whole situation it is trying to get out of. store.RotateRefresh
 	// resolves the device FROM the token — CANT-97.
-	Refresh func(ctx context.Context, token string) (store.Rotated, error)
+	//
+	// proposed is the client's proposed successor, or "" for none (CANT-125).
+	// It has already passed the generated decoder's Token check by the time it
+	// arrives here.
+	Refresh func(ctx context.Context, token, proposed string) (store.Rotated, error)
 
 	// Devices and RevokeOwnDevice are CANT-117's self-service surface. Both
 	// take the caller's own user id and nothing from the request chooses it —
@@ -468,8 +472,24 @@ func refreshHandler(d Deps) http.HandlerFunc {
 			return
 		}
 
-		rotated, err := d.Refresh(r.Context(), string(req.RefreshToken))
+		var proposed string
+		if req.ProposedRefreshToken != nil {
+			proposed = string(*req.ProposedRefreshToken)
+		}
+		rotated, err := d.Refresh(r.Context(), string(req.RefreshToken), proposed)
 		switch {
+		case errors.Is(err, store.ErrRefreshRetry):
+			// 503, AND NEVER 401 (CANT-125). The rotation was neither performed
+			// nor refused: the proposal collided with a stored token while the
+			// presented one is still good, or this is the in-flight retry of a
+			// rotation that has just succeeded. A client treats Catenary's own
+			// 401 here as terminal (CANT-123), so 401 would log a person out of
+			// a working device; 500 would hide a condition the client recovers
+			// from by itself. The body is deliberately NOT the 401's.
+			w.Header().Set("Retry-After", "1")
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "refresh not performed; retry"})
+			return
 		case errors.Is(err, store.ErrUnauthorized):
 			// THE SAME BODY /enroll AND /sync WRITE, deliberately identical.
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})

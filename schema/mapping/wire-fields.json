@@ -662,6 +662,10 @@
       "kind": "derived",
       "note": "PRESENTED OR RETURNED, NEVER STORED. refresh_tokens.token_hash holds this string's SHA-256 and nothing anywhere holds the string: it exists in the one message that carried it and is unrecoverable afterwards. Mapping it to a column would be a claim that the database keeps a working credential, which is exactly what hashing it is for."
     },
+    "RefreshRequest.proposed_refresh_token": {
+      "kind": "derived",
+      "note": "PRESENTED, AND STORED ONLY AS A HASH. When the server honours the proposal, refresh_tokens.token_hash of the SUCCESSOR row holds this string's SHA-256 — the same column every refresh token's hash lives in, and for the same reason: nothing anywhere holds the string. When the proposal collides or the server predates the field, nothing derived from it is stored at all."
+    },
     "RefreshResponse.access_token": {
       "kind": "derived",
       "note": "PRESENTED OR RETURNED, NEVER STORED. access_tokens.token_hash holds this string's SHA-256 and nothing anywhere holds the string: it exists in the one message that carried it and is unrecoverable afterwards. Mapping it to a column would be a claim that the database keeps a working credential, which is exactly what hashing it is for."

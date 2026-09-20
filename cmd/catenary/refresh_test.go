@@ -242,3 +242,64 @@ func TestAMalformedRefreshRequestIsABadRequest(t *testing.T) {
 		})
 	}
 }
+
+// CANT-125 through the real router: the proposal is honoured and returned, the
+// in-flight retry is a 503 whose body is NOT the 401's, and a malformed
+// proposal is refused by the generated decoder before it can reach the store.
+func TestRefreshHonoursAProposedSuccessorAndAnswersItsRetry503(t *testing.T) {
+	ctx, pool, st, h := authFixture(t)
+	user := mkUser(ctx, t, pool, "ada", "Ada Lovelace")
+	issued, err := st.IssueEnrollmentToken(ctx, user)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := enrollOne(t, h, issued.Plaintext)
+	proposed, _, err := store.MintToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	post := func(body map[string]string) (int, http.Header, []byte) {
+		t.Helper()
+		b, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/refresh", bytes.NewReader(b)))
+		return rec.Code, rec.Header(), rec.Body.Bytes()
+	}
+
+	code, _, body := post(map[string]string{"refresh_token": first.RefreshToken, "proposed_refresh_token": proposed})
+	if code != http.StatusOK {
+		t.Fatalf("POST /refresh with a proposal = %d: %s", code, body)
+	}
+	var next pair
+	if err := json.Unmarshal(body, &next); err != nil {
+		t.Fatal(err)
+	}
+	if next.RefreshToken != proposed {
+		t.Error("the response's refresh_token is not the proposal the server honoured")
+	}
+
+	// The response was "lost": the same pair again.
+	code, hdr, body := post(map[string]string{"refresh_token": first.RefreshToken, "proposed_refresh_token": proposed})
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("the in-flight retry = %d, want 503: %s", code, body)
+	}
+	if bytes.Contains(body, []byte("unauthorized")) {
+		t.Errorf("the 503's body reads as the 401's, which a client treats as terminal: %s", body)
+	}
+	if hdr.Get("Retry-After") == "" {
+		t.Error("the 503 carries no Retry-After")
+	}
+
+	// A proposal that is not a Token never reaches the store.
+	code, _, body = post(map[string]string{"refresh_token": proposed, "proposed_refresh_token": "too_short"})
+	if code != http.StatusBadRequest {
+		t.Fatalf("a malformed proposal = %d, want 400: %s", code, body)
+	}
+	// ...and did not consume the token it was presented with.
+	if code, _, body := post(map[string]string{"refresh_token": proposed}); code != http.StatusOK {
+		t.Errorf("the token the malformed request named no longer rotates: %d %s", code, body)
+	}
+}
