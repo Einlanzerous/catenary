@@ -13,14 +13,26 @@ package store
 // rather than a delete-on-rotate: a freshly superseded refresh token is
 // exactly the row CANT-29's reuse detection reads.
 //
-// OLDEST-FIRST IS WHAT KEEPS refresh_tokens.replaced_by FROM EVER DANGLING. A
-// predecessor's row is always issued strictly before the successor its own
-// replaced_by names — RotateRefresh reads the predecessor's existing row and
-// only then inserts the successor, in the same transaction — so the
-// predecessor is always at least as old as, and therefore at least as
-// eligible as, whatever it points to. Deleting in issued_at order can
-// therefore never reach a row before something else has stopped pointing at
-// it.
+// OLDEST-FIRST IS WHAT KEEPS refresh_tokens.replaced_by FROM EVER DANGLING,
+// AND THE ARGUMENT NEEDS BOTH ITS HALVES STATED. A predecessor's row was
+// written by an earlier, already-committed transaction — issued_at defaults
+// to the inserting transaction's own now() — so it is always at least as OLD
+// as the successor its replaced_by names. Age alone is not eligibility,
+// though: eligibility is age AND deadness, and the second half rests on a
+// premise this file does not itself enforce — every refresh row takes
+// expires_at = issued_at + RefreshTokenLifetime from ONE constant
+// (insertRefreshProposed, refresh.go), which makes expiry monotone in
+// issued_at, and family invalidation revokes WHERE family_id = $1
+// (refresh.go), which can never leave a live ancestor pointing at a revoked
+// descendant. Together those two make a predecessor at least as eligible as
+// whatever it points to, whenever that row is eligible at all.
+//
+// THAT UNIFORM-LIFETIME PREMISE IS LOAD-BEARING, AND A LATER CHANGE CAN BREAK
+// IT: shorten RefreshTokenLifetime and a predecessor issued under the old,
+// longer lifetime can outlive a successor issued under the new, shorter one.
+// This ticket's own tests all run under a single lifetime, by construction,
+// so none of them would catch that — whoever changes RefreshTokenLifetime has
+// to re-check this argument rather than trust it.
 //
 // THAT LAST CLAIM IS PROVEN AGAINST REAL POSTGRES IN sweep_test.go RATHER THAN
 // ASSUMED. A single DELETE naming BOTH ends of a dead chain link at once does
@@ -68,7 +80,7 @@ const SweepInterval = time.Hour
 // that NULL as "cannot be expired" rather than as a bound that vacuously
 // passes, so a live long-lived bot credential is never eligible no matter how
 // old issued_at gets — only a REVOKED bot token is, and only once it is old
-// enough too. See TestALiveBotTokenSurvivesTheSweepHoweverOld.
+// enough too. See TestALiveBotTokenSurvivesTheSweepHoweverOldButARevokedOneDoesNot.
 func (s *Store) sweepAccessTokensOnce(ctx context.Context) (int64, error) {
 	tag, err := s.pool.Exec(ctx, `
 		DELETE FROM access_tokens

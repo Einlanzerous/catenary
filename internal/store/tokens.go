@@ -123,12 +123,17 @@ const (
 // is exactly what refusalOutcome reads to invalidate the family.
 //
 // ALSO TRUE, AND WORTH NAMING RATHER THAN DISCOVERING: once R's row is swept,
-// its hash is no longer UNIQUE-constrained against, so it becomes proposable
-// again under routeCollision branch 1 — a caller who now proposes hash(R) as
-// their OWN successor succeeds instead of colliding. That is harmless rather
-// than a second exposure: branch 1 only ever hands the proposer their own new
-// credential, never anyone else's, so the only thing a stale hash buys is not
-// colliding with a row that no longer exists.
+// hash(R) is no longer UNIQUE-constrained against, so it becomes proposable
+// again under routeCollision branch 1 — a caller who now proposes R as their
+// OWN successor does not collide at all, and gets back a live refresh_tokens
+// row whose token_hash is hash(R), in THEIR OWN family. That row is what
+// RotateRefreshProposing's lookup (`WHERE r.token_hash = $1`) then resolves to
+// for anyone who presents R afterwards — including R's original holder, or an
+// attacker who captured it before it was swept — so a very late presentation
+// of R rotates the PROPOSER's family rather than answering "unknown
+// credential". It still requires already knowing R's plaintext, so it hands
+// nobody a credential they did not already hold; the honest description is "a
+// swept hash can be re-bound to a different family", not "harmless".
 const SpentCredentialRetention = RefreshTokenLifetime + 7*24*time.Hour
 
 // TokenBytes is the entropy behind every credential this service issues.
