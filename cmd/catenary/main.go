@@ -80,6 +80,8 @@ func run(args []string) error {
 		return runMigrate(args[1:])
 	case "bot":
 		return runBot(args[1:])
+	case "user":
+		return runUser(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return nil
@@ -108,6 +110,8 @@ usage:
   catenary bot token <handle>          mint a fresh token for an existing bot
   catenary bot list                    list service accounts and live credentials
   catenary bot revoke <handle>         revoke every live token a bot holds
+
+  catenary user set-email <handle> <email>  give an existing email-less person an email
 
 Migrations are embedded and applied automatically on serve. The subcommand
 exists for the cases where that is the wrong moment: a rollback, and looking.

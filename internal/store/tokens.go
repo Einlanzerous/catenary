@@ -334,8 +334,15 @@ func (s *Store) Authenticate(ctx context.Context, presented string) (Caller, err
 	return c, nil
 }
 
-// IssueEnrollmentToken mints the bootstrap credential for one person, and is
-// what Purser's Provision calls — on a first invite and on a re-invite alike.
+// IssueEnrollmentToken mints the bootstrap credential for one person, opening
+// its own transaction, and is what `soakrig provision`
+// (server/cmd/soakrig/provision.go) calls.
+//
+// A THIN WRAPPER, SINCE CANT-130. issueEnrollmentTokenTx below is the actual
+// work; this just gives it a transaction and commits it, on publishRevocation
+// and RevokeDevice's own shape in this file — a tx-taking function underneath
+// a pool-taking one that opens a transaction around it and nothing else. It
+// stays, unchanged, so soakrig keeps compiling against it.
 //
 // R6'S RE-INVITE CASE, WHICH LYCEUM'S CONNECTOR GETS WRONG. Provision must be
 // able to re-issue, and re-issuing must leave exactly ONE redeemable token. The
@@ -343,17 +350,35 @@ func (s *Store) Authenticate(ctx context.Context, presented string) (Caller, err
 // in 0007, which turns forgetting it into a constraint violation rather than
 // into a second live invitation nobody notices until two devices enroll.
 func (s *Store) IssueEnrollmentToken(ctx context.Context, userID uuid.UUID) (IssuedToken, error) {
-	plaintext, hash, err := MintToken()
-	if err != nil {
-		return IssuedToken{}, err
-	}
-	expires := ServerTime().Add(EnrollmentTokenLifetime)
-
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return IssuedToken{}, fmt.Errorf("store: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+
+	issued, err := issueEnrollmentTokenTx(ctx, tx, userID)
+	if err != nil {
+		return IssuedToken{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return IssuedToken{}, fmt.Errorf("store: commit: %w", err)
+	}
+	return issued, nil
+}
+
+// issueEnrollmentTokenTx is IssueEnrollmentToken's work, ON THE CALLER'S OWN
+// TRANSACTION — CANT-130's EnsurePerson is the first caller that needs it
+// atomic with something else: minting a token for a person it just inserted,
+// or for one it is about to hand back as already existing, in the SAME
+// transaction that decided which, so a crash between the two can never leave
+// an account with no way to redeem. Unexported: nothing outside this package
+// has a transaction to hand it.
+func issueEnrollmentTokenTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (IssuedToken, error) {
+	plaintext, hash, err := MintToken()
+	if err != nil {
+		return IssuedToken{}, err
+	}
+	expires := ServerTime().Add(EnrollmentTokenLifetime)
 
 	// Superseded rather than deleted, on the same argument redeemed_at gets:
 	// "what became of that invitation?" is a question somebody asks precisely
@@ -370,9 +395,6 @@ func (s *Store) IssueEnrollmentToken(ctx context.Context, userID uuid.UUID) (Iss
 		return IssuedToken{}, fmt.Errorf("store: issue enrollment token: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return IssuedToken{}, fmt.Errorf("store: commit: %w", err)
-	}
 	return IssuedToken{Plaintext: plaintext, ExpiresAt: expires}, nil
 }
 

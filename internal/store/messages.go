@@ -83,6 +83,16 @@ package store
 // lock there: CANT-33 offboards accounts, and CANT-63 touches this file. A
 // reader is entitled to treat this list as exhaustive, so it has to be.
 //
+// CANT-130's EnsurePerson (internal/store/persons.go) IS THE FIRST OF THOSE
+// TO LAND, and it takes exactly this lock for exactly this reason: finding an
+// existing person by email and reading `deactivated_at` to decide whether to
+// re-invite them or refuse must not straddle a concurrent deactivation
+// landing in between. FOR NO KEY UPDATE, never FOR UPDATE, on metadata.go's
+// own argument — it does not conflict with the KEY SHARE a send takes on
+// `users(author_id)` at position 11, so the two compose. It draws no ordinal
+// of its own and so never enters the deployment-wide serialised section at
+// all.
+//
 // POSITION 12 TAKES NO LOCK WHEN IT RUNS, AND ITS COMMIT TAKES ONE THIS LIST
 // WOULD OTHERWISE MISS. pg_notify appends to a backend-local pending list;
 // nothing is locked until CommitTransaction reaches PreCommit_Notify, which
