@@ -318,7 +318,25 @@ func (s *Store) Authenticate(ctx context.Context, presented string) (Caller, err
 	// device_id so only a bot's token can hold one. A person's fifteen minutes
 	// is never one bad INSERT away from forever.
 	case expiresAt != nil && !expiresAt.After(now):
-		s.logger.WarnContext(ctx, "authentication refused", "reason", "token expired", "token_id", tokenID)
+		// INFO, NOT WARN, AND IT IS THE ONLY REFUSAL HERE THAT MOVED (CANT-129).
+		// The three below it — token revoked, device revoked, account deactivated
+		// — are a credential being ADMINISTERED, and a person should see them.
+		// An expired access token is the design working: CANT-31's record §1
+		// makes the reactive refresh "not optional", and a browser has no other
+		// way to learn its token is stale, because a failed upgrade's HTTP status
+		// is invisible to it. So a client meeting this line is doing what it was
+		// told to. WARN on this path now means something happened.
+		//
+		// THE OTHER EXPIRED-CREDENTIAL REFUSALS STAY WARN, and they are not this
+		// one: `refresh refused` / `token expired` in refresh.go is an expired
+		// REFRESH token, and `enrollment refused` / `expired` in RedeemEnrollment
+		// below is an expired enrollment token. Both are credentials that have
+		// ENDED — the device cannot recover on its own and a person has to
+		// re-invite it — where this one is cured by the next /refresh. So
+		// `token expired` is logged at two levels in this package and nowhere
+		// else; TestAnExpiredAccessTokenIsRefusedAtInfoAndTheAdministeredRefusalsStayWarn
+		// pins all three. The token_id stays, so the quieter level costs no detail.
+		s.logger.InfoContext(ctx, "authentication refused", "reason", "token expired", "token_id", tokenID)
 		return Caller{}, ErrUnauthorized
 	case deviceRevoked != nil:
 		s.logger.WarnContext(ctx, "authentication refused", "reason", "device revoked", "token_id", tokenID, "device_id", deviceID)

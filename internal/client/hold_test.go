@@ -440,6 +440,22 @@ func (r *rig) client(t *testing.T, faults Faults, rnd io.Reader) *Client {
 	c, err := New(driveBackoff(Config{
 		BaseURL: r.e.srv.URL, Journal: r.j, Refresh: true, Now: r.clk.now, Logger: r.log.logger(),
 		HTTPClient: &http.Client{Transport: r.net}, Rand: rnd, Faults: faults,
+		// CANT-129'S WAIT SLEEPS THROUGH THIS SEAM, and these rigs have to charge
+		// it simPerDial rather than the duration it asked for. A refused client
+		// makes no dials, and the dial is the only thing that advances the fake
+		// clock here — so without a seam the black-holed-/refresh rig freezes at
+		// the first hold. And the wait polls at c.backoffMax, which driveBackoff
+		// compresses to microseconds so that simulated hours cost seconds:
+		// charging `d` would advance the clock by 50 µs a poll and a
+		// fifteen-minute hold would never end (measured: 185,616 polls, 9.3
+		// simulated seconds, in 180 s of real time). simPerDial is the same
+		// accounting the transport uses for a dial — one poll of the wait stands
+		// in for one dial not made, and costs what that dial would have cost.
+		Pause: func(ctx context.Context, _ time.Duration) bool {
+			time.Sleep(50 * time.Microsecond)
+			r.clk.add(simPerDial)
+			return ctx.Err() == nil
+		},
 	}))
 	if err != nil {
 		t.Fatal(err)
@@ -711,8 +727,18 @@ func TestABlackHoledRefreshIsBoundedByTheBackoff(t *testing.T) {
 	if s.RefreshWalkBacks != chain {
 		t.Errorf("%d walk-backs for a chain of %d; the walk on return is one step per link, in ONE attempt", s.RefreshWalkBacks, chain)
 	}
-	if s.RefreshesHeldBackoff == 0 {
-		t.Error("nothing was held by the backoff; the gate cannot have been open")
+	// THE BACKOFF IS WHAT BOUNDED IT, AND SINCE CANT-129 IT IS WAITED OUT RATHER
+	// THAN ATTEMPTED INTO. Before that ticket every dial's proactive refresh met
+	// the delay and was counted as held, so RefreshesHeldBackoff was the evidence
+	// here. Now Catenary's own 401 on /sync marks the access token refused, Run
+	// stops dialing, and the one attempt per hold goes out THROUGH the probe at
+	// the moment the delay has elapsed — so nothing is left to be held by it, and
+	// that counter is structurally zero in this arrangement. What must not happen
+	// is NEITHER: a build where the delay neither holds an attempt nor stands one
+	// down has lost the suppressor this test is about. The bound itself is
+	// unchanged and is asserted above, on the chain.
+	if s.RefreshesHeldBackoff+s.SyncsWithheld == 0 {
+		t.Error("the delay neither held an attempt nor stood a request down; the gate cannot have been open")
 	}
 	assertNoReplays(t, r.e.f)
 	if cr, _ := r.j.Credential(); cr.RefreshToken != r.e.f.live() {
