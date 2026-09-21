@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.10.0](https://github.com/Einlanzerous/catenary/compare/v0.9.0...v0.10.0) (2026-09-21)
+
+
+### Features
+
+* CANT-118 — spent credentials are swept once their window has passed ([#77](https://github.com/Einlanzerous/catenary/issues/77)) ([1ec8eb2](https://github.com/Einlanzerous/catenary/commit/1ec8eb2faee83e03ccac377734b43184251e6a84))
+* CANT-121 — the client's credential is durable state, not configuration ([#72](https://github.com/Einlanzerous/catenary/issues/72)) ([afdf201](https://github.com/Einlanzerous/catenary/commit/afdf20110acbad43b6fc1b4b6a6125d5b5c162e1))
+* CANT-122 — the hello timeout closes 4002, so a bare 1008 means a client bug ([#70](https://github.com/Einlanzerous/catenary/issues/70)) ([b0d95d3](https://github.com/Einlanzerous/catenary/commit/b0d95d33753b909e371ff287def32bfed07a069c))
+* CANT-123 — the reference client stops when it must, and only then ([#74](https://github.com/Einlanzerous/catenary/issues/74)) ([355c8db](https://github.com/Einlanzerous/catenary/commit/355c8dbe2d6a4d9cee2a3e97fa55e88bb00295c9))
+* CANT-124 — the client refreshes before it needs to, and when it is refused ([#73](https://github.com/Einlanzerous/catenary/issues/73)) ([c8e067b](https://github.com/Einlanzerous/catenary/commit/c8e067b7e4baa764c0e01458b4bc6a9dd75a0f9c))
+* CANT-125 — RotateRefresh accepts a proposed successor, and routes its collision ([#75](https://github.com/Einlanzerous/catenary/issues/75)) ([10bddac](https://github.com/Einlanzerous/catenary/commit/10bddac590414c6d5dee55e546701f536dc54a85))
+* CANT-126 — a lost refresh response no longer costs the device ([#76](https://github.com/Einlanzerous/catenary/issues/76)) ([9a32829](https://github.com/Einlanzerous/catenary/commit/9a328292ee1039fb7a6070815e7aa7152d8cc10f))
+* CANT-127 — an unsettled credential waits for Catenary before it refreshes again ([#78](https://github.com/Einlanzerous/catenary/issues/78)) ([6383fb3](https://github.com/Einlanzerous/catenary/commit/6383fb336b3d3740809e561441df3201d18afabb))
+* CANT-129 — a refused access token is presented once per refresh hold ([#80](https://github.com/Einlanzerous/catenary/issues/80)) ([ccbf849](https://github.com/Einlanzerous/catenary/commit/ccbf849688748c91e879d56f361da72e39e87644))
+* CANT-131 — the provisioning surface: its own listener, one credential, three operations ([#82](https://github.com/Einlanzerous/catenary/issues/82)) ([e7e9c34](https://github.com/Einlanzerous/catenary/commit/e7e9c3475b6a704c5af4f96eaa993c135ff4b953))
+
 ## [0.9.0](https://github.com/Einlanzerous/catenary/compare/v0.8.0...v0.9.0) (2026-09-18)
 
 
