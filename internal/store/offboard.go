@@ -231,7 +231,7 @@ func (s *Store) DeactivateUser(ctx context.Context, userID uuid.UUID) (Offboard,
 
 	if out.Changed() {
 		if err := publishUserRevocation(ctx, tx, userID); err != nil {
-			return Offboard{}, err
+			return Offboard{}, fmt.Errorf("store: deactivate user: %w", err)
 		}
 	}
 
@@ -401,7 +401,7 @@ func (s *Store) reactivateTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (
 		}
 		if revoked.Changed() {
 			if err := publishUserRevocation(ctx, tx, userID); err != nil {
-				return CredentialsRevoked{}, err
+				return CredentialsRevoked{}, fmt.Errorf("store: reactivate person: %w", err)
 			}
 		}
 	}
@@ -433,9 +433,14 @@ func (s *Store) reactivateTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (
 // this would not be a payload migration across a running deployment. Every
 // comment that said the field had no publisher is corrected in this ticket's
 // own PR.
+//
+// IT WRAPS NOTHING, AND ITS TWO CALLERS DO — found in review (#81). This has
+// two of them, an offboard and the reversal of one, and a prefix chosen here
+// would name the wrong operation for one of them: a pg_notify failure during a
+// reactivation reported as "store: deactivate user: notify: …" sends an
+// operator looking at the transaction that did not fail. The subject is this
+// function's; the operation belongs to the call site, exactly as it does for
+// revokeCredentialsTx.
 func publishUserRevocation(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
-	if err := publishRevocationPayload(ctx, tx, RevocationPayload{UserID: &userID}); err != nil {
-		return fmt.Errorf("store: deactivate user: %w", err)
-	}
-	return nil
+	return publishRevocationPayload(ctx, tx, RevocationPayload{UserID: &userID})
 }

@@ -110,21 +110,30 @@ func readAccountState(ctx context.Context, t *testing.T, pool *pgxpool.Pool, use
 
 // assertFullyRevoked is the whole of "everywhere, at once", asserted over rows
 // rather than over what the call returned.
+//
+// FIVE INDEPENDENT CHECKS AND NOT A switch — found in review (#81). This is the
+// assertion five tests and both race loops share, so it is the one place where
+// seeing the whole shape of a failure at once is worth the most: a run of cases
+// reports only the first, and "deactivated_at is not set" would hide that four
+// other things were live too.
 func assertFullyRevoked(ctx context.Context, t *testing.T, pool *pgxpool.Pool, userID uuid.UUID, what string) {
 	t.Helper()
 	got := readAccountState(ctx, t, pool, userID)
-	switch {
-	case !got.deactivated:
+	if !got.deactivated {
 		t.Errorf("%s: users.deactivated_at is not set", what)
-	case got.devicesRevoked != got.devices:
+	}
+	if got.devicesRevoked != got.devices {
 		t.Errorf("%s: %d of %d devices revoked, want all — Authenticate, DeadDevices and CANT-30's "+
 			"gap re-check all read this column", what, got.devicesRevoked, got.devices)
-	case got.refreshRevoked != got.refresh:
+	}
+	if got.refreshRevoked != got.refresh {
 		t.Errorf("%s: %d of %d refresh tokens revoked, want all — a live family is a way back in "+
 			"that survives every access token expiring", what, got.refreshRevoked, got.refresh)
-	case got.accessRevoked != got.access:
+	}
+	if got.accessRevoked != got.access {
 		t.Errorf("%s: %d of %d access tokens revoked, want all", what, got.accessRevoked, got.access)
-	case got.liveInvitations != 0:
+	}
+	if got.liveInvitations != 0 {
 		t.Errorf("%s: %d redeemable invitations survive, want 0 — a deprovisioned person's mailbox "+
 			"must not still hold a working enrollment", what, got.liveInvitations)
 	}
