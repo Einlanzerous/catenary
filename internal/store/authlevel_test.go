@@ -13,11 +13,13 @@ package store
 // loudest line a healthy estate produced, and CANT-129 is the ticket that
 // measured how many of them one held device makes.
 //
-// AND WHY THE OTHER TWO `token expired` LINES ARE HERE TOO. The same string is
-// logged by RotateRefresh for an expired REFRESH token and by RedeemEnrollment
-// for an expired enrollment token, and both stay WARN: those credentials have
-// ENDED, and the device needs a person. Somebody grepping `token expired` and
-// finding one string at two levels should find this test rather than a puzzle.
+// AND WHY THE OTHER EXPIRED-CREDENTIAL REFUSALS ARE HERE TOO. RotateRefresh logs
+// `refresh refused` / `token expired` for an expired REFRESH token — the same
+// reason string as the line above, at the other level — and RedeemEnrollment logs
+// `enrollment refused` / `expired` for an expired enrollment token. Both stay
+// WARN: those credentials have ENDED, and the device needs a person. So
+// `token expired` appears at two levels in this package, and somebody grepping it
+// should find this test rather than a puzzle.
 
 import (
 	"errors"

@@ -327,12 +327,15 @@ func (s *Store) Authenticate(ctx context.Context, presented string) (Caller, err
 		// is invisible to it. So a client meeting this line is doing what it was
 		// told to. WARN on this path now means something happened.
 		//
-		// THE OTHER TWO `token expired` LINES STAY WARN, and they are not this
-		// one: refresh.go's is an expired REFRESH token, and the one at
-		// RedeemEnrollment's expiry check is an expired enrollment token. Both are
-		// credentials that have ENDED — the device cannot recover on its own and a
-		// person has to re-invite it — where this one is cured by the next
-		// /refresh. The token_id stays, so the quieter level costs no detail.
+		// THE OTHER EXPIRED-CREDENTIAL REFUSALS STAY WARN, and they are not this
+		// one: `refresh refused` / `token expired` in refresh.go is an expired
+		// REFRESH token, and `enrollment refused` / `expired` in RedeemEnrollment
+		// below is an expired enrollment token. Both are credentials that have
+		// ENDED — the device cannot recover on its own and a person has to
+		// re-invite it — where this one is cured by the next /refresh. So
+		// `token expired` is logged at two levels in this package and nowhere
+		// else; TestAnExpiredAccessTokenIsRefusedAtInfoAndTheAdministeredRefusalsStayWarn
+		// pins all three. The token_id stays, so the quieter level costs no detail.
 		s.logger.InfoContext(ctx, "authentication refused", "reason", "token expired", "token_id", tokenID)
 		return Caller{}, ErrUnauthorized
 	case deviceRevoked != nil:

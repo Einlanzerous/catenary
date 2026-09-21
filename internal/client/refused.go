@@ -73,6 +73,14 @@ const (
 // many times over one hold's worth of retries, and a line per meeting would be
 // the stream this ticket exists to remove, moved from the server's log into the
 // client's.
+//
+// AND IT STATES A BOUND RATHER THAN A PREDICTION, because the path it is read on
+// most often is the one where nothing is withheld at all: a catch-up an hour into
+// a socket's life always meets an expired token (fetch, CANT-28 ruling 2), the
+// reactive refresh cures it in the same pass, and the mark is retired at the next
+// poll having stood nothing down. So the line carries the chain's length, which is
+// what says whether a hold is in force to be waited out — zero is a settled
+// credential, and a reader can see that the rule has nothing to do here.
 func (c *Client) markRefused(token string) {
 	if !c.cfg.Refresh || token == "" {
 		return
@@ -84,8 +92,8 @@ func (c *Client) markRefused(token string) {
 	if !first {
 		return
 	}
-	c.log.Info("access token refused by Catenary on /sync; it will not be dialed with, " +
-		"and will be presented once per refresh hold until the pair changes")
+	c.log.Info("access token refused by Catenary on /sync; until the pair changes it is not dialed with, "+
+		"and it is presented at most once per refresh hold", "chain_length", c.j.chainLen())
 	c.notify()
 }
 
