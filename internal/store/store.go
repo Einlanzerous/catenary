@@ -129,12 +129,27 @@ type Store struct {
 	// package variable — CANT-115 is what a shared mutable test knob costs.
 	collisionFault collisionFault
 
-	// personGuardFault breaks one of EnsurePerson, PersonByEmail or SetEmail's
-	// own guards against reaching a bot, for CANT-130 criterion 6's negative
-	// controls — collisionFault's own shape, for the same reason: zero in
-	// every Store the composition root builds, and PER STORE rather than a
-	// package variable.
+	// personGuardFault breaks one guard of EnsurePerson, PersonByEmail,
+	// SetEmail or (since CANT-134) DeactivateUser and its reversal, for the
+	// negative controls criterion 6 asks for — collisionFault's own shape, for
+	// the same reason: zero in every Store the composition root builds, and PER
+	// STORE rather than a package variable.
 	personGuardFault personGuardFault
+
+	// offboardPause is called by revokeCredentialsTx between its devices write
+	// and its enrollment supersede, and it exists to drive ONE race
+	// deterministically: the redeem-during-offboard interleaving
+	// RedeemEnrollment documents as accepted (tokens.go), which CANT-134
+	// criterion 5 has to drive rather than describe. Nil in every Store the
+	// composition root builds — nothing outside this package's tests can set
+	// it — and PER STORE for collisionFault's own reason.
+	//
+	// A HOOK RATHER THAN A SLEEP OR A LUCKY GOROUTINE ORDERING. The race needs
+	// another transaction to commit at one exact point inside this one, and
+	// the alternatives are a timing test that passes by accident and fails in
+	// CI, or staging the offboard's four writes by hand in the test — which
+	// would prove them about a copy of the code rather than about the code.
+	offboardPause func()
 }
 
 // New wraps an existing pool.

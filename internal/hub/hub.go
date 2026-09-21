@@ -731,7 +731,9 @@ func (h *Hub) gap(ctx context.Context) {
 // devices alone — "the other devices are untouched" is in this ticket's own
 // `Done when`. A user revocation closes all of them, which is the deactivated
 // account the payload has carried a field for since CANT-28 and which
-// CANT-33's connector surface will one day publish.
+// CANT-134's `store.DeactivateUser` — and the reversal in `EnsurePerson`, which
+// revokes everything the account held before it clears `deactivated_at` —
+// actually publish. CANT-131 is the HTTP surface Purser calls to reach them.
 //
 // Close, not CloseNow: the peer is alive and the status is the point, exactly
 // as the drain and the head-unreadable sever already argue. Collected under
@@ -750,9 +752,12 @@ func (h *Hub) OnRevocation(ctx context.Context, p store.RevocationPayload) {
 	h.mu.Lock()
 	var doomed []*session
 	// ONE ENTRY PER SESSION EVEN WHEN BOTH SUBJECTS NAME IT. A payload may
-	// carry a device AND a user: CANT-33's deprovision is the natural producer,
-	// since revoking a person's device and deactivating their account is one
-	// action. A session matched by both would be appended twice, closed by two
+	// carry a device AND a user: a deprovision revoking a person's devices and
+	// deactivating their account is one action, so it is the natural producer —
+	// though CANT-134's own offboard does it in a single transaction and
+	// publishes the USER subject alone, which is why this stays a property of
+	// the reader rather than of any one publisher. A session matched by both
+	// would be appended twice, closed by two
 	// goroutines, and counted twice on the log line below — and because
 	// removeLocked is idempotent the COUNT would stay right while only the
 	// telemetry lied, which is the kind of wrong that is found late or never.

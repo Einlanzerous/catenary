@@ -417,27 +417,12 @@ func TestEnsurePersonNeverAdoptsAnEmaillessPersonsHandle(t *testing.T) {
 	}
 }
 
-func TestEnsurePersonOnADeactivatedPersonRefusesAndChangesNothing(t *testing.T) {
-	ctx, pool := freshDB(t)
-	st := New(pool, DefaultLimits(), discardLogger())
-	ep, err := st.EnsurePerson(ctx, "ada@example.com", "Ada")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, `UPDATE users SET deactivated_at = now() WHERE id = $1`, ep.Account.UserID); err != nil {
-		t.Fatal(err)
-	}
-
-	before := tablesSnapshot(ctx, t, pool)
-	_, err = st.EnsurePerson(ctx, "ada@example.com", "Ada")
-	if !errors.Is(err, ErrPersonDeactivated) {
-		t.Fatalf("ensure on a deactivated person = %v, want ErrPersonDeactivated", err)
-	}
-	after := tablesSnapshot(ctx, t, pool)
-	if before != after {
-		t.Error("EnsurePerson changed the database on a deactivated person it was refused")
-	}
-}
+// CANT-130's TestEnsurePersonOnADeactivatedPersonRefusesAndChangesNothing HAS
+// BECOME reactivate_test.go's TestEnsurePersonOnADeactivatedPersonReactivates-
+// ThemAfterRevokingEverything. That test asserted the placeholder ruling 5
+// always meant to replace — ErrPersonDeactivated, and nothing changed — so
+// CANT-134 could not leave it standing and could not keep its name either: the
+// behaviour it pinned is now the behaviour that would be a bug.
 
 func TestEnsurePersonRefusesAMalformedEmailBeforeTouchingThePool(t *testing.T) {
 	ctx, pool := freshDB(t)

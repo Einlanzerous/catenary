@@ -7,7 +7,7 @@ Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-
 ## Layout
 
 - `cmd/catenary/` — entrypoint + subcommands (`serve`, `migrate`, `version`). Composition root: `setup()` wires store + services + router.
-- `schema/` — **the wire contract.** One schema, the generator over it, and 48 conformance vectors that TypeScript, Dart and Go all have to agree on, with a staleness guard that fails the build on a hand edit. Everything else here is downstream of this directory, and nothing in it is edited by hand.
+- `schema/` — **the wire contract.** One schema, the generator over it, and 85 conformance vectors that TypeScript, Dart and Go all have to agree on, with a staleness guard that fails the build on a hand edit. Everything else here is downstream of this directory, and nothing in it is edited by hand.
 - `internal/config/` — env-only config, `CATENARY_`-prefixed.
 - `internal/store/` — pgx pool, embedded migrator, repo queries, and the domain types themselves. Types sit beside the queries that return them rather than in a separate `internal/model/`.
 - `internal/api/` — the HTTP and WebSocket surface.
@@ -16,7 +16,7 @@ Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-
 - `web/` — Vue 3 + TypeScript client, served by the Go binary. `npm run smoke` SSRs the app and asserts the design canvas's landmarks are actually on screen.
 - `dart/` — the generated Dart wire package and its conformance runner. The Flutter client lands here in E5.
 - `server/` — the Go conformance runner and the R1/R2 spike binaries. A second module, and it imports `internal/wire` back across the boundary; the wire package itself is no longer here.
-- `deploy/` — compose fragment and Traefik labels.
+- `deploy/` — the `Dockerfile`, the one-time `provision.sql`, and the deployment decisions whoever writes Catenary's block in `construct-server` needs and cannot infer from the code. **No compose fragment and no Traefik labels:** that block and every router live in `construct-server`, and a second copy here is the one that goes stale.
 - `spike/` — **the P0 evidence, and read-only history.** R1's tunnel rig, R2's push harness, R3's whisper benchmarks, R6's Purser stub, each with its own `FINDINGS.md`. Read them before re-deriving anything they already answer; `SPIKE-RESULTS.md` is the one-page index.
 
 ## Conventions (match the construct-server house style)
@@ -44,7 +44,7 @@ So both ordinals come from a single-row counter inside the same transaction as t
 
 D3 splits the client in two, which means the sync protocol gets implemented twice in two languages. Divergence between them shows up as ghost messages, duplicate sends, and unread counts that disagree across devices — the exact failure class this project exists to avoid.
 
-The wire schema is the source of truth and the only place a message type is defined. TypeScript, Dart and Go are generated from it, 48 golden vectors are the contract between them, and a staleness guard fails the build the moment a generated file is hand-edited. Retrofitting this after two clients have drifted is far worse than paying for it up front, which is why R4 was a gate rather than a P1 task.
+The wire schema is the source of truth and the only place a message type is defined. TypeScript, Dart and Go are generated from it, 85 golden vectors are the contract between them, and a staleness guard fails the build the moment a generated file is hand-edited. Retrofitting this after two clients have drifted is far worse than paying for it up front, which is why R4 was a gate rather than a P1 task.
 
 The one deliberate exception is the **frame union**, where the Dart generator's handling is bad enough that a bespoke generator may earn its keep. `CANT-12` settles exactly where that line sits; until it does, assume the house OpenAPI pipeline owns the REST surface.
 
@@ -72,13 +72,13 @@ Reviewing sixty diffs does not scale, and long autonomous runs accumulate unrevi
 |---|---|---|---|
 | **A · evidence** | `evidence` | the `Done when` claim and green CI — not the diff | 40 |
 | **B · decision first** | `decision` | a written decision *before* any code; the PR is then mechanical | 15 |
-| **C · full diff** | `full` | every line | the five below |
+| **C · full diff** | `full` | every line | the eight below |
 
 **Mode B is enforced rather than encouraged.** Switchyard refuses to move a `decision` ticket into In Progress until its plan is approved, returning a 422 that names the reason. Open the plan and get it approved, then build. Do not ask for the mode to be lowered instead.
 
-**Mode C is exactly five tickets, and the list does not grow by habit:** `CANT-14` (both ordinals in one transaction), `CANT-22` (WebSocket upgrade and auth handshake), `CANT-29` (refresh rotation with reuse detection), `CANT-63` (edits and deletes), `CANT-67` (retention sweep). The rule that generates that list: *anything that can destroy authored messages, or hand an agent write access to them.* **Those five are parents.** A sub-task of one is the same work under a new key, so it is Mode C too — that is not the list growing by habit, and the Mechanics bullet below says how, because the inheritance runs the wrong way on its own.
+**Mode C is exactly eight tickets, and the list does not grow by habit:** `CANT-14` (both ordinals in one transaction), `CANT-22` (WebSocket upgrade and auth handshake), `CANT-29` (refresh rotation with reuse detection), `CANT-63` (edits and deletes), `CANT-67` (retention sweep), and — added by `CANT-33` ruling 8, **by key** — `CANT-130`, `CANT-134` and `CANT-131`, which decide, and open, the door through which a device can be enrolled as any existing person. The rule that generates that list: *anything that can destroy authored messages, or hand an agent write access to them.* The first five are of the original sixty, which is what the `40` and `15` above count; the last three are sub-tasks filed later, under that same rule and not by their parent's key — `CANT-33` itself stays off the list, or the sub-task rule below would sweep in its connector and drill rows, which are `evidence`. **Those eight are parents.** A sub-task of one is the same work under a new key, so it is Mode C too, and a later sub-task of any listed row is filed `review_mode: full` explicitly — that is not the list growing by habit, and the Mechanics bullet below says how, because the inheritance runs the wrong way on its own.
 
-Three tickets look like they belong on it and deliberately do not. `CANT-13`'s initial migration runs against an empty database — there is nothing there yet to destroy, and it is Mode B because its *shape* is the risk. `CANT-68`'s restore drill is reviewed as a **result** — a restore that ran, worked, and was timed — rather than as a diff. `CANT-33`'s Purser connector deletes accounts rather than messages, and R6 already wrote seven tests against the real interface.
+Three tickets look like they belong on it and deliberately do not. `CANT-13`'s initial migration runs against an empty database — there is nothing there yet to destroy, and it is Mode B because its *shape* is the risk. `CANT-68`'s restore drill is reviewed as a **result** — a restore that ran, worked, and was timed — rather than as a diff. `CANT-33`'s Purser connector **deactivates** accounts rather than deleting messages — `Deprovision` means revoke, not delete (PRSR-17) — and R6 already wrote seven tests against the real interface.
 
 **The tier is not the mode.** Model tier tracks the strength of the oracle — 19 Opus, 37 Sonnet, 4 Haiku, chosen by asking whether a machine can tell you the work is wrong. Mode tracks what a human reads. They correlate, and they are not the same axis: `CANT-67` is a Sonnet ticket read line by line, because it deletes messages on a timer.
 
@@ -100,4 +100,4 @@ Everything else runs to completion and is reviewed afterwards.
 
 ## Testing
 
-`go test ./...` — `go test -p 1 ./...` when `CATENARY_TEST_DATABASE_URL` is set, because two packages now reset the one test database and Go runs packages in parallel — plus `npm run smoke` in `web/`, the Dart conformance runner in `dart/`, and `./verify.sh` for the full non-hardware suite, which passes the flag for you. CI builds the binary, runs all three conformance runners against the same 48 vectors, and fails when a generated file and its schema disagree — a generated artefact with no guard is a generated artefact someone hand-edits.
+`go test ./...` — `go test -p 1 ./...` when `CATENARY_TEST_DATABASE_URL` is set, because two packages now reset the one test database and Go runs packages in parallel — plus `npm run smoke` in `web/`, the Dart conformance runner in `dart/`, and `./verify.sh` for the full non-hardware suite, which passes the flag for you. CI builds the binary, runs all three conformance runners against the same 85 vectors, and fails when a generated file and its schema disagree — a generated artefact with no guard is a generated artefact someone hand-edits.

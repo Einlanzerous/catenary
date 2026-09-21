@@ -282,9 +282,11 @@ func TestAFailedAttachReCheckAllowsTheSessionAndSaysSo(t *testing.T) {
 	}
 }
 
-// A payload carrying BOTH subjects names each session once. CANT-33's
-// deprovision is the natural producer — revoking a person's device and
-// deactivating their account is one action.
+// A payload carrying BOTH subjects names each session once. A deprovision is
+// the natural producer — revoking a person's devices and deactivating their
+// account is one action — although CANT-134's offboard does both in one
+// transaction and publishes the USER subject alone, which is why this is a
+// property of the reader rather than of any one publisher.
 func TestAPayloadCarryingBothSubjectsSeversEachSessionOnce(t *testing.T) {
 	f := newFixture(t)
 	p := f.attach(f.ada)

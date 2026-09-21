@@ -5,10 +5,13 @@ package store
 // THIS IS ROW 1 OF CANT-33'S PLAN, THE DATA-SHAPE HALF, SPLIT FROM ROW 1B AT
 // THE SEAM THE APPROVING REVIEW PROPOSED. It builds EnsurePerson, its handle
 // function, PersonByEmail and the store half of `catenary user set-email`.
-// DeactivateUser, reactivation and the revocation publisher are CANT-134's —
-// EnsurePerson on a DEACTIVATED person returns ErrPersonDeactivated and
-// changes nothing here, because reversing an offboard has to sweep every live
-// device first (ruling 5), and nothing in this file can do that yet.
+//
+// EnsurePerson's REACTIVATION BRANCH ARRIVED WITH CANT-134 (1b) and its work
+// lives in offboard.go — reactivateTx — beside the offboard it reverses, so
+// that both writers of users.deactivated_at are read together. What is here is
+// the branch: the lookup that finds a deactivated account, and the one
+// transaction that then holds that row FOR NO KEY UPDATE across sweep,
+// publish, clear and issue.
 //
 // ONE TRANSACTION PER ATTEMPT, on messages.go's own argument, which this file
 // now names in its exhaustive list: the user row is held FOR NO KEY UPDATE,
@@ -38,16 +41,14 @@ import (
 // a credential that failed to check out.
 var ErrInvalidEmail = errors.New("store: invalid email")
 
-// ErrPersonNotFound is PersonByEmail resolving nobody.
-var ErrPersonNotFound = errors.New("store: no person with that email")
-
-// ErrPersonDeactivated is EnsurePerson finding an existing, but deactivated,
-// person. NOT YET A REACTIVATION: CANT-134 replaces this branch with the
-// sweep-then-clear reversal ruling 5 settled; until it does, reversing an
-// offboard from here would mint a device for an account whose live sessions
-// were never revoked, resurrecting exactly the device tokens.go:396-402
-// documents as the accepted race. Nothing changes on this path.
-var ErrPersonDeactivated = errors.New("store: person is deactivated; reactivation is not built here yet")
+// ErrPersonNotFound is this surface resolving nobody: PersonByEmail on an
+// email nothing holds, or (since CANT-134) DeactivateUser on an id that is
+// unknown OR is a bot's.
+//
+// ONE SENTINEL FOR BOTH SHAPES, DELIBERATELY. CANT-131 maps it to 404 on both
+// operations, and a bot must not be distinguishable from nobody: telling them
+// apart would make this surface an oracle for which ids name service accounts.
+var ErrPersonNotFound = errors.New("store: no such person")
 
 // ErrNoSuchUser is `catenary user set-email` naming a handle nothing has —
 // distinct from bots.go's ErrNoSuchBot, which means "not a bot" rather than
@@ -113,6 +114,15 @@ const (
 	// re-invite must always work, the same argument IssueEnrollmentToken's
 	// own doc comment makes for Provision.
 	PersonExisting PersonOutcome = "existing"
+	// PersonReactivated is a person who was DEACTIVATED and is not any more —
+	// ruling 5, built in CANT-134. It is reported separately from
+	// PersonExisting rather than folded into it because the two are the same
+	// answer to Purser and very different news to the operator who caused it:
+	// any later invite naming Catenary — a bundle re-run, a re-hire, a retry —
+	// un-offboards, since Purser skips a service only while its account row is
+	// active. CANT-131's connector carries this value into
+	// Result.Instructions, which is where that operator is looking.
+	PersonReactivated PersonOutcome = "reactivated"
 )
 
 // EnsuredPerson is what EnsurePerson hands back.
@@ -164,6 +174,45 @@ const (
 	// costs is the clean refusal: without it, an operator's typo gets an
 	// opaque constraint violation instead of ErrCannotEmailBot.
 	personFaultSetEmailIgnoresBotCheck
+
+	// personFaultDeactivateIgnoresKind drops "AND kind = 'person'" from
+	// DeactivateUser's own locking lookup (offboard.go). CANT-134's addition,
+	// and unlike personFaultLookupIgnoresKind it needs no broken CHECK to
+	// demonstrate: DeactivateUser is given an ID rather than an email, so
+	// nothing about a bot's row stops this predicate being the only thing
+	// between Purser and a service account's credentials.
+	personFaultDeactivateIgnoresKind
+
+	// personFaultOffboardFailsAfterFirstWrite makes DeactivateUser return an
+	// error immediately after setting users.deactivated_at. NOT A REMOVED
+	// GUARD — an injected failure, which is the only way to observe ruling 4's
+	// all-or-nothing claim: without one transaction, the users row would be
+	// committed with every credential it names still live.
+	personFaultOffboardFailsAfterFirstWrite
+
+	// personFaultSweepIgnoresIsNull drops "AND revoked_at IS NULL" from all
+	// three credential sweeps (offboard.go). The writes stay correct — an
+	// already-revoked row is revoked again — and what it costs is idempotence:
+	// a converged retry re-stamps revoked_at and publishes a second revocation
+	// for sockets that were severed the first time, which is the bug
+	// invalidateFamily's own doc comment records finding.
+	personFaultSweepIgnoresIsNull
+
+	// personFaultReactivationFailsAfterSweep makes EnsurePerson's reversal
+	// return an error after its sweep and its publish, before it clears
+	// deactivated_at. NOT A REMOVED GUARD — an injected failure, and the only
+	// way to observe from the outside that the reversal is ONE transaction:
+	// with it, the sweep's revocations and the clear must both roll back, so a
+	// stray device is still live and the account is still deactivated.
+	personFaultReactivationFailsAfterSweep
+
+	// personFaultReactivationSkipsSweep makes EnsurePerson's reversal clear
+	// deactivated_at WITHOUT running the sweep first — rev 1 of CANT-33's plan,
+	// which relied on the offboard having already revoked everything. For
+	// exactly one device it had not: the stray row tokens.go documents. This is
+	// criterion 5's negative control, and it is watched resurrecting that
+	// device.
+	personFaultReactivationSkipsSweep
 )
 
 // ---------------------------------------------------------------------------
@@ -484,9 +533,13 @@ func (s *Store) liveDeviceCount(ctx context.Context, userID uuid.UUID) (int, err
 // its second caller. Everything it does happens in ONE transaction per
 // attempt.
 //
-// R5'S REACTIVATE BRANCH IS NOT HERE. A deactivated person is refused with
-// ErrPersonDeactivated and nothing changes; see that error's own doc comment
-// for why reversing an offboard cannot be done from this file yet.
+// RULING 5: IT REACTIVATES, AND THE REVERSAL REVOKES FOR ITSELF. A deactivated
+// person found by email is swept — every live device, every refresh and access
+// token, any unredeemed invitation — the revocation is published, and only then
+// is `deactivated_at` cleared and a fresh enrollment token issued, all on the
+// one transaction that has held the row FOR NO KEY UPDATE since the lookup.
+// Outcome PersonReactivated, logged at WARN. offboard.go's reactivateTx carries
+// the argument for the order.
 //
 // DISPLAY_NAME IS SET ON CREATION ONLY. The existing-person branch below
 // never writes it, whatever name this call is carrying — metadata_guard_test.go
@@ -543,9 +596,18 @@ func (s *Store) ensurePersonOnce(ctx context.Context, email, displayName string)
 		Scan(&id, &storedEmail, &handle, &nameFrom, &deactivated)
 	switch {
 	case err == nil:
+		outcome := PersonExisting
+		var revoked CredentialsRevoked
 		if deactivated != nil {
-			s.logger.WarnContext(ctx, "ensure person refused", "reason", "account deactivated", "user_id", id)
-			return EnsuredPerson{}, false, ErrPersonDeactivated
+			// THE REVERSAL — ruling 5, and the whole of CANT-134's second half.
+			// It runs on THIS transaction, which has held the user row FOR NO
+			// KEY UPDATE since the lookup above, so a reactivation can never
+			// commit without its sweep: sweep → publish → clear → issue.
+			swept, err := s.reactivateTx(ctx, tx, id)
+			if err != nil {
+				return EnsuredPerson{}, false, err
+			}
+			revoked, outcome = swept, PersonReactivated
 		}
 
 		token, err := issueEnrollmentTokenTx(ctx, tx, id)
@@ -555,13 +617,28 @@ func (s *Store) ensurePersonOnce(ctx context.Context, email, displayName string)
 		if err := tx.Commit(ctx); err != nil {
 			return EnsuredPerson{}, false, fmt.Errorf("store: ensure person: commit: %w", err)
 		}
-		s.logger.InfoContext(ctx, "person ensured", "user_id", id, "outcome", string(PersonExisting))
+		if outcome == PersonReactivated {
+			// AT WARN, AND IT IS THE POINT OF THE LEVEL RATHER THAN THE VOLUME.
+			// Every other outcome of this function is an ordinary provisioning
+			// call; this one silently undid an administrative act somebody
+			// performed on purpose, and the operator who triggered it almost
+			// certainly did not mean to. Ids and counts only — never the email,
+			// never a token.
+			s.logger.WarnContext(ctx, "person reactivated; an offboard was reversed",
+				"user_id", id,
+				"refresh_tokens_revoked", revoked.RefreshTokens,
+				"access_tokens_revoked", revoked.AccessTokens,
+				"devices_revoked", revoked.Devices,
+				"enrollment_tokens_superseded", revoked.EnrollmentTokens)
+		} else {
+			s.logger.InfoContext(ctx, "person ensured", "user_id", id, "outcome", string(outcome))
+		}
 		return EnsuredPerson{
 			Account: PersonAccount{
 				UserID: id, Email: storedEmail, Handle: handle, DisplayName: nameFrom, Status: PersonStatusActive,
 			},
 			Token:   token,
-			Outcome: PersonExisting,
+			Outcome: outcome,
 		}, false, nil
 
 	case !errors.Is(err, pgx.ErrNoRows):

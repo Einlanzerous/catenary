@@ -102,6 +102,37 @@ package store
 // it the same way: the second caller blocks on the first's commit and reads
 // the row as it now is.
 //
+// CANT-134's OFFBOARD AND ITS REVERSAL (internal/store/offboard.go) ARE THE
+// TICKET THIS PARAGRAPH WAS WRITTEN FOR, and they take:
+//
+//	users  →  refresh_tokens  →  access_tokens  →  devices  →  enrollment_tokens
+//
+// FOR NO KEY UPDATE on the user row, never FOR UPDATE, because setting or
+// clearing `deactivated_at` is a NON-KEY update: it composes with the KEY
+// SHARE a send takes on `users(author_id)` at position 11, so an offboard can
+// neither block a send nor cycle against one, exactly as metadata.go's own
+// argument requires of anything that locks a user row. NEITHER DRAWS
+// `log_counter` — no message, edit or receipt is written — so neither enters
+// the deployment-wide serialised section at all, and the counter's position at
+// the bottom of every writer's order is undisturbed.
+//
+// THE THREE CREDENTIAL TABLES ARE TAKEN IN invalidateFamily'S ORDER (refresh.go),
+// and that is a hard requirement rather than a convention: a replay-triggered
+// invalidation writes refresh_tokens → access_tokens → devices over rows that
+// are a SUBSET of an offboard's, so the reverse order over the same rows is a
+// cycle, and Postgres resolves it by aborting one — a 500 on either the
+// offboard or the invalidation, both of which are the answer to somebody's
+// credential being in doubt. `enrollment_tokens` comes last and cannot cycle
+// against RedeemEnrollment, which takes that row FIRST and afterwards takes
+// only KEY SHARE on `users(id)` (compatible) and a brand-new `devices` row
+// (unlockable by anyone else): a redeem therefore never waits on an offboard,
+// and a cycle needs both directions.
+//
+// The devices write is also the thing that makes the OTHER mechanisms agree,
+// as invalidateFamily's own comment says of its copy: Authenticate refuses a
+// revoked device, DeadDevices names it, and CANT-30's gap re-check reaches the
+// same verdict as the notification the offboard publishes.
+//
 // POSITION 12 TAKES NO LOCK WHEN IT RUNS, AND ITS COMMIT TAKES ONE THIS LIST
 // WOULD OTHERWISE MISS. pg_notify appends to a backend-local pending list;
 // nothing is locked until CommitTransaction reaches PreCommit_Notify, which
