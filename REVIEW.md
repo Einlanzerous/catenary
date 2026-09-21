@@ -77,12 +77,15 @@ Find the ticket key in the branch name or PR title (`CANT-NN`). Then:
   is the decision of record. A PR that satisfies the summary and departs from
   the plan is an Important finding even if the code is good — and a deviation
   the author *flagged* is not a finding, it is the process working.
-- **`full` (Mode C)** — five tickets, and the list does not grow: `CANT-14`
-  (both ordinals in one transaction), `CANT-22` (WebSocket upgrade and auth
-  handshake), `CANT-29` (refresh rotation with reuse detection), `CANT-63`
-  (edits and deletes), `CANT-67` (retention sweep). A human reads every line, so
-  do not duplicate that. Report only what a line-by-line read plausibly misses:
-  concurrency, ordering, and what happens on the failure path.
+- **`full` (Mode C)** — eight tickets, and the list does not grow by habit:
+  `CANT-14` (both ordinals in one transaction), `CANT-22` (WebSocket upgrade and
+  auth handshake), `CANT-29` (refresh rotation with reuse detection), `CANT-63`
+  (edits and deletes), `CANT-67` (retention sweep), and — by key, and not
+  `CANT-33` — `CANT-130`, `CANT-134` and `CANT-131`, which decide, and open, the
+  door through which a device can be enrolled as any existing person. A human
+  reads every line, so do not duplicate that. Report only what a line-by-line
+  read plausibly misses: concurrency, ordering, and what happens on the failure
+  path.
 - **unset** — ask rather than assume. An unset mode is not permission.
 
 **Scope.** The working agreement says a change that wants to touch something
