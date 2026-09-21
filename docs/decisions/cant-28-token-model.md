@@ -75,7 +75,7 @@ No index on `family_id`: the column has to exist now because adding it later rew
 
 Redemption takes `FOR UPDATE` on the one `enrollment_tokens` row and **no lock on `users`** — `deactivated_at` is read unlocked, and the `devices` insert takes `KEY SHARE` through its FK, which `internal/store/messages.go:66` already argues is safe against a `FOR NO KEY UPDATE` deactivation. `log_counter` is never drawn.
 
-**The race that leaves open is closed at authentication, not at enrollment.** A deactivation committing between the read and the insert lets a device row be created for a now-disabled account; every request from it is then refused. A stray row and no access — R6's explicitly-accepted half-done state, from the other direction.
+**The race that leaves open is closed at authentication, not at enrollment.** A deactivation committing between the read and the insert lets a device row be created for a now-disabled account; every request from it is then refused. A stray row and no access — R6's explicitly-accepted half-done state, from the other direction. **CANT-134 added the second half of that acceptance**, because it was complete only while nothing could re-enable an account: ruling 5's reactivation revokes everything the person held — that stray device included — in the transaction that clears `deactivated_at`, rather than trusting the offboard to have.
 
 `RevokeDevice` is a non-key `UPDATE`, so `FOR NO KEY UPDATE`, which the same note anticipated. It is idempotent by its `revoked_at IS NULL` guard, because R6 requires Deprovision to be safe to retry.
 
@@ -83,7 +83,7 @@ Redemption takes `FOR UPDATE` on the one `enrollment_tokens` row and **no lock o
 
 `RevokeDevice` writes `devices.revoked_at` and publishes on `catenary_device_revoked` **inside the same transaction** — CANT-18's ruling 2 applied to a second event, so a notification cannot exist without its cause or the reverse. The write lands here rather than in CANT-30 because that property cannot be handed to a caller as a convention.
 
-`RevocationPayload` carries a subject that is a **device or a user**. The user half has no publisher yet: the write that sets `users.deactivated_at` is CANT-33's connector surface over an admin API that does not exist. **Until it does, a deactivated account's live socket survives until it drops** — CANT-30's `Done when` covers devices, and R6's sentence is about request paths.
+`RevocationPayload` carries a subject that is a **device or a user**. The user half had no publisher for a long time: nothing wrote `users.deactivated_at`, so a deactivated account's live socket survived until it dropped — CANT-30's `Done when` covers devices, and R6's sentence is about request paths. **CANT-134 is the publisher.** `store.DeactivateUser` sets the column and publishes `RevocationPayload{UserID}` in one transaction, and `EnsurePerson`'s reversal revokes everything the account held and publishes before it clears the column again; CANT-131 is the HTTP surface Purser calls to reach them.
 
 Severing the live socket is CANT-30's. So is the gap case: Postgres queues nothing for a disconnected listener and a revocation has no cursor, so on `OnGap` an instance must re-check its own live sessions against the database.
 

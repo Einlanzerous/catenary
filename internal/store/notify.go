@@ -58,7 +58,8 @@ const NotifyChannel = "catenary_message"
 // A device revocation (`device_id` only) decodes with UserID nil: IsReceipt()
 // is false, and it is delivered as a MESSAGE notification for the nil
 // conversation at seq 0 — the original failure this paragraph described. A
-// USER revocation (`user_id` set, CANT-33's) decodes with NotifyPayload's own
+// USER revocation (`user_id` set — CANT-134's offboard and its reversal are
+// what publish one) decodes with NotifyPayload's own
 // UserID field populated, because `"user_id"` is the tag both structs use:
 // IsReceipt() is now TRUE, and it is delivered as a RECEIPT notification for
 // the nil conversation, span (0, 0] — which MessagesForReadNotify reads as
@@ -139,17 +140,23 @@ func (p NotifyPayload) IsReceipt() bool { return p.UserID != nil }
 // exactly the same terms as NotifyPayload, and guarded the same way.
 //
 // THE SUBJECT IS A DEVICE OR A USER, AND BOTH ARE HERE FROM THE START.
-// CANT-30's `Done when` covers a revoked device. It does not cover a
-// DEACTIVATED ACCOUNT — and under CANT-28 ruling 2 a socket is authorized once
-// at accept, so a disabled person's session keeps streaming until it happens to
-// drop. R6's sentence about a disabled account does not claim otherwise: it
-// speaks about refreshing and enrolling, which are request paths.
+// CANT-30's `Done when` covers a revoked device and not a DEACTIVATED ACCOUNT:
+// under CANT-28 ruling 2 a socket is authorized once at accept, so nothing
+// about a deactivation reaches a live session by itself, and a disabled
+// person's session would keep streaming until it happened to drop. R6's
+// sentence about a disabled account does not claim otherwise — it speaks about
+// refreshing and enrolling, which are request paths. CANT-134 is what closed
+// that gap, by publishing this payload's user subject inside the one
+// transaction that writes the column.
 //
-// So the shape carries both today and the user half has no publisher yet: the
-// write that sets users.deactivated_at is CANT-33's connector surface over an
-// admin API that does not exist. Carrying the field now costs one nullable id
-// and saves migrating a payload type across a running deployment later — the
-// same argument refresh_tokens.family_id gets in 0007.
+// SO THE SHAPE CARRIED BOTH FROM THE START, AND SINCE CANT-134 BOTH HAVE A
+// PUBLISHER. `users.deactivated_at` is written by DeactivateUser and cleared by
+// EnsurePerson's reversal (internal/store/offboard.go), each publishing
+// `RevocationPayload{UserID}` inside its own transaction; CANT-131 is the HTTP
+// surface Purser calls to reach them. Carrying the field before either existed
+// cost one nullable id and saved migrating a payload type across a running
+// deployment — the same argument refresh_tokens.family_id gets in 0007, and
+// this is the ticket that collected on it.
 type RevocationPayload struct {
 	DeviceID *uuid.UUID `json:"device_id,omitempty"`
 	UserID   *uuid.UUID `json:"user_id,omitempty"`

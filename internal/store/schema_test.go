@@ -478,6 +478,10 @@ func TestSweepCanDeleteAMessageWithRepliesAndAttachments(t *testing.T) {
 // The other half of Ruling 4: an author who has written anything cannot be
 // deleted. That is the single fact that keeps CANT-33 off the Mode C list —
 // a Purser offboard deactivates, and cannot destroy authored messages.
+// (Its store and door sub-tasks — CANT-130, CANT-134, CANT-131 — are on that
+// list since ruling 8, for the generating rule's OTHER half: they decide who
+// can be enrolled as whom. This test is about the first half, and CANT-134's
+// own tests assert that an offboard writes nothing to messages at all.)
 func TestAnAuthorWithMessagesCannotBeDeleted(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())

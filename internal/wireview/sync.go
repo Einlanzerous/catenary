@@ -87,8 +87,13 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 		// said until CANT-90. readByExpr counts the author by identity, so a
 		// message whose author is still a member is at least 1 before anyone
 		// has done anything. Zero needs the author GONE from
-		// conversation_members — having left, or deleted by CANT-33's Purser
-		// connector — and no current member's receipt to have passed it.
+		// conversation_members — and having left is the only way that
+		// happens. AN OFFBOARD IS NOT: CANT-33 ruling 7 keeps membership,
+		// and CANT-134's DeactivateUser writes nothing to that table, so a
+		// deactivated author is still a member and still counts here. (Which
+		// is the cost ruling 7 accepted and CANT-135 carries: `read_by` and
+		// `N MEMBERS` go on counting somebody who can no longer read
+		// anything.)
 		//
 		// It is also the value DeliveryState reads below, which is what keeps
 		// the word and the number from being two answers to one question.

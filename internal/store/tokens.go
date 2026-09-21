@@ -440,6 +440,16 @@ func issueEnrollmentTokenTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (I
 // device is then refused on every request by Authenticate. What is left behind
 // is a stray row and no access — R6's explicitly-accepted half-done state,
 // arriving from the other direction.
+//
+// SINCE CANT-134 THAT ACCEPTANCE HAS A SECOND HALF, AND IT IS NOT THIS
+// FUNCTION'S. "Refused while the account is disabled" was a complete answer
+// only while nothing could ever re-enable one; ruling 5 made EnsurePerson
+// reactivate, and clearing `deactivated_at` over a stray device would hand it
+// back its refresh and access tokens, live. So THE REVERSAL REVOKES FOR ITSELF:
+// offboard.go's reactivateTx runs the offboard's whole sweep, in the
+// transaction that clears the column, before it clears it. Nothing changes
+// here — the race is still accepted and still closed at authentication — but
+// the sentence above is no longer the end of it.
 func (s *Store) RedeemEnrollment(ctx context.Context, presented, deviceName string) (Enrollment, error) {
 	// Before the pool is touched, on the SendMessage pattern: a malformed
 	// request should not cost a connection.
@@ -698,15 +708,32 @@ func (s *Store) RevokeDevice(ctx context.Context, deviceID uuid.UUID) (bool, err
 // copy; it is a fourth write in a longer transaction and predates this helper,
 // so it is named here rather than quietly left out.
 func publishRevocation(ctx context.Context, tx pgx.Tx, deviceID uuid.UUID) error {
-	payload, err := RevocationPayload{DeviceID: &deviceID}.Encode()
-	if err != nil {
-		// Loud rather than silent. A revocation that committed without its
-		// notification would leave a severed device holding a live socket, and
-		// the person who clicked the button would have no way to know.
+	if err := publishRevocationPayload(ctx, tx, RevocationPayload{DeviceID: &deviceID}); err != nil {
 		return fmt.Errorf("store: revoke device: %w", err)
 	}
+	return nil
+}
+
+// publishRevocationPayload is the notify itself, shared since CANT-134 with the
+// USER-subject publisher (offboard.go's publishUserRevocation).
+//
+// ONE IMPLEMENTATION RATHER THAN TWO NEAR-IDENTICAL SIX-LINERS, because what
+// these functions exist to guarantee is a single property — the notify happens
+// on the caller's transaction, so it cannot exist without its cause or the
+// reverse — and a property with two implementations is a property that holds in
+// one of them a quarter from now. The two named wrappers stay, so a call site
+// still says which subject it is publishing.
+//
+// Loud rather than silent on an encode failure: a revocation that committed
+// without its notification would leave a severed device holding a live socket,
+// and the person who asked for it would have no way to know.
+func publishRevocationPayload(ctx context.Context, tx pgx.Tx, p RevocationPayload) error {
+	payload, err := p.Encode()
+	if err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, RevocationChannel, payload); err != nil {
-		return fmt.Errorf("store: revoke device: notify: %w", err)
+		return fmt.Errorf("notify: %w", err)
 	}
 	return nil
 }

@@ -200,7 +200,9 @@ Every migration after the first is a delta against a table with history in it.
   bounded predicate) against `messages` or `attachments`.
 - An `ON DELETE` that lets a user or device deletion reach authored messages.
   `messages.author_id` is `RESTRICT`, and that single fact is what keeps
-  `CANT-33` off the Mode C list.
+  `CANT-33` off the Mode C list. (Three of its sub-tasks are ON that list since
+  ruling 8 — `CANT-130`, `CANT-134`, `CANT-131` — and for the other half of the
+  generating rule, the enrollment door, never for authored messages.)
 - `retention_days`: `NULL` means inherit-global-infinite, **not zero days**.
   Code reading it as 0 deletes everything.
 

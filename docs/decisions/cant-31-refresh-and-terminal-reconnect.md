@@ -128,5 +128,5 @@ Retrying a send across any of these events is safe on the server's side: `client
 - **The Dart transport and SQLite local store** — CANT-42.
 - **The outbox state machine**, including §7's obligation — CANT-36 and CANT-42.
 - **Cross-client convergence**, the only mechanical check that the two clients agree — CANT-46.
-- **A user-revocation publisher** — CANT-33. The hub's `UserID` branch exists and is tested; nothing writes `users.deactivated_at` yet. §4's `4001` row is written for both subjects now so it is not retrofitted.
+- **A user-revocation publisher** — **built in CANT-134** (`store.DeactivateUser`, and the reversal in `EnsurePerson` that revokes every live credential before it clears `deactivated_at`), reachable over HTTP in CANT-131. The hub's `UserID` branch was already built and tested; what was missing was anything that wrote `users.deactivated_at`. §4's `4001` row was written for both subjects from the start, so it was not retrofitted.
 - **`ReuseGraceWindow`** stays as CANT-29 set it, and this plan adds no second window beside it.
