@@ -128,6 +128,13 @@ type Store struct {
 	// nothing outside this package's tests can set it. PER STORE, not a
 	// package variable — CANT-115 is what a shared mutable test knob costs.
 	collisionFault collisionFault
+
+	// personGuardFault breaks one of EnsurePerson, PersonByEmail or SetEmail's
+	// own guards against reaching a bot, for CANT-130 criterion 6's negative
+	// controls — collisionFault's own shape, for the same reason: zero in
+	// every Store the composition root builds, and PER STORE rather than a
+	// package variable.
+	personGuardFault personGuardFault
 }
 
 // New wraps an existing pool.

@@ -878,6 +878,10 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"metadata_log_seq", "bigint", false},
 			{"deactivated_at", "timestamp with time zone", true},
 			{"kind", "text", false},
+			// CANT-130. NULL for every person soakrig provisioned and for
+			// every bot (users_bot_has_no_email); EnsurePerson is what
+			// starts requiring one, and only for a person it creates itself.
+			{"email", "text", true},
 		},
 		"devices": {
 			{"id", "uuid", false},
