@@ -25,7 +25,7 @@ Built by **CANT-120** (this file), **CANT-121**, **CANT-122**, **CANT-123**, **C
 
 **Three edges of that, settled by the reference client (CANT-124) so the other two do not each pick.** The *served lifetime* is measured on the server's clock at both ends — `access_expires_at` minus the `Date` of the response that served it — so a wrong device clock cannot stretch it. **A pair whose issue time was never learned gets the 60 s floor**, not a guessed lifetime. **A `/refresh` response with no usable `Date` keeps the offset the device already had**: the offset describes the device's clock, not one pair, and a stale correction is a better guess than none.
 
-**Reactive, and not optional.** On any Catenary `/sync` 401: single-flight refresh, then retry **once** — not a loop. A browser `WebSocket` never exposes a failed upgrade's HTTP status (a 401 surfaces as `error` then `close 1006`), so the reactive path is the only way a TypeScript client can learn its token is stale, and it is the safety net for every error the proactive check makes.
+**Reactive, and not optional.** On any Catenary `/sync` 401: single-flight refresh, then retry **once** — not a loop. A browser `WebSocket` never exposes a failed upgrade's HTTP status (a 401 surfaces as `error` then `close 1006`), so the reactive path is the only way a TypeScript client can learn its token is stale, and it is the safety net for every error the proactive check makes. **A token Catenary has refused stays refused; what changes is the pair** (§5).
 
 ## 2 · Single-flight, per credential — not per process
 
@@ -91,7 +91,8 @@ The last two are unreachable behind the generated decoder (`Seq` carries `minimu
 
 | observation | client does |
 |---|---|
-| 401 on `/sync` | single-flight refresh, then retry **once** |
+| 401 on `/sync` | single-flight refresh, then retry **once**. **If that refresh is held (§3), do not retry.** |
+| an access token Catenary's own 401 on `/sync` has refused, while the refresh is held | **do not dial, and present it at most once per refresh hold**: one `/sync` when `last_sent_at + delay` (§3) has passed. **The answer to that one request is what reopens §3's gate and drives the reactive refresh; without it a client with no socket never refreshes again.** That wait is a **predicate over the wall clock and the persisted chain, re-read at the dial cadence** — never a timer computed once, which §1's rule against the monotonic clock forbids. If it gets no answer from Catenary, retry it as any failed `/sync`. Resume when the pair changes — by that refresh, or by another context's rotation, which must be noticed within one dial interval. An established socket is not closed. **Only Catenary's own 401 on `/sync` marks a token refused** — not the upgrade's status, not a hop's 401, and not the device clock. Inert where the client cannot refresh. |
 | 401 on `/refresh` — **Catenary's own** `{"code":"unauthorized"}`, **and** the stored credential is still the one presented | **terminal.** The credential is gone. |
 | 401 on `/refresh` that did not come from Catenary — a proxy, an expired Access session in front | **not terminal** |
 | 401 on `/refresh` for a credential another context already rotated | **not terminal.** Re-read the persisted credential before concluding anything. |

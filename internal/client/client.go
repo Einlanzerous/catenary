@@ -151,6 +151,22 @@ type Faults struct {
 	// is a claim against.
 	Unbounded bool
 
+	// PresentRefusedToken breaks record §5's refused-token row (CANT-129): an
+	// access token Catenary's own 401 on /sync has already refused is dialed
+	// with, and presented on every catch-up, exactly as every client did before
+	// that ticket — two requests per dial that the server is certain to refuse,
+	// ~1,440 an hour per device, which is the measurement CANT-129's criterion 2
+	// is a claim against.
+	PresentRefusedToken bool
+	// NeverPresentRefusedToken is CANT-129's WITHDRAWN first proposal: a refused
+	// token is never presented again at all, the one /sync per refresh hold
+	// included. It reads as the stricter rule and it STALLS THE CLIENT FOR GOOD
+	// — that one /sync is the only thing that reopens CANT-127's gate for a
+	// client with no socket, so the second failed attempt is the last attempt
+	// the client ever makes and a healed /refresh is never noticed. The negative
+	// control for the rule's own engine.
+	NeverPresentRefusedToken bool
+
 	// NeverTerminal removes CANT-123's terminal branch: every close
 	// reconnects and a refused refresh is retried, as before that ticket.
 	// AlwaysTerminal makes it unconditional: any session that ends, ends the
@@ -231,6 +247,18 @@ type Config struct {
 	// Now is the device's wall clock. Nil means time.Now. It exists so a test
 	// can be a device whose clock is wrong, or one that slept.
 	Now func() time.Time
+	// Pause is how the client sleeps between the polls of CANT-129's wait, and
+	// nil is time.After — which is what everything deployed uses. It reports
+	// whether it waited d out, false meaning ctx ended first.
+	//
+	// IT EXISTS FOR A CLOCK THAT MUST MOVE WHILE THE CLIENT IS SILENT. A client
+	// holding a refused token sends nothing for up to fifteen minutes, so a test
+	// whose Now only advances when the transport is asked for something would
+	// freeze exactly where the deadline is — and a wait on a wall-clock deadline
+	// that never arrives is not the rule under test. A test's Pause advances its
+	// own clock by d and returns at once, which buys the simulated quarter-hour
+	// for nothing. Nothing else in the client sleeps through this seam.
+	Pause func(ctx context.Context, d time.Duration) bool
 
 	Faults Faults
 }
@@ -277,9 +305,17 @@ type Stats struct {
 	// fail.
 	RefreshesHeldUnreachable int
 	RefreshesHeldBackoff     int
-	Undecodable              int
-	LastRTT                  time.Duration
-	LastClose                string
+	// DialsWithheld and SyncsWithheld count the requests CANT-129's rule did not
+	// make while Catenary's own 401 had refused the access token they would have
+	// carried: one per poll of the wait, which is the rate they would have gone
+	// out at. A withheld request is not an error either — nobody made it, so
+	// nothing failed — and it is not logged per poll, for the reason the rule
+	// exists at all.
+	DialsWithheld int
+	SyncsWithheld int
+	Undecodable   int
+	LastRTT       time.Duration
+	LastClose     string
 
 	// CloseStatuses counts how each session this client HELD has ended —
 	// a session that actually opened a socket, whether or not it reached
@@ -308,6 +344,22 @@ type Status struct {
 	// dial backoff that has grown to its ceiling and either terminal: the client
 	// is connecting normally and declining to spend a link it cannot afford.
 	RefreshHold RefreshHold
+	// TokenRefused is CANT-129: Catenary's own 401 on /sync has refused the
+	// access token the client currently holds, so it is not dialed with and is
+	// presented once per refresh hold.
+	//
+	// A FIELD BESIDE RefreshHold AND NOT A FOURTH VALUE OF IT. The two are
+	// orthogonal and co-occur in every combination: a refused token waits out
+	// RefreshHeldBackoff, waits out RefreshHeldUnreachable, and is still refused
+	// at the end of a hold when nothing holds the refresh at all. One enum would
+	// have to lose one of them or misreport the other.
+	TokenRefused bool
+	// NextRefreshAt is `last_sent_at + min(15 min, 5 s × 2^(n−1))`: when
+	// CANT-127's backoff next allows an automatic refresh, and so also when
+	// CANT-129's one /sync per hold goes out. THE ZERO TIME for a credential
+	// with an empty chain or no stamp — record §3 reads an absent stamp as
+	// elapsed, and there is no time to name for a wait that is already over.
+	NextRefreshAt time.Time
 
 	Stats
 	Connected         bool // a socket is open
@@ -373,6 +425,13 @@ type Client struct {
 	gateKnown       bool
 	gateOpen        bool
 	warnedLongChain bool
+	// refused is the access token CATENARY ITSELF refused on /sync (CANT-129),
+	// and "" for none. Per-Client and in memory on purpose, like answeredAt: it
+	// is this context's evidence about one token, it is keyed on that token so a
+	// rotation by anybody ends it, and a fresh context learns it again with its
+	// first /sync rather than reading a value three clients would have to keep
+	// consistent with the pair.
+	refusedToken string
 
 	nmu     sync.Mutex
 	changed chan struct{}
@@ -509,6 +568,17 @@ func (c *Client) Run(ctx context.Context) error {
 		// its own initiative, once per dial, so it is the one the bound is on:
 		// while the credential is unsettled it waits for Catenary to answer
 		// this context, and for the delay counted from the last send.
+		//
+		// AND NEITHER GOES OUT WITH A TOKEN CATENARY HAS REFUSED (CANT-129).
+		// Its own 401 on /sync has said this access token cannot open a
+		// socket, and nothing but a different pair changes that — so the
+		// upgrade and the proactive refresh both wait here, at the dial
+		// cadence, until the pair changes or the context ends. The one request
+		// the hold does allow belongs to catchUpLoop, because what needs its
+		// answer is the gate.
+		if !c.waitWhileRefused(ctx, withheldDial) {
+			break
+		}
 		switch err := c.refreshDueWhenAllowed(ctx); {
 		case errors.Is(err, errRefreshHeld):
 			// EXPECTED, AND NOT LOGGED PER ATTEMPT. As a plain error this would
@@ -725,8 +795,10 @@ func (c *Client) Send(ctx context.Context, f wire.ClientSend) (wire.ServerAck, e
 func (c *Client) Status() Status {
 	// BEFORE EITHER LOCK: the hold is read from the Journal and from this
 	// Client's own state, and it takes both of those locks itself. Quietly,
-	// because being asked for a status must not write a log line.
+	// because being asked for a status must not write a log line — which is
+	// why the refused mark is read quietly here too (CANT-129).
 	hold, chain := c.refreshHoldQuiet(), c.j.chainLen()
+	refused, next := c.refusedNow(false), c.nextRefreshAt()
 	c.mu.Lock()
 	s := Status{
 		Stats:             c.stats,
@@ -738,6 +810,8 @@ func (c *Client) Status() Status {
 		CaughtUp:          c.gen == c.doneGen,
 		Terminal:          c.terminal,
 		RefreshHold:       hold,
+		TokenRefused:      refused,
+		NextRefreshAt:     next,
 	}
 	s.ChainLength = chain
 	// s.Stats is a value copy of c.stats, but a map field copies its header,
@@ -1160,6 +1234,22 @@ func (c *Client) catchUpLoop(ctx context.Context) {
 			}
 			continue
 		}
+		// CANT-129: ONE /sync PER REFRESH HOLD, AND THIS LOOP OWNS IT. While
+		// Catenary's own 401 has refused the access token, every trigger —
+		// `ready`, `resync_required`, CatchUp, and the dial's own pull — waits
+		// here rather than retrying at once, until the hold counted from
+		// `last_sent_at` has elapsed or the pair has changed. What goes out then
+		// is one ordinary page request, and its 401 is what reopens CANT-127's
+		// gate and drives the reactive refresh: withhold it and a client with no
+		// socket never refreshes again.
+		//
+		// THERE IS ALWAYS A CATCH-UP PENDING WHILE A TOKEN IS REFUSED, which is
+		// what makes this the right owner: the mark is set inside a catch-up, by
+		// the 401 that made that catch-up fail, so the trigger it was serving is
+		// still outstanding and this loop is still the one thing waiting on it.
+		if !c.waitWhileRefused(ctx, withheldSync) {
+			return
+		}
 		err := c.catchUp(ctx)
 		if err == nil {
 			backoff = c.backoffMin
@@ -1308,6 +1398,12 @@ func (c *Client) fetchWith(ctx context.Context, after int64, cred Credential) (w
 		// in front does not carry that body and falls through to the status
 		// branch below, where nothing is marked.
 		c.markAnswered()
+		// AND IT IS THE ONE SITE THAT MARKS A TOKEN REFUSED (CANT-129). The
+		// token this request carried, not the one held now — a refresh may have
+		// rotated the pair while it was in flight, and what was refused is what
+		// went out. Nothing else marks: not the upgrade's status, not a hop's
+		// 401, not a 5xx, not a network error, and not the device clock.
+		c.markRefused(cred.AccessToken)
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: %w", errUnauthorized)
 	}
 	if resp.StatusCode != http.StatusOK {
