@@ -305,3 +305,180 @@ func TestTheHeartbeatDialIsVisibleToTheEnvScanner(t *testing.T) {
 		}
 	}
 }
+
+// --- CANT-131: the provisioning surface's two variables ----------------------
+
+// provisionToken is exactly MinProvisionTokenBytes long and a LITERAL, so that
+// the assertion which searches every refusal for its prefixes is the same every
+// run.
+//
+// IT READS AS A SENTENCE RATHER THAN AS A CREDENTIAL, ON ci.yml's OWN ARGUMENT.
+// The first version of this test used 32 random base64url characters, which is
+// what Signet actually generates — and GitGuardian reported it as a Generic High
+// Entropy Secret on the pull request, exactly as ci.yml predicted for the
+// password-shaped Postgres literal it deleted for the same reason: "a check that
+// is routinely dismissed is a check nobody reads. Removing the literal removes
+// the finding at its source instead of teaching people to wave it through." What
+// these tests need from this value is its LENGTH, its mixed case and its
+// distinctive prefix — none of which requires entropy.
+//
+// The capital T in `Test` is load bearing in internal/provision's own table: a
+// credential that differs from this one only in case must be refused, and an
+// all-lowercase constant could not express that.
+const provisionToken = "not-a-secret-just-a-Test-token-1"
+
+// Criterion 9's boot half — WITH NEITHER VARIABLE THE SURFACE DOES NOT EXIST, and
+// that is the ordinary case: every deployment of this service before CANT-131, and
+// every test in every other package, runs with both unset and must be completely
+// unaffected.
+func TestTheProvisioningSurfaceIsAbsentUnlessItIsConfigured(t *testing.T) {
+	setEnv(t, map[string]string{"CATENARY_DATABASE_URL": "postgres://x/y"})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load with neither provisioning variable set: %v", err)
+	}
+	if c.ProvisionAddr != "" || c.ProvisionToken != "" {
+		t.Errorf("unset provisioning config = %q / %d bytes, want both empty", c.ProvisionAddr, len(c.ProvisionToken))
+	}
+	if c.ProvisioningEnabled() {
+		t.Error("ProvisioningEnabled() is true with neither variable set — the composition root would " +
+			"build a credential-minting surface for a deployment that was never given a credential")
+	}
+}
+
+// BOTH OR NEITHER, AND A FLOOR ON THE CREDENTIAL. Each refusal names the variable,
+// because a boot failure that says "invalid provisioning configuration" is a boot
+// failure somebody debugs by bisecting a compose file.
+func TestLoadRefusesAHalfConfiguredProvisioningSurface(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		env   map[string]string
+		names string
+	}{
+		{
+			"an address with no token",
+			map[string]string{"CATENARY_PROVISION_ADDR": ":4013"},
+			"CATENARY_PROVISION_TOKEN",
+		},
+		{
+			"a token with no address",
+			map[string]string{"CATENARY_PROVISION_TOKEN": provisionToken},
+			"CATENARY_PROVISION_ADDR",
+		},
+		{
+			// ONE BYTE UNDER THE FLOOR. The interesting boundary is not "short",
+			// it is "one short" — a check written with >= where it meant > passes
+			// every test whose bad value is obviously bad.
+			"a token one byte under the floor",
+			map[string]string{"CATENARY_PROVISION_ADDR": ":4013", "CATENARY_PROVISION_TOKEN": provisionToken[:MinProvisionTokenBytes-1]},
+			"CATENARY_PROVISION_TOKEN",
+		},
+		{
+			"a token that is only whitespace",
+			map[string]string{"CATENARY_PROVISION_ADDR": ":4013", "CATENARY_PROVISION_TOKEN": "   "},
+			"CATENARY_PROVISION_TOKEN",
+		},
+		{
+			// The obvious mistake: the routed port copied into the second address.
+			"the address the routed listener already holds",
+			map[string]string{"CATENARY_PROVISION_ADDR": ":4012", "CATENARY_PROVISION_TOKEN": provisionToken},
+			"CATENARY_PROVISION_ADDR",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"CATENARY_DATABASE_URL": "postgres://x/y"}
+			for k, v := range tc.env {
+				env[k] = v
+			}
+			setEnv(t, env)
+
+			_, err := Load()
+			if err == nil {
+				t.Fatal("Load succeeded; a half-configured provisioning surface must refuse to boot")
+			}
+			if !strings.Contains(err.Error(), tc.names) {
+				t.Errorf("the refusal does not name %s: %v", tc.names, err)
+			}
+
+			// AND IT NEVER ECHOES THE CREDENTIAL. Every prefix from four bytes up,
+			// and the whole thing.
+			//
+			// THE LENGTH IS ALLOWED HERE AND IS NOT ALLOWED IN THE 401's LOG LINE,
+			// and the difference is who is reading. This message goes to the
+			// operator who just set the variable and needs to know their value is
+			// 31 bytes; that log line goes wherever logs go, about a credential
+			// somebody else presented, and a length there narrows a guess.
+			for n := 4; n <= len(provisionToken); n++ {
+				if strings.Contains(err.Error(), provisionToken[:n]) {
+					t.Fatalf("the refusal echoes the first %d bytes of the credential: %v", n, err)
+				}
+			}
+		})
+	}
+}
+
+func TestLoadAcceptsAFullyConfiguredProvisioningSurface(t *testing.T) {
+	setEnv(t, map[string]string{
+		"CATENARY_DATABASE_URL":    "postgres://x/y",
+		"CATENARY_PROVISION_ADDR":  " :4013 ",
+		"CATENARY_PROVISION_TOKEN": provisionToken,
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// The ADDRESS is trimmed, because a stray space in a compose file is a typo.
+	if c.ProvisionAddr != ":4013" {
+		t.Errorf("ProvisionAddr = %q, want the trimmed :4013", c.ProvisionAddr)
+	}
+	// The TOKEN is not, because Purser presents it verbatim and silently trimming
+	// it here would make the two services disagree about the secret whenever one
+	// of them was pasted with trailing whitespace — a 401 with no visible cause.
+	if c.ProvisionToken != provisionToken {
+		t.Errorf("ProvisionToken was altered by Load (%d bytes, want %d)", len(c.ProvisionToken), len(provisionToken))
+	}
+	if !c.ProvisioningEnabled() {
+		t.Error("ProvisioningEnabled() is false with both variables set")
+	}
+
+	// AT the floor is accepted; the boundary is tested from both sides.
+	if len(provisionToken) != MinProvisionTokenBytes {
+		t.Fatalf("this test's token is %d bytes; it is meant to sit exactly at the floor of %d",
+			len(provisionToken), MinProvisionTokenBytes)
+	}
+}
+
+// A token carrying trailing whitespace is still measured on its raw bytes, so a
+// 32-byte value that is 30 bytes and two spaces passes the floor. Stated as a test
+// rather than left implicit, because it is the cost of not trimming and somebody
+// will ask.
+func TestTheTokenIsMeasuredOnTheBytesPurserWillPresent(t *testing.T) {
+	padded := provisionToken[:MinProvisionTokenBytes-2] + "  "
+	setEnv(t, map[string]string{
+		"CATENARY_DATABASE_URL":    "postgres://x/y",
+		"CATENARY_PROVISION_ADDR":  ":4013",
+		"CATENARY_PROVISION_TOKEN": padded,
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.ProvisionToken != padded {
+		t.Errorf("ProvisionToken = %d bytes, want the %d it was given, whitespace included",
+			len(c.ProvisionToken), len(padded))
+	}
+}
+
+// The same drift guard as the two above, for the provisioning pair: a variable the
+// scanner cannot see is a variable setEnv stops clearing, and then every test in
+// this file inherits whatever the developer's shell has set — including, here, a
+// real credential.
+func TestTheProvisioningVariablesAreVisibleToTheEnvScanner(t *testing.T) {
+	got := envVarsReadByLoad(t)
+	for _, want := range []string{"CATENARY_PROVISION_ADDR", "CATENARY_PROVISION_TOKEN"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("%s is not visible to envVarsReadByLoad — it reaches os.Getenv through a "+
+				"parameter, so setEnv will stop clearing it: %v", want, got)
+		}
+	}
+}

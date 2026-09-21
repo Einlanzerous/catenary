@@ -88,7 +88,37 @@ type Config struct {
 	// would refuse.
 	HeartbeatIntervalSec int
 	MissedPongLimit      int
+
+	// ProvisionAddr is CATENARY_PROVISION_ADDR and ProvisionToken is
+	// CATENARY_PROVISION_TOKEN: CANT-131's provisioning surface — the listen
+	// address of the SECOND http.Server, and the one static service credential
+	// that opens it.
+	//
+	// BOTH EMPTY MEANS THE SURFACE DOES NOT EXIST. Not "exists and refuses
+	// everything": no listener is opened and no handler is registered, so a
+	// deployment that has not been given a credential has no door to attack.
+	// That is ruling 2's fail-closed clause, and it is the reason these are two
+	// variables with one rule rather than an address with an optional token.
+	//
+	// ProvisionToken IS A SECRET AND NEVER REACHES A LOG LINE OR AN ERROR
+	// MESSAGE. Load's refusals below name the VARIABLE and say what is wrong
+	// with its value in the abstract — too short, or set without its partner —
+	// and never quote a byte of it, unlike CATENARY_PORT's own refusal, which
+	// echoes what it was given because a port is not a credential.
+	ProvisionAddr  string
+	ProvisionToken string
 }
+
+// MinProvisionTokenBytes is the floor on CATENARY_PROVISION_TOKEN.
+//
+// Thirty-two bytes, matching store.TokenBytes' own entropy: this credential can
+// obtain an enrollment token for any existing person, which is a device
+// enrolled as them, so it is the most powerful credential in the service and a
+// short one is the cheapest possible way to lose everything in it. The floor is
+// on LENGTH and not on entropy, because a length is the only property a config
+// loader can actually check — "generated in Signet" is what supplies the
+// entropy, and deploy/README.md says so.
+const MinProvisionTokenBytes = 32
 
 // Load reads the environment and validates it, or returns the first error.
 //
@@ -156,7 +186,90 @@ func Load() (Config, error) {
 		return c, err
 	}
 
+	// CANT-131's provisioning surface. BOTH OR NEITHER, and the half-configured
+	// cases are the whole reason this is not two independent reads.
+	//
+	// NOT TRIMMED, AND THE TOKEN IS THE REASON. Every other variable here goes
+	// through TrimSpace because a stray space in a compose file is a typo; a
+	// credential is a byte string that Signet generated and Purser presents
+	// verbatim, and silently trimming it here would mean the two services
+	// disagree about what the secret is whenever one of them was pasted with a
+	// trailing newline — a 401 an operator cannot see the cause of. So the
+	// address is trimmed and the token is not: presence is decided on the raw
+	// bytes, and a token that is only whitespace is caught by the length floor
+	// below rather than turned into "unset", which would silently disarm the
+	// surface.
+	c.ProvisionAddr = strings.TrimSpace(os.Getenv("CATENARY_PROVISION_ADDR"))
+	c.ProvisionToken = os.Getenv("CATENARY_PROVISION_TOKEN")
+	if err := c.validateProvisioning(); err != nil {
+		return c, err
+	}
+
 	return c, nil
+}
+
+// ProvisioningEnabled reports whether this process has a provisioning surface at
+// all — the composition root's gate, and the one place the "both or neither" rule
+// is read rather than enforced.
+//
+// BOTH, NOT EITHER. After Load the two cannot disagree, so this could test one of
+// them; it tests both so that a Config built by hand — which a test does, and
+// which bypasses Load's rules exactly as it bypasses every other rule there —
+// cannot produce a listener with no credential or a credential with no listener.
+func (c Config) ProvisioningEnabled() bool {
+	return c.ProvisionAddr != "" && c.ProvisionToken != ""
+}
+
+// validateProvisioning enforces the three rules ruling 2 states, each naming
+// its variable and none of them echoing the credential.
+//
+// A method on Config rather than a stanza inside Load so cmd/catenary can state
+// the same rules over a Config it built by hand — and so this can be read on
+// its own, which is what a reviewer of a door wants.
+func (c Config) validateProvisioning() error {
+	hasAddr := c.ProvisionAddr != ""
+	hasToken := c.ProvisionToken != ""
+
+	switch {
+	case !hasAddr && !hasToken:
+		// The surface does not exist. Nothing to check, nothing to open.
+		return nil
+	case hasAddr && !hasToken:
+		return fmt.Errorf("config: CATENARY_PROVISION_ADDR is set without CATENARY_PROVISION_TOKEN — " +
+			"the provisioning surface is both or neither, and a listener with no credential " +
+			"would serve account creation to anything that can reach the port")
+	case !hasAddr && hasToken:
+		return fmt.Errorf("config: CATENARY_PROVISION_TOKEN is set without CATENARY_PROVISION_ADDR — " +
+			"the provisioning surface is both or neither, and a credential with no listener is " +
+			"a deployment that believes it has a provisioning surface and does not")
+	}
+
+	// LENGTH IN BYTES, NOT RUNES, AND THE VALUE IS NEVER QUOTED. len() on a Go
+	// string is bytes, which is what an attacker guesses; the count is reported
+	// because "yours is 24" is the one thing an operator needs and says nothing
+	// about which bytes they are.
+	if n := len(c.ProvisionToken); n < MinProvisionTokenBytes {
+		return fmt.Errorf("config: CATENARY_PROVISION_TOKEN is %d bytes, and at least %d are required — "+
+			"this credential can obtain an enrollment token for any person in the service; "+
+			"generate it in Signet", n, MinProvisionTokenBytes)
+	}
+
+	// EXACT-STRING EQUALITY ONLY, DELIBERATELY. Two listeners on one address
+	// cannot both bind, so this is already fail-closed: the second net.Listen
+	// fails and the process exits. What this adds is the sentence — the
+	// OBVIOUS way to get here is copying CATENARY_PORT's value into the
+	// provisioning address, and "address already in use" does not name either
+	// variable. Equivalent-but-differently-spelled addresses (`:4012` against
+	// `0.0.0.0:4012`) are left to the bind, because a config loader that
+	// resolved addresses to compare them would be doing the kernel's job
+	// badly.
+	if c.ProvisionAddr == c.Addr {
+		return fmt.Errorf("config: CATENARY_PROVISION_ADDR is %q, the address CATENARY_PORT already "+
+			"listens on — the provisioning surface is a SECOND listener serving nothing else, "+
+			"and sharing the port would put account creation on the routed one", c.ProvisionAddr)
+	}
+
+	return nil
 }
 
 // positiveInt reads an optional positive bound. Unset returns 0, which the

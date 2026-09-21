@@ -772,7 +772,10 @@ func TestACancelledServeClosesEverySessionWith1001(t *testing.T) {
 	since := dbNow(ctx, t, pool)
 	serveCtx, cancel := context.WithCancel(ctx)
 	served := make(chan error, 1)
-	go func() { served <- serve(serveCtx, d, ln) }()
+	// No provisioning listener: this fixture's config carries neither variable,
+	// so setup built no provisioning handler and serve is handed no second
+	// socket. CANT-131's own test drives the shutdown with one.
+	go func() { served <- serve(serveCtx, d, ln, nil) }()
 	base := "http://" + ln.Addr().String()
 
 	r := &rig{t: t, ctx: ctx, pool: pool, st: d.store, d: d, log: log, base: base, since: since}

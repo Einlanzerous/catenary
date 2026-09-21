@@ -71,6 +71,27 @@ would put a listener on the host that bypasses the edge — and until the three
 tickets named below land, what is behind that listener is not something to put
 on the open internet.
 
+**The provisioning port is `expose`d on `construct_net` and NEVER under `ports:`, and no router, service URL or label points at it.** CANT-131 adds a SECOND listener to this process — its own `http.Server`, its own mux, serving `POST /accounts`, `GET /accounts` and `POST /accounts/{id}/deactivate` and nothing else — which Purser's `catenary` connector calls to create, look up and deactivate accounts. The rule above about the host applies to it with more force, not less: `expose` makes it reachable from `construct_net`, which is all Purser needs, and a `ports:` entry would put account creation on the host. There is also no Traefik router for it, no `traefik.http.services.*.loadbalancer.server.port` naming it, and no entry in `config/traefik/dynamic/routers.yml` — publishing it has to be a deliberate act rather than the absence of a deny rule, which is the honest version of ruling 1: the port is not structurally unreachable, and what keeps the door safe is the credential plus a listener that serves nothing else.
+
+**Why that matters more than it does for 4012.** The credential on that port can obtain an enrollment token for any person in the service, and an enrollment token redeems into a device enrolled as them — every conversation they are in, every message in it. Re-invite is the only way anyone ever gets a second device, so the surface cannot refuse it. It is the most powerful credential Catenary has, and the only one that grants nothing in the database: rotating it is a Signet change and a restart of both services.
+
+**Catenary's two variables, and it is both or neither.**
+
+| variable | what it is |
+|---|---|
+| `CATENARY_PROVISION_ADDR` | the provisioning listener's address, e.g. `:4013`. Unset means the surface does not exist — no listener, no route |
+| `CATENARY_PROVISION_TOKEN` | the service credential, at least 32 bytes, presented as `Authorization: Bearer`. Compared constant-time over SHA-256 digests; never logged |
+
+One without the other **refuses to boot**, with a message naming the missing variable, and so does a token under 32 bytes — a listener with no credential would serve account creation to anything on `construct_net`, and a credential with no listener is a deployment that believes it has a provisioning surface and does not. There is deliberately **no default port** for this one, unlike 4012: a default would mean a deployment could open this door by forgetting something rather than by choosing it. `4013` is the next free slot in the estate's 40xx block at the time of writing, and `construct-server`'s own `.env` is the authority on that.
+
+**Purser's two variables**, set on the `purser` service in the same compose file: `PURSER_CATENARY_BASE_URL` (`http://catenary:4013`, the `expose`d port on `construct_net`) and `PURSER_CATENARY_PROVISION_TOKEN` (the same secret). With them unset the connector registers itself `Unavailable`, as Purser's other connectors do, so a Catenary that is not deployed yet is not an error there.
+
+**A person generates the secret in Signet, and nobody else.** It never appears in this repository, in a compose file, or in a ticket — the same rule `CATENARY_DB_PASSWORD` already follows. Both services read the identical value, so rotating it is one Signet change and a restart of both; there is no rotation window in which one of them holds the old one.
+
+**The `construct-server` change is SERV-202.** SERV-168, which onboarded Catenary, is closed, so the second `expose`d port, Catenary's two variables and Purser's two have their own ticket rather than nobody's. **And it is a change over there, not a fragment here**: `deploy/` holds no copy of Catenary's compose block and must not gain one, for the reason at the top of this file — Chronicle's copy has already diverged from what is deployed, and the second copy is the one that goes stale. What lives here is this decision.
+
+**The contract is `provision/openapi.yaml`, versioned by the tag `provision-v1`.** It is not part of `schema/`, no generator reads it, and a test in `server/spec` drives every operation against the real handlers and fails when they disagree with it. PRSR-50 pins the tag, which is invariant 4's arrangement for the shared ASR service pointed the other way round.
+
 ## The routing split, and why it is not symmetric
 
 **`/admin` behind Access; the socket and `/sync` never.** Cloudflare Access is a

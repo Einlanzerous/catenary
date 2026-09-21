@@ -26,6 +26,7 @@ import (
 	"github.com/magos/catenary/internal/api"
 	"github.com/magos/catenary/internal/config"
 	"github.com/magos/catenary/internal/hub"
+	"github.com/magos/catenary/internal/provision"
 	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/wire"
 	"github.com/magos/catenary/internal/wireview"
@@ -132,7 +133,21 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
   CATENARY_MAX_ATTACHMENTS    how many attachments one send may carry. Default 16, at most %d.
   CATENARY_HEARTBEAT_INTERVAL_SEC  how often ready tells the client to ping. Default 35, 5-90.
   CATENARY_MISSED_PONG_LIMIT       missed pings before severance, both ends. Default 2, at least 1.
-`, store.MaxAttachmentsCeiling)
+
+The provisioning surface (CANT-131) is a SECOND listener, off the router, which
+Purser's connector calls to create, look up and deactivate accounts. Both of its
+variables or neither: one without the other refuses to boot, and with neither set
+there is no second listener and no such route anywhere in the process.
+
+  CATENARY_PROVISION_ADDR   listen address for it, e.g. :4013. Never published to
+                            the host and never behind a Traefik router — it is
+                            exposed on construct_net alone. See deploy/README.md.
+  CATENARY_PROVISION_TOKEN  the service credential, presented as
+                            Authorization: Bearer. At least %d bytes, generated in
+                            Signet. It can obtain an enrollment token for any
+                            person in the service, which is a device enrolled as
+                            them, so it is the most powerful credential here.
+`, store.MaxAttachmentsCeiling, config.MinProvisionTokenBytes)
 }
 
 // serveSync reads one page and maps it, which is the whole of GET /sync's body.
@@ -209,6 +224,18 @@ type deps struct {
 	// DIFFERENTLY on a parse failure rather than erroring — notify.go carries
 	// the whole argument. Run and stopped exactly as `listener` is.
 	revocations *store.Listener[store.RevocationPayload]
+
+	// provision is CANT-131's provisioning surface, or NIL when the process was
+	// given no credential for it — which is the ordinary case and the safe one.
+	//
+	// A SECOND HANDLER, NOT SECOND ROUTES (ruling 1). It never reaches
+	// api.NewRouter, so `/accounts` does not exist on the routed listener, and
+	// serve runs it on its own net.Listener with its own http.Server. It is nil
+	// unless BOTH variables are set and there is a store behind them, which is
+	// api.Deps' own safe-absence convention: a route that does not exist beats a
+	// route backed by nothing, and it matters more here than anywhere else in
+	// this file, because the thing behind this one mints credentials.
+	provision http.Handler
 }
 
 // setup is the composition root. Every dependency is constructed here and
@@ -333,6 +360,28 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		}
 	}
 
+	// CANT-131's provisioning surface, and the gate is deliberately narrow: BOTH
+	// variables set AND a store to serve from. config.Load has already refused
+	// the half-configured cases and a token under the floor, so what this adds is
+	// the store — a surface wired to nothing would answer 500 to a connector that
+	// had been told the account was created.
+	//
+	// THE THREE SEAMS ARE THE STORE'S OWN FUNCTIONS, unwrapped. Nothing is
+	// adapted here and there is nothing for this line to get wrong: the
+	// predicates that decide who can be enrolled as whom live in CANT-130 and
+	// CANT-134, are read there, and are reachable from here only through these
+	// three names.
+	var provisionHandler http.Handler
+	if st != nil && cfg.ProvisioningEnabled() {
+		provisionHandler = provision.New(provision.Deps{
+			Logger:     logger,
+			Token:      cfg.ProvisionToken,
+			Ensure:     st.EnsurePerson,
+			Lookup:     st.PersonByEmail,
+			Deactivate: st.DeactivateUser,
+		})
+	}
+
 	return deps{
 		cfg:         cfg,
 		logger:      logger,
@@ -340,6 +389,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		hub:         h,
 		listener:    listener,
 		revocations: revocations,
+		provision:   provisionHandler,
 		router: api.NewRouter(api.Deps{
 			Logger:   logger,
 			DB:       db,
@@ -522,7 +572,22 @@ func runServe(args []string) error {
 	if err != nil {
 		return fmt.Errorf("serve: %w", err)
 	}
-	return serve(ctx, d, ln)
+
+	// CANT-131's SECOND LISTENER, opened here for the reason the first one is:
+	// serve must be runnable by a test on a port the kernel chose, so the socket
+	// is this function's and serve only runs and joins it.
+	//
+	// THE ERROR NAMES THE VARIABLE, because "bind: address already in use" with
+	// two listeners in one process does not say which of them failed. The address
+	// is echoed and the token never is.
+	var provisionLn net.Listener
+	if cfg.ProvisioningEnabled() {
+		provisionLn, err = net.Listen("tcp", cfg.ProvisionAddr)
+		if err != nil {
+			return fmt.Errorf("serve: CATENARY_PROVISION_ADDR %q: %w", cfg.ProvisionAddr, err)
+		}
+	}
+	return serve(ctx, d, ln, provisionLn)
 }
 
 // serve runs the process until ctx is cancelled, then drains it.
@@ -547,7 +612,43 @@ func runServe(args []string) error {
 // CANT-118's credential sweep rides the listener's own context and join, on
 // the cheapest possible argument: it has no ordering claim on anything else
 // here, so it costs nothing to stop it exactly when the two listeners stop.
-func serve(ctx context.Context, d deps, ln net.Listener) error {
+//
+// CANT-131'S PROVISIONING LISTENER IS A SECOND http.Server ON ITS OWN SOCKET,
+// AND ITS ORDERING ARGUMENT IS THAT IT HAS NONE. It holds no WebSocket and no
+// session, so nothing about when it stops can leave a client with a healthy
+// socket and no delivery behind it — the reason the NOTIFY listener has to stop
+// LAST — and nothing it serves is waited on by the hub's drain. So it shuts down
+// CONCURRENTLY with the routed server, in the same WaitGroup and under the same
+// grace deadline, and that is all the sequencing it needs. Two facts do follow
+// from where it sits. It stops ACCEPTING at the top of the drain, so a
+// provisioning call that arrives during a redeploy is refused at the socket
+// rather than half-served. And AN OFFBOARD ALREADY IN FLIGHT NEVER RUNS AGAINST A
+// CLOSED POOL — but not because the grace reaches it, which is what an earlier
+// draft of this comment said and a review corrected. Shutdown stops accepting and
+// waits for in-flight requests to finish; it does NOT cancel a handler's context
+// (only the client connection dropping does), so when the grace expires with a
+// `deactivate` still running, Shutdown returns the deadline error, this function
+// returns it, and the transaction carries on to its own end. What protects it is
+// runServe's deferred pool.Close(), which BLOCKS until every connection is
+// returned — pgxpool documents exactly that — and which is the same protection
+// every in-flight REST request on the routed server already has. Worth being
+// precise about, because the WriteTimeout paragraph below reasons from it: the
+// hazard both are about is a committed offboard whose response the connector never
+// saw.
+func serve(ctx context.Context, d deps, ln, provisionLn net.Listener) error {
+	// BOTH OR NEITHER, ONE LAYER FURTHER DOWN. config.Load refuses the
+	// half-configured environment and setup builds the handler only when both
+	// variables are set, so reaching here with one of the two is a wiring mistake
+	// in this file rather than an operator's. It is worth a loud refusal anyway,
+	// because the two silent outcomes are a listener that accepts connections no
+	// handler answers, and a provisioning handler that is never served at all —
+	// and the second one is a deployment that believes it has a provisioning
+	// surface and does not.
+	if (d.provision == nil) != (provisionLn == nil) {
+		return fmt.Errorf("serve: the provisioning surface is half-wired (handler: %t, listener: %t)",
+			d.provision != nil, provisionLn != nil)
+	}
+
 	srv := &http.Server{
 		Handler: d.router,
 
@@ -555,6 +656,34 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 		// request would sever the WebSocket upgrade E2 hangs off this same
 		// server, and R1 measured sockets held for 1h20m on purpose.
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	// THE PROVISIONING SERVER CAN CARRY THE DEADLINES THE ROUTED ONE CANNOT, and
+	// that is one of the quieter benefits of ruling 1. Nothing here is upgraded to
+	// a WebSocket and no request is long-lived, so a whole-request read deadline
+	// and an idle deadline are both safe — where on the server above they would
+	// sever E2's sockets.
+	//
+	// NO WriteTimeout, DELIBERATELY, and it is the one omission worth naming. The
+	// bodies are a few hundred bytes, so a write deadline could only ever fire on
+	// a wedged connection — and if it fired on the offboard it would cut the
+	// response to a transaction that had already COMMITTED, which Purser would
+	// read as a failed deprovision for an account that is in fact deactivated.
+	// The read side is bounded, the body is bounded, and the shutdown grace bounds
+	// the rest.
+	var provisionSrv *http.Server
+	if d.provision != nil {
+		provisionSrv = &http.Server{
+			Handler:           d.provision,
+			ReadHeaderTimeout: 10 * time.Second,
+			ReadTimeout:       30 * time.Second,
+			IdleTimeout:       60 * time.Second,
+
+			// One email and one display name, with room for the headers around
+			// them. net/http's own default is 1 MiB, which is 1 MiB this
+			// listener has no use for.
+			MaxHeaderBytes: 8 << 10,
+		}
 	}
 
 	// The listener runs on its OWN context, not ctx: it must outlive the
@@ -602,7 +731,10 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 		close(sweepDone)
 	}
 
-	errCh := make(chan error, 1)
+	// TWO SLOTS, because two servers can now fail to serve. Buffered so neither
+	// goroutine blocks forever once this function has returned on the other's
+	// error.
+	errCh := make(chan error, 2)
 	go func() {
 		d.logger.Info("listening",
 			"addr", ln.Addr().String(),
@@ -613,6 +745,23 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 			errCh <- err
 		}
 	}()
+	if provisionSrv != nil {
+		go func() {
+			// ITS OWN LINE, NAMING THE SURFACE. A second bare "listening" line
+			// with a different port is how an operator concludes the service
+			// listens twice for the same reason; this one says what is behind it,
+			// and — because the port carries the most powerful credential in the
+			// service — it is the line to look for when auditing what a deployed
+			// process actually opened. The credential itself is never logged.
+			d.logger.Info("listening on the provisioning surface",
+				"addr", provisionLn.Addr().String(),
+				"routes", "POST /accounts, GET /accounts, POST /accounts/{id}/deactivate",
+			)
+			if err := provisionSrv.Serve(provisionLn); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("provisioning listener: %w", err)
+			}
+		}()
+	}
 
 	select {
 	case err := <-errCh:
@@ -631,6 +780,18 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 		defer wg.Done()
 		srvErr = srv.Shutdown(shutdownCtx)
 	}()
+	// Concurrently, on the same grace, for the reason in this function's own
+	// comment: no ordering claim, so nothing is bought by making it wait or by
+	// making anything wait for it. Its error is kept apart from srvErr so a
+	// reader of the failure knows which listener would not drain.
+	var provisionErr error
+	if provisionSrv != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			provisionErr = provisionSrv.Shutdown(shutdownCtx)
+		}()
+	}
 	if d.hub != nil {
 		wg.Add(1)
 		go func() {
@@ -650,6 +811,9 @@ func serve(ctx context.Context, d deps, ln net.Listener) error {
 
 	if srvErr != nil {
 		return fmt.Errorf("shutdown: %w", srvErr)
+	}
+	if provisionErr != nil {
+		return fmt.Errorf("shutdown: provisioning listener: %w", provisionErr)
 	}
 	d.logger.Info("stopped")
 	return nil
