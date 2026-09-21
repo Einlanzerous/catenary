@@ -282,6 +282,15 @@ func TestDeriveHandle(t *testing.T) {
 		{"punctuation-only local part falls back to user", "...@example.com", "user"},
 		{"a 64-octet local part truncates to 32", strings.Repeat("a", 64) + "@example.com", strings.Repeat("a", 32)},
 		{"leading and trailing punctuation is trimmed", "-.alice.-@example.com", "alice"},
+		// Found in review (#79): a stem whose 33rd character was the ONLY
+		// thing keeping an internal dot from being the last one. Truncating
+		// to 32 without re-trimming would return "...29 a's....b." — ending
+		// in a dot the doc comment says cannot happen.
+		{
+			"truncation cannot reintroduce trailing punctuation",
+			strings.Repeat("a", 29) + ".b.c@x.example",
+			strings.Repeat("a", 29) + ".b",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := deriveHandle(tc.email); got != tc.want {
@@ -305,6 +314,24 @@ func TestHandleCandidateTruncatesToMakeRoomForItsSuffix(t *testing.T) {
 		if !strings.HasSuffix(got, suffix) {
 			t.Errorf("candidate(%d) = %q, want it to carry its suffix %q", n, got, suffix)
 		}
+	}
+}
+
+// Found in review (#79): handleCandidate's OWN truncation, cutting an
+// already-clean stem further to make room for a suffix, can land on an
+// internal dot exactly as easily as deriveHandle's own truncation can.
+func TestHandleCandidateDoesNotReintroduceTrailingPunctuation(t *testing.T) {
+	stem := strings.Repeat("a", 29) + ".b" // 31 bytes, deriveHandle's own clean output
+	got := handleCandidate(stem, 2)
+	if !strings.HasSuffix(got, "-2") {
+		t.Fatalf("candidate = %q, want it to carry -2", got)
+	}
+	before := strings.TrimSuffix(got, "-2")
+	if strings.HasSuffix(before, ".") || strings.HasSuffix(before, "-") || strings.HasSuffix(before, "_") {
+		t.Fatalf("candidate = %q, the truncated stem ends in punctuation right before its suffix", got)
+	}
+	if len(got) > maxHandleLength {
+		t.Fatalf("candidate = %q is %d bytes, want <= %d", got, len(got), maxHandleLength)
 	}
 }
 
@@ -691,6 +718,46 @@ func TestWithoutBotsInTheDedupComparisonACaseCollisionSlipsThrough(t *testing.T)
 
 // ---------------------------------------------------------------------------
 // catenary user set-email — the store half
+
+// Found in review (#79): SetEmail's own lookup now locks the row it decides
+// on, so two racing calls on one handle cannot both read "no email yet" and
+// both report success — the TOCTOU that would otherwise silently re-key the
+// account to whichever call committed second.
+func TestConcurrentSetEmailsOnOneHandleRefuseTheLoser(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	mkUser(ctx, t, pool, "alice")
+
+	emails := []string{"a@x.example", "b@y.example"}
+	errs := make([]error, len(emails))
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, email := range emails {
+		wg.Add(1)
+		go func(i int, email string) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = st.SetEmail(ctx, "alice", email)
+		}(i, email)
+	}
+	close(start)
+	wg.Wait()
+
+	var succeeded, refused int
+	for _, err := range errs {
+		switch {
+		case err == nil:
+			succeeded++
+		case errors.Is(err, ErrPersonAlreadyHasEmail):
+			refused++
+		default:
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if succeeded != 1 || refused != 1 {
+		t.Fatalf("succeeded=%d refused=%d, want exactly one of each — a race must not let both report success", succeeded, refused)
+	}
+}
 
 func TestSetEmailGivesAnEmaillessPersonOne(t *testing.T) {
 	ctx, pool := freshDB(t)

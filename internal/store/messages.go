@@ -93,6 +93,15 @@ package store
 // of its own and so never enters the deployment-wide serialised section at
 // all.
 //
+// SetEmail (same file) TAKES THE SAME LOCK ON THE SAME ARGUMENT, added in
+// review (#79): reading `email IS NOT NULL` and writing it on a later
+// statement, with nothing held between them, let two racing `set-email`
+// calls on one handle both read "no email yet" and the second silently
+// overwrite the first's — the refusal `ErrPersonAlreadyHasEmail` exists
+// precisely to prevent never firing. FOR NO KEY UPDATE on the lookup closes
+// it the same way: the second caller blocks on the first's commit and reads
+// the row as it now is.
+//
 // POSITION 12 TAKES NO LOCK WHEN IT RUNS, AND ITS COMMIT TAKES ONE THIS LIST
 // WOULD OTHERWISE MISS. pg_notify appends to a backend-local pending list;
 // nothing is locked until CommitTransaction reaches PreCommit_Notify, which

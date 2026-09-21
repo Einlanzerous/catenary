@@ -221,7 +221,15 @@ const maxHandleLength = 32
 //   - Trim leading and trailing punctuation, so a local part that led or
 //     trailed with one of the four kept-but-not-alphanumeric characters does
 //     not hand back a handle starting or ending in a dot or a dash.
-//   - Truncate to maxHandleLength.
+//   - Truncate to maxHandleLength, AND TRIM AGAIN — found in review (#79).
+//     Truncating a byte string can land exactly on an internal dot or dash
+//     that the first trim never saw, because that trim ran before the cut
+//     existed; a plain slice would then hand back the "does not end in a
+//     dot" promise broken by the very next line. TrimRight only, because the
+//     first character of a stem that already passed the first trim is never
+//     punctuation, so truncating from the right can never expose a leading
+//     one — a claim worth stating because it is what lets this skip the
+//     empty-after-all-that check truncation would otherwise need.
 //   - Fall back to "user" if nothing survives.
 func deriveHandle(email string) string {
 	local, _, _ := strings.Cut(email, "@")
@@ -239,7 +247,7 @@ func deriveHandle(email string) string {
 	}
 	stem := strings.Trim(b.String(), "._-")
 	if len(stem) > maxHandleLength {
-		stem = stem[:maxHandleLength]
+		stem = strings.TrimRight(stem[:maxHandleLength], "._-")
 	}
 	if stem == "" {
 		stem = "user"
@@ -251,6 +259,13 @@ func deriveHandle(email string) string {
 // n == 1, and the stem truncated to make room for "-n" otherwise. Truncating
 // the STEM rather than appending past maxHandleLength is what keeps a
 // full-length collision inside the cap.
+//
+// RE-TRIMMED AFTER ITS OWN CUT, for deriveHandle's own reason (#79): this
+// truncates an already-clean stem FURTHER, to make room for the suffix, and
+// that second cut can exactly as easily land on an internal dot or dash that
+// was never at an edge before. The stem entering this function never STARTS
+// with punctuation (deriveHandle's own guarantee), so trimming only the
+// right side cannot empty it.
 func handleCandidate(stem string, n int) string {
 	if n <= 1 {
 		return stem
@@ -263,7 +278,7 @@ func handleCandidate(stem string, n int) string {
 		max = 1
 	}
 	if len(stem) > max {
-		stem = stem[:max]
+		stem = strings.TrimRight(stem[:max], "._-")
 	}
 	return stem + suffix
 }
@@ -618,6 +633,16 @@ func (s *Store) ensurePersonOnce(ctx context.Context, email, displayName string)
 // bots.go's own reason: users.handle has no lower() index, so this has to
 // agree with what actually collides at the database rather than with a rule
 // only this function would be enforcing.
+//
+// THE LOOKUP LOCKS THE ROW, FOR NO KEY UPDATE — found in review (#79). Reading
+// `email IS NOT NULL` and then writing on a separate statement, with nothing
+// locked between them, is a TOCTOU: two `set-email` calls racing the same
+// handle can both read "no email yet", and the second's UPDATE re-evaluates
+// its WHERE against the row T1 just committed and overwrites it — success
+// reported twice, ErrPersonAlreadyHasEmail never returned, and the account
+// silently re-keyed to whichever call went second. FOR NO KEY UPDATE closes
+// it exactly as EnsurePerson's own lookup does: the second caller blocks on
+// the first's commit and then reads the row as it now is, not as it was.
 func (s *Store) SetEmail(ctx context.Context, handle, email string) (uuid.UUID, error) {
 	normalized, err := normalizeEmail(email)
 	if err != nil {
@@ -637,7 +662,8 @@ func (s *Store) SetEmail(ctx context.Context, handle, email string) (uuid.UUID, 
 	var id uuid.UUID
 	var kind string
 	var hasEmail bool
-	err = tx.QueryRow(ctx, `SELECT id, kind, email IS NOT NULL FROM users WHERE handle = $1`, handle).
+	err = tx.QueryRow(ctx,
+		`SELECT id, kind, email IS NOT NULL FROM users WHERE handle = $1 FOR NO KEY UPDATE`, handle).
 		Scan(&id, &kind, &hasEmail)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
