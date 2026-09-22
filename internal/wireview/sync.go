@@ -168,13 +168,31 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 // what I wrote", which is not a question.
 //
 // It never reads member_count, so a JOIN moves the fraction without touching
-// the word. A DEPARTURE moves both, and saying otherwise was wrong: leaving is
-// a row DELETE from conversation_members — there is no left_at, the key is
-// (conversation_id, user_id) — and readByExpr counts rows in that table, so the
-// numerator drops with the denominator. A room where exactly one other member
-// had read your message sits at 2 and serves `read`; that member leaves, the
-// count is 1, and the next page serves `sent`. Message.read_by's own schema
-// description says the same thing from the other side.
+// the word. TWO THINGS MOVE BOTH, and only one of them can happen.
+//
+// A DEPARTURE would: leaving is a row DELETE from conversation_members — there
+// is no left_at, the key is (conversation_id, user_id) — and readByExpr counts
+// rows in that table, so the numerator drops with the denominator. NOTHING IN
+// THE SERVICE REMOVES A MEMBERSHIP ROW, so that has never been reachable, and
+// this paragraph described it as the cause for want of another one.
+//
+// A DEACTIVATION DOES, AND SINCE CANT-137 IT IS THE REACHABLE CAUSE.
+// activeMemberExpr drops a deactivated member from readByExpr, so a room where
+// exactly one other member had read your message sits at 2 and serves `read`;
+// that member is deprovisioned, the count is 1, and the next page serves `sent`.
+// THAT IS THIS LADDER GOING BACKWARDS, and it is the first thing in the service
+// that can lower the count at all — MarkRead's LEAST/GREATEST makes every
+// receipt monotone, and nothing deletes a member row.
+//
+// NOTHING RE-EMITS THE MESSAGE FOR IT. A receipt is the only thing that re-emits
+// (CANT-92), and a deactivation is not one, so a client that holds `read` keeps
+// it while a client bootstrapping afterwards is served `sent` — two of one
+// person's devices disagreeing about one message, permanently, until the offboard
+// is reversed. DeliveryState's own schema description carries the client rule
+// (the ladder is not monotone on your own message; the latest serve wins), and
+// CANT-140 is where the server-side mechanism is decided. It is not settled here,
+// and this comment exists so the next reader does not conclude from the
+// paragraph above that only a departure can do this.
 //
 // FOR SOMEONE ELSE'S MESSAGE, `state` describes THIS READER: `read` once their
 // read_seq has passed it, `delivered` otherwise — they are receiving it in this
