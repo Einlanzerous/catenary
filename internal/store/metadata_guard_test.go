@@ -47,10 +47,19 @@ import (
 const metadataFile = "internal/store/metadata.go"
 
 // Columns whose change must move a marker, by table.
+//
+// `users.deactivated_at` JOINED THE LIST IN CANT-137, and this is the case the
+// failure message below was written for. Since CANT-135 ruling 1 both
+// `Conversation.member_count` and `Message.read_by` count ACTIVE members, so
+// setting or clearing that one column changes what /sync serves for every room
+// the person is in — and a change nobody is told about is invisible to every
+// cursor already past it. Adding it here is what moved the two statements that
+// write it out of offboard.go and into metadata.go, which is the guard doing its
+// job rather than a coincidence.
 var metadataColumns = map[string][]string{
 	"conversations":        {"name", "kind", "retention_days", "metadata_log_seq"},
 	"conversation_members": {"metadata_log_seq"},
-	"users":                {"display_name", "metadata_log_seq"},
+	"users":                {"display_name", "deactivated_at", "metadata_log_seq"},
 }
 
 var (
@@ -266,6 +275,20 @@ func TestTheMetadataGuardBites(t *testing.T) {
 			sql:    `UPDATE users SET display_name = $2 WHERE id = $1`,
 			want:   1,
 			reason: "the users array carries the same promise as conversations and had the same gap",
+		},
+		{
+			name: "an offboard's own write",
+			sql: `UPDATE users SET deactivated_at = now()
+			       WHERE id = $1 AND deactivated_at IS NULL`,
+			want:   1,
+			reason: "CANT-137. member_count and read_by count active members, so this one column changes what every room the person is in serves — and the statement therefore belongs in metadata.go, which is where the guard put it",
+		},
+		{
+			name: "and the reversal's",
+			sql: `UPDATE users SET deactivated_at = NULL
+			       WHERE id = $1 AND deactivated_at IS NOT NULL`,
+			want:   1,
+			reason: "both directions, or the guard watches the expensive half and misses the one that un-does it",
 		},
 		{
 			name: "MarkRead's own receipt write is NOT an offence",

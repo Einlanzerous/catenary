@@ -32,10 +32,13 @@ type SyncPage struct {
 	ReplySources map[uuid.UUID]ReplySource
 
 	// ReadBy is how many members have read each message — the numerator in the
-	// canvas's `READ 5/7`, counting the SAME POPULATION MemberCount does, the
-	// author included. Every message on the page has a key, because the author
-	// always counts. CANT-26 owns the query; see readstate.go, which is where
-	// the reasoning for the author clause lives.
+	// canvas's `READ 5/7`, counting the SAME POPULATION MemberCount does:
+	// ACTIVE members, the author included when the author is one of them
+	// (CANT-135 ruling 1). Every message on the page has a key, because a
+	// message is on a page at all only for a member of its room, and the author
+	// counts unless they have been deactivated. CANT-26 owns the query; see
+	// readstate.go's activeMemberExpr, which is where the reasoning for both the
+	// author clause and the predicate lives.
 	ReadBy map[uuid.UUID]int64
 
 	Conversations []ConversationRow
@@ -104,6 +107,19 @@ type ConversationRow struct {
 type UserRow struct {
 	ID          uuid.UUID
 	DisplayName string
+
+	// Deactivated is `deactivated_at IS NOT NULL`, and the MOMENT is deliberately
+	// not carried (CANT-135 ruling 2). The wire says whether the account can still
+	// reach this service, which is what lets a client grey the author of an old
+	// message or tell someone the other half of their direct conversation cannot
+	// read what they are typing. When it happened is an operator's question, and
+	// putting a timestamp on the wire would answer it for every member of every
+	// room the person is in.
+	//
+	// A BOOL HERE AND A BOOL ON THE WIRE, both false for an active account, and
+	// the wire field is ABSENT rather than false — wireview.User is where that
+	// distinction is made, because it is the wire's rule and not the store's.
+	Deactivated bool
 }
 
 // DefaultSyncLimit is the page size when the caller names none.
@@ -348,7 +364,7 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 	// case a rename with no new message produces.
 	rows, err := tx.Query(ctx, `
 		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
-		       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
+		       `+memberCountExpr+`,
 		       `+firstUnreadSeqExpr+`,
 		       (SELECT u.display_name FROM conversation_members o
 		          JOIN users u ON u.id = o.user_id
@@ -432,7 +448,7 @@ func (s *Store) loadUsers(ctx context.Context, tx pgx.Tx, viewer uuid.UUID, afte
 	}
 	// No early return: a renamed user can be the only thing on the page.
 	rows, err := tx.Query(ctx, `
-		SELECT id, display_name
+		SELECT id, display_name, deactivated_at IS NOT NULL
 		  FROM users u
 		 WHERE u.id = ANY($1)
 		    OR (u.metadata_log_seq > $2 AND u.metadata_log_seq <= $3
@@ -448,7 +464,7 @@ func (s *Store) loadUsers(ctx context.Context, tx pgx.Tx, viewer uuid.UUID, afte
 	}
 	page.Users, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (UserRow, error) {
 		var u UserRow
-		err := r.Scan(&u.ID, &u.DisplayName)
+		err := r.Scan(&u.ID, &u.DisplayName, &u.Deactivated)
 		return u, err
 	})
 	if err != nil {
@@ -483,7 +499,7 @@ func ServerTime() time.Time { return time.Now().UTC() }
 const conversationRowPerViewer = `
 	SELECT cm.user_id,
 	       c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
-	       (SELECT count(*) FROM conversation_members x WHERE x.conversation_id = c.id),
+	       ` + memberCountExpr + `,
 	       ` + firstUnreadSeqExpr + `,
 	       (SELECT u.display_name FROM conversation_members o
 	          JOIN users u ON u.id = o.user_id
@@ -545,11 +561,19 @@ func (s *Store) conversationRowsForMembers(ctx context.Context, tx pgx.Tx, id uu
 // author_id it cannot render. Viewer-independent — a display name is the same
 // for everyone — so this is one list rather than one per member.
 //
+// EVERY MEMBER, DEACTIVATED ONES INCLUDED, AND THAT IS NOT AN INCONSISTENCY
+// WITH memberCountExpr (CANT-135). The count answers "how many people are in this
+// room" and a deactivated person is not one of them; this answers "whose names
+// does a client need in order to render what is on this page", and a deactivated
+// person's old messages are still there with their author_id on them. A client
+// that could not resolve that id would render a message from nobody. Their record
+// now says `deactivated` so the client can render the difference.
+//
 // Ordered by id, like every other list this package returns, so a caller that
 // does not sort is still deterministic.
 func (s *Store) memberUsers(ctx context.Context, tx pgx.Tx, conv uuid.UUID) ([]UserRow, error) {
 	rows, err := tx.Query(ctx, `
-		SELECT u.id, u.display_name
+		SELECT u.id, u.display_name, u.deactivated_at IS NOT NULL
 		  FROM users u
 		  JOIN conversation_members cm ON cm.user_id = u.id
 		 WHERE cm.conversation_id = $1
@@ -559,7 +583,7 @@ func (s *Store) memberUsers(ctx context.Context, tx pgx.Tx, conv uuid.UUID) ([]U
 	}
 	users, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (UserRow, error) {
 		var u UserRow
-		err := r.Scan(&u.ID, &u.DisplayName)
+		err := r.Scan(&u.ID, &u.DisplayName, &u.Deactivated)
 		return u, err
 	})
 	if err != nil {

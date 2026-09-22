@@ -41,25 +41,77 @@ const firstUnreadSeqExpr = `(SELECT min(m.seq) FROM messages m
 	           AND m.seq > cm.read_seq
 	           AND m.author_id <> cm.user_id)`
 
+// activeMemberExpr IS THE DEFINITION OF "A MEMBER", and CANT-135 ruling 1 is
+// what put it in one place: a member counts iff their `users.deactivated_at IS
+// NULL`.
+//
+// ONE FRAGMENT, THREE COUNTING SITES, AND THE COPIES ARE WHAT THE TICKET IS
+// ABOUT. `member_count` (sync.go's two sites) and `read_by` (below) are the
+// numerator and the denominator of `READ 5/7`, and the schema's own description
+// of `read_by` says they have to count the same population or the numerator can
+// never reach the denominator. Three hand-written joins that agree today are
+// three that disagree the first time one of them is edited, so the predicate is
+// a const and TestEveryMemberCountUsesTheActivePredicate fails the build if any
+// of the three counts `conversation_members` without it.
+//
+// WHY A DEACTIVATED MEMBER STOPS COUNTING. Ruling 7 of CANT-33 keeps their
+// `conversation_members` row — they are frozen in place and a reactivation finds
+// their rooms as they left them — so a count over rows alone goes on counting
+// somebody who can no longer read, send or connect. The thread header then reads
+// `7 MEMBERS` about six people, which is the claim Invariant 3 says this service
+// must not make. A deactivated member stops counting exactly as one who left
+// does, and a reactivated one counts again with their old `read_seq`.
+//
+// BOTS COUNT. `kind` is not part of this predicate: a bot is a member that can
+// read, and CANT-76's `User.kind` is a different question. The only thing that
+// decides is whether the account can still reach the room.
+//
+// IT CORRELATES AGAINST THE ALIAS `am`, which is why all three sites name their
+// `conversation_members` scan that. A fragment that took its alias as a
+// parameter would be a function returning SQL, and the three call sites could
+// then pass three different aliases — which is the same drift in a costume.
+//
+// NO INDEX AND NO MIGRATION: the lookup is `users` by primary key, once per
+// counted row, inside a subquery Postgres already evaluates per outer row.
+const activeMemberExpr = `EXISTS (SELECT 1 FROM users amu
+	             WHERE amu.id = am.user_id AND amu.deactivated_at IS NULL)`
+
 // readByExpr counts how many members have read a message. `READ 5/7` in a room
 // is this over Conversation.member_count.
 //
-// IT COUNTS THE SAME POPULATION member_count DOES, and that is the whole of the
-// design here. The first version excluded the author from the numerator while
-// the denominator counted everybody, so in a seven-member room where all seven
-// had read a message the label said READ 6/7 — telling the author one person
-// had not seen it when everybody had, permanently, because 7/7 was unreachable.
-// The canvas's own reference data draws READ 7/7 and READ 9/9.
+// IT COUNTS THE SAME POPULATION member_count DOES — ACTIVE MEMBERS, by
+// activeMemberExpr above — and that is the whole of the design here. The first
+// version excluded the author from the numerator while the denominator counted
+// everybody, so in a seven-member room where all seven had read a message the
+// label said READ 6/7 — telling the author one person had not seen it when
+// everybody had, permanently, because 7/7 was unreachable. The canvas's own
+// reference data draws READ 7/7 and READ 9/9. CANT-135 re-scoped both halves
+// TOGETHER for exactly that reason: re-scoping one of them is the same bug.
 //
 // THE AUTHOR COUNTS FROM THE MOMENT THE MESSAGE EXISTS, by derivation rather
-// than by a receipt: `cm.user_id = m.author_id OR …`. You have read what you
+// than by a receipt: `am.user_id = m.author_id OR …`. You have read what you
 // wrote, and their read_seq cannot say so — advancing it on send was built and
 // removed, because it swallowed the sender's own unread backlog (0005). This is
 // the same fact, in the one place where a derivation can express it without a
 // scalar column having to.
-const readByExpr = `(SELECT count(*) FROM conversation_members cm
-	         WHERE cm.conversation_id = m.conversation_id
-	           AND (cm.user_id = m.author_id OR cm.read_seq >= m.seq))`
+//
+// THE AUTHOR'S OWN +1 IS SUBJECT TO THE PREDICATE TOO, AND THAT IS THE THIRD
+// CAUSE OF `read_by: 0` the schema now names. A deactivated author does not
+// count themselves, so a message of theirs that no active member has read serves
+// 0 — which is a fact about who can read it now, not a claim that nobody ever
+// did.
+const readByExpr = `(SELECT count(*) FROM conversation_members am
+	         WHERE am.conversation_id = m.conversation_id
+	           AND ` + activeMemberExpr + `
+	           AND (am.user_id = m.author_id OR am.read_seq >= m.seq))`
+
+// memberCountExpr is the denominator, correlated on `c.id` — the other half of
+// the fraction, in the same file as the numerator so the two are read together.
+// sync.go's two sites both use it; neither writes the count out by hand any
+// more.
+const memberCountExpr = `(SELECT count(*) FROM conversation_members am
+	         WHERE am.conversation_id = c.id
+	           AND ` + activeMemberExpr + `)`
 
 // ErrNotAMember is returned when the reader is not in the conversation. It
 // carries wire.ErrorCodeNotAMember through sendErrorTable, so a transport does

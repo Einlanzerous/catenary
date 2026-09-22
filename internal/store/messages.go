@@ -103,18 +103,45 @@ package store
 // the row as it now is.
 //
 // CANT-134's OFFBOARD AND ITS REVERSAL (internal/store/offboard.go) ARE THE
-// TICKET THIS PARAGRAPH WAS WRITTEN FOR, and they take:
+// TICKET THIS PARAGRAPH WAS WRITTEN FOR, and since CANT-137 BOTH DIRECTIONS
+// take:
 //
-//	users  →  refresh_tokens  →  access_tokens  →  devices  →  enrollment_tokens
+//	conversations (every room of the person, ascending id)  →
+//	conversation_members  →  users  →  refresh_tokens  →  access_tokens  →
+//	devices  →  enrollment_tokens  →  log_counter, LAST
 //
 // FOR NO KEY UPDATE on the user row, never FOR UPDATE, because setting or
 // clearing `deactivated_at` is a NON-KEY update: it composes with the KEY
 // SHARE a send takes on `users(author_id)` at position 11, so an offboard can
 // neither block a send nor cycle against one, exactly as metadata.go's own
-// argument requires of anything that locks a user row. NEITHER DRAWS
-// `log_counter` — no message, edit or receipt is written — so neither enters
-// the deployment-wide serialised section at all, and the counter's position at
-// the bottom of every writer's order is undisturbed.
+// argument requires of anything that locks a user row.
+//
+// THIS PARAGRAPH USED TO SAY "NEITHER DRAWS `log_counter`", AND CANT-137
+// CORRECTED IT. Both directions now draw, exactly once, last. `member_count` and
+// `read_by` count ACTIVE members (CANT-135 ruling 1), so setting or clearing that
+// one column changes what /sync serves for every room the person is in — and
+// without a marker the change reached nobody until something else happened to
+// touch the room. So both directions enter the deployment-wide serialised
+// section, briefly, after every row lock above is already held. Three reasons
+// that cannot cycle, and the first is why `conversations` moved to the front:
+//
+//   - AGAINST A SEND. A send takes `conversations(X)` at position 8 and draws at
+//     10. An offboard takes every room of the person before the counter and draws
+//     last, so both writers agree that conversations comes before the counter,
+//     and the two serialise on a conversation row or on the counter rather than
+//     waiting on each other in opposite directions. The FOR NO KEY UPDATE on
+//     `users` and `devices` still passes through the KEY SHARE position 11 takes,
+//     so nothing there changed.
+//   - AGAINST A METADATA BUMP. Identical table order, ascending id within each
+//     table, counter last. That is also why the offboard cannot leave its
+//     conversation locks to the bump at the bottom of its own transaction: the
+//     bump runs after `users`, so those would be the wrong locks at the wrong
+//     time, and holding `users` while reaching for `conversations` is the cycle
+//     metadata.go's header describes from the other side.
+//   - AGAINST invalidateFamily AND EnsurePerson'S CREATE PATH. Neither touches
+//     `conversations`, `conversation_members` or the counter at all, so the two
+//     new positions are invisible to both and the credential-table argument below
+//     is unchanged.
 //
 // THE THREE CREDENTIAL TABLES ARE TAKEN IN invalidateFamily'S ORDER (refresh.go),
 // and that is a hard requirement rather than a convention: a replay-triggered
@@ -122,11 +149,13 @@ package store
 // are a SUBSET of an offboard's, so the reverse order over the same rows is a
 // cycle, and Postgres resolves it by aborting one — a 500 on either the
 // offboard or the invalidation, both of which are the answer to somebody's
-// credential being in doubt. `enrollment_tokens` comes last and cannot cycle
+// credential being in doubt. `enrollment_tokens` comes last BEFORE THE COUNTER
+// and cannot cycle
 // against RedeemEnrollment, which takes that row FIRST and afterwards takes
 // only KEY SHARE on `users(id)` (compatible) and a brand-new `devices` row
 // (unlockable by anyone else): a redeem therefore never waits on an offboard,
-// and a cycle needs both directions.
+// and a cycle needs both directions. A redeem takes neither `conversations` nor
+// `log_counter`, so CANT-137's two new positions leave that argument alone.
 //
 // The devices write is also the thing that makes the OTHER mechanisms agree,
 // as invalidateFamily's own comment says of its copy: Authenticate refuses a

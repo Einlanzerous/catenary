@@ -213,6 +213,14 @@ const (
 	// criterion 5's negative control, and it is watched resurrecting that
 	// device.
 	personFaultReactivationSkipsSweep
+
+	// personFaultOffboardFailsAfterTheMarker makes DeactivateUser return an
+	// error after its metadata bump has drawn log_counter and written every
+	// marker, and before its Commit. CANT-137's own all-or-nothing control, and
+	// it watches the one thing the earlier fault cannot: that a DRAWN counter
+	// value rolls back with the rest — so a failed offboard leaves no gap in
+	// log_seq for a client to wonder about, and tells nobody anything.
+	personFaultOffboardFailsAfterTheMarker
 )
 
 // ---------------------------------------------------------------------------
@@ -471,6 +479,43 @@ func personLookupQuery(forUpdate bool, fault personGuardFault) string {
 	return q
 }
 
+// errReversalRacedAnOffboard is never returned to a caller: EnsurePerson's
+// bounded retry swallows it and runs a fresh attempt. It exists so the reason for
+// that retry is a named value rather than a bare `true` — the same courtesy
+// isHandleCollision and isEmailCollision do for the other two retry causes, and
+// the one the `gave up after N attempts` message wraps.
+var errReversalRacedAnOffboard = errors.New(
+	"store: ensure person: an offboard committed between this attempt's peek and its locked lookup")
+
+// peekForReversal runs the SHARED email lookup UNLOCKED, to answer one question
+// ahead of the lock: is this email a deactivated person, and which one?
+//
+// WHY IT REUSES personLookupQuery RATHER THAN A NARROWER ONE. The kind filter and
+// the case-insensitive match are the two rules that decide whether an email
+// resolves to a person at all, and a second query would be a second place for
+// either to be got wrong — which is the argument that put both callers on one
+// query in the first place. Three of the five columns are discarded here, and
+// naming them as discards is cheaper than a lookup that could disagree with the
+// one that decides.
+//
+// A MISS IS NOT AN ERROR. Nobody by this email, or an active person, both answer
+// "no room locks needed" — and ensurePersonOnce's locked lookup is what turns
+// either into an outcome.
+func (s *Store) peekForReversal(ctx context.Context, tx pgx.Tx, email string) (uuid.UUID, bool, error) {
+	var id uuid.UUID
+	var discardEmail, discardHandle, discardName string
+	var deactivated *time.Time
+	err := tx.QueryRow(ctx, personLookupQuery(false, s.personGuardFault), email).
+		Scan(&id, &discardEmail, &discardHandle, &discardName, &deactivated)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return uuid.Nil, false, nil
+	case err != nil:
+		return uuid.Nil, false, fmt.Errorf("store: ensure person: peek for the reversal: %w", err)
+	}
+	return id, deactivated != nil, nil
+}
+
 // ---------------------------------------------------------------------------
 // PersonByEmail
 
@@ -587,6 +632,46 @@ func (s *Store) ensurePersonOnce(ctx context.Context, email, displayName string)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// CANT-137 — THE REVERSAL'S ROOM LOCKS, TAKEN FROM AN UNLOCKED PEEK, AND WHY
+	// THE ORDER LEAVES NO CHOICE.
+	//
+	// A reactivation now draws a metadata marker for the person and for each of
+	// their rooms, and metadata.go's order puts `conversations` ABOVE `users`. But
+	// the branch that decides whether this is a reactivation at all is chosen by
+	// READING `deactivated_at` under the user lock — so by the time this function
+	// knows it needs the room locks, taking them would invert the order against a
+	// concurrent metadata bump, which is a cycle no ordering removes (offboard.go's
+	// file header).
+	//
+	// So the shared lookup runs TWICE: once unlocked, to learn whether this email
+	// belongs to a deactivated person and which one, and once locked, exactly as
+	// before, to decide. The unlocked read is a peek and is treated as one — it is
+	// allowed to be wrong, and the locked read is still the only thing that
+	// decides anything.
+	//
+	// THE TWO WAYS IT CAN BE WRONG, AND WHAT EACH COSTS.
+	//
+	//   - The peek says deactivated and the locked read says active (an offboard
+	//     was reversed in between). This transaction holds room locks it does not
+	//     need, in the right order, and releases them at commit. Nothing to do.
+	//   - The peek says active or nothing and the locked read says deactivated (an
+	//     offboard committed in between). The reversal needs locks this attempt
+	//     cannot take any more, so the attempt is ABANDONED and EnsurePerson runs
+	//     a whole new one — the retry seam that is already here for a lost INSERT
+	//     race, used for the second time and for the same reason: the state this
+	//     attempt read is stale and a fresh attempt reads it committed. The next
+	//     peek sees the offboard and takes the locks.
+	peekID, peekDeactivated, err := s.peekForReversal(ctx, tx, email)
+	if err != nil {
+		return EnsuredPerson{}, false, err
+	}
+	var rooms []uuid.UUID
+	if peekDeactivated {
+		if rooms, err = lockRoomsOfPerson(ctx, tx, peekID); err != nil {
+			return EnsuredPerson{}, false, fmt.Errorf("store: ensure person: %w", err)
+		}
+	}
+
 	var (
 		id                            uuid.UUID
 		storedEmail, handle, nameFrom string
@@ -598,22 +683,43 @@ func (s *Store) ensurePersonOnce(ctx context.Context, email, displayName string)
 	case err == nil:
 		outcome := PersonExisting
 		var revoked CredentialsRevoked
+		var cleared bool
 		if deactivated != nil {
+			if !peekDeactivated || peekID != id {
+				// The peek missed an offboard that committed in between. See the
+				// comment above: a whole new attempt, rather than reaching for
+				// room locks below the user lock this transaction already holds.
+				return EnsuredPerson{}, true, errReversalRacedAnOffboard
+			}
 			// THE REVERSAL — ruling 5, and the whole of CANT-134's second half.
 			// It runs on THIS transaction, which has held the user row FOR NO
 			// KEY UPDATE since the lookup above, so a reactivation can never
 			// commit without its sweep: sweep → publish → clear → issue.
-			swept, err := s.reactivateTx(ctx, tx, id)
+			swept, didClear, err := s.reactivateTx(ctx, tx, id)
 			if err != nil {
 				return EnsuredPerson{}, false, err
 			}
-			revoked, outcome = swept, PersonReactivated
+			revoked, cleared, outcome = swept, didClear, PersonReactivated
 		}
 
 		token, err := issueEnrollmentTokenTx(ctx, tx, id)
 		if err != nil {
 			return EnsuredPerson{}, false, err
 		}
+
+		// CANT-137 — THE MARKER, LAST, AFTER THE ENROLLMENT TOKEN AND BEFORE THE
+		// COMMIT. `enrollment_tokens` is position 7 of the order and the counter
+		// is position 8, so the draw cannot move above the token; and it is gated
+		// on the clear having actually moved the column, because that is the only
+		// thing here that changes a value /sync serves. An ordinary re-invite of
+		// an active person draws nothing and never enters the serialised section,
+		// which is what it did before this ticket and must go on doing.
+		if cleared {
+			if _, err := bumpDeactivationMarkers(ctx, tx, id, rooms); err != nil {
+				return EnsuredPerson{}, false, fmt.Errorf("store: ensure person: %w", err)
+			}
+		}
+
 		if err := tx.Commit(ctx); err != nil {
 			return EnsuredPerson{}, false, fmt.Errorf("store: ensure person: commit: %w", err)
 		}
@@ -626,6 +732,7 @@ func (s *Store) ensurePersonOnce(ctx context.Context, email, displayName string)
 			// never a token.
 			s.logger.WarnContext(ctx, "person reactivated; an offboard was reversed",
 				"user_id", id,
+				"rooms_marked", len(rooms),
 				"refresh_tokens_revoked", revoked.RefreshTokens,
 				"access_tokens_revoked", revoked.AccessTokens,
 				"devices_revoked", revoked.Devices,

@@ -229,6 +229,176 @@ func (b *metadataBump) apply(ctx context.Context, tx pgx.Tx) (int64, error) {
 	return v, nil
 }
 
+// ---------------------------------------------------------------------------
+// CANT-137 — users.deactivated_at, and the marker an offboard has to draw
+//
+// `deactivated_at` IS A WATCHED COLUMN NOW (metadata_guard_test.go's
+// metadataColumns), so the two statements that write it live here rather than in
+// offboard.go, and the guard is what keeps them here. CANT-135 ruling 1 is the
+// reason it became watched: `Conversation.member_count` and `Message.read_by`
+// count ACTIVE members (readstate.go's activeMemberExpr), so setting or clearing
+// that one column changes what /sync serves for every room the person is in —
+// and `metadata_guard_test.go`'s own instruction for exactly this case is "if it
+// does, add it to metadataColumns here at the same time".
+//
+// WITHOUT THE MARKER NOTHING ARRIVES. Until CANT-137 neither direction drew
+// `log_counter`, so no co-member's cursor was ever passed by either: the count
+// was recomputed at serve time and was therefore right the next time something
+// happened to touch the room, and not before. A quiet room showed a number that
+// claimed somebody who could no longer read anything, indefinitely. The marker is
+// what makes "nobody is offboarded without being told of" true.
+//
+// TWO MARKERS PER CHANGE, AND THEY CARRY DIFFERENT THINGS.
+//
+//   - Each ROOM the person is in gets `conversations.metadata_log_seq`, so that
+//     room's `Conversation` — with its new `member_count` — rides the next page
+//     to every other member. SyncResponse.conversations already promises "any
+//     whose metadata changed — … membership".
+//   - The PERSON gets `users.metadata_log_seq`, so their own `User` record rides
+//     too, carrying `deactivated: true` after an offboard and carrying the field
+//     absent after a reversal. loadUsers' reachability EXISTS is what bounds who
+//     that reaches: the people who share a room with them, which is exactly the
+//     set that can see the count change.
+//
+// NO PER-MEMBER MARKER. `conversation_members.metadata_log_seq` carries
+// first_unread_seq and muted, and a deactivation changes neither for anybody —
+// not for the person (their receipts simply stop moving) and not for a co-member.
+// Bumping it would wake every member's devices to tell them nothing about
+// themselves, which is the cost ruling 1 of CANT-89 chose the per-member marker
+// to avoid.
+//
+// ONE DRAW FOR THE WHOLE CHANGE, LAST, HOWEVER MANY ROOMS. metadataBump.apply's
+// own argument: a person's offboard is one event, not one per room, and a second
+// apply() in the same transaction would reach for its target row while holding
+// the counter.
+//
+// AND THE BUMP IS CONDITIONAL ON THE COLUMN HAVING MOVED, which is the same gate
+// the revocation NOTIFY already has. A converged retry — `deactivated_at` already
+// set, nothing to revoke — must not enter the deployment-wide serialised section
+// to record that nothing happened; and a retry that REPAIRS credentials without
+// moving the column changes no value /sync serves, so it has nothing to tell
+// anybody either.
+
+// lockRoomsOfPerson reads every conversation the person is a member of and locks
+// it, then locks the person's own membership row in each — positions 1 and 2 of
+// the order BOTH directions of a deactivation take, above the `users` lock the
+// caller then takes for itself.
+//
+// THIS IS WHY IT IS A SEPARATE STEP FROM THE BUMP AT THE BOTTOM. apply() locks
+// its conversations itself, but it runs LAST, after the caller has taken `users`
+// and written four credential tables. If those were the only conversation locks,
+// the transaction's real order would be `users → … → conversations → counter` —
+// inverted against a metadata bump holding `conversations(C)` and waiting on
+// `users(U)`, which is a cycle, and Postgres resolves one by aborting somebody.
+// So the rows are named and locked here, in the documented order, and apply()
+// then re-locks rows this transaction already holds, which costs nothing and
+// keeps its own invariant intact.
+//
+// THE ROOM SET IS READ ONCE, UNLOCKED, AND THAT BOUNDS WHAT THIS CAN PROMISE. A
+// conversation created FOR this person between this read and the commit is not in
+// the set and gets no marker from this transaction: only FindOrCreateDirect
+// creates one, and its row does not exist for this snapshot to lock. Its
+// co-member still learns of the deactivation, through the person's own `User`
+// record, and that room's count is corrected the next time anything touches it.
+// The alternative — discovering the room after `users` is held and locking it
+// then — is the inversion above, so the boundary is deliberate rather than
+// overlooked. (CANT-139 is the ticket for FindOrCreateDirect opening a room with
+// a deactivated person at all.)
+//
+// ASCENDING ID WITHIN EACH TABLE, AND IT COMES FROM sortedIDs RATHER THAN FROM
+// `ORDER BY`. Postgres compares uuid bytewise and so does sortedIDs, so the two
+// agree today — but "these two comparators agree" is a claim somebody has to
+// re-derive, and there is no reason to make them derive it. One comparator, the
+// one apply() uses.
+//
+// EVERY LOCK FOR NO KEY UPDATE, never FOR UPDATE, on this file's own argument:
+// the caller goes on to hold `users` and `devices` against a send that takes KEY
+// SHARE on both AFTER the counter, and FOR NO KEY UPDATE is what lets the two
+// compose. `conversation_members` is taken at the weaker level for the same
+// consistency reason apply() states, and it cannot cycle against MarkRead, which
+// takes that table before the counter too.
+func lockRoomsOfPerson(ctx context.Context, tx pgx.Tx, userID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := tx.Query(ctx,
+		`SELECT conversation_id FROM conversation_members WHERE user_id = $1`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("store: rooms of person: %w", err)
+	}
+	found, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("store: rooms of person: collect: %w", err)
+	}
+	set := make(map[uuid.UUID]bool, len(found))
+	for _, id := range found {
+		set[id] = true
+	}
+	rooms := sortedIDs(set)
+
+	for _, id := range rooms {
+		var got uuid.UUID
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM conversations WHERE id = $1 FOR NO KEY UPDATE`, id).Scan(&got); err != nil {
+			return nil, fmt.Errorf("store: rooms of person: lock conversation %s: %w", id, err)
+		}
+	}
+	for _, id := range rooms {
+		var got uuid.UUID
+		if err := tx.QueryRow(ctx, `SELECT user_id FROM conversation_members
+			 WHERE conversation_id = $1 AND user_id = $2 FOR NO KEY UPDATE`, id, userID).Scan(&got); err != nil {
+			return nil, fmt.Errorf("store: rooms of person: lock member %s: %w", id, err)
+		}
+	}
+	return rooms, nil
+}
+
+// setDeactivatedAt is the ONLY statement in the service that sets
+// users.deactivated_at, and clearDeactivatedAt the only one that clears it. Both
+// take the caller's transaction, which must already hold the user row.
+//
+// ITS OWN `IS NULL` IS THE TRANSITION TEST, AND THAT IS WHY IT RETURNS A BOOL
+// RATHER THAN NOTHING. The row is locked, so nothing can change the column
+// between the lock and this write; the predicate is still what decides, because
+// RowsAffected is then the answer to "did THIS call deactivate them" rather than
+// something inferred from a read — and that answer is both DeactivateUser's
+// `Deactivated` field and the gate on the marker bump below.
+func setDeactivatedAt(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (bool, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE users SET deactivated_at = now()
+		 WHERE id = $1 AND deactivated_at IS NULL`, userID)
+	if err != nil {
+		return false, fmt.Errorf("store: set deactivated_at: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// clearDeactivatedAt is the reversal's half. Same shape, same reason for the
+// predicate: a reversal that found the column already clear has nothing to tell
+// anybody, and its bool says so.
+func clearDeactivatedAt(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (bool, error) {
+	tag, err := tx.Exec(ctx, `
+		UPDATE users SET deactivated_at = NULL
+		 WHERE id = $1 AND deactivated_at IS NOT NULL`, userID)
+	if err != nil {
+		return false, fmt.Errorf("store: clear deactivated_at: %w", err)
+	}
+	return tag.RowsAffected() > 0, nil
+}
+
+// bumpDeactivationMarkers is the one draw, for the person and every room they
+// are in. ONE FUNCTION FOR BOTH DIRECTIONS, on revokeCredentialsTx's own
+// argument: what must never differ between an offboard and its reversal is which
+// rows are told about it, and the copy that would drift is the reversal's.
+//
+// The rooms are the ones lockRoomsOfPerson already locked, so apply()'s own
+// locks are all re-entrant and nothing here can block on a row this transaction
+// has not got.
+func bumpDeactivationMarkers(ctx context.Context, tx pgx.Tx, userID uuid.UUID, rooms []uuid.UUID) (int64, error) {
+	b := newMetadataBump().user(userID)
+	for _, id := range rooms {
+		b.conversation(id)
+	}
+	return b.apply(ctx, tx)
+}
+
 // CANT-75 — find-or-create the direct conversation between two people.
 //
 // D4: "create" is a conversations row PLUS TWO conversation_members rows,

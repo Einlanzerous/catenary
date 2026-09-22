@@ -528,6 +528,7 @@ final class User {
     required this.id,
     required this.name,
     this.initials,
+    this.deactivated,
   });
 
   final Uuid id;
@@ -541,12 +542,37 @@ final class User {
   /// problem for zero benefit.
   final String? initials;
 
+  /// Present and TRUE when this account has been deactivated, and ABSENT otherwise —
+  /// never `false`. Emitted only when true, so every client and every conformance vector
+  /// written before this field existed is untouched: a server with nothing to say says
+  /// nothing, which is the same rule `absent and null mean the same thing` states from
+  /// the other side.
+  ///
+  /// A deactivated person cannot read, send or connect. Their membership rows STAY where
+  /// they were (CANT-33 ruling 7), so their old messages keep their author and a
+  /// reactivation finds their rooms as they left them — which is why a client needs
+  /// telling: this is what lets it grey the author of an old message, or say that the
+  /// other half of a direct conversation cannot read what is being typed at them.
+  ///
+  /// IT DOES NOT MAKE THE HEADER HONEST, AND IS NOT WHAT KEEPS `read_by` HONEST EITHER.
+  /// `Conversation.member_count` and `Message.read_by` do that by not counting a
+  /// deactivated member at all, on the server, where there is something to subtract from
+  /// — there is no member list on the wire, so a flag on `User` has nothing a client
+  /// could subtract it from.
+  ///
+  /// THE MOMENT IS DELIBERATELY NOT HERE. When somebody was deprovisioned is an
+  /// operator's question, and a timestamp on this type would answer it for every member
+  /// of every room they were in. A boolean rather than a status enum, because there are
+  /// two states and `User.kind` (CANT-76) is the enum-shaped question. CANT-135 ruling 2.
+  final bool? deactivated;
+
   factory User.fromJson(Object? v, [String p = "User"]) {
     final o = _obj(v, p);
     return User(
       id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _asUuid(o["id"], '${p}.id'),
       name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'name must be at least 1 characters, got ${x.runes.length}'); return x; })(o["name"], '${p}.name'),
       initials: o["initials"] == null ? null : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'initials must be at least 1 characters, got ${x.runes.length}'); if (x.runes.length > 2) _bad(p, 'initials must be at most 2 characters, got ${x.runes.length}'); return x; })(o["initials"], '${p}.initials'),
+      deactivated: o["deactivated"] == null ? null : _bool(o["deactivated"], '${p}.deactivated'),
     );
   }
 
@@ -554,6 +580,7 @@ final class User {
     "id": id,
     "name": name,
     "initials": initials == null ? null : initials!,
+    "deactivated": deactivated == null ? null : deactivated!,
   });
 }
 
@@ -841,14 +868,18 @@ final class Message {
   /// permanently, and the canvas's own READ 7/7 was unreachable. The author's half is a
   /// DERIVATION rather than a stored receipt, because sending does not advance the
   /// sender's read_seq — that was built and removed for swallowing their own unread
-  /// backlog. BOTH HALVES COUNT TODAY'S MEMBERS: the numerator counts rows in
-  /// conversation_members and `member_count` counts the same table in the same serve, so
-  /// a member who read a message and then left stops counting in both, and one who joined
-  /// afterwards is in the denominator before their own receipt puts them in the
-  /// numerator. That is what keeps n/n reachable across a join or a departure. `0`
-  /// therefore does NOT mean "nobody else has read it" — with the author counted by
-  /// identity that is unreachable — it means the author is no longer a current member and
-  /// no current member's receipt has passed the message.
+  /// backlog. BOTH HALVES COUNT ACTIVE MEMBERS: a member counts iff their account is not
+  /// deactivated, and `member_count` and `read_by` apply that one test in the same serve,
+  /// so a member who is deactivated stops counting in both exactly as one who left does,
+  /// and a reactivated one counts again — with the receipt they already had, so the
+  /// numerator returns to where it was. One who joined afterwards is in the denominator
+  /// before their own receipt puts them in the numerator. That is what keeps n/n
+  /// reachable across a join, a departure or an offboard. `0` therefore does NOT mean
+  /// "nobody else has read it" — with the author counted by identity that is unreachable
+  /// — and it has THREE causes: the author has left the conversation, or the author is
+  /// DEACTIVATED, and in either case no active member's receipt has passed the message.
+  /// CANT-135 ruling 1 re-scoped BOTH halves together, because re-scoping one of them is
+  /// the READ 6/7 bug the paragraph above is about, arriving from the other side.
   final int? readBy;
 
   /// Echoed back to the sender only, so a client can match a broadcast message against
@@ -918,6 +949,25 @@ final class Conversation {
 
   final String name;
 
+  /// How many people are in this room, as the server counts them at serve time: the
+  /// thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
+  /// numerator over it.
+  ///
+  /// BOTH HALVES COUNT ACTIVE MEMBERS: a member counts iff their account is not
+  /// deactivated, and `member_count` and `read_by` apply that one test in the same serve,
+  /// so a member who is deactivated stops counting in both exactly as one who left does,
+  /// and a reactivated one counts again. That is what keeps the fraction able to reach
+  /// n/n.
+  ///
+  /// BOTS COUNT — a bot is a member that can read, and `kind` is no part of the test. A
+  /// DEACTIVATED PERSON DOES NOT: they cannot read, send or connect, so counting them
+  /// would make this header claim somebody the server cannot deliver to, which is the one
+  /// thing a client must never assert. CANT-135 ruling 1 re-scoped it, as a clarification
+  /// rather than a breaking change — see the compatibility policy in this schema's own
+  /// description.
+  ///
+  /// NEVER BELOW 1. A page is served only to a member who is active, so the reader is
+  /// always in their own count.
   final int memberCount;
 
   final bool? muted;

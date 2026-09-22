@@ -613,6 +613,29 @@ type User struct {
 	// about how to abbreviate a name — deriving this client-side is a two-implementation
 	// problem for zero benefit.
 	Initials *string `json:"initials,omitempty"`
+	// Present and TRUE when this account has been deactivated, and ABSENT otherwise —
+	// never `false`. Emitted only when true, so every client and every conformance vector
+	// written before this field existed is untouched: a server with nothing to say says
+	// nothing, which is the same rule `absent and null mean the same thing` states from
+	// the other side.
+	//
+	// A deactivated person cannot read, send or connect. Their membership rows STAY where
+	// they were (CANT-33 ruling 7), so their old messages keep their author and a
+	// reactivation finds their rooms as they left them — which is why a client needs
+	// telling: this is what lets it grey the author of an old message, or say that the
+	// other half of a direct conversation cannot read what is being typed at them.
+	//
+	// IT DOES NOT MAKE THE HEADER HONEST, AND IS NOT WHAT KEEPS `read_by` HONEST EITHER.
+	// `Conversation.member_count` and `Message.read_by` do that by not counting a
+	// deactivated member at all, on the server, where there is something to subtract from
+	// — there is no member list on the wire, so a flag on `User` has nothing a client
+	// could subtract it from.
+	//
+	// THE MOMENT IS DELIBERATELY NOT HERE. When somebody was deprovisioned is an
+	// operator's question, and a timestamp on this type would answer it for every member
+	// of every room they were in. A boolean rather than a status enum, because there are
+	// two states and `User.kind` (CANT-76) is the enum-shaped question. CANT-135 ruling 2.
+	Deactivated *bool `json:"deactivated,omitempty"`
 }
 
 // UnmarshalJSON decodes and VALIDATES a User: required fields must be
@@ -625,9 +648,10 @@ func (v *User) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *User) decode(b []byte, p string) error {
 	var s struct {
-		ID       *Uuid   `json:"id"`
-		Name     *string `json:"name"`
-		Initials *string `json:"initials"`
+		ID          *Uuid   `json:"id"`
+		Name        *string `json:"name"`
+		Initials    *string `json:"initials"`
+		Deactivated *bool   `json:"deactivated"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return decodeErr(p, err)
@@ -643,6 +667,9 @@ func (v *User) decode(b []byte, p string) error {
 	out.Name = *s.Name
 	if s.Initials != nil {
 		out.Initials = s.Initials
+	}
+	if s.Deactivated != nil {
+		out.Deactivated = s.Deactivated
 	}
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
@@ -1053,14 +1080,18 @@ type Message struct {
 	// permanently, and the canvas's own READ 7/7 was unreachable. The author's half is a
 	// DERIVATION rather than a stored receipt, because sending does not advance the
 	// sender's read_seq — that was built and removed for swallowing their own unread
-	// backlog. BOTH HALVES COUNT TODAY'S MEMBERS: the numerator counts rows in
-	// conversation_members and `member_count` counts the same table in the same serve, so
-	// a member who read a message and then left stops counting in both, and one who joined
-	// afterwards is in the denominator before their own receipt puts them in the
-	// numerator. That is what keeps n/n reachable across a join or a departure. `0`
-	// therefore does NOT mean "nobody else has read it" — with the author counted by
-	// identity that is unreachable — it means the author is no longer a current member and
-	// no current member's receipt has passed the message.
+	// backlog. BOTH HALVES COUNT ACTIVE MEMBERS: a member counts iff their account is not
+	// deactivated, and `member_count` and `read_by` apply that one test in the same serve,
+	// so a member who is deactivated stops counting in both exactly as one who left does,
+	// and a reactivated one counts again — with the receipt they already had, so the
+	// numerator returns to where it was. One who joined afterwards is in the denominator
+	// before their own receipt puts them in the numerator. That is what keeps n/n
+	// reachable across a join, a departure or an offboard. `0` therefore does NOT mean
+	// "nobody else has read it" — with the author counted by identity that is unreachable
+	// — and it has THREE causes: the author has left the conversation, or the author is
+	// DEACTIVATED, and in either case no active member's receipt has passed the message.
+	// CANT-135 ruling 1 re-scoped BOTH halves together, because re-scoping one of them is
+	// the READ 6/7 bug the paragraph above is about, arriving from the other side.
 	ReadBy *int64 `json:"read_by,omitempty"`
 	// Echoed back to the sender only, so a client can match a broadcast message against
 	// its own outbox entry when the `ack` and the `message` frame race. Other members
@@ -1196,11 +1227,30 @@ func (v *Message) decode(b []byte, p string) error {
 }
 
 type Conversation struct {
-	ID          Uuid             `json:"id"`
-	Kind        ConversationKind `json:"kind"`
-	Name        string           `json:"name"`
-	MemberCount int64            `json:"member_count"`
-	Muted       *bool            `json:"muted,omitempty"`
+	ID   Uuid             `json:"id"`
+	Kind ConversationKind `json:"kind"`
+	Name string           `json:"name"`
+	// How many people are in this room, as the server counts them at serve time: the
+	// thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
+	// numerator over it.
+	//
+	// BOTH HALVES COUNT ACTIVE MEMBERS: a member counts iff their account is not
+	// deactivated, and `member_count` and `read_by` apply that one test in the same serve,
+	// so a member who is deactivated stops counting in both exactly as one who left does,
+	// and a reactivated one counts again. That is what keeps the fraction able to reach
+	// n/n.
+	//
+	// BOTS COUNT — a bot is a member that can read, and `kind` is no part of the test. A
+	// DEACTIVATED PERSON DOES NOT: they cannot read, send or connect, so counting them
+	// would make this header claim somebody the server cannot deliver to, which is the one
+	// thing a client must never assert. CANT-135 ruling 1 re-scoped it, as a clarification
+	// rather than a breaking change — see the compatibility policy in this schema's own
+	// description.
+	//
+	// NEVER BELOW 1. A page is served only to a member who is active, so the reader is
+	// always in their own count.
+	MemberCount int64 `json:"member_count"`
+	Muted       *bool `json:"muted,omitempty"`
 	// The first seq the reader has not seen; absent means fully read. Both the rail's
 	// badge and the thread's "N NEW" rule derive from this. There is deliberately NO
 	// stored unread count on the wire, because a count and a marker can disagree and this

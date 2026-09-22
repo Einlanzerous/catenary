@@ -17,6 +17,10 @@
       "kind": "derived",
       "note": "Computed from display_name at serve time. Storing it would be a second source of truth that goes stale on a rename."
     },
+    "User.deactivated": {
+      "kind": "derived",
+      "note": "users.deactivated_at IS NOT NULL, tested at serve time. DERIVED rather than a column mapping, because the column is a timestamptz and the wire carries only whether it is set: the MOMENT of a deprovision is an operator's question, and a timestamp here would answer it for every member of every room the person is in. Emitted only when true, by wireview.User, so an active account carries no field at all. CANT-135 ruling 2."
+    },
     "TranscriptSegment.at_ms": {
       "kind": "column",
       "table": "attachments",
@@ -235,7 +239,7 @@
     },
     "Message.read_by": {
       "kind": "derived",
-      "note": "Count over conversation_members.read_seq, PLUS THE AUTHOR, who counts by derivation rather than by a receipt — sending does not advance read_seq (0005). Not stored, so it cannot drift from the receipts it summarises, and it counts the same population member_count does, so the fraction can reach n/n. CANT-26."
+      "note": "Count over conversation_members.read_seq, PLUS THE AUTHOR, who counts by derivation rather than by a receipt — sending does not advance read_seq (0005). Not stored, so it cannot drift from the receipts it summarises, and it counts the same population member_count does — ACTIVE members, by the one predicate in readstate.go — so the fraction can reach n/n. A deactivated author does not count themselves, which is the third cause of 0. CANT-26, re-scoped by CANT-135 ruling 1."
     },
     "Message.client_id": {
       "kind": "column",
@@ -276,7 +280,7 @@
     },
     "Conversation.member_count": {
       "kind": "derived",
-      "note": "Count over conversation_members. Not stored: that table already answers it."
+      "note": "Count over conversation_members, of ACTIVE members only — readstate.go's activeMemberExpr, joined to users on deactivated_at IS NULL. Not stored: those two tables already answer it, and a stored count is one that can disagree with them. The same predicate is the numerator's, so the fraction can reach n/n. CANT-135 ruling 1."
     },
     "Conversation.muted": {
       "kind": "column",

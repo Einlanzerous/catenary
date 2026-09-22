@@ -477,37 +477,211 @@ func TestTheOffboardsLockIsNeverKeyLevel(t *testing.T) {
 	}
 }
 
-func TestAnOffboardDrawsNoOrdinal(t *testing.T) {
+// AN OFFBOARD DRAWS EXACTLY ONE log_seq, HOWEVER MANY ROOMS, AND NO seq AT ALL.
+//
+// THIS TEST ASSERTED THE OPPOSITE UNTIL CANT-137, and the sentence it asserted —
+// "the offboard must never enter the deployment-wide serialised section" — is the
+// one CANT-135 ruling 3 overturned on purpose: without a draw the change reached
+// no co-member's cursor until something else happened to touch the room. What
+// survives unweakened is the half that was always the real hazard, and it is
+// asserted more strictly than before: the draw is ONE, not one per room, and
+// `conversations.last_seq` — the per-conversation ordinal, which is dense and
+// whose gaps a client is entitled to treat as missing messages — must not move at
+// all. Three rooms rather than one, because one room cannot tell a single draw
+// from a draw per room.
+func TestAnOffboardDrawsExactlyOneOrdinalForEveryRoomAndNoConversationSeq(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
 	f := newOffboarded(ctx, t, st)
-	conv := mkGroup(ctx, t, pool, "room", f.UserID)
+	rooms := []uuid.UUID{
+		mkGroup(ctx, t, pool, "room-a", f.UserID),
+		mkGroup(ctx, t, pool, "room-b", f.UserID),
+		mkGroup(ctx, t, pool, "room-c", f.UserID),
+	}
 	if _, err := st.SendMessage(ctx, NewMessage{
-		ConversationID: conv, AuthorID: f.UserID, ClientID: uuid.New(), Text: ptr("before"),
+		ConversationID: rooms[0], AuthorID: f.UserID, ClientID: uuid.New(), Text: ptr("before"),
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	var before, lastSeqBefore int64
+	lastSeqBefore := map[uuid.UUID]int64{}
+	var before int64
 	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &before)
-	mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv), &lastSeqBefore)
+	for _, r := range rooms {
+		var n int64
+		mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, r), &n)
+		lastSeqBefore[r] = n
+	}
 
-	if _, err := st.DeactivateUser(ctx, f.UserID); err != nil {
+	out, err := st.DeactivateUser(ctx, f.UserID)
+	if err != nil {
 		t.Fatalf("deactivate: %v", err)
 	}
 
-	var after, lastSeqAfter int64
+	var after int64
 	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &after)
-	mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, conv), &lastSeqAfter)
-
-	if after != before {
-		t.Errorf("log_counter moved %d -> %d across an offboard.\n"+
-			"Nothing here writes a message, an edit or a receipt, so the offboard must never enter the "+
-			"deployment-wide serialised section — and a drawn-but-unused ordinal is a gap in log_seq "+
-			"that no /sync can explain.", before, after)
+	if after != before+1 {
+		t.Errorf("log_counter moved %d -> %d across an offboard of somebody in %d rooms; want exactly one "+
+			"draw.\nOne atomic change draws ONE marker (metadata.go): an offboard is one event, not one per "+
+			"room, and a second apply() in the same transaction would reach for its target row while "+
+			"holding the counter — the cycle against SendMessage that metadata.go's header describes.",
+			before, after, len(rooms))
 	}
-	if lastSeqAfter != lastSeqBefore {
-		t.Errorf("conversations.last_seq moved %d -> %d across an offboard", lastSeqBefore, lastSeqAfter)
+	if out.MarkerLogSeq != after {
+		t.Errorf("the call reported MarkerLogSeq %d and the counter stands at %d; the reported value is "+
+			"what an operator correlates against a client's cursor, so it has to be the value drawn",
+			out.MarkerLogSeq, after)
+	}
+	// AND EVERY ROOM CARRIES THAT ONE VALUE, which is what makes the single draw
+	// a delivery rather than an economy: a room left behind at its old marker is a
+	// room whose member_count never arrives.
+	for _, r := range rooms {
+		var marker int64
+		mustScan(t, pool.QueryRow(ctx, `SELECT metadata_log_seq FROM conversations WHERE id = $1`, r), &marker)
+		if marker != after {
+			t.Errorf("room %s carries marker %d, want the change's own %d", r, marker, after)
+		}
+		var lastSeqAfter int64
+		mustScan(t, pool.QueryRow(ctx, `SELECT last_seq FROM conversations WHERE id = $1`, r), &lastSeqAfter)
+		if lastSeqAfter != lastSeqBefore[r] {
+			t.Errorf("conversations.last_seq for %s moved %d -> %d across an offboard.\n"+
+				"`seq` is DENSE: a client that can see 4 and 6 may assume 5 exists and it is missing it. "+
+				"Nothing here writes a message, so nothing here may draw one.", r, lastSeqBefore[r], lastSeqAfter)
+		}
+	}
+	var userMarker int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT metadata_log_seq FROM users WHERE id = $1`, f.UserID), &userMarker)
+	if userMarker != after {
+		t.Errorf("the person's own marker is %d, want %d — without it their `User` record, and so "+
+			"`deactivated: true`, rides no page at all", userMarker, after)
+	}
+}
+
+// A CONVERGED RETRY DRAWS NOTHING, on the same terms as it publishes nothing.
+// Entering the deployment-wide serialised section to record that nothing happened
+// is the cost MarkRead's own bump refuses for a duplicate receipt, and a
+// drawn-but-silent value is a gap in log_seq no /sync can explain.
+func TestAConvergedOffboardDrawsNoMarker(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	f := newOffboarded(ctx, t, st)
+	mkGroup(ctx, t, pool, "room", f.UserID)
+
+	first, err := st.DeactivateUser(ctx, f.UserID)
+	if err != nil {
+		t.Fatalf("first offboard: %v", err)
+	}
+	if first.MarkerLogSeq == 0 {
+		t.Fatal("the first offboard drew no marker, so this test's second half proves nothing")
+	}
+	var before int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &before)
+
+	second, err := st.DeactivateUser(ctx, f.UserID)
+	if err != nil {
+		t.Fatalf("second offboard: %v", err)
+	}
+	if second.MarkerLogSeq != 0 {
+		t.Errorf("a converged retry reported MarkerLogSeq %d, want 0", second.MarkerLogSeq)
+	}
+	var after int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &after)
+	if after != before {
+		t.Errorf("log_counter moved %d -> %d on a converged retry; want no draw at all", before, after)
+	}
+}
+
+// A CREDENTIAL-REPAIRING RETRY DRAWS NOTHING EITHER, and the gate is
+// `Deactivated` rather than `Changed()` for exactly this case. Revoking a stray
+// device changes no value on the wire, so there is nothing to tell a co-member —
+// while the publish, which severs that device's socket, still has to happen.
+func TestARepairingOffboardPublishesButDrawsNoMarker(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	f := newOffboarded(ctx, t, st)
+	mkGroup(ctx, t, pool, "room", f.UserID)
+
+	// The half-converged account TestASecondOffboardRepairs… builds: the column
+	// set by something outside this service, every credential it names still live.
+	if _, err := pool.Exec(ctx, `UPDATE users SET deactivated_at = now() WHERE id = $1`, f.UserID); err != nil {
+		t.Fatal(err)
+	}
+	var before int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &before)
+
+	var out Offboard
+	got := revocationsDuring(ctx, t, pool, func() {
+		var err error
+		if out, err = st.DeactivateUser(ctx, f.UserID); err != nil {
+			t.Errorf("deactivate: %v", err)
+		}
+	})
+
+	if len(got) != 1 {
+		t.Fatalf("%d revocations published while repairing, want 1", len(got))
+	}
+	if out.Deactivated {
+		t.Error("reported Deactivated on an account whose column was already set")
+	}
+	if out.MarkerLogSeq != 0 {
+		t.Errorf("MarkerLogSeq %d on a retry that moved no column; want 0 — the marker announces a change "+
+			"to what /sync serves, and revoking a device is not one", out.MarkerLogSeq)
+	}
+	var after int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &after)
+	if after != before {
+		t.Errorf("log_counter moved %d -> %d while only credentials were repaired", before, after)
+	}
+}
+
+// A FAULT AFTER THE MARKER WRITES LEAVES NOTHING CHANGED, PUBLISHES NOTHING, AND
+// CONSUMES NO VISIBLE log_seq. The counter is a ROW, not a sequence, so its draw
+// rolls back with everything else — which is Invariant 1's whole argument, and
+// this is the one place a test can watch it hold for a marker rather than for a
+// message.
+func TestAFaultAfterTheMarkerLeavesNothingChangedAndNoGap(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	f := newOffboarded(ctx, t, st)
+	mkGroup(ctx, t, pool, "room", f.UserID)
+
+	before := tablesSnapshot(ctx, t, pool)
+	beforeMembership := membershipSnapshot(ctx, t, pool)
+	var headBefore int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &headBefore)
+
+	st.personGuardFault = personFaultOffboardFailsAfterTheMarker
+	got := revocationsDuring(ctx, t, pool, func() {
+		if _, err := st.DeactivateUser(ctx, f.UserID); err == nil {
+			t.Error("the injected fault did not fail the call")
+		}
+	})
+
+	if len(got) != 0 {
+		t.Errorf("%d revocations published by an offboard that failed after its marker, want 0", len(got))
+	}
+	if after := tablesSnapshot(ctx, t, pool); after != before {
+		t.Error("an offboard that failed after its marker changed the database")
+	}
+	if after := membershipSnapshot(ctx, t, pool); after != beforeMembership {
+		t.Error("an offboard that failed after its marker left a marker behind.\n" +
+			"The bump writes conversations.metadata_log_seq, which membershipSnapshot excludes — so " +
+			"seeing this fire means something else in that table moved and survived.")
+	}
+	var headAfter int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &headAfter)
+	if headAfter != headBefore {
+		t.Errorf("log_counter stands at %d having been %d before a FAILED offboard.\n"+
+			"A drawn value that survives its own rollback is a gap no /sync can explain — and it is "+
+			"precisely what a bigserial would have left here.", headAfter, headBefore)
+	}
+	// And the marker the bump wrote is gone with it, so no room claims to have
+	// been told anything.
+	var marker int64
+	mustScan(t, pool.QueryRow(ctx,
+		`SELECT coalesce(max(metadata_log_seq), 0) FROM conversations`), &marker)
+	if marker > headAfter {
+		t.Errorf("a conversation carries marker %d above the counter's own %d", marker, headAfter)
 	}
 }
 
@@ -845,26 +1019,45 @@ func TestWithoutItsKindFilterDeactivateUserWouldRevokeABotsCredentials(t *testin
 // as one comparable string — tablesSnapshot's shape, pointed at the other side
 // of the model. `messages` is here too: an offboard must not edit, delete or
 // re-attribute a single one.
+//
+// `conversations.metadata_log_seq` IS THE ONE EXCLUSION, AND CANT-137 IS WHY.
+// That column is not membership and not content: it is the marker that carries a
+// changed `member_count` to the room's other members, and an offboard now moves
+// it in exactly the rooms the person is a member of. Excluding it by name — rather
+// than dropping `conversations` from this snapshot — is what keeps the assertion
+// SHARPER than it was: every other column of that table, `name`, `kind`,
+// `last_seq`, `retention_days` and `direct_key`, must still be identical, so the
+// offboard is held to writing precisely one column of it and nothing else.
+//
+// `conversation_members` IS NOT EXCLUDED AT ALL, including its own
+// `metadata_log_seq`. A deactivation changes nobody's first_unread_seq and
+// nobody's muted, so the per-member marker must not move — and this is where that
+// is asserted (metadata.go's own note says the same thing from the other side).
+//
+// The columns come from to_jsonb rather than from a hand-written list, so a
+// column added to any of the three tables is in the snapshot the day it is
+// added and this helper cannot silently stop watching one.
 func membershipSnapshot(ctx context.Context, t *testing.T, pool *pgxpool.Pool) string {
 	t.Helper()
 	var b strings.Builder
 	for _, q := range []struct{ name, sql string }{
-		{"conversation_members", `SELECT * FROM conversation_members ORDER BY conversation_id, user_id`},
-		{"conversations", `SELECT * FROM conversations ORDER BY id`},
-		{"messages", `SELECT * FROM messages ORDER BY log_seq`},
+		{"conversation_members", `SELECT to_jsonb(x)::text FROM conversation_members x
+			 ORDER BY conversation_id, user_id`},
+		{"conversations", `SELECT (to_jsonb(c) - 'metadata_log_seq')::text FROM conversations c ORDER BY id`},
+		{"messages", `SELECT to_jsonb(m)::text FROM messages m ORDER BY log_seq`},
 	} {
 		rows, err := pool.Query(ctx, q.sql)
 		if err != nil {
 			t.Fatalf("snapshot %s: %v", q.name, err)
 		}
-		vals, err := pgx.CollectRows(rows, pgx.RowToMap)
+		vals, err := pgx.CollectRows(rows, pgx.RowTo[string])
 		if err != nil {
 			t.Fatalf("snapshot %s: collect: %v", q.name, err)
 		}
 		b.WriteString(q.name)
 		b.WriteByte(':')
 		for _, v := range vals {
-			fmt.Fprintf(&b, "%v;", v)
+			fmt.Fprintf(&b, "%s;", v)
 		}
 		b.WriteByte('\n')
 	}
@@ -908,12 +1101,23 @@ func TestAnOffboardLeavesMembershipReceiptsAndMessagesByteForByte(t *testing.T) 
 	}
 }
 
-// THE OTHER MEMBERS' VIEW, THROUGH THE PATH THAT COMPUTES IT rather than
-// through the columns it reads. first_unread_seq and read_by are both derived
-// (invariant 3), so "the rows did not change" is not the same claim as "what
-// the other member sees did not change" — and the second is the one ruling 7's
-// cost is stated in terms of.
-func TestTheOtherMembersFirstUnreadSeqAndReadByAreUnchangedByAnOffboard(t *testing.T) {
+// THE OTHER MEMBER'S VIEW, THROUGH THE PATH THAT COMPUTES IT rather than
+// through the columns it reads. first_unread_seq, member_count and read_by are
+// all derived (invariant 3), so "the rows did not change" is not the same claim
+// as "what the other member sees did not change" — and the second is the one
+// ruling 7's cost was stated in terms of.
+//
+// TWO OF THE THREE CHANGED THEIR ANSWER IN CANT-137, AND THAT IS THE POINT OF
+// THE TICKET RATHER THAN A WEAKENING OF THIS TEST. Its old body required
+// `member_count` and `read_by` to be unchanged across an offboard, and said in
+// so many words that CANT-135 was where that would be answered and it must not
+// be answered here by accident. It is answered there now, deliberately, and this
+// test carries the corrected claim: the two counts FALL, by one predicate,
+// together; `first_unread_seq` — which reads only messages and the viewer's own
+// read_seq — does not move at all. The room-of-four scenario with a reactivation
+// is honestcounts_test.go's TestARoomOfFourCountsOnlyItsActiveMembers; this one
+// stays here because it is the CANT-134 evidence being corrected.
+func TestAnOffboardLowersTheOtherMembersCountsAndLeavesFirstUnreadSeqAlone(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
 	f := newOffboarded(ctx, t, st)
@@ -939,25 +1143,37 @@ func TestTheOtherMembersFirstUnreadSeqAndReadByAreUnchangedByAnOffboard(t *testi
 		t.Fatalf("conversations before=%d after=%d, want 1 each", len(before.Conversations), len(after.Conversations))
 	}
 	b, a := before.Conversations[0], after.Conversations[0]
-	if b.MemberCount != a.MemberCount {
-		t.Errorf("member count %d -> %d. Ruling 7 accepted that N MEMBERS goes on counting somebody "+
-			"who can no longer read anything — CANT-135 is where that is answered, and it must not be "+
-			"answered here by accident", b.MemberCount, a.MemberCount)
+	if b.MemberCount != 2 || a.MemberCount != 1 {
+		t.Errorf("member count %d -> %d, want 2 -> 1. `N MEMBERS` must stop counting somebody who can "+
+			"no longer read anything — the claim invariant 3 says this service must not make, and the "+
+			"cost ruling 7 of CANT-33 accepted until CANT-135 ruling 1 removed it", b.MemberCount, a.MemberCount)
 	}
 	switch {
 	case (b.FirstUnreadSeq == nil) != (a.FirstUnreadSeq == nil):
-		t.Errorf("first_unread_seq presence changed: %v -> %v", b.FirstUnreadSeq, a.FirstUnreadSeq)
+		t.Errorf("first_unread_seq presence changed: %v -> %v.\n"+
+			"It depends only on messages and this viewer's own read_seq, so an offboard must not reach it "+
+			"— and it is the one of the three counts CANT-137 deliberately did not touch.",
+			b.FirstUnreadSeq, a.FirstUnreadSeq)
 	case b.FirstUnreadSeq != nil && *b.FirstUnreadSeq != *a.FirstUnreadSeq:
 		t.Errorf("first_unread_seq %d -> %d for a member who was not offboarded", *b.FirstUnreadSeq, *a.FirstUnreadSeq)
 	}
 	if len(before.ReadBy) != len(after.ReadBy) {
 		t.Fatalf("read_by covers %d messages before and %d after", len(before.ReadBy), len(after.ReadBy))
 	}
+	// Both messages were written by the person now offboarded and theo has read
+	// neither, so the author's own +1 is the whole of the count before and there
+	// is nobody left to count after. This is `read_by: 0`'s THIRD cause, which
+	// the schema's description now names.
 	for id, n := range before.ReadBy {
-		if after.ReadBy[id] != n {
-			t.Errorf("read_by for message %s: %d -> %d. It counts members by identity, so removing the "+
-				"author from conversation_members WOULD change it — which is exactly what ruling 7 says "+
-				"an offboard does not do", id, n, after.ReadBy[id])
+		if n != 1 {
+			t.Errorf("read_by for message %s was %d before the offboard, want 1 (the author, by "+
+				"identity); the case below is not the one this test means to exercise", id, n)
+		}
+		if after.ReadBy[id] != 0 {
+			t.Errorf("read_by for message %s: %d -> %d, want 0.\n"+
+				"The author is deactivated, so they no longer count themselves and no active member's "+
+				"receipt has passed the message — the third cause of 0 that Message.read_by's schema "+
+				"description now states.", id, n, after.ReadBy[id])
 		}
 	}
 }

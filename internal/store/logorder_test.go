@@ -584,6 +584,232 @@ func TestConcurrentWritersInDistinctConversationsAreNeverSkipped(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Arm 3 · the property with offboards and reactivations interleaved
+//
+// CANT-137 criterion 6. Until that ticket nothing but a send and a metadata bump
+// drew from `log_counter`; an offboard and its reversal now draw one each, so
+// `log_seq` is consumed by writers that are not messages while messages are being
+// written in parallel. The property has to hold across that, and the reason it is
+// worth asserting rather than assuming is that the offboard's draw sits at the
+// bottom of a transaction that ALSO holds several `conversations` rows — the exact
+// rows a concurrent send wants — so it is the first thing in this service that can
+// serialise a send behind something other than another send.
+//
+// THE ORACLE CHANGES SHAPE AND THE PROPERTY DOES NOT. Arms 1 and 2 assert strict
+// contiguity: `log_seq` 1..N with nothing missing, which is sound while only sends
+// draw. It is WRONG here, and asserting it would be asserting against Invariant 1
+// itself — `log_seq` is server-global and SPARSE, and its gaps carry no
+// information. What replaces it is the property stated directly: nothing at or
+// below the reader's cursor may be a message the reader was never handed. That
+// still fires at the moment of a skip, which is the whole reason Arm 2's
+// contiguity check exists.
+
+// pollToleratingMarkerGaps is Arm 3's poll. Same query, same cursor advance, a
+// different oracle — and a separate method rather than a flag on poll(), so that
+// Arms 1 and 2 keep the stricter check they are entitled to.
+//
+// `count(*) … WHERE log_seq <= cursor` IS EXACT RATHER THAN A HEURISTIC. The
+// cursor advances only to a value this reader was handed, every handed row is
+// appended to `delivered` exactly once (the query is `> cursor`, so no row can
+// arrive twice), and every delivered row has `log_seq <= cursor`. So the count of
+// messages at or below the cursor and the number delivered are equal iff nothing
+// was skipped.
+func (r *syncReader) pollToleratingMarkerGaps(ctx context.Context) error {
+	rows, err := r.conn.Query(ctx,
+		`SELECT id, log_seq FROM messages WHERE log_seq > $1 ORDER BY log_seq`, r.cursor)
+	if err != nil {
+		return fmt.Errorf("poll: %w", err)
+	}
+	for rows.Next() {
+		var id uuid.UUID
+		var logSeq int64
+		if err := rows.Scan(&id, &logSeq); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan: %w", err)
+		}
+		// The cursor advances to what it was handed, across a gap, for Arm 2's own
+		// reason: a real client cannot know a row below is missing, so it never
+		// asks again and the skip becomes permanent at exactly this line.
+		r.cursor = logSeq
+		r.delivered = append(r.delivered, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	var behind int64
+	if err := r.conn.QueryRow(ctx,
+		`SELECT count(*) FROM messages WHERE log_seq <= $1`, r.cursor).Scan(&behind); err != nil {
+		return fmt.Errorf("poll: count behind the cursor: %w", err)
+	}
+	if behind != int64(len(r.delivered)) {
+		return skipErr{got: r.cursor, want: behind - int64(len(r.delivered))}
+	}
+	return nil
+}
+
+// arm3Churners is how many people are being offboarded and reinstated in a loop.
+// Two rather than one, so two of them can want the same `conversations` rows at
+// once — which is the pairing the ascending-id rule exists for and the one a
+// single churner cannot produce.
+const arm3Churners = 2
+
+// arm3Cycles is offboard-then-reactivate, per churner. Each cycle draws two
+// markers, so the log ends up with roughly as many non-message ordinals as this
+// number times four — enough that the reader's stream is visibly sparse and the
+// old contiguity oracle would have failed on the first poll.
+const arm3Cycles = 12
+
+func TestConcurrentSendsInterleavedWithOffboardsAndReactivationsAreNeverSkipped(t *testing.T) {
+	ctx, pool := freshDB(t)
+	writers := writerPool(ctx, t, arm2PoolMaxConns)
+	st := New(writers, DefaultLimits(), discardLogger())
+
+	// One author for every send, always active, so a refused send cannot be
+	// mistaken for a lost one. The churners are separate people who are MEMBERS
+	// of the same rooms, which is what makes their offboards lock the rows the
+	// sends want.
+	author := mkUser(ctx, t, pool, "arm3-author")
+	convs := make([]uuid.UUID, arm2Writers)
+	for i := range convs {
+		convs[i] = mkGroup(ctx, t, pool, fmt.Sprintf("arm3-room-%d", i), author)
+	}
+
+	type churner struct {
+		id    uuid.UUID
+		email string
+	}
+	churners := make([]churner, arm3Churners)
+	for i := range churners {
+		email := fmt.Sprintf("arm3-churner%d@example.com", i)
+		ep, err := st.EnsurePerson(ctx, email, "Churner")
+		if err != nil {
+			t.Fatalf("churner %d: %v", i, err)
+		}
+		churners[i] = churner{id: ep.Account.UserID, email: email}
+		// EVERY room, for both of them: two offboards then want the same set of
+		// `conversations` rows, in the same ascending order, while sends hold one
+		// of them each.
+		for _, c := range convs {
+			mkMember(ctx, t, pool, c, churners[i].id)
+		}
+	}
+
+	const perWriter = 15
+	const totalMessages = arm2Writers * perWriter
+
+	reader := newSyncReader(standaloneConn(ctx, t, "cant19-reader"))
+	readerDone := make(chan error, 1)
+	stop := make(chan struct{})
+	var readerErr error
+	finishReader := sync.OnceFunc(func() {
+		close(stop)
+		readerErr = <-readerDone
+	})
+	defer finishReader()
+
+	go func() {
+		for {
+			if err := reader.pollToleratingMarkerGaps(ctx); err != nil {
+				readerDone <- err
+				return
+			}
+			select {
+			case <-stop:
+				readerDone <- reader.pollToleratingMarkerGaps(ctx)
+				return
+			default:
+			}
+		}
+	}()
+
+	var wg sync.WaitGroup
+	sendErrs := make([]error, arm2Writers)
+	churnErrs := make([]error, arm3Churners)
+	start := make(chan struct{})
+
+	for w := range arm2Writers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range perWriter {
+				if _, err := referenceInserter(ctx, writers, convs[w], author, uuid.New(), "m"); err != nil {
+					sendErrs[w] = err
+					return
+				}
+			}
+		}()
+	}
+	for c := range arm3Churners {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range arm3Cycles {
+				if _, err := st.DeactivateUser(ctx, churners[c].id); err != nil {
+					churnErrs[c] = fmt.Errorf("offboard: %w", err)
+					return
+				}
+				if _, err := st.EnsurePerson(ctx, churners[c].email, "Churner"); err != nil {
+					churnErrs[c] = fmt.Errorf("reactivate: %w", err)
+					return
+				}
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for w, err := range sendErrs {
+		if err != nil {
+			t.Fatalf("writer %d: %v.\n"+
+				"A send must not fail because somebody in the same room was being offboarded — the "+
+				"offboard takes every one of its person's rooms FOR NO KEY UPDATE and the send takes one "+
+				"of them, both before the counter, so the two serialise rather than cycle.", w, err)
+		}
+	}
+	for c, err := range churnErrs {
+		if err != nil {
+			t.Fatalf("churner %d: %v.\nThis is the call that must not flake: Purser's Deprovision sees a 500.", c, err)
+		}
+	}
+
+	finishReader()
+	if readerErr != nil {
+		t.Fatalf("a sync client reading alongside %d writers and %d people being offboarded and "+
+			"reinstated was skipped: %v", arm2Writers, arm3Churners, readerErr)
+	}
+	if err := reader.pollToleratingMarkerGaps(ctx); err != nil {
+		return
+	}
+	if len(reader.delivered) != totalMessages {
+		t.Fatalf("the reader was handed %d of %d messages", len(reader.delivered), totalMessages)
+	}
+	reader.assertDeliveredEverything(ctx, t, pool)
+
+	// THE LOG REALLY IS SPARSE, WHICH IS WHAT SAYS THIS ARM MEASURED ANYTHING. If
+	// the markers had not drawn, the counter would stand at the message count and
+	// this arm would be Arm 2 with extra goroutines.
+	var head int64
+	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &head)
+	if head <= int64(totalMessages) {
+		t.Errorf("log_counter stands at %d with %d messages written; the offboards and reactivations "+
+			"drew nothing, so nothing here was interleaved and the arm proves only what Arm 2 does",
+			head, totalMessages)
+	}
+	// And every churner is back, which is what makes the cycles cycles.
+	for i, c := range churners {
+		var deactivated *time.Time
+		mustScan(t, pool.QueryRow(ctx, `SELECT deactivated_at FROM users WHERE id = $1`, c.id), &deactivated)
+		if deactivated != nil {
+			t.Errorf("churner %d ended deactivated; the last reactivation did not commit", i)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // The structural guard
 //
 // The cheap half of the permanent net, and the half that cannot rot. Arm 2

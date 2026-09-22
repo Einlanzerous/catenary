@@ -144,6 +144,59 @@ async function main() {
     `settled at ${sent.state}`,
   )
 
+  // 6. CANT-137 — a deactivated member is not one the header claims.
+  //
+  // THE HEADER NEEDS NO CHANGE AND THAT IS THE WHOLE RESULT. `member_count` is
+  // now the count of ACTIVE members, computed on the server by one predicate
+  // shared with `read_by` (CANT-135 ruling 1); `Thread.vue` renders the number it
+  // is given and has no idea anything happened. So this section builds the page a
+  // server WOULD serve for a room of seven with one member deprovisioned, and
+  // asserts the rendered chip. There is no member list on the wire, which is
+  // exactly why the count has to be honest before it leaves the server: a client
+  // has nothing to subtract a flag from.
+  //
+  // THE SIX IS DERIVED, NOT TYPED. Counting a seven-name roster with one of them
+  // deactivated is what makes this a test of the rule rather than of a literal —
+  // typing `memberCount: 6` and asserting `6 MEMBERS` would pass against any
+  // number at all. It is the same arithmetic the server's predicate does, and the
+  // same 6 the `sync_response_with_a_deactivated_member` conformance vector
+  // carries.
+  //
+  // SECTION 1'S `7 MEMBERS · TLS` LANDMARK IS UNTOUCHED. It asserts against the
+  // `main` string captured at the top, and this section adds a NEW conversation
+  // rather than editing Kitchen Table — so the shipped corpus, and the canvas's
+  // own seven-member room, are exactly what they were.
+  const roster = [
+    { id: 'u-hollis', deactivated: false },
+    { id: 'u-ilse', deactivated: false },
+    { id: 'u-nadia', deactivated: false },
+    { id: 'u-marek', deactivated: false },
+    { id: 'u-ted', deactivated: false },
+    { id: 'u-rosa', deactivated: false },
+    // Deprovisioned. Their membership row stays (CANT-33 ruling 7), so their old
+    // messages keep their author — and they stop being counted.
+    { id: 'u-ada', deactivated: true },
+  ]
+  const active = roster.filter((m) => !m.deactivated).length
+  check('the roster is seven with one deactivated', roster.length === 7 && active === 6,
+    `${active} of ${roster.length}`)
+  state.conversations.push({
+    id: 'c-offboarded',
+    kind: 'group',
+    name: 'Allotment Six',
+    memberCount: active,
+    headSeq: 1,
+  })
+  select('c-offboarded')
+  const honest = await render()
+  check('a deactivated member is not in the header count', honest.includes('6 MEMBERS · TLS'))
+  check('and the header still says TLS rather than E2E', !honest.includes('E2E'))
+  check(
+    'the room of seven is not claimed anywhere on that page',
+    !honest.includes('7 MEMBERS'),
+    'the count is the server\'s, and Thread.vue renders what it is given',
+  )
+
   console.log(fail.length ? `\n${fail.length} FAILED` : '\nall green')
   process.exit(fail.length ? 1 : 0)
 }
