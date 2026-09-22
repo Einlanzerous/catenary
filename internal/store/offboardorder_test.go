@@ -249,19 +249,31 @@ func bumpRoomAndMaybeUser(ctx context.Context, pool *pgxpool.Pool, user uuid.UUI
 // together on a closed channel rather than on a sleep, which is what makes the
 // overlap real rather than hoped for.
 //
-// `bothMustSucceed` IS NOT A CONVENIENCE, AND IT WAS ADDED IN REVIEW (#84, round
-// 3). A lock failure is always fatal — that is the ordering property every case
-// here exists to assert. But for most of these pairings a non-lock error is a
-// failure too, and saying so is the stronger claim: an offboard, a reversal and a
-// metadata bump are all calls that must simply work while the other one runs, and
-// the offboard is the one that must not flake, because Purser's Deprovision sees
-// a 500. Without this flag those cases asserted only "no deadlock" while their
-// own comments claimed both racers commit — a comment ahead of its test.
+// ANY ERROR FROM EITHER RACER IS FATAL, AND IT TOOK TWO ROUNDS OF REVIEW TO GET
+// THERE (#84). Round 1 of this helper reported nothing but a deadlock and a lock
+// timeout and logged everything else — so six cases whose own comments claimed
+// both racers commit asserted only "no deadlock", and `go test` prints a `t.Logf`
+// only under `-v`, which is the silent-green shape this repo's guards exist to
+// catch. Round 3 added a `bothMustSucceed` flag with two SEND cases exempted,
+// justified by "a send may be refused on its own merits — its author's own
+// offboard can land first". Round 4 found that reason unavailable in either test:
+// the sender is `theo`, an active member of the room in every round, and he is
+// never the subject of a deprovision anywhere in the package. The case the
+// exemption described is CANT-134's TestASendRacingAnOffboardNeitherDeadlocks,
+// where the author IS the person being offboarded — that test does its own error
+// classification and does not use this helper.
 //
-// It is false for exactly the two SEND cases, where a send may be refused on its
-// own merits and only a lock failure is a defect. Those two say so at their call
-// site.
-func race(t *testing.T, rounds int, bothMustSucceed bool, setUp func(n int), left, right func(n int) error) {
+// Worse, the flag was per CALL rather than per RACER, so `false` exempted the
+// offboard and the reversal too — the two calls this helper's own message says
+// must not flake, because Purser's Deprovision sees a 500. So the flag is gone
+// rather than split: every pairing here is two calls that must both commit while
+// the other runs, and there is no case left to tolerate.
+//
+// A LOCK FAILURE IS REPORTED SEPARATELY, because it means something different: a
+// 40P01 or a 55P03 says the order in messages.go's list is not the order the code
+// takes, while any other error says one of these calls simply broke. Both are
+// fatal; a reader of the failure should not have to work out which happened.
+func race(t *testing.T, rounds int, setUp func(n int), left, right func(n int) error) {
 	t.Helper()
 	for n := range rounds {
 		setUp(n)
@@ -288,14 +300,13 @@ func race(t *testing.T, rounds int, bothMustSucceed bool, setUp func(n int), lef
 					"list is not the order the code takes — or that the two writers disagree about it.",
 					n, i, code, err)
 			}
-			if bothMustSucceed {
-				t.Fatalf("round %d: racer %d failed with something other than a lock: %v.\n"+
-					"Both of these have to commit while the other runs. The offboard in particular is "+
-					"the one call that must not flake — Purser's Deprovision sees a 500 — and a "+
-					"reversal or a metadata bump aborting for any reason is the same defect wearing a "+
-					"different error.", n, i, err)
-			}
-			t.Logf("round %d: racer %d returned %v (tolerated — see the call site)", n, i, err)
+			t.Fatalf("round %d: racer %d failed with something other than a lock: %v.\n"+
+				"Both of these have to commit while the other runs. The offboard in particular is "+
+				"the one call that must not flake — Purser's Deprovision sees a 500 — and a "+
+				"reversal or a metadata bump aborting for any reason is the same defect wearing a "+
+				"different error. A send that may legitimately be refused does not belong in this "+
+				"helper; see TestASendRacingAnOffboardNeitherDeadlocks, which classifies its own.",
+				n, i, err)
 		}
 	}
 }
@@ -307,10 +318,13 @@ func TestAnOffboardRacingACoMembersSendIntoTheSharedRoom(t *testing.T) {
 
 	var user uuid.UUID
 	var room uuid.UUID
-	// A send may be refused on its own merits — its author's own offboard can
-	// land first — so only a LOCK failure is a defect here. Every other race in
-	// this file requires both racers to commit.
-	race(t, raceRounds, false,
+	// BOTH RACERS MUST COMMIT, AND theo IS WHY THAT IS THE HONEST VALUE (#84 round
+	// 4). The sender is an active member of the room in every round and is never
+	// the subject of a deprovision anywhere in this package, so there is no reason
+	// his send can be refused — the "a send may legitimately fail" case is
+	// CANT-134's TestASendRacingAnOffboardNeitherDeadlocks, where the author IS the
+	// person being offboarded.
+	race(t, raceRounds,
 		func(n int) {
 			user, _, _ = racePerson(ctx, t, st, n)
 			room = mkGroup(ctx, t, pool, fmt.Sprintf("shared%d", n), user, theo)
@@ -324,13 +338,24 @@ func TestAnOffboardRacingACoMembersSendIntoTheSharedRoom(t *testing.T) {
 			return err
 		})
 
-	// THE SEND IS THE ONE THAT MUST NOT FAIL AT ALL. A co-member has nothing to
-	// do with the offboard; their message failing because somebody else was
-	// deprovisioned a millisecond earlier is the failure this order exists to
-	// prevent, and it would look like an ordinary 500 to them.
+	// AND AFTERWARDS, INTO A ROOM WHOSE OTHER MEMBER IS ALREADY GONE. The race
+	// above covers the concurrent case; this covers the settled one, which is the
+	// state every room the person was in is left in. It OFFBOARDS FIRST — round 4
+	// of the review found this loop asserting its message against a room whose
+	// other member was never deprovioned at all, which made it a test of an
+	// ordinary send.
+	//
+	// A co-member has nothing to do with somebody else's offboard, and their
+	// message failing because of it would look like an ordinary 500 to them. Note
+	// what the send has to do here: `member_count` for this room is now 1, and the
+	// send path reads `conversation_members` at its membership EXISTS without
+	// caring, which is the property this confirms rather than assumes.
 	for n := range 3 {
 		user, _, _ = racePerson(ctx, t, st, 100+n)
 		room = mkGroup(ctx, t, pool, fmt.Sprintf("after%d", n), user, theo)
+		if _, err := st.DeactivateUser(ctx, user); err != nil {
+			t.Fatalf("offboard before the settled send: %v", err)
+		}
 		if _, err := st.SendMessage(ctx, NewMessage{
 			ConversationID: room, AuthorID: theo, ClientID: uuid.New(), Text: ptr("still works"),
 		}); err != nil {
@@ -345,7 +370,7 @@ func TestAnOffboardRacingAMetadataBumpOfTheSameRoom(t *testing.T) {
 	st := New(racer, DefaultLimits(), discardLogger())
 
 	var user, room uuid.UUID
-	race(t, raceRounds, true,
+	race(t, raceRounds,
 		func(n int) {
 			user, _, _ = racePerson(ctx, t, st, n)
 			room = mkGroup(ctx, t, pool, fmt.Sprintf("bumped%d", n), user)
@@ -364,7 +389,7 @@ func TestAnOffboardRacingABumpOfBothTheRoomAndThePerson(t *testing.T) {
 	st := New(racer, DefaultLimits(), discardLogger())
 
 	var user, room uuid.UUID
-	race(t, raceRounds, true,
+	race(t, raceRounds,
 		func(n int) {
 			user, _, _ = racePerson(ctx, t, st, n)
 			room = mkGroup(ctx, t, pool, fmt.Sprintf("bumped%d", n), user)
@@ -381,7 +406,7 @@ func TestAReactivationRacingABumpOfBothTheRoomAndThePerson(t *testing.T) {
 
 	var user, room uuid.UUID
 	var email string
-	race(t, raceRounds, true,
+	race(t, raceRounds,
 		func(n int) {
 			user, _, email = racePerson(ctx, t, st, n)
 			room = mkGroup(ctx, t, pool, fmt.Sprintf("bumped%d", n), user)
@@ -402,7 +427,7 @@ func TestTwoOffboardsOfTwoPeopleWhoShareTwoRooms(t *testing.T) {
 	st := New(poolWithLockTimeout(ctx, t, raceLockTimeout), DefaultLimits(), discardLogger())
 
 	var first, second uuid.UUID
-	race(t, raceRounds, true,
+	race(t, raceRounds,
 		func(n int) {
 			first, _, _ = racePerson(ctx, t, st, 2*n)
 			second, _, _ = racePerson(ctx, t, st, 2*n+1)
@@ -424,10 +449,11 @@ func TestAReactivationRacingACoMembersSendIntoTheSharedRoom(t *testing.T) {
 
 	var email string
 	var room uuid.UUID
-	// A send may be refused on its own merits — its author's own offboard can
-	// land first — so only a LOCK failure is a defect here. Every other race in
-	// this file requires both racers to commit.
-	race(t, raceRounds, false,
+	// BOTH RACERS MUST COMMIT, on the same argument as the offboard's version of
+	// this race: theo is an active member throughout and is never deprovisioned,
+	// so his send has nothing to fail for, and a reversal that aborts for any
+	// reason is a defect.
+	race(t, raceRounds,
 		func(n int) {
 			var user uuid.UUID
 			user, _, email = racePerson(ctx, t, st, n)
@@ -453,7 +479,7 @@ func TestAReactivationRacingAMetadataBumpOfTheSameRoom(t *testing.T) {
 
 	var email string
 	var room uuid.UUID
-	race(t, raceRounds, true,
+	race(t, raceRounds,
 		func(n int) {
 			var user uuid.UUID
 			user, _, email = racePerson(ctx, t, st, n)
@@ -477,7 +503,7 @@ func TestAnOffboardRacingAReactivationOfSomebodyWhoSharesTheirRoom(t *testing.T)
 
 	var goingOut uuid.UUID
 	var comingBackEmail string
-	race(t, raceRounds, true,
+	race(t, raceRounds,
 		func(n int) {
 			var comingBack uuid.UUID
 			goingOut, _, _ = racePerson(ctx, t, st, 2*n)
