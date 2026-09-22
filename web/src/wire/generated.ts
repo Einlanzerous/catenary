@@ -619,12 +619,29 @@ export interface Message {
   // and a reactivated one counts again — with the receipt they already had, so the
   // numerator returns to where it was. One who joined afterwards is in the denominator
   // before their own receipt puts them in the numerator. That is what keeps n/n
-  // reachable across a join, a departure or an offboard. `0` therefore does NOT mean
-  // "nobody else has read it" — with the author counted by identity that is unreachable
-  // — and it has THREE causes: the author has left the conversation, or the author is
-  // DEACTIVATED, and in either case no active member's receipt has passed the message.
-  // CANT-135 ruling 1 re-scoped BOTH halves together, because re-scoping one of them is
-  // the READ 6/7 bug the paragraph above is about, arriving from the other side.
+  // reachable across a join, a departure or an offboard.
+  //
+  // AND IT HOLDS PER SERVE, WHICH IS NOT THE SAME AS ACROSS TWO OF THEM: A CACHED
+  // `read_by` IS NOT CURRENT AFTER `member_count` CHANGES. Both halves are computed
+  // together in the serve that carries them, so a page is always internally consistent.
+  // But a deactivation changes the `read_by` of messages a client ALREADY HOLDS, and
+  // nothing re-sends them: a message is on a `/sync` page only when its `log_seq` is
+  // above the caller's cursor, and neither an offboard nor its reversal moves a
+  // message's `log_seq` — deliberately, because `seq` is dense. So a client holding
+  // `read_by: 7` that is then served `member_count: 6` must not render `READ 7/6`, and
+  // one that cached `read_by: 6` during an offboard and is then served `member_count: 7`
+  // must not render `READ 6/7` for a message everybody has read. A FRACTION IS RENDERED
+  // ONLY FROM A NUMERATOR AND A DENOMINATOR THAT ARRIVED IN THE SAME SERVE. CANT-140 is
+  // where the server-side mechanism is decided; this sentence is the rule until it
+  // lands, and it is here rather than in two clients because that is the divergence the
+  // one schema exists to prevent.
+  //
+  // `0` therefore does NOT mean "nobody else has read it" — with the author counted by
+  // identity that is unreachable — and it has THREE causes: the author has left the
+  // conversation, or the author is DEACTIVATED, and in either case no active member's
+  // receipt has passed the message. CANT-135 ruling 1 re-scoped BOTH halves together,
+  // because re-scoping one of them is the READ 6/7 bug the paragraph above is about,
+  // arriving from the other side.
   readBy?: number
   // Echoed back to the sender only, so a client can match a broadcast message against
   // its own outbox entry when the `ack` and the `message` frame race. Other members

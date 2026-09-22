@@ -100,6 +100,20 @@ const activeMemberExpr = `EXISTS (SELECT 1 FROM users amu
 // count themselves, so a message of theirs that no active member has read serves
 // 0 — which is a fact about who can read it now, not a claim that nobody ever
 // did.
+//
+// WHAT THIS DEPENDENCY ON `users` COSTS, AND IT IS CANT-140 (found in review of
+// #84). Both halves of the fraction move together IN ONE SERVE, which is what
+// the paragraph above is about. They do NOT move together across two serves to
+// one client: a deactivation changes the `read_by` of every message in every room
+// the person is in, an offboard marks only `conversations` and `users`, and Sync
+// serves a message only when `m.log_seq > after`. So a client holding
+// `read_by: 7` is served `member_count: 6` and nothing re-sends the message —
+// and after a reversal, a client that cached 6 renders `READ 6/7` for a message
+// everybody read, indefinitely. `Message.read_by`'s schema description carries
+// the client rule (render a fraction only from halves that arrived together);
+// the server-side mechanism is CANT-140's to decide, and it is not settled here.
+// A DEPARTURE HAS THE IDENTICAL SHAPE and always did — nothing removes a
+// membership row yet, which is the only reason it has never been reachable.
 const readByExpr = `(SELECT count(*) FROM conversation_members am
 	         WHERE am.conversation_id = m.conversation_id
 	           AND ` + activeMemberExpr + `
