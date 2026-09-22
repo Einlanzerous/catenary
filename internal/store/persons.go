@@ -597,14 +597,31 @@ func (s *Store) EnsurePerson(ctx context.Context, email, displayName string) (En
 	}
 	displayName = strings.TrimSpace(displayName)
 
-	// BOUNDED RETRY, NOT AN INFINITE LOOP. The only path back here is a 23505
-	// on the email or the handle constraint — see ensurePersonOnce — and each
-	// one means a concurrent EnsurePerson (or, for the handle, a concurrent
-	// `catenary bot create`) just committed the row this attempt's stale read
-	// missed. One retry always resolves the email case, because the second
-	// attempt's lookup deterministically finds the row the first attempt's
-	// failed INSERT proves now exists. The bound exists so a bug elsewhere
-	// fails loudly instead of spinning.
+	// BOUNDED RETRY, NOT AN INFINITE LOOP. THREE PATHS BACK HERE, AND THEY ARE
+	// NOT THE SAME SHAPE — the third was added by CANT-137 and this paragraph
+	// used to say "the only path".
+	//
+	//   - A 23505 on the EMAIL constraint. A concurrent EnsurePerson for the same
+	//     email committed the row this attempt's stale read missed. ONE retry
+	//     always resolves it, because the second attempt's lookup
+	//     deterministically finds the row the first attempt's failed INSERT
+	//     proves now exists.
+	//   - A 23505 on the HANDLE constraint, from a concurrent `catenary bot
+	//     create` or EnsurePerson choosing the identical string. Resolved by
+	//     re-running chooseHandle against committed state.
+	//   - errReversalRacedAnOffboard: this attempt's unlocked peek said the email
+	//     was not a deactivated person and its LOCKED lookup said it was, so an
+	//     offboard committed in between and the reversal needs room locks this
+	//     transaction cannot take any more. See ensurePersonOnce's own comment for
+	//     why the peek exists at all. Unlike the email case this is NOT
+	//     single-retry by construction: a second offboard committing inside the
+	//     next attempt's own peek window sends it back here again. It is
+	//     vanishingly unlikely — it needs a deprovision landing in a window a few
+	//     statements wide, twice — and the bound is what makes "unlikely" safe
+	//     rather than a hope.
+	//
+	// The bound exists so a bug elsewhere, or a pathological run of any of the
+	// three, fails loudly instead of spinning.
 	const maxAttempts = 5
 	var lastErr error
 	for attempt := 0; attempt < maxAttempts; attempt++ {

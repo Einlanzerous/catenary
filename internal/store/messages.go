@@ -89,9 +89,24 @@ package store
 // re-invite them or refuse must not straddle a concurrent deactivation
 // landing in between. FOR NO KEY UPDATE, never FOR UPDATE, on metadata.go's
 // own argument — it does not conflict with the KEY SHARE a send takes on
-// `users(author_id)` at position 11, so the two compose. It draws no ordinal
-// of its own and so never enters the deployment-wide serialised section at
-// all.
+// `users(author_id)` at position 11, so the two compose.
+//
+// IT DRAWS NO ORDINAL ON ITS CREATE PATH OR ITS PLAIN RE-INVITE, AND IT DOES ON
+// ITS REVERSAL — the clause CANT-137 had to split, because the sentence here
+// used to say "never" of the whole function and that is now true of only two of
+// its three branches. `ensurePersonOnce` IS the reversal (it calls
+// reactivateTx), so when the locked lookup finds a deactivated person it takes
+// the CANT-134 paragraph's order below in full — the person's rooms first, from
+// an unlocked peek above the lookup, and `log_counter` last, one statement
+// before its Commit. An ordinary invite or re-invite of an active person locks
+// `users` and `enrollment_tokens` and nothing else, and never enters the
+// deployment-wide serialised section at all: the draw is gated on
+// `deactivated_at` having actually been cleared, so every Purser bundle re-run
+// stays out of it.
+//
+// Said here rather than left to the paragraph below because this list is read as
+// exhaustive, and a reader looking up where EnsurePerson may take a lock must
+// not find a claim that is true of two branches out of three.
 //
 // SetEmail (same file) TAKES THE SAME LOCK ON THE SAME ARGUMENT, added in
 // review (#79): reading `email IS NOT NULL` and writing it on a later

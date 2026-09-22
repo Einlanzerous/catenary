@@ -1247,8 +1247,16 @@ type Conversation struct {
 	// rather than a breaking change — see the compatibility policy in this schema's own
 	// description.
 	//
-	// NEVER BELOW 1. A page is served only to a member who is active, so the reader is
-	// always in their own count.
+	// NEVER BELOW 1, AND THE REASON IS DELIVERABILITY RATHER THAN ARITHMETIC. On `/sync`
+	// the floor is the reader: a page is served only to a member who is active, so the
+	// reader is always in their own count. The server also computes this number once per
+	// member when it fans a message out, and that pass does not skip a deactivated member
+	// — their `Conversation` would carry a smaller count, and in a room where every member
+	// had been deprovisioned it would carry 0. No such record can reach anybody: a
+	// deactivated account holds no live socket, because deactivating one severs every
+	// session it has. So the constraint holds on what can be DELIVERED, which is a weaker
+	// guarantee than the count itself and is stated that way here because a decoder
+	// enforces the bound.
 	MemberCount int64 `json:"member_count"`
 	Muted       *bool `json:"muted,omitempty"`
 	// The first seq the reader has not seen; absent means fully read. Both the rail's

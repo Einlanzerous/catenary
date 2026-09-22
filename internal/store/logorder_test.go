@@ -782,7 +782,7 @@ func TestConcurrentSendsInterleavedWithOffboardsAndReactivationsAreNeverSkipped(
 			"reinstated was skipped: %v", arm2Writers, arm3Churners, readerErr)
 	}
 	if err := reader.pollToleratingMarkerGaps(ctx); err != nil {
-		return
+		t.Fatalf("after every writer and every churner committed: %v", err)
 	}
 	if len(reader.delivered) != totalMessages {
 		t.Fatalf("the reader was handed %d of %d messages", len(reader.delivered), totalMessages)

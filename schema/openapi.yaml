@@ -364,7 +364,7 @@ components:
 
             BOTS COUNT — a bot is a member that can read, and `kind` is no part of the test. A DEACTIVATED PERSON DOES NOT: they cannot read, send or connect, so counting them would make this header claim somebody the server cannot deliver to, which is the one thing a client must never assert. CANT-135 ruling 1 re-scoped it, as a clarification rather than a breaking change — see the compatibility policy in this schema's own description.
 
-            NEVER BELOW 1. A page is served only to a member who is active, so the reader is always in their own count.
+            NEVER BELOW 1, AND THE REASON IS DELIVERABILITY RATHER THAN ARITHMETIC. On `/sync` the floor is the reader: a page is served only to a member who is active, so the reader is always in their own count. The server also computes this number once per member when it fans a message out, and that pass does not skip a deactivated member — their `Conversation` would carry a smaller count, and in a room where every member had been deprovisioned it would carry 0. No such record can reach anybody: a deactivated account holds no live socket, because deactivating one severs every session it has. So the constraint holds on what can be DELIVERED, which is a weaker guarantee than the count itself and is stated that way here because a decoder enforces the bound.
         muted:
           type: "boolean"
         first_unread_seq:
