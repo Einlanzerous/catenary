@@ -17,6 +17,9 @@ const props = defineProps<{
 
 const mine = computed(() => isMine(props.message))
 const author = computed(() => user(props.message.authorId))
+/** Their membership row stays after a deactivation, so the message keeps its
+ *  author — this is the quiet "cannot read this any more" marker for it. */
+const authorDeactivated = computed(() => !!author.value?.deactivated)
 const voice = computed(() => voiceOf(props.message))
 const images = computed<ImageAttachment[]>(
   () =>
@@ -69,7 +72,12 @@ const returnTo = computed(() => {
     <div class="body">
       <div v-if="startsGroup" class="head">
         <Avatar :user-id="message.authorId" :size="20" />
-        <span class="name">{{ mine ? 'You' : author?.name }}</span>
+        <span class="name" :class="{ deactivated: authorDeactivated }">{{
+          mine ? 'You' : author?.name
+        }}</span>
+        <!-- Quiet and factual, never the copper accent: this reads "cannot
+             read this any more", not an alarm. -->
+        <span v-if="authorDeactivated" class="deactivated-tag">DEACTIVATED</span>
         <!-- Narrow only: the gutter collapses and the stamp comes inline,
              still tabular. -->
         <span class="inline-time meta tnum">{{ clock(message.at) }}</span>
@@ -184,6 +192,18 @@ const returnTo = computed(() => {
 
 .row.mine .name {
   color: var(--accent-wire);
+}
+
+/* CANT-138: dimmed, not alarmed — the copper accent is spoken for. */
+.name.deactivated {
+  color: var(--text-dim);
+}
+
+.deactivated-tag {
+  font: var(--type-label);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
 }
 
 .back {

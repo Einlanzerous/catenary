@@ -6,6 +6,7 @@ import {
   activeConversation,
   activeMessages,
   newCount,
+  otherMember,
   state,
   typingLabel,
 } from '@/store'
@@ -18,6 +19,13 @@ interface UnreadRule { kind: 'unread'; key: string; label: string }
 interface Row { kind: 'message'; key: string; message: Message; previous?: Message }
 
 const conversation = computed(() => activeConversation.value)
+
+/** CANT-138: the other half of a direct conversation cannot read what is
+ *  being typed at them — the header says so, quietly, when it is true. */
+const otherDeactivated = computed(() => {
+  const c = conversation.value
+  return c?.kind === 'direct' && !!otherMember(c)?.deactivated
+})
 
 /**
  * The two rules that break the run of messages: a date change, and the point
@@ -82,6 +90,9 @@ watch(
   <section class="thread">
     <header class="head">
       <h1 class="title">{{ conversation.name }}</h1>
+      <!-- Quiet and factual, never the copper accent: this reads "cannot
+           read this any more", not an alarm. -->
+      <span v-if="otherDeactivated" class="deactivated-tag">DEACTIVATED</span>
       <!-- TLS, not E2E. D1 declines end-to-end encryption and names honesty
            about what the server can see as the mitigation, so the chip states
            the guarantee that actually holds: encrypted in transit. -->
@@ -167,6 +178,14 @@ watch(
   font-size: 10.5px;
   letter-spacing: 0.08em;
   color: var(--text-meta);
+}
+
+/* CANT-138: dimmed, not alarmed — the copper accent is spoken for. */
+.deactivated-tag {
+  font: var(--type-label);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
 }
 
 .tools {

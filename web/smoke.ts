@@ -197,6 +197,38 @@ async function main() {
     'the count is the server\'s, and Thread.vue renders what it is given',
   )
 
+  // 7. CANT-138 — a deactivated person's old message, and the DM whose other
+  //    half is deactivated, are marked; an active person's is not.
+  //
+  // u-petra is deactivated but her membership rows stay (CANT-33 ruling 7):
+  // she keeps authorship of her old message in Bergen Hill Co-op, and
+  // c-petra's only message is hers. Both must carry the quiet textual
+  // marker this ticket adds, and MAIN — captured at the top against Kitchen
+  // Table, where nobody is deactivated — proves an active author gets none.
+  check(
+    'active authors carry no mark on the default screen',
+    !main.includes('DEACTIVATED'),
+  )
+
+  select('c-bergen')
+  const bergenPage = await render()
+  check(
+    'a deactivated author is dimmed in a group room',
+    bergenPage.includes('Petra Lindqvist') && bergenPage.includes('DEACTIVATED'),
+  )
+
+  select('c-petra')
+  const petraDm = await render()
+  check(
+    'the DM header marks a deactivated other half',
+    petraDm.includes('Petra Lindqvist') && petraDm.includes('DEACTIVATED'),
+  )
+
+  // An active DM's header carries no mark — same component, other member.
+  select('c-ilse')
+  const ilseDm = await render()
+  check('an active DM header carries no mark', !ilseDm.includes('DEACTIVATED'))
+
   console.log(fail.length ? `\n${fail.length} FAILED` : '\nall green')
   process.exit(fail.length ? 1 : 0)
 }

@@ -27,6 +27,15 @@ export interface User {
   name: string
   /** Two letters. Rooms have none — the rail is text-only for rooms. */
   initials: string
+  /**
+   * Present and true only once this account has been deactivated (CANT-137's
+   * `User.deactivated`); absent otherwise, never `false`. Their membership
+   * rows stay where they were, so their old messages keep their author — this
+   * is what a client dims the author of an old message for, and marks the
+   * header of a direct conversation whose other half cannot read what is
+   * being typed at them (CANT-138).
+   */
+  deactivated?: boolean
 }
 
 export interface VoiceAttachment {
