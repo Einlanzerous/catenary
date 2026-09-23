@@ -115,6 +115,35 @@ func (p *peer) nothing(t *testing.T) {
 	}
 }
 
+// waitForDrained polls, with a bounded deadline and never a bare sleep as the
+// wait itself, until every given peer's got channel holds at least `want`
+// frames — i.e. until each one's run() goroutine has actually caught its
+// outbox up to this point, rather than assuming it has. See
+// TestASlowConsumerIsSeveredWithoutBlockingTheEnqueuer's chunk comment for
+// why a burst test needs this between chunks and not just at the end.
+func waitForDrained(t *testing.T, want int, peers ...*peer) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		done := true
+		for _, p := range peers {
+			if len(p.got) < want {
+				done = false
+			}
+		}
+		if done {
+			return
+		}
+		if time.Now().After(deadline) {
+			for _, p := range peers {
+				t.Errorf("peer %s: got %d frame(s), want at least %d", p.user, len(p.got), want)
+			}
+			t.FailNow()
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 type fakeStore struct {
 	fanout     func(ctx context.Context, conv uuid.UUID, seq int64) (store.FanoutMessage, error)
 	members    func(ctx context.Context, conv uuid.UUID) ([]uuid.UUID, error)
@@ -393,17 +422,53 @@ func TestASlowConsumerIsSeveredWithoutBlockingTheEnqueuer(t *testing.T) {
 	// conversation's first message would prepend an introduction to the burst.
 	const frames = outboxBound + 20
 	const firstBurstSeq = store.FirstMessageSeq + 1
-	var slowest time.Duration
+	// CHUNKED, NOT FIRED BLIND (CANT-142). A frame lands on a reader's own
+	// outbox (cap outboxBound) before its run() goroutine ever gets to drain
+	// it into r.got — draining r.got, below, does nothing for that, since
+	// r.got only fills once run() has already dequeued. This loop used to
+	// fire every notify back to back and trust the scheduler to run r1's and
+	// r2's run() goroutines often enough that neither outbox ever approached
+	// outboxBound, same as the stuck peer's. Under real load that trust is
+	// misplaced: CANT-142 reproduced r1 AND r2 severed alongside the stuck
+	// peer — "slow consumer severed" logged three times, Attached() left at
+	// 0 — with nothing in the hub at fault, purely because their run()
+	// goroutines went unscheduled for long enough to fill 256-deep outboxes
+	// of their own. chunk keeps the gap between "sent" and "drained" small
+	// enough that no amount of scheduling delay can build a 256-deep backlog
+	// on a peer that IS reading — it only widens between checks, and each
+	// check waits for it to close before widening it again.
+	const chunk = 32
+	// THE OBSERVABLE IS THE ENQUEUER'S RETURN, NOT A WALL-CLOCK BUDGET
+	// (CANT-142). This used to time each f.notify call and fail past 100ms —
+	// a comparison that cannot tell "the sever's select took the blocking
+	// branch" from "the scheduler hadn't run this goroutine yet", and
+	// CANT-142 reproduced exactly that false reading under load, with the
+	// enqueue itself never touching the stuck peer's channel. What the test
+	// needs proved is narrower and does not need a tight bound to prove it:
+	// f.notify returns AT ALL rather than blocking on the stuck peer's
+	// unread channel. A real regression to a blocking send hangs until
+	// stuck.block closes, which happens only after this loop returns — so
+	// any finite wait here catches it, and a generous one just stops
+	// mistaking scheduler noise for that regression.
+	const perCallBound = 2 * time.Second
+	sent := 0
 	for i := firstBurstSeq; i < firstBurstSeq+frames; i++ {
-		start := time.Now()
-		f.notify(i)
-		if d := time.Since(start); d > slowest {
-			slowest = d
+		callDone := make(chan struct{})
+		go func(seq int64) {
+			f.notify(seq)
+			close(callDone)
+		}(i)
+		select {
+		case <-callDone:
+		case <-time.After(perCallBound):
+			t.Fatalf("an enqueue for seq %d did not return within %v; the sever must not wait on the peer", i, perCallBound)
+		}
+		sent++
+		if sent%chunk == 0 {
+			waitForDrained(t, sent, r1, r2)
 		}
 	}
-	if slowest > 100*time.Millisecond {
-		t.Errorf("an enqueue blocked for %v; the sever must not wait on the peer", slowest)
-	}
+	waitForDrained(t, sent, r1, r2)
 	deadline := time.Now().Add(5 * time.Second)
 	for stuck.closedNow() == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
