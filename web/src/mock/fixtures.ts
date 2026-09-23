@@ -20,6 +20,10 @@ export const USERS: Record<string, User> = {
   'u-marek': { id: 'u-marek', name: 'Marek Dubois', initials: 'MD' },
   'u-ted': { id: 'u-ted', name: 'Ted Almasy', initials: 'TA' },
   'u-rosa': { id: 'u-rosa', name: 'Rosa Whitfield', initials: 'RW' },
+  // CANT-138 — deactivated. Her membership rows stay where they were: she
+  // still authors an old message in Bergen Hill Co-op, and c-petra's only
+  // message is hers, so both marks the ticket asks for are exercised.
+  'u-petra': { id: 'u-petra', name: 'Petra Lindqvist', initials: 'PL', deactivated: true },
 }
 
 export const CONVERSATIONS: Conversation[] = [
@@ -32,6 +36,8 @@ export const CONVERSATIONS: Conversation[] = [
   { id: 'c-nadia', kind: 'direct', name: 'Nadia Okonkwo', memberCount: 2, headSeq: 133 },
   { id: 'c-ted', kind: 'direct', name: 'Ted Almasy', memberCount: 2, headSeq: 19 },
   { id: 'c-rosa', kind: 'direct', name: 'Rosa Whitfield', memberCount: 2, headSeq: 64 },
+  // CANT-138 — the other half is deactivated; the header has to say so.
+  { id: 'c-petra', kind: 'direct', name: 'Petra Lindqvist', memberCount: 2, headSeq: 5 },
 ]
 
 /**
@@ -190,6 +196,13 @@ export const MESSAGES: Message[] = [
   },
 
   // ── Bergen Hill Co-op ──────────────────────────────────────────────────
+  // CANT-138 — an old message from a since-deactivated author (u-petra). Her
+  // membership row stays, so it keeps her name; the row dims it.
+  {
+    id: 'm-b411', seq: 411, conversationId: 'c-bergen', authorId: 'u-petra',
+    at: at(6, '10:02'), state: 'delivered',
+    text: 'handed the spare gate key to Ted before rotation ends — deliveries can go through him from here',
+  },
   {
     id: 'm-b412', seq: 412, conversationId: 'c-bergen', authorId: 'u-ted',
     at: at(0, '13:55'), state: 'delivered',
@@ -292,5 +305,12 @@ export const MESSAGES: Message[] = [
     id: 'm-r064', seq: 64, conversationId: 'c-rosa', authorId: 'u-rosa',
     at: at(5, '19:30'), state: 'delivered',
     text: 'that’s the one, thank you',
+  },
+
+  // ── DM: Petra — the other half is deactivated ───────────────────────────
+  {
+    id: 'm-p005', seq: 5, conversationId: 'c-petra', authorId: 'u-petra',
+    at: at(9, '16:20'), state: 'delivered',
+    text: 'sent the last invoice through Ilse, easier that way',
   },
 ]

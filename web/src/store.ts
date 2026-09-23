@@ -15,6 +15,7 @@ import type {
   Conversation,
   ConnectionState,
   Message,
+  User,
   VoiceAttachment,
 } from '@/types'
 import { CONVERSATIONS, ME, MESSAGES, USERS } from '@/mock/fixtures'
@@ -110,6 +111,21 @@ export const lastMessageOf = (conversationId: string): Message | undefined => {
 /** Rooms above DMs, both in one column with the same row anatomy. */
 export const rooms = computed(() => byRecency(state.conversations.filter((c) => c.kind === 'group')))
 export const directs = computed(() => byRecency(state.conversations.filter((c) => c.kind === 'direct')))
+
+/**
+ * The other party in a direct conversation. The wire's `Conversation` carries
+ * no member list — CANT-139 is what decides how a client really learns this —
+ * so the mock derives it from whoever besides `state.me` has posted into the
+ * thread, falling back to a name match for the two DMs where only `state.me`
+ * has sent anything yet: a direct conversation's fixture `name` already IS
+ * the other person's display name.
+ */
+export function otherMember(c: Conversation): User | undefined {
+  if (c.kind !== 'direct') return undefined
+  const theirs = messagesFor(c.id).find((m) => m.authorId !== state.me)
+  if (theirs) return user(theirs.authorId)
+  return Object.values(state.users).find((u) => u.name === c.name)
+}
 
 function byRecency(list: Conversation[]): Conversation[] {
   return [...list].sort((a, b) => {
