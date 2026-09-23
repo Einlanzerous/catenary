@@ -259,14 +259,27 @@ func checkConversationKind(v ConversationKind, p string) error {
 // is not refreshed by catching up. (1) On a message you wrote, `state` and `read_by`
 // are as of the page or frame that carried it; the socket re-emits the message to you
 // when another member's receipt moves the count, so a connected client tracks it and a
-// client that was offline sees the old fraction until it bootstraps. THE RE-EMISSION
-// IS CAPPED: a receipt whose span covers more of your own messages than the cap
-// re-emits only the newest ones in it, live; the rest of the span is not lost, it is
-// simply not refreshed until your next full bootstrap, the same as if you had been
-// offline. (2) On a message you did NOT write, `state` is as of your own device's last
-// page — your other devices' receipts do not refresh it, so a thread you read on your
-// phone still reads `delivered` on your laptop. (3) `Conversation.first_unread_seq` is
-// the exception and is refreshed on every page that carries the conversation, which a
+// client that was offline sees the old fraction until it bootstraps. THE LADDER IS NOT
+// MONOTONE ON A MESSAGE YOU WROTE, AND A LATER SERVE MAY CARRY A LOWER RUNG. `state`
+// there is derived from the same count `read_by` is — `read` iff more than one active
+// member has read it, `sent` otherwise — and since CANT-135 that count excludes a
+// member who has been deactivated. So deprovisioning the one other person who had read
+// your message takes it from `read` back to `sent`, and nothing re-emits it: a receipt
+// is the only thing that re-emits, and a deactivation is not one. A BOOTSTRAP IS
+// THEREFORE NOT A REPAIR — it is how a client acquires the lower rung, so two of your
+// own devices can hold `read` and `sent` for one message indefinitely. THE LATEST
+// SERVE IS AUTHORITATIVE: a client reconciles by taking what the server last said and
+// never by keeping the highest rung it has seen, because the server is the trust
+// boundary and this enum is its half of the lifecycle. Reversing the deactivation
+// restores the count and the rung. CANT-140 is where the server-side mechanism for
+// both halves is decided; this is the rule until it lands. THE RE-EMISSION IS CAPPED:
+// a receipt whose span covers more of your own messages than the cap re-emits only the
+// newest ones in it, live; the rest of the span is not lost, it is simply not
+// refreshed until your next full bootstrap, the same as if you had been offline. (2)
+// On a message you did NOT write, `state` is as of your own device's last page — your
+// other devices' receipts do not refresh it, so a thread you read on your phone still
+// reads `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the
+// exception and is refreshed on every page that carries the conversation, which a
 // receipt from any of your own devices now causes.
 type DeliveryState string
 
@@ -613,6 +626,29 @@ type User struct {
 	// about how to abbreviate a name — deriving this client-side is a two-implementation
 	// problem for zero benefit.
 	Initials *string `json:"initials,omitempty"`
+	// Present and TRUE when this account has been deactivated, and ABSENT otherwise —
+	// never `false`. Emitted only when true, so every client and every conformance vector
+	// written before this field existed is untouched: a server with nothing to say says
+	// nothing, which is the same rule `absent and null mean the same thing` states from
+	// the other side.
+	//
+	// A deactivated person cannot read, send or connect. Their membership rows STAY where
+	// they were (CANT-33 ruling 7), so their old messages keep their author and a
+	// reactivation finds their rooms as they left them — which is why a client needs
+	// telling: this is what lets it grey the author of an old message, or say that the
+	// other half of a direct conversation cannot read what is being typed at them.
+	//
+	// IT DOES NOT MAKE THE HEADER HONEST, AND IS NOT WHAT KEEPS `read_by` HONEST EITHER.
+	// `Conversation.member_count` and `Message.read_by` do that by not counting a
+	// deactivated member at all, on the server, where there is something to subtract from
+	// — there is no member list on the wire, so a flag on `User` has nothing a client
+	// could subtract it from.
+	//
+	// THE MOMENT IS DELIBERATELY NOT HERE. When somebody was deprovisioned is an
+	// operator's question, and a timestamp on this type would answer it for every member
+	// of every room they were in. A boolean rather than a status enum, because there are
+	// two states and `User.kind` (CANT-76) is the enum-shaped question. CANT-135 ruling 2.
+	Deactivated *bool `json:"deactivated,omitempty"`
 }
 
 // UnmarshalJSON decodes and VALIDATES a User: required fields must be
@@ -625,9 +661,10 @@ func (v *User) UnmarshalJSON(b []byte) error {
 // from rather than the outermost type.
 func (v *User) decode(b []byte, p string) error {
 	var s struct {
-		ID       *Uuid   `json:"id"`
-		Name     *string `json:"name"`
-		Initials *string `json:"initials"`
+		ID          *Uuid   `json:"id"`
+		Name        *string `json:"name"`
+		Initials    *string `json:"initials"`
+		Deactivated *bool   `json:"deactivated"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return decodeErr(p, err)
@@ -643,6 +680,9 @@ func (v *User) decode(b []byte, p string) error {
 	out.Name = *s.Name
 	if s.Initials != nil {
 		out.Initials = s.Initials
+	}
+	if s.Deactivated != nil {
+		out.Deactivated = s.Deactivated
 	}
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
@@ -1053,14 +1093,35 @@ type Message struct {
 	// permanently, and the canvas's own READ 7/7 was unreachable. The author's half is a
 	// DERIVATION rather than a stored receipt, because sending does not advance the
 	// sender's read_seq — that was built and removed for swallowing their own unread
-	// backlog. BOTH HALVES COUNT TODAY'S MEMBERS: the numerator counts rows in
-	// conversation_members and `member_count` counts the same table in the same serve, so
-	// a member who read a message and then left stops counting in both, and one who joined
-	// afterwards is in the denominator before their own receipt puts them in the
-	// numerator. That is what keeps n/n reachable across a join or a departure. `0`
-	// therefore does NOT mean "nobody else has read it" — with the author counted by
-	// identity that is unreachable — it means the author is no longer a current member and
-	// no current member's receipt has passed the message.
+	// backlog. BOTH HALVES COUNT ACTIVE MEMBERS: a member counts iff their account is not
+	// deactivated, and `member_count` and `read_by` apply that one test in the same serve,
+	// so a member who is deactivated stops counting in both exactly as one who left does,
+	// and a reactivated one counts again — with the receipt they already had, so the
+	// numerator returns to where it was. One who joined afterwards is in the denominator
+	// before their own receipt puts them in the numerator. That is what keeps n/n
+	// reachable across a join, a departure or an offboard.
+	//
+	// AND IT HOLDS PER SERVE, WHICH IS NOT THE SAME AS ACROSS TWO OF THEM: A CACHED
+	// `read_by` IS NOT CURRENT AFTER `member_count` CHANGES. Both halves are computed
+	// together in the serve that carries them, so a page is always internally consistent.
+	// But a deactivation changes the `read_by` of messages a client ALREADY HOLDS, and
+	// nothing re-sends them: a message is on a `/sync` page only when its `log_seq` is
+	// above the caller's cursor, and neither an offboard nor its reversal moves a
+	// message's `log_seq` — deliberately, because `seq` is dense. So a client holding
+	// `read_by: 7` that is then served `member_count: 6` must not render `READ 7/6`, and
+	// one that cached `read_by: 6` during an offboard and is then served `member_count: 7`
+	// must not render `READ 6/7` for a message everybody has read. A FRACTION IS RENDERED
+	// ONLY FROM A NUMERATOR AND A DENOMINATOR THAT ARRIVED IN THE SAME SERVE. CANT-140 is
+	// where the server-side mechanism is decided; this sentence is the rule until it
+	// lands, and it is here rather than in two clients because that is the divergence the
+	// one schema exists to prevent.
+	//
+	// `0` therefore does NOT mean "nobody else has read it" — with the author counted by
+	// identity that is unreachable — and it has THREE causes: the author has left the
+	// conversation, or the author is DEACTIVATED, and in either case no active member's
+	// receipt has passed the message. CANT-135 ruling 1 re-scoped BOTH halves together,
+	// because re-scoping one of them is the READ 6/7 bug the paragraph above is about,
+	// arriving from the other side.
 	ReadBy *int64 `json:"read_by,omitempty"`
 	// Echoed back to the sender only, so a client can match a broadcast message against
 	// its own outbox entry when the `ack` and the `message` frame race. Other members
@@ -1196,11 +1257,38 @@ func (v *Message) decode(b []byte, p string) error {
 }
 
 type Conversation struct {
-	ID          Uuid             `json:"id"`
-	Kind        ConversationKind `json:"kind"`
-	Name        string           `json:"name"`
-	MemberCount int64            `json:"member_count"`
-	Muted       *bool            `json:"muted,omitempty"`
+	ID   Uuid             `json:"id"`
+	Kind ConversationKind `json:"kind"`
+	Name string           `json:"name"`
+	// How many people are in this room, as the server counts them at serve time: the
+	// thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
+	// numerator over it.
+	//
+	// BOTH HALVES COUNT ACTIVE MEMBERS: a member counts iff their account is not
+	// deactivated, and `member_count` and `read_by` apply that one test in the same serve,
+	// so a member who is deactivated stops counting in both exactly as one who left does,
+	// and a reactivated one counts again. That is what keeps the fraction able to reach
+	// n/n.
+	//
+	// BOTS COUNT — a bot is a member that can read, and `kind` is no part of the test. A
+	// DEACTIVATED PERSON DOES NOT: they cannot read, send or connect, so counting them
+	// would make this header claim somebody the server cannot deliver to, which is the one
+	// thing a client must never assert. CANT-135 ruling 1 re-scoped it, as a clarification
+	// rather than a breaking change — see the compatibility policy in this schema's own
+	// description.
+	//
+	// NEVER BELOW 1, AND THE REASON IS DELIVERABILITY RATHER THAN ARITHMETIC. On `/sync`
+	// the floor is the reader: a page is served only to a member who is active, so the
+	// reader is always in their own count. The server also computes this number once per
+	// member when it fans a message out, and that pass does not skip a deactivated member
+	// — their `Conversation` would carry a smaller count, and in a room where every member
+	// had been deprovisioned it would carry 0. No such record can reach anybody: a
+	// deactivated account holds no live socket, because deactivating one severs every
+	// session it has. So the constraint holds on what can be DELIVERED, which is a weaker
+	// guarantee than the count itself and is stated that way here because a decoder
+	// enforces the bound.
+	MemberCount int64 `json:"member_count"`
+	Muted       *bool `json:"muted,omitempty"`
 	// The first seq the reader has not seen; absent means fully read. Both the rail's
 	// badge and the thread's "N NEW" rule derive from this. There is deliberately NO
 	// stored unread count on the wire, because a count and a marker can disagree and this

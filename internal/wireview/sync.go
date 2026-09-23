@@ -85,15 +85,19 @@ func Sync(page store.SyncPage, v SyncViewer, serverTime string) wire.SyncRespons
 		//
 		// `0` DOES NOT MEAN "NOBODY ELSE HAS READ IT", which is what this
 		// said until CANT-90. readByExpr counts the author by identity, so a
-		// message whose author is still a member is at least 1 before anyone
-		// has done anything. Zero needs the author GONE from
-		// conversation_members — and having left is the only way that
-		// happens. AN OFFBOARD IS NOT: CANT-33 ruling 7 keeps membership,
-		// and CANT-134's DeactivateUser writes nothing to that table, so a
-		// deactivated author is still a member and still counts here. (Which
-		// is the cost ruling 7 accepted and CANT-135 carries: `read_by` and
-		// `N MEMBERS` go on counting somebody who can no longer read
-		// anything.)
+		// message whose author is an ACTIVE member is at least 1 before
+		// anyone has done anything. Zero needs the author out of the
+		// COUNTED population, and since CANT-135 there are two ways in:
+		// they left conversation_members, or they were DEACTIVATED.
+		//
+		// AN OFFBOARD IS NOW ONE OF THEM, and this comment used to say the
+		// opposite. CANT-33 ruling 7 still keeps membership — DeactivateUser
+		// writes nothing to that table — but the count no longer runs over
+		// rows alone: readstate.go's activeMemberExpr joins `users` and drops
+		// anyone whose `deactivated_at` is set, from BOTH halves of the
+		// fraction together. So the cost ruling 7 accepted is the cost
+		// CANT-135 removed, and `read_by` and `N MEMBERS` stopped counting
+		// somebody who can no longer read anything.
 		//
 		// It is also the value DeliveryState reads below, which is what keeps
 		// the word and the number from being two answers to one question.
@@ -164,13 +168,31 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 // what I wrote", which is not a question.
 //
 // It never reads member_count, so a JOIN moves the fraction without touching
-// the word. A DEPARTURE moves both, and saying otherwise was wrong: leaving is
-// a row DELETE from conversation_members — there is no left_at, the key is
-// (conversation_id, user_id) — and readByExpr counts rows in that table, so the
-// numerator drops with the denominator. A room where exactly one other member
-// had read your message sits at 2 and serves `read`; that member leaves, the
-// count is 1, and the next page serves `sent`. Message.read_by's own schema
-// description says the same thing from the other side.
+// the word. TWO THINGS MOVE BOTH, and only one of them can happen.
+//
+// A DEPARTURE would: leaving is a row DELETE from conversation_members — there
+// is no left_at, the key is (conversation_id, user_id) — and readByExpr counts
+// rows in that table, so the numerator drops with the denominator. NOTHING IN
+// THE SERVICE REMOVES A MEMBERSHIP ROW, so that has never been reachable, and
+// this paragraph described it as the cause for want of another one.
+//
+// A DEACTIVATION DOES, AND SINCE CANT-137 IT IS THE REACHABLE CAUSE.
+// activeMemberExpr drops a deactivated member from readByExpr, so a room where
+// exactly one other member had read your message sits at 2 and serves `read`;
+// that member is deprovisioned, the count is 1, and the next page serves `sent`.
+// THAT IS THIS LADDER GOING BACKWARDS, and it is the first thing in the service
+// that can lower the count at all — MarkRead's LEAST/GREATEST makes every
+// receipt monotone, and nothing deletes a member row.
+//
+// NOTHING RE-EMITS THE MESSAGE FOR IT. A receipt is the only thing that re-emits
+// (CANT-92), and a deactivation is not one, so a client that holds `read` keeps
+// it while a client bootstrapping afterwards is served `sent` — two of one
+// person's devices disagreeing about one message, permanently, until the offboard
+// is reversed. DeliveryState's own schema description carries the client rule
+// (the ladder is not monotone on your own message; the latest serve wins), and
+// CANT-140 is where the server-side mechanism is decided. It is not settled here,
+// and this comment exists so the next reader does not conclude from the
+// paragraph above that only a departure can do this.
 //
 // FOR SOMEONE ELSE'S MESSAGE, `state` describes THIS READER: `read` once their
 // read_seq has passed it, `delivered` otherwise — they are receiving it in this
@@ -254,6 +276,19 @@ func User(u store.UserRow) wire.User {
 	// that is what the schema actually allows, not because refusal was optional.
 	if init := initials(u.DisplayName); init != "" {
 		out.Initials = &init
+	}
+
+	// TRUE OR ABSENT, NEVER FALSE (CANT-135 ruling 2, and `User.deactivated`'s
+	// own schema description). The generated field is a `*bool` with
+	// `omitempty`, so nil is what omits it — a pointer to `false` would encode
+	// `"deactivated": false`, which is a thing said rather than a thing not
+	// said, and it would change the bytes of every `User` on every page for
+	// every account that is perfectly fine. This branch is the whole mechanism,
+	// which is why it is here and not in the generator: absent-unless-true is
+	// the wire's rule for THIS field, not a property of optional booleans.
+	if u.Deactivated {
+		t := true
+		out.Deactivated = &t
 	}
 	return out
 }

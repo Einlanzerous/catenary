@@ -238,7 +238,7 @@
       "name": "server_user_frame_no_initials",
       "kind": "ServerFrame",
       "expect": "roundtrip",
-      "why": "CANT-113, absent optional. initials is User's only optional field; every earlier User vector carried one, so this is the first to omit it.",
+      "why": "CANT-113, absent optional. `initials` was User's only optional field when this case was written and every earlier User vector carried one, so this was the first to omit it; CANT-135 added `deactivated`, whose own absent case is `user_active_carries_no_deactivated_field`. This one still covers the frame wrapper, which that one does not.",
       "json": {
         "type": "user",
         "user": {
@@ -1398,6 +1398,94 @@
           {
             "id": "f3a4b5c6-d7e8-4f9a-ab0c-2d3e4f5a6b7c",
             "name": "Pixel 8 Pro"
+          }
+        ]
+      }
+    },
+    {
+      "name": "user_deactivated",
+      "kind": "User",
+      "expect": "roundtrip",
+      "why": "CANT-135 ruling 2. `deactivated` is present and true for a person who has been deprovisioned: they keep their membership rows (CANT-33 ruling 7), so their old messages still name them as author and a client still has to render that name — this is the one thing that lets it render the name DIFFERENTLY. The value survives the round trip in all three languages, which is the whole claim for an additive optional field.",
+      "json": {
+        "id": "1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a",
+        "name": "Ada Lovelace",
+        "initials": "AL",
+        "deactivated": true
+      }
+    },
+    {
+      "name": "user_active_carries_no_deactivated_field",
+      "kind": "User",
+      "expect": "roundtrip",
+      "why": "CANT-135 ruling 2, the absent half, and the reason every vector written before the field is still byte-identical. The server emits `deactivated` ONLY when true — never `false` — so an active account's record is exactly what it was, and a re-encode that added `\"deactivated\": false` would fail this case. Absent is a thing not said; false is a thing said, and on this field they are not the same wire.",
+      "json": {
+        "id": "2e3f4a5b-6c7d-4e8f-9a0b-1c2d3e4f5a6b",
+        "name": "Theo Almasy",
+        "initials": "TA"
+      }
+    },
+    {
+      "name": "user_deactivated_beside_an_unknown_field",
+      "kind": "User",
+      "expect": "roundtrip",
+      "why": "CANT-135 ruling 1's additive claim, pinned on the type it is about. A client generated before `deactivated` existed was in exactly the position this decoder is in with respect to `deactivated_reason`: a field it does not know, on a `User` it otherwise understands completely. `encoded` shows it is DROPPED rather than raised and rather than echoed — so the old client was never at risk from the new field, which is the argument for not bumping `x-wire-version`, stated as a vector instead of only as a sentence. The known field beside it survives, which is what makes this different from `unknown_field_is_ignored`: the two behaviours coexist on one record.",
+      "json": {
+        "id": "3f4a5b6c-7d8e-4f9a-8b0c-1d2e3f4a5b6c",
+        "name": "Marisol Byrne",
+        "initials": "MB",
+        "deactivated": true,
+        "deactivated_reason": "offboarded"
+      },
+      "encoded": {
+        "id": "3f4a5b6c-7d8e-4f9a-8b0c-1d2e3f4a5b6c",
+        "name": "Marisol Byrne",
+        "initials": "MB",
+        "deactivated": true
+      }
+    },
+    {
+      "name": "sync_response_with_a_deactivated_member",
+      "kind": "SyncResponse",
+      "expect": "roundtrip",
+      "why": "CANT-135's two rulings on one page, which is the only place their relationship is visible. The room held seven people and one of them has been deprovisioned, so `member_count` is 6 — the count is honest on the SERVER, because there is no member list on the wire for a client to subtract a flag from. `read_by` is 5 out of that 6 and counts the same population by the same predicate, so the fraction can still reach 6/6. The deactivated person is in `users` with `deactivated: true`, because their message is on the page and the name behind an author_id is needed whether or not the account still works; the active author beside them carries no such field. The page is what a co-member's next `/sync` returns after an offboard with no message sent: the conversation rides on its own metadata marker, and so does the `User`.",
+      "json": {
+        "log_seq": 52310,
+        "has_more": false,
+        "server_time": "2026-09-22T04:40:00.000Z",
+        "messages": [
+          {
+            "id": "4a5b6c7d-8e9f-4a0b-9c1d-2e3f4a5b6c7d",
+            "seq": 1210,
+            "log_seq": 52308,
+            "conversation_id": "bb22cc33-dd44-4e55-8f66-aa77bb88cc99",
+            "author_id": "1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a",
+            "at": "2026-09-21T18:03:12.004Z",
+            "text": "handing the keys over on Friday",
+            "state": "read",
+            "read_by": 5
+          }
+        ],
+        "conversations": [
+          {
+            "id": "bb22cc33-dd44-4e55-8f66-aa77bb88cc99",
+            "kind": "group",
+            "name": "Kitchen Table",
+            "member_count": 6,
+            "head_seq": 1210
+          }
+        ],
+        "users": [
+          {
+            "id": "1d2e3f4a-5b6c-4d7e-8f9a-0b1c2d3e4f5a",
+            "name": "Ada Lovelace",
+            "initials": "AL",
+            "deactivated": true
+          },
+          {
+            "id": "2e3f4a5b-6c7d-4e8f-9a0b-1c2d3e4f5a6b",
+            "name": "Theo Almasy",
+            "initials": "TA"
           }
         ]
       }
