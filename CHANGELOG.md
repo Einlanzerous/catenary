@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.11.0](https://github.com/Einlanzerous/catenary/compare/v0.10.0...v0.11.0) (2026-09-24)
+
+
+### Features
+
+* CANT-137 — member counts count active members, and an offboard reaches the room ([#84](https://github.com/Einlanzerous/catenary/issues/84)) ([435df0f](https://github.com/Einlanzerous/catenary/commit/435df0f1697a991a170964b1408ffa1f4ebcf472))
+* CANT-138 — web shows a deactivated person, quietly ([#86](https://github.com/Einlanzerous/catenary/issues/86)) ([798f5a4](https://github.com/Einlanzerous/catenary/commit/798f5a47a85394571cf45189185b2c82db284e3b))
+* CANT-144 — the wire states the clamp, names what re-emits, and narrows the compatibility bullet ([#89](https://github.com/Einlanzerous/catenary/issues/89)) ([f36243c](https://github.com/Einlanzerous/catenary/commit/f36243cd4e895e3a7e12f0187a1e90e90507f869))
+* CANT-145 — web clamps the read fraction to the room, and the two-member guard is pinned ([#90](https://github.com/Einlanzerous/catenary/issues/90)) ([534edb0](https://github.com/Einlanzerous/catenary/commit/534edb0fa307b45b63b5909793a05815a88f4981))
+
+
+### Bug Fixes
+
+* CANT-142 — pace the slow-consumer burst against real drain, not the scheduler ([#87](https://github.com/Einlanzerous/catenary/issues/87)) ([ef5a640](https://github.com/Einlanzerous/catenary/commit/ef5a64079f72ad06cca71aeb76215944f6a114ee))
+* CANT-143 — an offboard and its reversal re-emit the messages the person had read ([#88](https://github.com/Einlanzerous/catenary/issues/88)) ([337ef26](https://github.com/Einlanzerous/catenary/commit/337ef266da3c9f2e43411a1901b0de400cbcb63a))
+
 ## [0.10.0](https://github.com/Einlanzerous/catenary/compare/v0.9.0...v0.10.0) (2026-09-21)
 
 
