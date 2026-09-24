@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { createSSRApp } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
+import StatusLabel from '@/components/StatusLabel.vue'
 import {
   newCount,
   typingLabel,
@@ -228,6 +231,83 @@ async function main() {
   select('c-ilse')
   const ilseDm = await render()
   check('an active DM header carries no mark', !ilseDm.includes('DEACTIVATED'))
+
+  // 8. CANT-145 — the read fraction is rendered by the wire's rule:
+  //    `min(read_by, member_count)` over `member_count` (CANT-140 ruling 2).
+  //
+  // THE ROWS ARE THE SERVER'S, NOT THIS FILE'S. server/spec/testdata/
+  // read-fraction.json is the plan's five-row table, and the Go harness
+  // (cmd/catenary/readfraction_test.go) constructs every row live over real
+  // /sync pages and asserts the same `clamped` column. Reading the one file
+  // here is what makes the web's clamp and the server's statement of it a
+  // single rule with two readers rather than two rules that agree today —
+  // and E5's Flutter renderer is meant to read it third.
+  //
+  // EACH ROW IS RENDERED THROUGH StatusLabel ITSELF, with `readBy` from the
+  // message as last served and `memberCount` from the conversation as last
+  // served, which is exactly the pair a client holds after an offboard: the
+  // conversation record rode the catch-up, the message did not.
+  const fixturePath = resolve(process.cwd(), '../server/spec/testdata/read-fraction.json')
+  const fixture = JSON.parse(readFileSync(fixturePath, 'utf8')) as {
+    rule: string
+    rows: {
+      id: string
+      held: { read_by: number; member_count: number }
+      fresh_member_count: number
+      unclamped: string
+      clamped: string
+    }[]
+  }
+  check('the read-fraction fixture has the plan\'s five rows', fixture.rows.length === 5,
+    `${fixture.rows.length} rows from ${fixturePath}`)
+  const label = (readBy: number | undefined, memberCount: number) =>
+    renderToString(
+      createSSRApp(StatusLabel, {
+        message: {
+          id: 'm-fixture', seq: 1, conversationId: 'c-fixture', authorId: state.me,
+          at: '2026-09-24T00:00:00.000Z', state: 'read', readBy,
+        },
+        memberCount,
+      }),
+    )
+  const text = (html: string) => html.replace(/<[^>]+>/g, '').trim()
+  let sawAClampThatBit = false
+  for (const row of fixture.rows) {
+    const rendered = await label(row.held.read_by, row.fresh_member_count)
+    check(`row ${row.id} renders READ ${row.clamped}`, rendered.includes(`READ ${row.clamped}`), text(rendered))
+    if (row.unclamped !== row.clamped) {
+      sawAClampThatBit = true
+      check(`row ${row.id} does not render the unclamped READ ${row.unclamped}`,
+        !rendered.includes(`READ ${row.unclamped}`))
+    }
+  }
+  check('at least one row has a numerator above the room, so the clamp was exercised', sawAClampThatBit)
+
+  // THE 7/6 CASE ON A WHOLE PAGE, not only through the component: a room the
+  // client holds at six members with an own message it was served at seven
+  // readers. Added as a NEW conversation, so every landmark above is untouched.
+  state.conversations.push({
+    id: 'c-clamped', kind: 'group', name: 'Allotment Seven', memberCount: 6, headSeq: 1,
+  })
+  state.messages.push({
+    id: 'm-clamped', seq: 1, conversationId: 'c-clamped', authorId: state.me,
+    at: '2026-09-24T00:00:00.000Z', state: 'read', readBy: 7,
+    text: 'read by all seven, then one of them was deprovisioned',
+  })
+  select('c-clamped')
+  const clampedPage = await render()
+  check('a held 7 over a fresh 6 renders READ 6/6 on the page', clampedPage.includes('READ 6/6'))
+  check('and READ 7/6 appears nowhere', !clampedPage.includes('READ 7/6'))
+  check('the header agrees with the denominator', clampedPage.includes('6 MEMBERS · TLS'))
+
+  // THE TWO-MEMBER GUARD IS PINNED: a direct conversation renders bare READ
+  // and no fraction, whatever the count says — `memberCount > 2 && readBy`
+  // is the guard this ticket keeps, and a clamp that reached it would render
+  // `READ 2/2` in every DM.
+  const dm = text(await label(2, 2))
+  check('a two-member room renders bare READ', dm === 'READ', dm)
+  const dmClamped = text(await label(3, 2))
+  check('and stays bare even with a numerator above two', dmClamped === 'READ', dmClamped)
 
   console.log(fail.length ? `\n${fail.length} FAILED` : '\nall green')
   process.exit(fail.length ? 1 : 0)

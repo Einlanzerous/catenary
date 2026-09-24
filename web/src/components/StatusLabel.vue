@@ -29,8 +29,23 @@ const text = computed(() => {
       return 'FAILED'
     case 'read':
       // In rooms the fraction is the useful part; hover lists who.
+      //
+      // THE NUMERATOR IS CLAMPED TO THE ROOM — the wire's rule on
+      // `Message.read_by` (CANT-140 ruling 2), implemented once here and once
+      // in the Flutter renderer. The two halves arrive on two records with two
+      // freshnesses: `member_count` rides every page on which the room's
+      // membership changed, while a held message is never re-served by a
+      // catch-up, so after an offboard this component can be handed
+      // `readBy: 7` beside `memberCount: 6`. `READ 7/6` is a number no serve
+      // ever said, and `min` is what stops it being rendered. It cannot
+      // repair a stale numerator in either direction — one short after a
+      // reversal, one high on a partially-read message — and does not try:
+      // the socket's re-emission does that, or a bootstrap. The rows the
+      // clamp is checked against are server/spec/testdata/read-fraction.json,
+      // shared with the Go harness, so this line and the server's cannot
+      // drift.
       return props.memberCount > 2 && m.readBy
-        ? `READ ${m.readBy}/${props.memberCount}`
+        ? `READ ${Math.min(m.readBy, props.memberCount)}/${props.memberCount}`
         : 'READ'
   }
 })
