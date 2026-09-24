@@ -717,6 +717,22 @@ func (s *Store) ensurePersonOnce(ctx context.Context, email, displayName string)
 				return EnsuredPerson{}, false, err
 			}
 			revoked, cleared, outcome = swept, didClear, PersonReactivated
+
+			// CANT-143 — THE READ SPANS RESTORED: one receipt-shaped notify per
+			// room the person had read, so every message whose `read_by` just
+			// started counting them again is re-emitted to its live author. The
+			// same call the offboard makes, over the same rooms and the same span
+			// ends (`read_seq` cannot have moved while the account was disabled),
+			// gated on the clear having moved the column exactly as the draw
+			// below is. Above the token and the draw because a notify locks
+			// nothing — metadata.go's CANT-143 section — and here rather than in
+			// reactivateTx because `rooms` is this function's, taken above the
+			// lookup, like both ends of the order are.
+			if cleared {
+				if err := notifyReadSpansOfPerson(ctx, tx, id, rooms); err != nil {
+					return EnsuredPerson{}, false, fmt.Errorf("store: ensure person: %w", err)
+				}
+			}
 		}
 
 		token, err := issueEnrollmentTokenTx(ctx, tx, id)

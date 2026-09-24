@@ -18,13 +18,17 @@ package store
 // reverse. That is the MESSAGE call site: attemptSend, position 12, in
 // messages.go. The REVOCATION call site is RevokeDevice in tokens.go, and the
 // two are byte-identical in shape. CANT-92 added a THIRD: markRead in
-// readstate.go, on the same reasoning, for the receipt shape below. All three
-// are transactions in this service whose commit takes Postgres's
-// instance-wide notify lock — messages.go's lock-order note names the first
-// two; readstate.go's own comment reasons about markRead's, which reaches
-// commit holding conversation_members FOR UPDATE plus the metadata bump's
-// locks, and does not go on to take another after it. Everything below the
-// call is here.
+// readstate.go, on the same reasoning, for the receipt shape below. CANT-143
+// added the receipt shape's two other writers — an offboard and its reversal,
+// through metadata.go's notifyReadSpanChanged — which raise it for a member
+// whose read span was withdrawn from or restored to the count rather than
+// advanced. All of these are transactions in this service whose commit takes
+// Postgres's instance-wide notify lock — messages.go's lock-order note names
+// the first two; readstate.go's own comment reasons about markRead's, which
+// reaches commit holding conversation_members FOR UPDATE plus the metadata
+// bump's locks, and does not go on to take another after it; offboard.go's
+// header covers both directions of a deactivation. Everything below the call
+// is here.
 
 import (
 	"context"
@@ -95,7 +99,11 @@ const NotifyPayloadMax = 8000
 //
 // UserID IS THE DISCRIMINATOR: IsReceipt reports whether it is set. No
 // message notification ever sets it, and every receipt notification names the
-// member whose mark moved. Seq is meaningless on a receipt (omitted rather
+// member whose mark moved — or, since CANT-143, whose whole span `(0,
+// read_seq]` stopped or started counting because their account was
+// deactivated or reinstated; the consumer re-reads the span either way and
+// cannot tell the two apart, which is the point. Seq is meaningless on a
+// receipt (omitted rather
 // than zero, since a real message seq is never zero — CANT-14's ordinals are
 // dense from 1) and Before/After are meaningless on a message.
 //

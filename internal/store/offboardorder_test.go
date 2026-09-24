@@ -109,27 +109,54 @@ func TestBothDirectionsTakeTheLocksInThePlansOrder(t *testing.T) {
 
 	// THE OFFBOARD. Positions 1-2 and 8 are calls into metadata.go; 3 is its own
 	// lock query; 4-7 are inside the sweep, which the CANT-134 scan below still
-	// owns table by table.
+	// owns table by table. CANT-143's read-span notify is a needle too: it sits
+	// after the sweep and ABOVE the draw, where a notify belongs (it locks
+	// nothing, and everything below the draw is time every send spends queued),
+	// and an edit that moves it under the counter fails here rather than in a
+	// reviewer's eye.
 	inOrder(t, root, "internal/store/offboard.go", "func (s *Store) DeactivateUser(",
 		[]struct{ what, find string }{
 			{"lock the person's rooms first", "lockRoomsOfPerson(ctx, tx,"},
 			{"then lock the user row", "deactivateLockQuery("},
 			{"then write deactivated_at", "setDeactivatedAt(ctx, tx,"},
 			{"then sweep the credential tables", "s.revokeCredentialsTx(ctx, tx,"},
+			{"then raise the read-span notifies", "notifyReadSpansOfPerson(ctx, tx,"},
 			{"and draw the counter last", "bumpDeactivationMarkers(ctx, tx,"},
 		})
 
 	// THE REVERSAL, whose two ends live with EnsurePerson rather than with
 	// reactivateTx — the room locks have to be above the lookup that chooses the
-	// branch, and the draw has to be below the enrollment token.
+	// branch, and the draw has to be below the enrollment token. The read-span
+	// notify sits between the clear and the token, for the same reason as above.
 	inOrder(t, root, "internal/store/persons.go", "func (s *Store) ensurePersonOnce(",
 		[]struct{ what, find string }{
 			{"lock the person's rooms first", "lockRoomsOfPerson(ctx, tx,"},
 			{"then lock the user row", "personLookupQuery(true,"},
 			{"then sweep and clear", "s.reactivateTx(ctx, tx,"},
+			{"then raise the read-span notifies", "notifyReadSpansOfPerson(ctx, tx,"},
 			{"then issue the enrollment token", "issueEnrollmentTokenTx(ctx, tx,"},
 			{"and draw the counter last", "bumpDeactivationMarkers(ctx, tx,"},
 		})
+
+	// AND THE SPAN-END READ IS ITS OWN STATEMENT, AFTER THE LOCKS, in a function
+	// of its own: lockRoomsOfPerson's select list is unchanged, so its needle
+	// above still names the lock and not a read that happens to share a table.
+	// The read comes first inside the helper and the notify follows it; the
+	// helper itself takes no lock at all, which TestEveryLockOnBothDirections…
+	// checks for the same reason.
+	inOrder(t, root, "internal/store/metadata.go", "func notifyReadSpansOfPerson(",
+		[]struct{ what, find string }{
+			{"read the span ends", "SELECT conversation_id, read_seq FROM conversation_members"},
+			{"then raise one notify per room", "notifyReadSpanChanged(ctx, tx,"},
+		})
+	body := funcBody(t, root, "internal/store/metadata.go", "func notifyReadSpansOfPerson(")
+	for _, lock := range []string{"FOR UPDATE", "FOR NO KEY UPDATE", "FOR SHARE", "FOR KEY SHARE"} {
+		if strings.Contains(body, lock) {
+			t.Errorf("notifyReadSpansOfPerson takes a row lock (%s); the span-end read rides the locks "+
+				"lockRoomsOfPerson already holds, and a lock taken here would be one taken after `devices` "+
+				"and out of the documented order", lock)
+		}
+	}
 
 	// POSITIONS 1 AND 2, INSIDE THE HELPER BOTH DIRECTIONS SHARE.
 	// The first `FROM conversation_members` in this function is the UNLOCKED read

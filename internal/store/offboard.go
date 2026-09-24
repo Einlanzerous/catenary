@@ -22,6 +22,11 @@ package store
 //  4. any unredeemed enrollment token superseded;
 //  5. ONE RevocationPayload{UserID} on RevocationChannel, which severs every
 //     live socket the account holds on every instance (hub.OnRevocation);
+//     and, only when step 2 actually transitioned the column, ONE receipt-shaped
+//     NotifyPayload{conv, user, 0, read_seq} on NotifyChannel per room the
+//     person had read — CANT-143, metadata.go's notifyReadSpansOfPerson —
+//     so the hub re-emits every message whose `read_by` just stopped counting
+//     them to its live author, exactly as it does for a receipt;
 //  6. ONE DRAW of `log_counter`, last, writing a metadata marker to the person
 //     and to each of their rooms — CANT-137, and only when step 2 actually
 //     transitioned the column.
@@ -96,13 +101,16 @@ package store
 //     can lock. So a redeem never waits on an offboard, and a cycle needs both
 //     directions. A redeem takes neither `conversations` nor the counter, so
 //     CANT-137's two new positions do not change that argument.
-//   - THE NOTIFY IS RAISED BEFORE THE DRAW, not after it, and that is the one
+//   - THE NOTIFIES ARE RAISED BEFORE THE DRAW, not after it, and that is the one
 //     place this file's order differs from the send path's. pg_notify takes no
 //     row lock when it runs — the queue lock is acquired inside commit
 //     (messages.go's position 12) — so it is free to sit above the counter, and
 //     above is where FindOrCreateDirect's review put its own read for the same
 //     reason: everything between the draw and the commit is time every send in
-//     the deployment spends queued.
+//     the deployment spends queued. That covers both the revocation and
+//     CANT-143's read-span notifies; the one statement the latter adds — the
+//     `read_seq` read behind them — is a plain SELECT on member rows this
+//     transaction already holds, and locks nothing it did not have.
 //
 // THE REVERSAL LIVES IN persons.go, INSIDE EnsurePerson, and shares this
 // file's sweep as one tx-taking helper so the two cannot drift. It holds the
@@ -237,9 +245,9 @@ func deactivateLockQuery(fault personGuardFault) string {
 // MEMBERSHIP IS UNTOUCHED (ruling 7). A membership row is not a credential:
 // the person is frozen in place, their messages stay attributed, their
 // receipts stop moving, and a reactivation finds their rooms as they left
-// them. The cost is stated where it lands — other members' `read_by` and
-// `N MEMBERS` go on counting somebody who can no longer read anything, which
-// is CANT-135.
+// them. What that costs other members' `read_by` and `N MEMBERS` was CANT-135
+// (the counts stop counting them), CANT-137 (the rooms are told) and CANT-143
+// (the messages they had read are re-emitted to their authors), in that order.
 //
 // NOT FOUND IS ErrPersonNotFound FOR AN UNKNOWN ID AND FOR A BOT'S ALIKE.
 func (s *Store) DeactivateUser(ctx context.Context, userID uuid.UUID) (Offboard, error) {
@@ -302,6 +310,21 @@ func (s *Store) DeactivateUser(ctx context.Context, userID uuid.UUID) (Offboard,
 	// time every send in the deployment spends queued.
 	if out.Changed() {
 		if err := publishUserRevocation(ctx, tx, userID); err != nil {
+			return Offboard{}, fmt.Errorf("store: deactivate user: %w", err)
+		}
+	}
+
+	// STEP 5b — THE READ SPANS, ONE RECEIPT-SHAPED NOTIFY PER ROOM THE PERSON HAD
+	// READ, AND ONLY IF THE COLUMN MOVED (CANT-143, CANT-140 ruling 1). Beside the
+	// revocation because it is the same kind of statement — a notify that takes
+	// no row lock and belongs above the draw — and gated like the marker rather
+	// than like the revocation, for the marker's reason: what this announces is
+	// a change to a value /sync serves (`read_by`, and the `state` derived from
+	// it, on every message the person had read), and a retry that moved no
+	// column changed none. metadata.go's CANT-143 section is the argument;
+	// nothing here locks anything, draws anything, or touches the hub.
+	if out.Deactivated {
+		if err := notifyReadSpansOfPerson(ctx, tx, userID, rooms); err != nil {
 			return Offboard{}, fmt.Errorf("store: deactivate user: %w", err)
 		}
 	}
@@ -495,7 +518,9 @@ func (s *Store) revokeCredentialsTx(ctx context.Context, tx pgx.Tx, userID uuid.
 // statement before its Commit, and the room locks this bump needs were taken by
 // EnsurePerson too, above the lookup that chose this branch. Both ends of the
 // order therefore live with the caller; what lives here is what the two
-// directions must not differ about.
+// directions must not differ about. CANT-143's read-span notify is the
+// caller's for the same reason: it is raised over the rooms EnsurePerson
+// locked, and gated on the bool this function returns.
 func (s *Store) reactivateTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) (CredentialsRevoked, bool, error) {
 	var revoked CredentialsRevoked
 

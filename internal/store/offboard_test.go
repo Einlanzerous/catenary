@@ -342,6 +342,9 @@ func TestAConvergedOffboardChangesNothingAndPublishesNothing(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
 	f := newOffboarded(ctx, t, st)
+	// A room with a read span, so the read-span half of "publishes nothing"
+	// below is asserted against a person the first offboard DID raise one for.
+	withReadSpan(ctx, t, st, pool, f.UserID)
 
 	if _, err := st.DeactivateUser(ctx, f.UserID); err != nil {
 		t.Fatalf("first offboard: %v", err)
@@ -349,11 +352,14 @@ func TestAConvergedOffboardChangesNothingAndPublishesNothing(t *testing.T) {
 	before := tablesSnapshot(ctx, t, pool)
 
 	var out Offboard
-	got := revocationsDuring(ctx, t, pool, func() {
-		var err error
-		if out, err = st.DeactivateUser(ctx, f.UserID); err != nil {
-			t.Errorf("second offboard: %v", err)
-		}
+	var got []RevocationPayload
+	spans := notifiesDuring(ctx, t, pool, func() {
+		got = revocationsDuring(ctx, t, pool, func() {
+			var err error
+			if out, err = st.DeactivateUser(ctx, f.UserID); err != nil {
+				t.Errorf("second offboard: %v", err)
+			}
+		})
 	})
 
 	if out.Changed() {
@@ -363,6 +369,11 @@ func TestAConvergedOffboardChangesNothingAndPublishesNothing(t *testing.T) {
 		t.Errorf("%d revocations published by a converged retry, want 0 — R6 requires Deprovision to "+
 			"be safe to retry, and a retry that re-notifies severs sockets that were severed the first "+
 			"time (the bug invalidateFamily's own comment records finding)", len(got))
+	}
+	// AND NO READ-SPAN NOTIFY EITHER (CANT-143): the column did not move, so no
+	// served value changed and there is nothing for the hub to re-emit.
+	if len(spans) != 0 {
+		t.Errorf("%d payloads raised on the message channel by a converged retry, want 0: %+v", len(spans), spans)
 	}
 	if after := tablesSnapshot(ctx, t, pool); after != before {
 		t.Error("a converged retry changed the database")
@@ -599,7 +610,7 @@ func TestARepairingOffboardPublishesButDrawsNoMarker(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
 	f := newOffboarded(ctx, t, st)
-	mkGroup(ctx, t, pool, "room", f.UserID)
+	withReadSpan(ctx, t, st, pool, f.UserID)
 
 	// The half-converged account TestASecondOffboardRepairs… builds: the column
 	// set by something outside this service, every credential it names still live.
@@ -610,15 +621,24 @@ func TestARepairingOffboardPublishesButDrawsNoMarker(t *testing.T) {
 	mustScan(t, pool.QueryRow(ctx, `SELECT value FROM log_counter WHERE id = 1`), &before)
 
 	var out Offboard
-	got := revocationsDuring(ctx, t, pool, func() {
-		var err error
-		if out, err = st.DeactivateUser(ctx, f.UserID); err != nil {
-			t.Errorf("deactivate: %v", err)
-		}
+	var got []RevocationPayload
+	spans := notifiesDuring(ctx, t, pool, func() {
+		got = revocationsDuring(ctx, t, pool, func() {
+			var err error
+			if out, err = st.DeactivateUser(ctx, f.UserID); err != nil {
+				t.Errorf("deactivate: %v", err)
+			}
+		})
 	})
 
 	if len(got) != 1 {
 		t.Fatalf("%d revocations published while repairing, want 1", len(got))
+	}
+	// THE READ-SPAN NOTIFY IS GATED LIKE THE MARKER, NOT LIKE THE REVOCATION
+	// (CANT-143): revoking a stray device changes no message's read_by, so a
+	// repair raises the revocation and nothing on the message channel.
+	if len(spans) != 0 {
+		t.Errorf("%d payloads raised on the message channel by a repairing retry, want 0: %+v", len(spans), spans)
 	}
 	if out.Deactivated {
 		t.Error("reported Deactivated on an account whose column was already set")
