@@ -101,19 +101,23 @@ const activeMemberExpr = `EXISTS (SELECT 1 FROM users amu
 // 0 — which is a fact about who can read it now, not a claim that nobody ever
 // did.
 //
-// WHAT THIS DEPENDENCY ON `users` COSTS, AND IT IS CANT-140 (found in review of
-// #84). Both halves of the fraction move together IN ONE SERVE, which is what
-// the paragraph above is about. They do NOT move together across two serves to
-// one client: a deactivation changes the `read_by` of every message in every room
-// the person is in, an offboard marks only `conversations` and `users`, and Sync
-// serves a message only when `m.log_seq > after`. So a client holding
-// `read_by: 7` is served `member_count: 6` and nothing re-sends the message —
-// and after a reversal, a client that cached 6 renders `READ 6/7` for a message
-// everybody read, indefinitely. `Message.read_by`'s schema description carries
-// the client rule (render a fraction only from halves that arrived together);
-// the server-side mechanism is CANT-140's to decide, and it is not settled here.
-// A DEPARTURE HAS THE IDENTICAL SHAPE and always did — nothing removes a
-// membership row yet, which is the only reason it has never been reachable.
+// WHAT THIS DEPENDENCY ON `users` COSTS, AND WHAT CANT-140 DID ABOUT IT (found
+// in review of #84). Both halves of the fraction move together IN ONE SERVE,
+// which is what the paragraph above is about. They do NOT move together across
+// two serves to one client: a deactivation changes the `read_by` of every
+// message the person had read, in every room, and Sync serves a message only
+// when `m.log_seq > after` — nothing here moves one. So a held message keeps
+// its old count, and the own-message `state` derived from it keeps a rung the
+// server no longer backs. CANT-140 ruling 1 gives a deactivation and its
+// reversal the repair a receipt has: both raise the receipt-shaped notify over
+// `(0, read_seq]` per room (metadata.go's notifyReadSpansOfPerson, CANT-143),
+// and the hub re-emits the affected messages to their live authors with this
+// expression recomputed. A device OFFLINE for the event keeps the old value
+// until it bootstraps, which is the receipt's own window and was accepted with
+// the pick; the fraction's other half is a clamp stated on the wire (ruling 2,
+// CANT-144). A DEPARTURE HAS THE IDENTICAL SHAPE and always did — nothing
+// removes a membership row yet, and the first thing that does calls the same
+// helper.
 const readByExpr = `(SELECT count(*) FROM conversation_members am
 	         WHERE am.conversation_id = m.conversation_id
 	           AND ` + activeMemberExpr + `

@@ -399,6 +399,125 @@ func bumpDeactivationMarkers(ctx context.Context, tx pgx.Tx, userID uuid.UUID, r
 	return b.apply(ctx, tx)
 }
 
+// ---------------------------------------------------------------------------
+// CANT-143 — a member's read span, withdrawn or restored, and the notify that
+// says so (CANT-140 ruling 1, option A)
+//
+// WHAT AN OFFBOARD CHANGES THAT THE MARKER ABOVE DOES NOT CARRY. readByExpr
+// counts ACTIVE members, so setting `deactivated_at` lowers the `read_by` of
+// every message the person had read, in every room — the span `seq IN (0,
+// read_seq]`, their own messages excepted — and clearing it raises them back.
+// The marker bump reaches the CONVERSATION and the USER rows; it cannot reach a
+// message, because a message is served only when its own `log_seq` is above
+// the cursor and nothing here moves one (CANT-19's property and
+// TestAnOffboardDrawsExactlyOneOrdinal… both forbid it). So a client that
+// already holds the message keeps the old count, and its own-message `state`
+// — derived from the same count — keeps a rung the server no longer backs.
+//
+// THE REPAIR IS THE RECEIPT'S OWN. A receipt that advances `read_seq` raises
+// NotifyPayload{conv, user, before, after} (readstate.go, CANT-92), and the
+// hub's onReadNotify re-reads that span in a fresh snapshot and re-emits each
+// affected message to its live AUTHOR with `read_by` recomputed. That path
+// already computes the count AFTER this transaction commits, already excludes
+// the reader's own messages, already caps per author, and already sends
+// nothing to anyone but an author — so a deactivation that raises the same
+// payload over the same span gets the same re-emission, and the hub does not
+// change. `IsReceipt()` keys on `UserID != nil` and no ServerReceipt frame is
+// built on the notify path (that is the socket read handler's), so nothing on
+// the wire claims the person read anything.
+//
+// ONE PAYLOAD PER ROOM WITH A SPAN, NONE FOR A ROOM AT read_seq 0. A room the
+// person never read has no message whose `read_by` counted them, so there is
+// nothing to re-emit and a payload would make the hub run a query that
+// returns no rows. The reversal raises the identical set: the same rooms, the
+// same span ends, because `read_seq` does not move while the account is
+// deactivated — MarkRead is a request path and the account cannot make one.
+//
+// THE SPAN END IS READ BY ITS OWN STATEMENT, AFTER THE LOCKS, and not by
+// widening lockRoomsOfPerson's select list. That function's `SELECT user_id
+// FROM conversation_members` is the needle TestBothDirectionsTakeTheLocksIn
+// ThePlansOrder pins as the lock, and the value is safe to read separately:
+// this transaction holds the member row FOR NO KEY UPDATE, MarkRead takes it
+// FOR UPDATE before it writes, so `read_seq` cannot move between the lock and
+// this read or between this read and the commit.
+//
+// A NOTIFY DRAWS NOTHING AND LOCKS NOTHING. pg_notify queues the payload and
+// takes the instance-wide notify lock at commit — the same lock every send,
+// receipt and revocation in this service already takes there — so it sits
+// above the counter draw with publishUserRevocation and for its reason:
+// everything between the draw and the commit is time every send in the
+// deployment spends queued. TestBothDirectionsTakeTheLocksInThePlansOrder
+// holds it there.
+//
+// GATED ON THE COLUMN MOVING, like the marker: a converged retry and a
+// credential-repairing retry change no served value, so they raise none of
+// these either. Both callers gate; this function does not know why it was
+// called.
+
+// notifyReadSpanChanged raises the receipt-shaped notify for ONE room: this
+// member's read span `(0, upTo]` has been withdrawn from, or restored to, the
+// count of every message in it. The caller's transaction; nothing committed
+// here.
+//
+// NAMED FOR WHAT IT DOES AND NOT FOR A DEACTIVATION, because a DEPARTURE has
+// exactly the same shape: a membership row removed takes that member's
+// receipts out of the count over the same span. No membership-removal writer
+// exists in this service (CANT-75 shipped without one; only CANT-103's
+// `membership_changed` resync reason so much as names one), so this ticket
+// builds no departure — it leaves the first one a single call to make, here,
+// after its own row locks and before its own draw, rather than a second
+// mechanism to keep in step with this one.
+func notifyReadSpanChanged(ctx context.Context, tx pgx.Tx, conv, member uuid.UUID, upTo int64) error {
+	// The same five-field shape MarkRead raises and the same cap check, on
+	// CANT-92's own ruling: one payload type on the channel, not two.
+	u := member
+	payload, err := NotifyPayload{ConversationID: conv, UserID: &u, Before: 0, After: upTo}.Encode()
+	if err != nil {
+		return fmt.Errorf("store: read span notify: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_notify($1, $2)`, NotifyChannel, payload); err != nil {
+		return fmt.Errorf("store: read span notify: %w", err)
+	}
+	return nil
+}
+
+// notifyReadSpansOfPerson is what both directions call: the span end of each
+// of the person's rooms, read after lockRoomsOfPerson has taken them, and one
+// notifyReadSpanChanged per room whose span is non-empty. `rooms` is the set
+// that function locked, and it is the only set this may name — a room joined
+// between that read and this one is not locked by this transaction, and its
+// count is corrected the next time anything touches it, exactly as the marker
+// bump's own boundary says.
+func notifyReadSpansOfPerson(ctx context.Context, tx pgx.Tx, userID uuid.UUID, rooms []uuid.UUID) error {
+	if len(rooms) == 0 {
+		return nil
+	}
+	rows, err := tx.Query(ctx, `
+		SELECT conversation_id, read_seq FROM conversation_members
+		 WHERE user_id = $1 AND conversation_id = ANY($2) AND read_seq > 0`, userID, rooms)
+	if err != nil {
+		return fmt.Errorf("store: read spans of person: %w", err)
+	}
+	type span struct {
+		conv uuid.UUID
+		upTo int64
+	}
+	spans, err := pgx.CollectRows(rows, func(r pgx.CollectableRow) (span, error) {
+		var s span
+		err := r.Scan(&s.conv, &s.upTo)
+		return s, err
+	})
+	if err != nil {
+		return fmt.Errorf("store: read spans of person: collect: %w", err)
+	}
+	for _, s := range spans {
+		if err := notifyReadSpanChanged(ctx, tx, s.conv, userID, s.upTo); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // CANT-75 — find-or-create the direct conversation between two people.
 //
 // D4: "create" is a conversations row PLUS TWO conversation_members rows,
