@@ -184,15 +184,20 @@ func sameConversation(m store.MessageRow, src store.ReplySource) bool {
 // that can lower the count at all — MarkRead's LEAST/GREATEST makes every
 // receipt monotone, and nothing deletes a member row.
 //
-// NOTHING RE-EMITS THE MESSAGE FOR IT. A receipt is the only thing that re-emits
-// (CANT-92), and a deactivation is not one, so a client that holds `read` keeps
-// it while a client bootstrapping afterwards is served `sent` — two of one
-// person's devices disagreeing about one message, permanently, until the offboard
-// is reversed. DeliveryState's own schema description carries the client rule
-// (the ladder is not monotone on your own message; the latest serve wins), and
-// CANT-140 is where the server-side mechanism is decided. It is not settled here,
-// and this comment exists so the next reader does not conclude from the
-// paragraph above that only a departure can do this.
+// AND IT IS RE-EMITTED FOR, THE WAY A RECEIPT IS (CANT-140 ruling 1, built as
+// CANT-143). An offboard and its reversal raise the receipt's own notify over
+// `(0, read_seq]` per room, and the hub re-emits each affected message to its
+// live author through this same function with the count recomputed — so a
+// connected author's `read` drops to `sent` when the one other reader is
+// deprovisioned, and comes back on the reversal. What is NOT closed is the
+// receipt's own offline window: a client detached for the event holds the
+// old rung until it bootstraps, and here the old rung is one the server no
+// longer backs. DeliveryState's schema description says all of this — the
+// ladder is not monotone on your own message, the latest serve wins, the
+// three events that re-emit, the window a bootstrap closes — and it is the
+// rule both clients render by. This comment exists so the next reader does
+// not conclude from the paragraph above that only a departure can lower the
+// count, and does not conclude from this one that nothing can be stale.
 //
 // FOR SOMEONE ELSE'S MESSAGE, `state` describes THIS READER: `read` once their
 // read_seq has passed it, `delivered` otherwise — they are receiving it in this

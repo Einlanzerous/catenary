@@ -224,24 +224,33 @@ const asConversationKind = (v: unknown, p: string): ConversationKind => {
 // FRESHNESS, AND THERE ARE THREE CASES. `/sync` pages on `log_seq` and a message a
 // client has already been served is never on a later page, so a held message's state
 // is not refreshed by catching up. (1) On a message you wrote, `state` and `read_by`
-// are as of the page or frame that carried it; the socket re-emits the message to you
-// when another member's receipt moves the count, so a connected client tracks it and a
-// client that was offline sees the old fraction until it bootstraps. THE LADDER IS NOT
-// MONOTONE ON A MESSAGE YOU WROTE, AND A LATER SERVE MAY CARRY A LOWER RUNG. `state`
-// there is derived from the same count `read_by` is — `read` iff more than one active
-// member has read it, `sent` otherwise — and since CANT-135 that count excludes a
-// member who has been deactivated. So deprovisioning the one other person who had read
-// your message takes it from `read` back to `sent`, and nothing re-emits it: a receipt
-// is the only thing that re-emits, and a deactivation is not one. A BOOTSTRAP IS
-// THEREFORE NOT A REPAIR — it is how a client acquires the lower rung, so two of your
-// own devices can hold `read` and `sent` for one message indefinitely. THE LATEST
-// SERVE IS AUTHORITATIVE: a client reconciles by taking what the server last said and
-// never by keeping the highest rung it has seen, because the server is the trust
-// boundary and this enum is its half of the lifecycle. Reversing the deactivation
-// restores the count and the rung. CANT-140 is where the server-side mechanism for
-// both halves is decided; this is the rule until it lands. THE RE-EMISSION IS CAPPED:
-// a receipt whose span covers more of your own messages than the cap re-emits only the
-// newest ones in it, live; the rest of the span is not lost, it is simply not
+// are as of the page or frame that carried it; THE SOCKET RE-EMITS THE MESSAGE TO YOU,
+// AS A `message` FRAME WITH THE SAME ID, WHENEVER THE COUNT MOVES — when another
+// member's receipt passes it, when a member who had read it is DEACTIVATED, and when
+// that member is REACTIVATED (CANT-92 for the receipt; CANT-140 ruling 1 gave the
+// other two the same re-emission) — so a connected client tracks all three, within the
+// cap below, and only the author is ever re-emitted to. THE LADDER IS NOT MONOTONE ON
+// A MESSAGE YOU WROTE, AND A LATER SERVE MAY CARRY A LOWER RUNG. `state` there is
+// derived from the same count `read_by` is — `read` iff more than one active member
+// has read it, `sent` otherwise — and since CANT-135 that count excludes a member who
+// has been deactivated. So deprovisioning the one other person who had read your
+// message takes it from `read` back to `sent`, and the re-emission is what tells you.
+// THE LATEST SERVE IS AUTHORITATIVE: a client reconciles by taking what the server
+// last said and never by keeping the highest rung it has seen, because the server is
+// the trust boundary and this enum is its half of the lifecycle. Reversing the
+// deactivation restores the count and the rung, and re-emits again. THE OFFLINE
+// WINDOW, WHICH IS THE RECEIPT'S OWN AND WAS ACCEPTED KNOWINGLY: a client that was
+// offline for the event is not told by its catch-up, because a catch-up never
+// re-serves a held message, and it holds the old rung until it bootstraps. For a
+// receipt the held rung is below the truth; for a deactivation it is ABOVE it — a
+// `read` the server no longer backs — so until that bootstrap one of your devices can
+// hold `read` while a device enrolled meanwhile bootstraps `sent`. A BOOTSTRAP IS HOW
+// A CLIENT LEARNS WHAT NO RE-EMISSION REACHED, and it is also how a client acquires a
+// lower rung; neither is a defect. THE RE-EMISSION IS CAPPED: a receipt, a
+// deactivation or a reactivation whose span covers more of your own messages than the
+// cap re-emits only the newest ones in it, live — and a deactivation's span is the
+// person's whole read history in the room, `(0, read_seq]`, so the cap bites there far
+// more often than on a receipt; the rest of the span is not lost, it is simply not
 // refreshed until your next full bootstrap, the same as if you had been offline. (2)
 // On a message you did NOT write, `state` is as of your own device's last page — your
 // other devices' receipts do not refresh it, so a thread you read on your phone still
@@ -634,20 +643,29 @@ export interface Message {
   // before their own receipt puts them in the numerator. That is what keeps n/n
   // reachable across a join, a departure or an offboard.
   //
-  // AND IT HOLDS PER SERVE, WHICH IS NOT THE SAME AS ACROSS TWO OF THEM: A CACHED
-  // `read_by` IS NOT CURRENT AFTER `member_count` CHANGES. Both halves are computed
+  // AND IT HOLDS PER SERVE, WHICH IS NOT THE SAME AS ACROSS TWO OF THEM: A HELD
+  // `read_by` MAY BE STALE AGAINST A FRESHER `member_count`. Both halves are computed
   // together in the serve that carries them, so a page is always internally consistent.
-  // But a deactivation changes the `read_by` of messages a client ALREADY HOLDS, and
-  // nothing re-sends them: a message is on a `/sync` page only when its `log_seq` is
-  // above the caller's cursor, and neither an offboard nor its reversal moves a
-  // message's `log_seq` — deliberately, because `seq` is dense. So a client holding
-  // `read_by: 7` that is then served `member_count: 6` must not render `READ 7/6`, and
-  // one that cached `read_by: 6` during an offboard and is then served `member_count: 7`
-  // must not render `READ 6/7` for a message everybody has read. A FRACTION IS RENDERED
-  // ONLY FROM A NUMERATOR AND A DENOMINATOR THAT ARRIVED IN THE SAME SERVE. CANT-140 is
-  // where the server-side mechanism is decided; this sentence is the rule until it
-  // lands, and it is here rather than in two clients because that is the divergence the
-  // one schema exists to prevent.
+  // But the two live on two records with two freshnesses: `member_count` rides every
+  // page that carries the conversation, while a message is on a `/sync` page only when
+  // its `log_seq` is above the caller's cursor, and neither an offboard nor its reversal
+  // moves a message's `log_seq` — deliberately, because `seq` is dense. So after a
+  // deactivation a client can hold `read_by: 7` beside a fresh `member_count: 6`. THE
+  // RENDER RULE, STATED ONCE HERE AND IMPLEMENTED ONCE PER CLIENT (CANT-140 ruling 2): a
+  // client renders `min(read_by, member_count)` over `member_count`, with `read_by` from
+  // the message as last served and `member_count` from the conversation as last served.
+  // The fraction never exceeds one, `READ 7/6` is unrenderable, and a numerator that is
+  // stale reads as at most the room. What the clamp cannot do is correct a stale
+  // numerator, in either direction: a message every active member has read can render
+  // one short (the reversal restored a reader the held count never had), and a message
+  // some members had read can render one HIGH (the held count still includes the
+  // deactivated reader, and the clamp only bites when the count exceeds the room — `5/6`
+  // against a truth of `4/6`), until it is refreshed. How a held `read_by` IS refreshed
+  // is `DeliveryState`'s FRESHNESS paragraph — a receipt, a deactivation or a
+  // reactivation re-emits the message to its author over the socket, a catch-up never
+  // re-serves it, a bootstrap serves it fresh. This is a rendering rule of the same
+  // shape as the "N NEW" rule: one sentence in the schema, one line in each client, and
+  // no client derives a count of its own.
   //
   // `0` therefore does NOT mean "nobody else has read it" — with the author counted by
   // identity that is unreachable — and it has THREE causes: the author has left the
@@ -712,6 +730,12 @@ export interface Conversation {
   // How many people are in this room, as the server counts them at serve time: the
   // thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
   // numerator over it.
+  //
+  // IT IS THE DENOMINATOR AS OF THE PAGE THAT CARRIED IT, AND IT IS FRESHER THAN THE
+  // NUMERATOR: this record rides every page on which the room's membership changed,
+  // while a held message is never re-served by a catch-up. A client renders
+  // `min(read_by, member_count)` over this value — the rule is stated once, on
+  // `Message.read_by` — and never a numerator above it.
   //
   // BOTH HALVES COUNT ACTIVE MEMBERS: a member counts iff their account is not
   // deactivated, and `member_count` and `read_by` apply that one test in the same serve,
