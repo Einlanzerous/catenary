@@ -295,12 +295,6 @@ func TestTheRenderRuleOverTwoServesMatchesTheTableOnEveryRow(t *testing.T) {
 			if got := renderFraction(*truth.readBy, truth.memberCount, true); got != row.Truth {
 				t.Errorf("a fresh bootstrap renders %s, the table says %s", got, row.Truth)
 			}
-			// AND THE CLAMPED FRACTION NEVER EXCEEDS ONE — the property the rule
-			// exists for, asserted directly rather than through the column.
-			n := min(*held.readBy, fresh.memberCount)
-			if n > fresh.memberCount {
-				t.Errorf("the clamped numerator %d exceeds the denominator %d", n, fresh.memberCount)
-			}
 
 			// IN SPAN: whether CANT-143's re-emission reaches this message live.
 			var msgSeq int64

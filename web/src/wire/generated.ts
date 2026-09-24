@@ -228,32 +228,35 @@ const asConversationKind = (v: unknown, p: string): ConversationKind => {
 // AS A `message` FRAME WITH THE SAME ID, WHENEVER THE COUNT MOVES — when another
 // member's receipt passes it, when a member who had read it is DEACTIVATED, and when
 // that member is REACTIVATED (CANT-92 for the receipt; CANT-140 ruling 1 gave the
-// other two the same re-emission) — so a connected client tracks all three, and only
-// the author is ever re-emitted to. THE LADDER IS NOT MONOTONE ON A MESSAGE YOU WROTE,
-// AND A LATER SERVE MAY CARRY A LOWER RUNG. `state` there is derived from the same
-// count `read_by` is — `read` iff more than one active member has read it, `sent`
-// otherwise — and since CANT-135 that count excludes a member who has been
-// deactivated. So deprovisioning the one other person who had read your message takes
-// it from `read` back to `sent`, and the re-emission is what tells you. THE LATEST
-// SERVE IS AUTHORITATIVE: a client reconciles by taking what the server last said and
-// never by keeping the highest rung it has seen, because the server is the trust
-// boundary and this enum is its half of the lifecycle. Reversing the deactivation
-// restores the count and the rung, and re-emits again. THE OFFLINE WINDOW, WHICH IS
-// THE RECEIPT'S OWN AND WAS ACCEPTED KNOWINGLY: a client that was offline for the
-// event is not told by its catch-up, because a catch-up never re-serves a held
-// message, and it holds the old rung until it bootstraps. For a receipt the held rung
-// is below the truth; for a deactivation it is ABOVE it — a `read` the server no
-// longer backs — so until that bootstrap one of your devices can hold `read` while a
-// device enrolled meanwhile bootstraps `sent`. A BOOTSTRAP IS HOW A CLIENT LEARNS WHAT
-// NO RE-EMISSION REACHED, and it is also how a client acquires a lower rung; neither
-// is a defect. THE RE-EMISSION IS CAPPED: a receipt whose span covers more of your own
-// messages than the cap re-emits only the newest ones in it, live; the rest of the
-// span is not lost, it is simply not refreshed until your next full bootstrap, the
-// same as if you had been offline. (2) On a message you did NOT write, `state` is as
-// of your own device's last page — your other devices' receipts do not refresh it, so
-// a thread you read on your phone still reads `delivered` on your laptop. (3)
-// `Conversation.first_unread_seq` is the exception and is refreshed on every page that
-// carries the conversation, which a receipt from any of your own devices now causes.
+// other two the same re-emission) — so a connected client tracks all three, within the
+// cap below, and only the author is ever re-emitted to. THE LADDER IS NOT MONOTONE ON
+// A MESSAGE YOU WROTE, AND A LATER SERVE MAY CARRY A LOWER RUNG. `state` there is
+// derived from the same count `read_by` is — `read` iff more than one active member
+// has read it, `sent` otherwise — and since CANT-135 that count excludes a member who
+// has been deactivated. So deprovisioning the one other person who had read your
+// message takes it from `read` back to `sent`, and the re-emission is what tells you.
+// THE LATEST SERVE IS AUTHORITATIVE: a client reconciles by taking what the server
+// last said and never by keeping the highest rung it has seen, because the server is
+// the trust boundary and this enum is its half of the lifecycle. Reversing the
+// deactivation restores the count and the rung, and re-emits again. THE OFFLINE
+// WINDOW, WHICH IS THE RECEIPT'S OWN AND WAS ACCEPTED KNOWINGLY: a client that was
+// offline for the event is not told by its catch-up, because a catch-up never
+// re-serves a held message, and it holds the old rung until it bootstraps. For a
+// receipt the held rung is below the truth; for a deactivation it is ABOVE it — a
+// `read` the server no longer backs — so until that bootstrap one of your devices can
+// hold `read` while a device enrolled meanwhile bootstraps `sent`. A BOOTSTRAP IS HOW
+// A CLIENT LEARNS WHAT NO RE-EMISSION REACHED, and it is also how a client acquires a
+// lower rung; neither is a defect. THE RE-EMISSION IS CAPPED: a receipt, a
+// deactivation or a reactivation whose span covers more of your own messages than the
+// cap re-emits only the newest ones in it, live — and a deactivation's span is the
+// person's whole read history in the room, `(0, read_seq]`, so the cap bites there far
+// more often than on a receipt; the rest of the span is not lost, it is simply not
+// refreshed until your next full bootstrap, the same as if you had been offline. (2)
+// On a message you did NOT write, `state` is as of your own device's last page — your
+// other devices' receipts do not refresh it, so a thread you read on your phone still
+// reads `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the
+// exception and is refreshed on every page that carries the conversation, which a
+// receipt from any of your own devices now causes.
 // CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
 // Message > DeliveryState. A value this schema version does not know decodes to the
 // sentinel `unknown` and is reported once; the server refuses it. Every switch over
@@ -652,13 +655,17 @@ export interface Message {
   // client renders `min(read_by, member_count)` over `member_count`, with `read_by` from
   // the message as last served and `member_count` from the conversation as last served.
   // The fraction never exceeds one, `READ 7/6` is unrenderable, and a numerator that is
-  // stale reads as at most the room. What the clamp cannot do is raise a stale
-  // numerator: a message every active member has read can render one short until it is
-  // refreshed, and how a held `read_by` IS refreshed is `DeliveryState`'s FRESHNESS
-  // paragraph — a receipt, a deactivation or a reactivation re-emits the message to its
-  // author over the socket, a catch-up never re-serves it, a bootstrap serves it fresh.
-  // This is a rendering rule of the same shape as the "N NEW" rule: one sentence in the
-  // schema, one line in each client, and no client derives a count of its own.
+  // stale reads as at most the room. What the clamp cannot do is correct a stale
+  // numerator, in either direction: a message every active member has read can render
+  // one short (the reversal restored a reader the held count never had), and a message
+  // some members had read can render one HIGH (the held count still includes the
+  // deactivated reader, and the clamp only bites when the count exceeds the room — `5/6`
+  // against a truth of `4/6`), until it is refreshed. How a held `read_by` IS refreshed
+  // is `DeliveryState`'s FRESHNESS paragraph — a receipt, a deactivation or a
+  // reactivation re-emits the message to its author over the socket, a catch-up never
+  // re-serves it, a bootstrap serves it fresh. This is a rendering rule of the same
+  // shape as the "N NEW" rule: one sentence in the schema, one line in each client, and
+  // no client derives a count of its own.
   //
   // `0` therefore does NOT mean "nobody else has read it" — with the author counted by
   // identity that is unreachable — and it has THREE causes: the author has left the
