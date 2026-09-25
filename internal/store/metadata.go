@@ -467,11 +467,12 @@ func bumpDeactivationMarkers(ctx context.Context, tx pgx.Tx, userID uuid.UUID, r
 // builds no departure — it leaves the first one a single call to make, here,
 // after its own row locks and before its own draw, rather than a second
 // mechanism to keep in step with this one.
-func notifyReadSpanChanged(ctx context.Context, tx pgx.Tx, conv, member uuid.UUID, upTo int64) error {
-	// The same five-field shape MarkRead raises and the same cap check, on
-	// CANT-92's own ruling: one payload type on the channel, not two.
+func notifyReadSpanChanged(ctx context.Context, tx pgx.Tx, conv, member uuid.UUID, upTo int64, batch uuid.UUID) error {
+	// The same shape MarkRead raises and the same cap check, on CANT-92's own
+	// ruling: one payload type on the channel, not two. What this adds to it is
+	// the batch, which is what tells the hub these payloads are one commit's.
 	u := member
-	payload, err := NotifyPayload{ConversationID: conv, UserID: &u, Before: 0, After: upTo}.Encode()
+	payload, err := NotifyPayload{ConversationID: conv, UserID: &u, Before: 0, After: upTo, Batch: &batch}.Encode()
 	if err != nil {
 		return fmt.Errorf("store: read span notify: %w", err)
 	}
@@ -488,6 +489,16 @@ func notifyReadSpanChanged(ctx context.Context, tx pgx.Tx, conv, member uuid.UUI
 // between that read and this one is not locked by this transaction, and its
 // count is corrected the next time anything touches it, exactly as the marker
 // bump's own boundary says.
+//
+// EVERY PAYLOAD ONE CALL RAISES SHARES ONE BATCH (CANT-146). The rooms are one
+// commit, the listener delivers them back to back, and the hub bounds what it
+// re-emits to one author across the batch — because the per-payload cap that
+// was enough for one room's receipt is multiplied by the number of rooms the
+// author shares with the person, and an author who shares four busy ones would
+// otherwise be handed the whole of their outbox in one burst. The id is drawn
+// per call, so an offboard and its reversal are two batches and the hub owes
+// each its own budget. A person with nothing read raises no payload and draws
+// no id.
 func notifyReadSpansOfPerson(ctx context.Context, tx pgx.Tx, userID uuid.UUID, rooms []uuid.UUID) error {
 	if len(rooms) == 0 {
 		return nil
@@ -510,8 +521,15 @@ func notifyReadSpansOfPerson(ctx context.Context, tx pgx.Tx, userID uuid.UUID, r
 	if err != nil {
 		return fmt.Errorf("store: read spans of person: collect: %w", err)
 	}
+	if len(spans) == 0 {
+		return nil
+	}
+	batch, err := uuid.NewRandom()
+	if err != nil {
+		return fmt.Errorf("store: read spans of person: batch id: %w", err)
+	}
 	for _, s := range spans {
-		if err := notifyReadSpanChanged(ctx, tx, s.conv, userID, s.upTo); err != nil {
+		if err := notifyReadSpanChanged(ctx, tx, s.conv, userID, s.upTo, batch); err != nil {
 			return err
 		}
 	}

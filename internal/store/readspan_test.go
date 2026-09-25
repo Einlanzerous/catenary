@@ -223,6 +223,70 @@ func TestAnOffboardAndItsReversalEachRaiseOneReadSpanPerRoomThePersonHadRead(t *
 	r.assertSpans(t, got, "reversal")
 }
 
+// CANT-146 — the payloads one offboard raises are ONE COMMIT'S, and they say
+// so. The hub bounds what it re-emits to an author across a batch, so what has
+// to hold here is that every room's payload in one call names the same batch,
+// that the reversal is a batch of its own, and that a single room's MarkRead
+// names none — the hub's per-payload cap is that receipt's whole rule, and a
+// batch on it would be a budget nothing else in the commit shares.
+func TestAnOffboardsReadSpansShareOneBatchAndItsReversalDrawsAnother(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	r := newReadSpans(ctx, t, st, pool)
+
+	batchOf := func(direction string, got []NotifyPayload) uuid.UUID {
+		t.Helper()
+		spans := receiptsOnly(t, got)
+		if len(spans) < 2 {
+			t.Fatalf("%s raised %d spans; the fixture has two rooms with one, and one room cannot share a batch with anything",
+				direction, len(spans))
+		}
+		var batch *uuid.UUID
+		for room, p := range spans {
+			if p.Batch == nil {
+				t.Fatalf("%s: room %s's payload names no batch; the hub would spend a budget per payload again", direction, room)
+			}
+			if *p.Batch == uuid.Nil {
+				t.Fatalf("%s: room %s's batch is the zero id, which every unbatched payload would also read as", direction, room)
+			}
+			if batch != nil && *batch != *p.Batch {
+				t.Errorf("%s: rooms named batches %s and %s; one commit is one batch", direction, batch, p.Batch)
+			}
+			batch = p.Batch
+		}
+		return *batch
+	}
+
+	got := notifiesDuring(ctx, t, pool, func() {
+		if _, err := st.DeactivateUser(ctx, r.f.UserID); err != nil {
+			t.Errorf("deactivate: %v", err)
+		}
+	})
+	offboard := batchOf("offboard", got)
+
+	got = notifiesDuring(ctx, t, pool, func() {
+		if _, err := st.EnsurePerson(ctx, r.f.Email, "Ada Lovelace"); err != nil {
+			t.Errorf("reactivate: %v", err)
+		}
+	})
+	if reversal := batchOf("reversal", got); reversal == offboard {
+		t.Errorf("the offboard and its reversal named the same batch %s; each owes the hub its own budget", offboard)
+	}
+
+	// A SINGLE ROOM'S RECEIPT NAMES NONE. The person is active again, so their
+	// mark can move: the room they had read none of.
+	got = notifiesDuring(ctx, t, pool, func() {
+		if _, err := st.MarkRead(ctx, r.unread, r.f.UserID, 1); err != nil {
+			t.Errorf("mark read: %v", err)
+		}
+	})
+	for room, p := range receiptsOnly(t, got) {
+		if p.Batch != nil {
+			t.Errorf("a plain MarkRead in room %s named batch %s; only an offboard's per-room fan-out is a batch", room, p.Batch)
+		}
+	}
+}
+
 // AND NOTHING MOVED THE PERSON'S OWN MARK. The reversal's spans equal the
 // offboard's because `read_seq` cannot move while the account is disabled;
 // this is the row-level fact behind that sentence.
