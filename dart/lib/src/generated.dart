@@ -260,12 +260,18 @@ enum ConversationKind {
 /// cap re-emits only the newest ones in it, live — and a deactivation's span is the
 /// person's whole read history in the room, `(0, read_seq]`, so the cap bites there far
 /// more often than on a receipt; the rest of the span is not lost, it is simply not
-/// refreshed until your next full bootstrap, the same as if you had been offline. (2)
-/// On a message you did NOT write, `state` is as of your own device's last page — your
-/// other devices' receipts do not refresh it, so a thread you read on your phone still
-/// reads `delivered` on your laptop. (3) `Conversation.first_unread_seq` is the
-/// exception and is refreshed on every page that carries the conversation, which a
-/// receipt from any of your own devices now causes.
+/// refreshed until your next full bootstrap, the same as if you had been offline. FOR A
+/// DEACTIVATION OR A REACTIVATION THE CAP IS ONE BUDGET ACROSS EVERY ROOM YOU SHARE
+/// WITH THAT PERSON, NOT ONE PER ROOM (CANT-146): the act raises one receipt per room,
+/// they are served in an order a client cannot rely on, and once the budget is spent a
+/// room reached later gets NO live re-emission for you, however small the span in it —
+/// so after a deactivation or a reactivation a connected client cannot take the absence
+/// of a re-emission as the count being unchanged, and only a bootstrap is
+/// authoritative. (2) On a message you did NOT write, `state` is as of your own
+/// device's last page — your other devices' receipts do not refresh it, so a thread you
+/// read on your phone still reads `delivered` on your laptop. (3)
+/// `Conversation.first_unread_seq` is the exception and is refreshed on every page that
+/// carries the conversation, which a receipt from any of your own devices now causes.
 /// CLIENT-OPEN (CANT-74): reachable from server root SyncResponse via SyncResponse >
 /// Message > DeliveryState. A value this schema version does not know decodes to the
 /// sentinel `unknown` and is reported once; the server refuses it. Every switch over
@@ -1499,10 +1505,12 @@ final class ServerUserFrame implements ServerFrame {
 /// every message in the steady state. The internal Postgres NOTIFY payload between
 /// server instances is a different layer and never appears on this wire — it carries
 /// only ids (conversation_id, seq) for a first delivery, or (conversation_id, user_id,
-/// before, after) for a receipt's live re-emission of this same frame, either way under
-/// its 8000-byte cap. A re-emission is this frame again, with an updated state and
-/// read_by and the row's original log_seq; nothing distinguishes it from a first
-/// delivery except that a client has seen its id before.
+/// before, after) for a receipt's live re-emission of this same frame — with a `batch`
+/// id added when a deactivation or reactivation raises one per room, which is how the
+/// server bounds that one commit's burst to an author (CANT-146) — either way under its
+/// 8000-byte cap. A re-emission is this frame again, with an updated state and read_by
+/// and the row's original log_seq; nothing distinguishes it from a first delivery
+/// except that a client has seen its id before.
 final class ServerMessageFrame implements ServerFrame {
   const ServerMessageFrame({
     required this.message,
