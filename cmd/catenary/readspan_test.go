@@ -193,6 +193,146 @@ func TestAnOffboardAndItsReversalReEmitTheAuthorsReadMessagesToTheAuthorAlone(t 
 	}
 }
 
+// messagesUntil reads s's frames up to and including the message with the given
+// id and returns the message frames that came before it, in arrival order.
+// Everything else is skipped — the introduction records a room's first message
+// carries are part of the noise this discards — so a caller that is ABOUT those
+// frames reads them raw. The id is a marker committed AFTER the act under test,
+// and the listener delivers in commit order, so everything the act put on the
+// socket is ahead of it and nothing after the marker is the act's.
+func messagesUntil(t *testing.T, s *session, markerID uuid.UUID) []wire.Message {
+	t.Helper()
+	var out []wire.Message
+	for {
+		m, ok := s.next().(wire.ServerMessageFrame)
+		if !ok {
+			continue
+		}
+		if string(m.Message.ID) == markerID.String() {
+			return out
+		}
+		out = append(out, m.Message)
+	}
+}
+
+// wantOneBudget asserts what an offboard or its reversal did to ONE device of an
+// author who shares several busy rooms with the person: exactly readNotifyCap
+// messages, all from the first room the batch served, that room's newest, each
+// with the count and rung the act produced.
+func wantOneBudget(t *testing.T, what string, got []wire.Message, wrote int, readBy int64, state wire.DeliveryState) {
+	t.Helper()
+	if len(got) != readNotifyCap {
+		t.Fatalf("%s: the author was re-emitted %d messages across the rooms the person had read, want exactly the "+
+			"budget %d — one payload per room, each capped alone, is rooms x the cap and the whole outbox",
+			what, len(got), readNotifyCap)
+	}
+	room := got[0].ConversationID
+	seen := map[int64]bool{}
+	for _, m := range got {
+		if m.ConversationID != room {
+			t.Errorf("%s: re-emissions came from rooms %s and %s; the first room served spends the whole budget",
+				what, room, m.ConversationID)
+		}
+		seen[int64(m.Seq)] = true
+		wantRung(t, what, m, readBy, state)
+	}
+	for seq := int64(wrote-readNotifyCap) + 1; seq <= int64(wrote); seq++ {
+		if !seen[seq] {
+			t.Errorf("%s: seq %d, in the newest %d of its room, was not re-emitted — the budget keeps the newest",
+				what, seq, readNotifyCap)
+		}
+	}
+}
+
+// CANT-146 — an offboard raises one receipt-shaped payload per room the person
+// had read, in one commit, and each was capped at readNotifyCap on its own. An
+// author who shares four busy rooms with the person was therefore re-emitted
+// 4 x 64 = 256 frames, the whole of an outbox, in one burst, and was severed by
+// any live traffic behind it. The store now stamps one call's payloads with one
+// batch and the hub spends readNotifyCap as the author's TOTAL across it.
+//
+// THE FAILING FORM: on the code before this change each device below receives
+// 256 message frames and wantOneBudget fails at its first assertion. What this
+// cannot show on a healthy loopback socket is the sever itself, because the
+// server's writer drains as fast as the test reads; that half is the hub's
+// TestABatchOfReceiptsSpendsOneBudgetPerAuthorAndDoesNotSeverThem, against a
+// writer that does not.
+//
+// BOTH DIRECTIONS, because the reversal raises the identical set through the
+// same call and would have had the same exposure — and because it is a second
+// batch, which is what proves the budget is per batch and not per process.
+func TestAnOffboardAcrossFourBusyRoomsReEmitsOneBudgetToAnAuthorAndSeversNoDevice(t *testing.T) {
+	r := newRig(t)
+	const adaEmail = "ada@example.com"
+	ada := person(r, adaEmail, "Ada Lovelace")
+	theo := mkUser(r.ctx, t, r.pool, "theo", "Theo")
+	mallory := mkUser(r.ctx, t, r.pool, "mallory", "Mallory")
+
+	// Four rooms Theo shares with Ada, in each of which Ada has read more of
+	// what he wrote than one budget holds. Nobody is attached yet, so none of
+	// it is a live fan-out; Mallory never reads, so read_by stops at Theo and
+	// Ada, and the rung the offboard lowers is the same one in every room.
+	const rooms = 4
+	const wrote = readNotifyCap + 8
+	var groups []uuid.UUID
+	for i := 0; i < rooms; i++ {
+		g := mkGroup(r.ctx, t, r.pool, "room "+strconv.Itoa(i), ada, theo, mallory)
+		var last int64
+		for j := 0; j < wrote; j++ {
+			last = r.commit(g, theo, "m").Seq
+		}
+		if _, err := r.st.MarkRead(r.ctx, g, ada, last); err != nil {
+			t.Fatalf("ada reads room %d: %v", i, err)
+		}
+		groups = append(groups, g)
+	}
+
+	// TWO DEVICES, because a budget counted in frames would be wrong for the one
+	// with two and each has its own outbox to protect.
+	devices := []*session{r.open(theo, "phone"), r.open(theo, "laptop")}
+
+	// Everything committed above may still be draining through the listener.
+	// A marker after it, and everything ahead of the marker discarded, is what
+	// makes the count below the act's and not the setup's.
+	settled := r.commit(groups[0], mallory, "settled")
+	for _, d := range devices {
+		messagesUntil(t, d, settled.ID)
+	}
+
+	// THE OFFBOARD.
+	if out, err := r.st.DeactivateUser(r.ctx, ada); err != nil || !out.Deactivated {
+		t.Fatalf("deactivate: moved=%v err=%v", out.Deactivated, err)
+	}
+	marker := r.commit(groups[0], mallory, "after the offboard")
+	for _, d := range devices {
+		wantOneBudget(t, "offboard", messagesUntil(t, d, marker.ID), wrote, 1, wire.DeliveryStateSent)
+	}
+
+	// THE REVERSAL: a second batch, a second budget.
+	back, err := r.st.EnsurePerson(r.ctx, adaEmail, "Ada Lovelace")
+	if err != nil {
+		t.Fatalf("reactivate: %v", err)
+	}
+	if back.Outcome != store.PersonReactivated {
+		t.Fatalf("outcome = %q, want reactivated", back.Outcome)
+	}
+	marker = r.commit(groups[0], mallory, "after the reversal")
+	for _, d := range devices {
+		wantOneBudget(t, "reversal", messagesUntil(t, d, marker.ID), wrote, 2, wire.DeliveryStateRead)
+	}
+
+	// AND EVERY DEVICE IS STILL ATTACHED AND READING LIVE TRAFFIC: the markers
+	// above were each delivered on both, after the re-emissions, and a ping
+	// round-trips on a session that was not severed.
+	live := r.commit(groups[1], mallory, "still here")
+	for _, d := range devices {
+		if m := d.message(); string(m.ID) != live.ID.String() {
+			t.Errorf("%s's next frame = %+v, want the live message — the device was not severed", d.user, m)
+		}
+		d.pingPong()
+	}
+}
+
 // CRITERION 3 — two serves, two devices, one account: the ticket's §2 for a
 // CONNECTED device is reachable before this change and not after.
 //

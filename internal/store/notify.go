@@ -122,6 +122,26 @@ const NotifyPayloadMax = 8000
 // — internal/hub's MessagesForReadNotify — rather than being handed anything
 // it could render without a query, on the same reasoning as the message half.
 //
+// BATCH IS CANT-146'S, AND IT SAYS NOTHING ABOUT A ROW. An offboard or its
+// reversal raises one receipt-shaped payload per room the person had read, in
+// one transaction, and the listener delivers them back to back. The hub cannot
+// tell that from unrelated receipts that happen to arrive together, and a bound
+// that has to guess where one commit ends and the next begins is a bound on
+// timing. So the transaction says it: every payload one call raises carries the
+// same Batch, a fresh random id, and internal/hub budgets what it re-emits to
+// one author across a batch rather than across a payload (hub.go,
+// readNotifyCap). It is absent on a single room's markRead and on every message
+// notification: those are one payload per commit, there is nothing for them to
+// share a budget with, and their per-payload cap is the whole rule.
+//
+// ADDITIVE IN BOTH DIRECTIONS. json.Unmarshal ignores a field it does not know,
+// so an instance that predates Batch reads a batched payload as the ordinary
+// receipt it always was and applies the per-payload cap it always did, and an
+// instance that has it reads an unbatched payload the same way. It is a
+// pointer for UserID's reason and one more: omitempty does not omit a zero
+// uuid.UUID, so a value field would put thirty-six bytes on every message
+// notification in the service to say nothing.
+//
 // The field names are spelled out rather than shortened to `c` and `s`. The
 // encoded payload is under a hundred bytes either way, a small fraction of the
 // cap, so the saving is imaginary and the cost is a human reading a notify in a
@@ -138,6 +158,10 @@ type NotifyPayload struct {
 	UserID *uuid.UUID `json:"user_id,omitempty"`
 	Before int64      `json:"before,omitempty"`
 	After  int64      `json:"after,omitempty"`
+
+	// Batch groups the receipt notifications one transaction raised together.
+	// Absent on a message notification and on a receipt that stands alone.
+	Batch *uuid.UUID `json:"batch,omitempty"`
 }
 
 // IsReceipt reports whether this is CANT-92's receipt shape rather than a
@@ -187,10 +211,11 @@ func (p RevocationPayload) Encode() (string, error) {
 
 // Encode renders the payload and refuses one that would exceed the cap.
 //
-// STILL UNREACHABLE AT FIVE FIXED-WIDTH FIELDS, and that is the reason this
+// STILL UNREACHABLE AT SIX FIXED-WIDTH FIELDS, and that is the reason this
 // is a function rather than an assumption: CANT-92 was the day somebody added
-// a third (then a fourth, then a fifth), and the check was already here to
-// hold, rather than something that had to be remembered on the way in. The
+// a third (then a fourth, then a fifth), CANT-146 added a sixth, and the check
+// was already here to hold, rather than something that had to be remembered on
+// the way in. The
 // failure it prevents surfaces as messages — or receipts — being refused
 // rather than as notifications going missing.
 func (p NotifyPayload) Encode() (string, error) {

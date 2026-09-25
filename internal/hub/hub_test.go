@@ -799,6 +799,135 @@ func TestReadNotifyForwardsExactlyTheCapWithoutSeveringTheAuthor(t *testing.T) {
 	}
 }
 
+// --- CANT-146: the budget one commit's receipts share -----------------------
+//
+// An offboard raises one receipt-shaped payload per room the person had read,
+// in one commit, and each is capped on its own at readNotifyCap. The store
+// stamps them with one Batch; what these prove is the hub's half — an author is
+// re-emitted at most readNotifyCap messages across the batch, per author,
+// per batch, and a payload that names no batch is bounded as it always was. The
+// same claim on real sockets and Postgres is cmd/catenary/readspan_test.go's.
+
+// newestBy is the store's answer for one room: n of one author's messages,
+// newest first, at read_by 2.
+func (f *fixture) newestBy(author uuid.UUID, n int) []store.ReadNotifyMessage {
+	rows := make([]store.ReadNotifyMessage, n)
+	for i := range rows {
+		rows[i] = f.readNotifyMessage(int64(n-i), 2)
+		rows[i].Message.AuthorID = author
+	}
+	return rows
+}
+
+// batchedReadNotify is one room of an offboard: a receipt for a room of its
+// own, stamped with the batch the store drew for the whole call.
+func (f *fixture) batchedReadNotify(reader uuid.UUID, batch *uuid.UUID) {
+	u := reader
+	f.hub.OnNotify(context.Background(), store.NotifyPayload{
+		ConversationID: uuid.New(), UserID: &u, Before: 0, After: readNotifyCap, Batch: batch,
+	})
+}
+
+// takeAll reads exactly n frames from p and then requires silence.
+func takeAll(t *testing.T, p *peer, n int) {
+	t.Helper()
+	for i := 0; i < n; i++ {
+		p.next(t)
+	}
+	p.nothing(t)
+}
+
+// THE FAILING FORM IS THE POINT. Five rooms of readNotifyCap, uncapped across
+// the batch, is 320 frames into an outbox of 256 — the stuck device is severed
+// by the re-emission alone, before any live traffic, and its second device gets
+// all 320. With the budget the author is handed readNotifyCap once, is not
+// severed, and reads the live message that follows on both devices.
+func TestABatchOfReceiptsSpendsOneBudgetPerAuthorAndDoesNotSeverThem(t *testing.T) {
+	f := newFixture(t)
+	stuck := f.attach(f.ada)
+	stuck.block = make(chan struct{})
+	reading := f.attach(f.ada)
+	f.st.readNotify = func(_ context.Context, _, _ uuid.UUID, _, _ int64, capPerAuthor int) ([]store.ReadNotifyMessage, error) {
+		return f.newestBy(f.ada, capPerAuthor), nil
+	}
+
+	const rooms = 5
+	batch := uuid.New()
+	for i := 0; i < rooms; i++ {
+		f.batchedReadNotify(f.theo, &batch)
+	}
+	// Live traffic after the burst, and the stuck device reads again.
+	f.notify(store.FirstMessageSeq + 1)
+	close(stuck.block)
+
+	for _, p := range []*peer{stuck, reading} {
+		takeAll(t, p, readNotifyCap+1)
+	}
+	if n := f.hub.Attached(); n != 2 {
+		t.Errorf("attached = %d after the batch, want both of the author's devices", n)
+	}
+	if len(stuck.closedWith()) != 0 || stuck.closedNow() != 0 {
+		t.Error("the author's slow device was severed by a batch of receipts")
+	}
+	if warns := f.log.atLeast(slog.LevelWarn); len(warns) != 0 {
+		t.Errorf("%d line(s) at WARN or above after a batch, first: %q", len(warns), warns[0].Message)
+	}
+}
+
+// The budget is per author: two authors in the same rooms each get the whole
+// of it, and each gets it once across the rooms rather than once per room.
+func TestTheBatchBudgetIsPerAuthorAndSharedAcrossRooms(t *testing.T) {
+	f := newFixture(t)
+	ada, mal := f.attach(f.ada), f.attach(f.mal)
+	f.st.readNotify = func(_ context.Context, _, _ uuid.UUID, _, _ int64, capPerAuthor int) ([]store.ReadNotifyMessage, error) {
+		// The store's own ordering: grouped by author, newest first inside each.
+		return append(f.newestBy(f.ada, capPerAuthor), f.newestBy(f.mal, capPerAuthor)...), nil
+	}
+
+	batch := uuid.New()
+	f.batchedReadNotify(f.theo, &batch)
+	f.batchedReadNotify(f.theo, &batch)
+
+	takeAll(t, ada, readNotifyCap)
+	takeAll(t, mal, readNotifyCap)
+}
+
+// A batch owns its budget: the next batch is a new offboard and starts fresh,
+// and a receipt that names no batch — every single room's MarkRead — is bounded
+// per payload and touches nobody's budget, before or after.
+func TestANewBatchAndAStandaloneReceiptEachGetTheirOwnBudget(t *testing.T) {
+	f := newFixture(t)
+	ada := f.attach(f.ada)
+	f.st.readNotify = func(_ context.Context, _, _ uuid.UUID, _, _ int64, capPerAuthor int) ([]store.ReadNotifyMessage, error) {
+		return f.newestBy(f.ada, capPerAuthor), nil
+	}
+
+	first, second := uuid.New(), uuid.New()
+	f.batchedReadNotify(f.theo, &first)
+	f.batchedReadNotify(f.theo, &first) // the first batch's budget is spent: nothing
+	f.batchedReadNotify(f.theo, &second)
+	f.readNotify(f.theo, 0, readNotifyCap)
+
+	takeAll(t, ada, 3*readNotifyCap)
+}
+
+// The budget is spent on an author who has a session here, and only then: a
+// payload that finds nobody to refresh costs nothing, so a device that attaches
+// mid-batch is not handed a spent budget.
+func TestAnAuthorWithNoSessionHereSpendsNoBudget(t *testing.T) {
+	f := newFixture(t)
+	f.st.readNotify = func(_ context.Context, _, _ uuid.UUID, _, _ int64, capPerAuthor int) ([]store.ReadNotifyMessage, error) {
+		return f.newestBy(f.ada, capPerAuthor), nil
+	}
+
+	batch := uuid.New()
+	f.batchedReadNotify(f.theo, &batch) // nobody of Ada's is attached
+	ada := f.attach(f.ada)
+	f.batchedReadNotify(f.theo, &batch)
+
+	takeAll(t, ada, readNotifyCap)
+}
+
 // Ruling 2: entries by session, list derived per user in start order.
 func TestTypingIsKeyedBySessionAndDerivedPerUser(t *testing.T) {
 	f := newFixture(t)

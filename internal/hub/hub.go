@@ -60,7 +60,8 @@ const (
 	// readNotifyCap bounds how many of ONE AUTHOR's own messages CANT-92's
 	// receipt re-emission refreshes live, per receipt, newest first — a
 	// quarter of outboxBound, and that ratio is the point rather than the
-	// number.
+	// number. Since CANT-146 it is also the most one author is re-emitted across
+	// all the receipts of one batch: see A QUARTER PER AUTHOR PER COMMIT below.
 	//
 	// THE CAP IS BOUNDED FROM BELOW BY outboxBound, NOT CHOSEN FREELY. A
 	// first read of a room, or a new member's first receipt, can move
@@ -84,6 +85,23 @@ const (
 	// the gap for the tail this cap leaves live. DeliveryState's schema
 	// description states the same guarantee on the wire, beside the catch-up
 	// sentence CANT-89 put there.
+	//
+	// A QUARTER PER AUTHOR PER COMMIT, NOT PER PAYLOAD (CANT-146). The
+	// three-quarters argument above assumed a receipt was one payload, and a
+	// single room's MarkRead is. An offboard or its reversal is not: it raises
+	// one payload per room the person had read, in one commit, and each was
+	// capped on its own — so an author who shares four busy rooms with the
+	// person was handed 4 x 64, the whole outbox, in one burst. That is the case
+	// the argument did not cover. Any live frame or a slow writer on top of it
+	// severs the author on every device they have open, which is the exact
+	// outcome the cap exists to prevent, and takes the tail of the re-emission
+	// with it. So the store stamps one call's payloads with a shared Batch
+	// (store.NotifyPayload) and the hub spends this same number as an author's
+	// TOTAL across the batch. Rooms are served in the order their payloads
+	// arrive, newest first inside each; a room that finds an author's budget
+	// spent gets no live refresh for that author, and the tail waits for the
+	// bootstrap on the terms above. Nothing is lost, and a payload with no
+	// Batch — every single-room receipt — is bounded exactly as it always was.
 	readNotifyCap = 64
 
 	// loadBudget bounds the retry of a fan-out load; headBudget bounds the
@@ -196,6 +214,34 @@ type Hub struct {
 	typing  map[uuid.UUID]map[*session]time.Time
 	closing bool
 	drained chan struct{}
+	// burst is what the receipts of ONE batch have re-emitted so far (CANT-146),
+	// under mu like everything an enqueue touches.
+	burst readBurst
+}
+
+// readBurst is the budget a batch of receipts shares: which batch it is, and
+// how many of each author's messages the batch has already re-emitted here.
+// ONE SLOT, replaced when a payload names a different batch. The listener
+// delivers a commit's notifications back to back and in order, so nothing needs
+// the previous batch once the next has started, and a map of them would be a
+// thing to evict. If payloads of two batches ever did interleave, the cost is a
+// budget that starts over — the per-payload cap still holds, and this is the
+// behavior the hub had before the batch existed.
+type readBurst struct {
+	batch uuid.UUID
+	spent map[uuid.UUID]int // author -> messages re-emitted in this batch
+}
+
+// budgetLocked returns the spend the payload's batch shares, or nil when the
+// payload stands alone and only the per-payload cap applies. mu held.
+func (h *Hub) budgetLocked(batch *uuid.UUID) map[uuid.UUID]int {
+	if batch == nil {
+		return nil
+	}
+	if h.burst.spent == nil || h.burst.batch != *batch {
+		h.burst = readBurst{batch: *batch, spent: map[uuid.UUID]int{}}
+	}
+	return h.burst.spent
 }
 
 // session is one attached Conn and its outbox.
@@ -629,11 +675,26 @@ func (h *Hub) onReadNotify(ctx context.Context, p store.NotifyPayload) {
 	}
 
 	h.mu.Lock()
-	n := 0
+	spent := h.budgetLocked(p.Batch)
+	n, shed := 0, 0
 	for _, rm := range msgs {
-		set := h.sessions[rm.Message.AuthorID]
+		author := rm.Message.AuthorID
+		set := h.sessions[author]
 		if len(set) == 0 {
 			continue
+		}
+		// THE BATCH BUDGET (CANT-146, readNotifyCap's last paragraph). Spent only
+		// on an author with a session here, so an absent author costs nothing,
+		// and counted in messages rather than frames because every device of one
+		// author gets the same messages and each has its own outbox to protect.
+		// Rows arrive newest first per author, so what is shed is always the
+		// oldest of what this payload would have refreshed.
+		if spent != nil {
+			if spent[author] >= readNotifyCap {
+				shed++
+				continue
+			}
+			spent[author]++
 		}
 		// Viewer is always the row's own author: MessagesForReadNotify
 		// already excluded every other case, so DeliveryState's own-message
@@ -655,7 +716,8 @@ func (h *Hub) onReadNotify(ctx context.Context, p store.NotifyPayload) {
 	h.mu.Unlock()
 	h.logger.Debug("read receipt re-emission",
 		"conversation_id", p.ConversationID, "reader", reader,
-		"before", p.Before, "after", p.After, "messages", len(msgs), "sessions", n)
+		"before", p.Before, "after", p.After, "messages", len(msgs), "sessions", n,
+		"batched", p.Batch != nil, "shed", shed)
 }
 
 // OnGap is the listener's reconnect callback: some number of notifications

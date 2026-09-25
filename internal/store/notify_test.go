@@ -295,9 +295,10 @@ func TestThePayloadIsNowhereNearTheCap(t *testing.T) {
 	// CANT-92's receipt shape, at ITS widest: two more ids-worth of bytes
 	// (UserID's uuid, plus Before and After at Seq's own maximum) than the
 	// message shape above, and still nowhere near the cap for the same
-	// reason — every field here is a fixed-width id or ordinal.
-	widestUser := uuid.Max
-	widestReceipt := NotifyPayload{ConversationID: uuid.Max, UserID: &widestUser, Before: seqMax, After: seqMax}
+	// reason — every field here is a fixed-width id or ordinal. CANT-146's Batch
+	// is the sixth field, so this is the widest thing an offboard raises.
+	widestUser, widestBatch := uuid.Max, uuid.Max
+	widestReceipt := NotifyPayload{ConversationID: uuid.Max, UserID: &widestUser, Before: seqMax, After: seqMax, Batch: &widestBatch}
 	encodedReceipt, err := widestReceipt.Encode()
 	if err != nil {
 		t.Fatalf("the widest legal receipt payload does not encode: %v", err)
@@ -367,8 +368,11 @@ func TestTheNotifyPayloadCannotGrowAContentField(t *testing.T) {
 	// the receipt shape — UserID, Before, After — deliberately, per its own
 	// ticket: widen the struct rather than open a second shape on the
 	// channel. Two ids and three integers, still nothing a receiver could
-	// render without a query.
-	const want = "ConversationID uuid.UUID, Seq int64, UserID *uuid.UUID, Before int64, After int64"
+	// render without a query. CANT-146 added a third id, Batch: a random
+	// correlation id the offboard draws so the hub can tell one commit's
+	// receipts from unrelated ones that arrive together. It names no row and
+	// carries no content, which is the whole of what this guard is for.
+	const want = "ConversationID uuid.UUID, Seq int64, UserID *uuid.UUID, Before int64, After int64, Batch *uuid.UUID"
 
 	got, err := notifyPayloadFields("notify.go")
 	if err != nil {
