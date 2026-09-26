@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.1](https://github.com/Einlanzerous/catenary/compare/v0.11.0...v0.11.1) (2026-09-25)
+
+
+### Bug Fixes
+
+* CANT-146 — an offboard re-emits one budget to an author, not one per room ([#92](https://github.com/Einlanzerous/catenary/issues/92)) ([37b2d3b](https://github.com/Einlanzerous/catenary/commit/37b2d3b2dcebf03185a96f6d838b3a70aa58afd2))
+
 ## [0.11.0](https://github.com/Einlanzerous/catenary/compare/v0.10.0...v0.11.0) (2026-09-24)
 
 
