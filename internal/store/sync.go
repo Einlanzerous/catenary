@@ -99,6 +99,11 @@ type ConversationRow struct {
 	// precisely because the rail shows the other member, which is per reader
 	// and cannot live in one column.
 	OtherMemberName *string
+
+	// OtherMemberID is CANT-141's: the same DIRECT-only resolution as
+	// OtherMemberName, one column over in the same otherMemberJoin row, so the
+	// two can never disagree about which member they mean.
+	OtherMemberID *uuid.UUID
 }
 
 // UserRow is a user as served. `initials` is derived at serve time and is not
@@ -366,13 +371,11 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 		SELECT c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
 		       `+memberCountExpr+`,
 		       `+firstUnreadSeqExpr+`,
-		       (SELECT u.display_name FROM conversation_members o
-		          JOIN users u ON u.id = o.user_id
-		         WHERE o.conversation_id = c.id AND o.user_id <> $2
-		         ORDER BY u.display_name LIMIT 1)
+		       om.other_member_id, om.other_member_name
 		  FROM conversations c
 		  JOIN conversation_members cm
 		    ON cm.conversation_id = c.id AND cm.user_id = $2
+		  `+otherMemberJoin+`
 		 WHERE c.id = ANY($1)
 		    OR (c.metadata_log_seq  > $3 AND c.metadata_log_seq  <= $4)
 		    OR (cm.metadata_log_seq > $3 AND cm.metadata_log_seq <= $4)
@@ -383,7 +386,7 @@ func (s *Store) loadConversations(ctx context.Context, tx pgx.Tx, viewer uuid.UU
 	page.Conversations, err = pgx.CollectRows(rows, func(r pgx.CollectableRow) (ConversationRow, error) {
 		var c ConversationRow
 		err := r.Scan(&c.ID, &c.Kind, &c.Name, &c.LastSeq, &c.RetentionDays, &c.Muted, &c.ReadSeq,
-			&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberName)
+			&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberID, &c.OtherMemberName)
 		return c, err
 	})
 	if err != nil {
@@ -501,13 +504,41 @@ const conversationRowPerViewer = `
 	       c.id, c.kind, c.name, c.last_seq, c.retention_days, cm.muted, cm.read_seq,
 	       ` + memberCountExpr + `,
 	       ` + firstUnreadSeqExpr + `,
-	       (SELECT u.display_name FROM conversation_members o
-	          JOIN users u ON u.id = o.user_id
-	         WHERE o.conversation_id = c.id AND o.user_id <> cm.user_id
-	         ORDER BY u.display_name LIMIT 1)
+	       om.other_member_id, om.other_member_name
 	  FROM conversations c
 	  JOIN conversation_members cm
-	    ON cm.conversation_id = c.id`
+	    ON cm.conversation_id = c.id
+	  ` + otherMemberJoin
+
+// otherMemberJoin resolves a direct conversation's other member for THIS row's
+// own member (cm.user_id) — both the id (CANT-141) and the display name that
+// was here first (CANT-20), from one evaluated LATERAL row rather than two
+// queries that could disagree. Spliced into conversationRowPerViewer above and
+// into loadConversations' own query, so there is exactly one text to keep
+// right — CANT-114's own review caught these two queries drifting once
+// already, which is why memberCountExpr and firstUnreadSeqExpr are consts and
+// this is too (TestOtherMemberJoinIsSplicedExactlyTwice).
+//
+// THE kind = 'direct' GUARD LIVES INSIDE THIS SUBQUERY'S OWN WHERE, WITH ON
+// TRUE ON THE JOIN ITSELF — NOT THE OTHER WAY AROUND
+// (TestOtherMemberJoinGuardsInsideTheLateral pins the text shape). A LEFT
+// JOIN's ON clause naming only the preserved (outer) side cannot be pushed
+// down into a LATERAL subquery: Postgres evaluates the inner side for every
+// outer row regardless of what the ON clause says, and applies it afterward as
+// a plain join filter. Measured (EXPLAIN ANALYZE, a clean fixture of 40 groups
+// and 10 directs, viewer a member of all 50): a guard on ON ran the inner join
+// with loops=50 (every row); the same guard inside WHERE, with ON true, showed
+// a One-Time Filter and ran it with loops=10 (only the directs) — a group
+// conversation never evaluates this subquery at all with the guard in the
+// right place.
+const otherMemberJoin = `
+	LEFT JOIN LATERAL (
+		SELECT o.user_id AS other_member_id, u.display_name AS other_member_name
+		  FROM conversation_members o
+		  JOIN users u ON u.id = o.user_id
+		 WHERE c.kind = 'direct' AND o.conversation_id = c.id AND o.user_id <> cm.user_id
+		 ORDER BY u.display_name LIMIT 1
+	) om ON true`
 
 // scanConversationRow reads one row of conversationRowPerViewer: the member the
 // row is for, and the conversation as that member sees it. One scan list for
@@ -517,7 +548,7 @@ func scanConversationRow(r interface{ Scan(...any) error }) (uuid.UUID, Conversa
 	var viewer uuid.UUID
 	var c ConversationRow
 	err := r.Scan(&viewer, &c.ID, &c.Kind, &c.Name, &c.LastSeq, &c.RetentionDays, &c.Muted, &c.ReadSeq,
-		&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberName)
+		&c.MemberCount, &c.FirstUnreadSeq, &c.OtherMemberID, &c.OtherMemberName)
 	return viewer, c, err
 }
 

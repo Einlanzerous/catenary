@@ -278,6 +278,10 @@
       "note": "NULL for a direct — the rail shows the other member, which is per reader. `name` is REQUIRED on the wire, so for kind=direct the served value is RESOLVED from the other member's display_name at serve time (CANT-20). A group reads the column.",
       "nullable_because": "The wire makes name REQUIRED and the column is nullable, and both are right: a group's name is this column, and a direct has none, because the rail shows the OTHER member and that is per reader. The server derives the served name for a direct rather than storing one — storing it would freeze a display name that SyncResponse.users exists to serve live."
     },
+    "Conversation.other_member_id": {
+      "kind": "derived",
+      "note": "Present iff kind is direct (CANT-141). Resolved by the same LATERAL join as Conversation.name's other-member string — internal/store/sync.go's otherMemberJoin, correlated on conversation_members and users, guarded by c.kind = 'direct' inside the LATERAL's own WHERE so a group row never evaluates it. Not stored: conversation_members already answers it, and a stored id is one that can disagree with the membership it names."
+    },
     "Conversation.member_count": {
       "kind": "derived",
       "note": "Count over conversation_members, of ACTIVE members only — readstate.go's activeMemberExpr, joined to users on deactivated_at IS NULL. Not stored: those two tables already answer it, and a stored count is one that can disagree with them. The same predicate is the numerator's, so the fraction can reach n/n. CANT-135 ruling 1."

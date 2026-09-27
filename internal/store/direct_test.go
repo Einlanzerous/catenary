@@ -37,6 +37,9 @@ func TestFindOrCreateDirectTwiceReturnsTheSameConversation(t *testing.T) {
 	if first.OtherMemberName == nil || *first.OtherMemberName != "theo" {
 		t.Errorf("other_member_name = %v, want theo", first.OtherMemberName)
 	}
+	if first.OtherMemberID == nil || *first.OtherMemberID != theo {
+		t.Errorf("other_member_id = %v, want theo's id %s", first.OtherMemberID, theo)
+	}
 
 	second, err := st.FindOrCreateDirect(ctx, ada, "theo")
 	if err != nil {
@@ -69,6 +72,9 @@ func TestFindOrCreateDirectTwiceReturnsTheSameConversation(t *testing.T) {
 	}
 	if fromTheo.OtherMemberName == nil || *fromTheo.OtherMemberName != "ada" {
 		t.Errorf("theo's other_member_name = %v, want ada", fromTheo.OtherMemberName)
+	}
+	if fromTheo.OtherMemberID == nil || *fromTheo.OtherMemberID != ada {
+		t.Errorf("theo's other_member_id = %v, want ada's id %s", fromTheo.OtherMemberID, ada)
 	}
 }
 

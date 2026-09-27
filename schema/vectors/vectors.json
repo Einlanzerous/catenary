@@ -208,13 +208,14 @@
       "name": "server_conversation_frame_new_direct",
       "kind": "ServerFrame",
       "expect": "roundtrip",
-      "why": "CANT-113, absent optional. muted, first_unread_seq and retention_days are all legally absent on Conversation and stay so wrapped in the introduction.",
+      "why": "CANT-113, absent optional. muted, first_unread_seq and retention_days are all legally absent on Conversation and stay so wrapped in the introduction. CANT-141: other_member_id present alongside them, since its presence is gated on kind rather than on the other three.",
       "json": {
         "type": "conversation",
         "conversation": {
           "id": "cc33dd44-ee55-4f66-8a77-bb88cc99dd00",
           "kind": "direct",
           "name": "Argosy",
+          "other_member_id": "dd44ee55-ff66-4a77-8b88-cc99dd00ee11",
           "member_count": 2,
           "head_seq": 1
         }
@@ -530,11 +531,12 @@
       "name": "conversation_fully_read_with_retention",
       "kind": "Conversation",
       "expect": "roundtrip",
-      "why": "ABSENT first_unread_seq means fully read. There is deliberately no stored unread count anywhere on the wire.",
+      "why": "ABSENT first_unread_seq means fully read. There is deliberately no stored unread count anywhere on the wire. CANT-141: other_member_id present, unaffected by whether the reader is caught up.",
       "json": {
         "id": "bb22cc33-dd44-4e55-9f66-aa77bb88cc99",
         "kind": "direct",
         "name": "Nadia",
+        "other_member_id": "ee55ff66-aa77-4b88-9c99-dd00ee11ff22",
         "member_count": 2,
         "head_seq": 88,
         "muted": false,
@@ -545,11 +547,12 @@
       "name": "conversation_freshly_found_or_created",
       "kind": "Conversation",
       "expect": "roundtrip",
-      "why": "CANT-75. head_seq: 0 is legal here and nowhere on Message.seq — a direct conversation find-or-create just created holds no messages yet, and 0 is the honest answer for what a resync would count towards. head_seq is an inline 0..2^53-1 integer rather than Seq for exactly this reason: Seq's own minimum of 1 stays true for a message's ordinal, which is never 0.",
+      "why": "CANT-75. head_seq: 0 is legal here and nowhere on Message.seq — a direct conversation find-or-create just created holds no messages yet, and 0 is the honest answer for what a resync would count towards. head_seq is an inline 0..2^53-1 integer rather than Seq for exactly this reason: Seq's own minimum of 1 stays true for a message's ordinal, which is never 0. CANT-141: other_member_id is present from the moment find-or-create returns, before either member has sent anything — it is what makes this conversation nameable at all before a first message exists.",
       "json": {
         "id": "cc33dd44-ee55-4f66-8a77-bb88cc99dd00",
         "kind": "direct",
         "name": "Argosy",
+        "other_member_id": "dd44ee55-ff66-4a77-8b88-cc99dd00ee11",
         "member_count": 2,
         "head_seq": 0
       }

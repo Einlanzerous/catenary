@@ -1283,7 +1283,24 @@ func (v *Message) decode(b []byte, p string) error {
 type Conversation struct {
 	ID   Uuid             `json:"id"`
 	Kind ConversationKind `json:"kind"`
-	Name string           `json:"name"`
+	// REQUIRED. For kind: group, the room's own stored name. For kind: direct, the other
+	// member's display name AS OF THE SERVE THAT CARRIED IT: a fallback for a client that
+	// cannot yet resolve other_member_id, never the title once it can. A held Conversation
+	// record is NOT re-emitted when the other member's display name changes (re-emission
+	// triggers on head_seq, first_unread_seq and membership only) while the renamed User
+	// record IS ('send the full record whenever … their name … changed'), so a client that
+	// cached this string instead would show a name the server has already corrected
+	// everywhere else; a full bootstrap serves this fresh regardless.
+	Name string `json:"name"`
+	// OPTIONAL. Present iff kind is direct; absent for kind: group. Names the other member
+	// of a direct conversation, resolved the same way name is. An id with no matching User
+	// yet means NOT YET KNOWN, never NO SUCH PERSON: on /sync and on a socket introduction
+	// this always rides the same page or frame as the User it names; the one exception is
+	// POST /conversations/direct's response, closed on the caller's own next /sync page.
+	// KIND IS MUTABLE — a third member promotes a direct to a group — so a later record
+	// REPLACES this field rather than merging with one already held. A CLIENT TITLES A
+	// DIRECT BY THE User THIS ID NAMES, read fresh on every render, not by name (above).
+	OtherMemberID *Uuid `json:"other_member_id,omitempty"`
 	// How many people are in this room, as the server counts them at serve time: the
 	// thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
 	// numerator over it.
@@ -1353,6 +1370,7 @@ func (v *Conversation) decode(b []byte, p string) error {
 		ID             *Uuid             `json:"id"`
 		Kind           *ConversationKind `json:"kind"`
 		Name           *string           `json:"name"`
+		OtherMemberID  *Uuid             `json:"other_member_id"`
 		MemberCount    *int64            `json:"member_count"`
 		Muted          *bool             `json:"muted"`
 		FirstUnreadSeq *Seq              `json:"first_unread_seq"`
@@ -1375,6 +1393,9 @@ func (v *Conversation) decode(b []byte, p string) error {
 		return badf(p+".name", "required field is missing")
 	}
 	out.Name = *s.Name
+	if s.OtherMemberID != nil {
+		out.OtherMemberID = s.OtherMemberID
+	}
 	if s.MemberCount == nil {
 		return badf(p+".member_count", "required field is missing")
 	}
@@ -1397,6 +1418,11 @@ func (v *Conversation) decode(b []byte, p string) error {
 	}
 	if err := checkConversationKind(out.Kind, p+".kind"); err != nil {
 		return err
+	}
+	if out.OtherMemberID != nil {
+		if err := checkUuid(*out.OtherMemberID, p+".other_member_id"); err != nil {
+			return err
+		}
 	}
 	if out.MemberCount < 1 {
 		return badf(p+".member_count", "member_count must be >= 1, got %v", out.MemberCount)

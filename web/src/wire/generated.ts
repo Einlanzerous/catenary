@@ -732,7 +732,24 @@ export function encodeMessage(v: Message): Record<string, unknown> {
 export interface Conversation {
   id: Uuid
   kind: ConversationKind
+  // REQUIRED. For kind: group, the room's own stored name. For kind: direct, the other
+  // member's display name AS OF THE SERVE THAT CARRIED IT: a fallback for a client that
+  // cannot yet resolve other_member_id, never the title once it can. A held Conversation
+  // record is NOT re-emitted when the other member's display name changes (re-emission
+  // triggers on head_seq, first_unread_seq and membership only) while the renamed User
+  // record IS ('send the full record whenever … their name … changed'), so a client that
+  // cached this string instead would show a name the server has already corrected
+  // everywhere else; a full bootstrap serves this fresh regardless.
   name: string
+  // OPTIONAL. Present iff kind is direct; absent for kind: group. Names the other member
+  // of a direct conversation, resolved the same way name is. An id with no matching User
+  // yet means NOT YET KNOWN, never NO SUCH PERSON: on /sync and on a socket introduction
+  // this always rides the same page or frame as the User it names; the one exception is
+  // POST /conversations/direct's response, closed on the caller's own next /sync page.
+  // KIND IS MUTABLE — a third member promotes a direct to a group — so a later record
+  // REPLACES this field rather than merging with one already held. A CLIENT TITLES A
+  // DIRECT BY THE User THIS ID NAMES, read fresh on every render, not by name (above).
+  otherMemberId?: Uuid
   // How many people are in this room, as the server counts them at serve time: the
   // thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
   // numerator over it.
@@ -795,6 +812,7 @@ export function decodeConversation(v: unknown, p = "Conversation"): Conversation
     id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asUuid(o["id"], `${p}.id`),
     kind: o["kind"] === undefined || o["kind"] === null ? bad(`${p}.kind`, 'required field is missing') : asConversationKind(o["kind"], `${p}.kind`),
     name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : asStr(o["name"], `${p}.name`),
+    otherMemberId: o["other_member_id"] === undefined || o["other_member_id"] === null ? undefined : asUuid(o["other_member_id"], `${p}.other_member_id`),
     memberCount: o["member_count"] === undefined || o["member_count"] === null ? bad(`${p}.member_count`, 'required field is missing') : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `member_count must be >= 1, got ${x}`); return x })(o["member_count"], `${p}.member_count`),
     muted: o["muted"] === undefined || o["muted"] === null ? undefined : asBool(o["muted"], `${p}.muted`),
     firstUnreadSeq: o["first_unread_seq"] === undefined || o["first_unread_seq"] === null ? undefined : asSeq(o["first_unread_seq"], `${p}.first_unread_seq`),
@@ -808,6 +826,7 @@ export function encodeConversation(v: Conversation): Record<string, unknown> {
     "id": v.id,
     "kind": v.kind,
     "name": v.name,
+    "other_member_id": v.otherMemberId === undefined ? undefined : v.otherMemberId,
     "member_count": v.memberCount,
     "muted": v.muted === undefined ? undefined : v.muted,
     "first_unread_seq": v.firstUnreadSeq === undefined ? undefined : v.firstUnreadSeq,

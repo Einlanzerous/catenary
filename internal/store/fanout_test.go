@@ -268,6 +268,16 @@ func TestTheIntroductionNamesADirectFromEachMembersOwnSide(t *testing.T) {
 	if adaRow.Kind != "direct" || adaRow.Name != nil {
 		t.Errorf("ada's row = %+v, want a direct with no stored name", adaRow)
 	}
+
+	// CANT-141 — the id rides the same LATERAL row as the name, so it is named
+	// from each member's own side too, and it is theo's and ada's OWN uuid
+	// rather than a string that merely happens to read right.
+	if adaRow.OtherMemberID == nil || *adaRow.OtherMemberID != theo {
+		t.Errorf("ada's other_member_id = %v, want theo's id %s", adaRow.OtherMemberID, theo)
+	}
+	if theoRow.OtherMemberID == nil || *theoRow.OtherMemberID != ada {
+		t.Errorf("theo's other_member_id = %v, want ada's id %s", theoRow.OtherMemberID, ada)
+	}
 }
 
 // statementCounter counts every statement a pool issues, so criterion 14 is
