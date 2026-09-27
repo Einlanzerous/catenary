@@ -263,14 +263,20 @@ export function send() {
 
   const message: Message = {
     id: `m-local-${state.nextSeq}`,
-    logSeq: state.nextSeq,
+    // Required and unread by anything here — CANT-36/CANT-48 decide what a
+    // locally-composed message's logSeq means before the real server assigns
+    // one. Deliberately NOT the same counter as seq: log_seq is server-global
+    // and sparse where seq is per-conversation and dense (invariant 1), and a
+    // shared counter here would read as that relationship rather than as the
+    // placeholder it is.
+    logSeq: state.nextSeq + 1_000_000,
     seq: state.nextSeq++,
     conversationId: state.activeId,
     authorId: state.me,
     at: new Date().toISOString(),
     text,
     state: offline ? 'queued' : 'sending',
-    idempotencyKey: cryptoKey(),
+    clientId: cryptoKey(),
     ...(source
       ? {
           replyTo: {
@@ -426,7 +432,9 @@ export function stopRecording(sendIt: boolean) {
   // here it lands as a pending-transcript voice note.
   state.messages.push({
     id: `m-local-${state.nextSeq}`,
-    logSeq: state.nextSeq,
+    // See send()'s own comment: a placeholder, deliberately not sharing seq's
+    // counter.
+    logSeq: state.nextSeq + 1_000_000,
     seq: state.nextSeq++,
     conversationId: state.activeId,
     authorId: state.me,

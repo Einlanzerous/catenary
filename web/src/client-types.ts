@@ -34,18 +34,19 @@ export type ImageAttachment = WireImageAttachment & { uploadedBytes?: number }
 
 export type Attachment = Exclude<WireAttachment, WireImageAttachment> | ImageAttachment
 
-/** `Message`, widened three ways: a client-authored delivery state,
- *  attachments that may carry local-only upload progress, an outbox error
- *  (populated only in the `failed` state, shown inline, never as a toast —
- *  the server has no opinion on why a send never left the building), and the
- *  idempotency key a client mints for its own retries; the wire has no
- *  opinion on that either, since `client_id` is what dedups a send once it
- *  arrives. */
+/** `Message`, widened two ways: a client-authored delivery state, and
+ *  attachments that may carry local-only upload progress. Also carries an
+ *  outbox `error`, populated only in the `failed` state and shown inline,
+ *  never as a toast — the server has no opinion on why a send never left the
+ *  building. NOT widened with a second idempotency key: `WireMessage.clientId`
+ *  already is one (`schema/mapping/wire-fields.json`: "Idempotency key, unique
+ *  per (author_id, client_id)"), echoed back to the sender so an outbox entry
+ *  can be matched against the `ack`/`message` frame it produces — a client
+ *  mints it with `send()`'s own `clientId`, not a second field. */
 export type Message = Omit<WireMessage, 'state' | 'attachments'> & {
   state: DeliveryState
   attachments?: Attachment[]
   error?: string
-  idempotencyKey?: string
 }
 
 /** The reconnect state machine's own labels. No wire equivalent — a session
