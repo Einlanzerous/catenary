@@ -119,6 +119,61 @@ func TestADirectConversationIsNamedForTheOtherMember(t *testing.T) {
 	}
 }
 
+// CANT-141 — other_member_id is gated on Kind directly, never inferred from
+// OtherMemberName being non-nil (the name switch above is precedence, not a
+// kind test). Four cases, all carrying a non-nil OtherMemberID except the
+// last, so what varies is Kind, Name and OtherMemberID's own presence rather
+// than whether the store found somebody by accident.
+func TestOtherMemberIDIsGatedOnKindNotOnTheNameSwitch(t *testing.T) {
+	nadia := mustUUID(t, nadiaID)
+
+	// A group row with a resolved OtherMemberID — today computed and thrown
+	// away by otherMemberJoin's own callers before this ever reaches the
+	// mapper, never actually reachable once the join's kind = 'direct' guard
+	// is in place, but this is the mapper's own belt beside that store-side
+	// suspender — must still not leak it.
+	group := Conversation(store.ConversationRow{
+		ID: mustUUID(t, convID), Kind: "group", Name: ptr("Shed Projects"),
+		OtherMemberID: &nadia, OtherMemberName: ptr("Nadia Ruiz"), LastSeq: 3, MemberCount: 5,
+	})
+	if group.OtherMemberID != nil {
+		t.Errorf("group carried other_member_id = %v, want absent", group.OtherMemberID)
+	}
+
+	// The ordinary direct case: no stored name, OtherMemberID present.
+	direct := Conversation(store.ConversationRow{
+		ID: mustUUID(t, convID), Kind: "direct", Name: nil,
+		OtherMemberID: &nadia, OtherMemberName: ptr("Nadia Ruiz"), LastSeq: 3, MemberCount: 2,
+	})
+	if direct.OtherMemberID == nil || string(*direct.OtherMemberID) != nadiaID {
+		t.Errorf("direct's other_member_id = %v, want %s", direct.OtherMemberID, nadiaID)
+	}
+
+	// A direct row that ALSO carries a stored Name — unreachable via any
+	// writer today (findOrCreateDirect's INSERT sets only id, kind,
+	// direct_key), but the exact case the explicit Kind guard exists for
+	// rather than the name switch's fallthrough: other_member_id must still
+	// come through.
+	directWithStoredName := Conversation(store.ConversationRow{
+		ID: mustUUID(t, convID), Kind: "direct", Name: ptr("stored, unreachable today"),
+		OtherMemberID: &nadia, OtherMemberName: ptr("Nadia Ruiz"), LastSeq: 3, MemberCount: 2,
+	})
+	if directWithStoredName.OtherMemberID == nil || string(*directWithStoredName.OtherMemberID) != nadiaID {
+		t.Errorf("direct-with-stored-name's other_member_id = %v, want %s",
+			directWithStoredName.OtherMemberID, nadiaID)
+	}
+
+	// A direct with no OtherMemberID at all (the store found nobody) carries
+	// none — nothing to leak, nothing invented.
+	directNone := Conversation(store.ConversationRow{
+		ID: mustUUID(t, convID), Kind: "direct", Name: nil,
+		OtherMemberName: ptr("Nadia Ruiz"), LastSeq: 3, MemberCount: 2,
+	})
+	if directNone.OtherMemberID != nil {
+		t.Errorf("direct with no OtherMemberID carried %v, want absent", directNone.OtherMemberID)
+	}
+}
+
 // THE SUBJECT OF `state` CHANGES WITH AUTHORSHIP, which is CANT-90's ruling and
 // the thing this table exists to hold still.
 //

@@ -251,6 +251,20 @@ func Conversation(c store.ConversationRow) wire.Conversation {
 		out.Name = *c.OtherMemberName
 	}
 
+	// other_member_id (CANT-141) IS GATED ON Kind DIRECTLY, NOT INFERRED FROM
+	// THE SWITCH ABOVE. That switch is name PRECEDENCE — c.Name wins first —
+	// and both of the store's queries resolve OtherMemberID unconditionally,
+	// group rows included (0002's CHECK only forces a group to HAVE a name; it
+	// does not forbid a direct from having one, which is what actually keeps
+	// the switch's second case direct-only today, by omission rather than by
+	// constraint). So this is checked explicitly rather than piggybacked on the
+	// switch, and stays correct even for a direct row that somehow carried a
+	// stored name too.
+	if c.Kind == "direct" && c.OtherMemberID != nil {
+		id := wire.Uuid(c.OtherMemberID.String())
+		out.OtherMemberID = &id
+	}
+
 	if c.FirstUnreadSeq != nil {
 		s := wire.Seq(*c.FirstUnreadSeq)
 		out.FirstUnreadSeq = &s

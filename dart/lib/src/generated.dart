@@ -990,6 +990,7 @@ final class Conversation {
     required this.id,
     required this.kind,
     required this.name,
+    this.otherMemberId,
     required this.memberCount,
     this.muted,
     this.firstUnreadSeq,
@@ -1001,7 +1002,25 @@ final class Conversation {
 
   final ConversationKind kind;
 
+  /// REQUIRED. For kind: group, the room's own stored name. For kind: direct, the other
+  /// member's display name AS OF THE SERVE THAT CARRIED IT: a fallback for a client that
+  /// cannot yet resolve other_member_id, never the title once it can. A held Conversation
+  /// record is NOT re-emitted when the other member's display name changes (re-emission
+  /// triggers on head_seq, first_unread_seq and membership only) while the renamed User
+  /// record IS ('send the full record whenever … their name … changed'), so a client that
+  /// cached this string instead would show a name the server has already corrected
+  /// everywhere else; a full bootstrap serves this fresh regardless.
   final String name;
+
+  /// OPTIONAL. Present iff kind is direct; absent for kind: group. Names the other member
+  /// of a direct conversation, resolved the same way name is. An id with no matching User
+  /// yet means NOT YET KNOWN, never NO SUCH PERSON: on /sync and on a socket introduction
+  /// this always rides the same page or frame as the User it names; the one exception is
+  /// POST /conversations/direct's response, closed on the caller's own next /sync page.
+  /// KIND IS MUTABLE — a third member promotes a direct to a group — so a later record
+  /// REPLACES this field rather than merging with one already held. A CLIENT TITLES A
+  /// DIRECT BY THE User THIS ID NAMES, read fresh on every render, not by name (above).
+  final Uuid? otherMemberId;
 
   /// How many people are in this room, as the server counts them at serve time: the
   /// thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
@@ -1068,6 +1087,7 @@ final class Conversation {
       id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _asUuid(o["id"], '${p}.id'),
       kind: o["kind"] == null ? _bad('${p}.kind', 'required field is missing') : ConversationKind.fromWire(o["kind"], '${p}.kind'),
       name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : _str(o["name"], '${p}.name'),
+      otherMemberId: o["other_member_id"] == null ? null : _asUuid(o["other_member_id"], '${p}.other_member_id'),
       memberCount: o["member_count"] == null ? _bad('${p}.member_count', 'required field is missing') : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'member_count must be >= 1, got $x'); return x; })(o["member_count"], '${p}.member_count'),
       muted: o["muted"] == null ? null : _bool(o["muted"], '${p}.muted'),
       firstUnreadSeq: o["first_unread_seq"] == null ? null : _asSeq(o["first_unread_seq"], '${p}.first_unread_seq'),
@@ -1080,6 +1100,7 @@ final class Conversation {
     "id": id,
     "kind": kind.wire,
     "name": name,
+    "other_member_id": otherMemberId == null ? null : otherMemberId!,
     "member_count": memberCount,
     "muted": muted == null ? null : muted!,
     "first_unread_seq": firstUnreadSeq == null ? null : firstUnreadSeq!,
