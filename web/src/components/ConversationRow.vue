@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Conversation } from '@/types'
+import type { Conversation } from '@/wire/generated'
 import { duration, railStamp, sameDay } from '@/lib/format'
 import {
   conversationTitle,
@@ -31,8 +31,8 @@ const preview = computed(() => {
   if (voice) {
     body =
       voice.transcript.state === 'pending'
-        ? `transcript pending · ${duration(voice.durationSec)}`
-        : `voice note · ${duration(voice.durationSec)}`
+        ? `transcript pending · ${duration(voice.durationMs)}`
+        : `voice note · ${duration(voice.durationMs)}`
   } else if (m.attachments?.some((a) => a.kind === 'image')) {
     body = 'photo'
   } else {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ImageAttachment, Message } from '@/types'
+import type { ImageAttachment, Message } from '@/client-types'
 import { clock } from '@/lib/format'
 import { discard, isMine, jumpTo, replyTo, retry, state, user, voiceOf } from '@/store'
 import Avatar from './Avatar.vue'

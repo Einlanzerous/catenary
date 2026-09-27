@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { ConnectionState } from '@/types'
+import type { ConnectionState } from '@/client-types'
 import { cycleTyping, setConnection, setTheme, state, typingIn } from '@/store'
 
 /**

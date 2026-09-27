@@ -59,7 +59,7 @@ function parts(text: string): { text: string; hit: boolean }[] {
 const voiceFor = (hit: SearchHit) => voiceOf(hit.message)
 
 function open(hit: SearchHit) {
-  jumpTo(hit.message.id, hit.jumpToSec)
+  jumpTo(hit.message.id, hit.jumpToMs)
 }
 
 function onKeydown(event: KeyboardEvent) {
@@ -132,7 +132,7 @@ function onKeydown(event: KeyboardEvent) {
               >
               <template v-else
                 >TRANSCRIPT MATCH ·
-                {{ duration(voiceFor(hit)?.durationSec ?? 0) }}</template
+                {{ duration(voiceFor(hit)?.durationMs ?? 0) }}</template
               >
             </span>
           </span>
@@ -152,7 +152,7 @@ function onKeydown(event: KeyboardEvent) {
             />
             <span class="snippet secondary">
               <template v-if="hit.notSearchableYet">{{
-                `matched on filename and sender only · ${duration(voiceFor(hit)?.durationSec ?? 0)}`
+                `matched on filename and sender only · ${duration(voiceFor(hit)?.durationMs ?? 0)}`
               }}</template>
               <template v-else>
                 <span
@@ -179,8 +179,8 @@ function onKeydown(event: KeyboardEvent) {
           <span class="room">{{ conversationTitle(hit.conversation) }}</span>
           <span>{{ fullStamp(hit.message.at) }}</span>
           <!-- Seeks the audio to the matched word, not just the message. -->
-          <span v-if="hit.jumpToSec !== undefined" class="jump">
-            JUMP TO {{ duration(hit.jumpToSec) }}
+          <span v-if="hit.jumpToMs !== undefined" class="jump">
+            JUMP TO {{ duration(hit.jumpToMs) }}
           </span>
         </span>
       </button>

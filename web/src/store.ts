@@ -11,13 +11,8 @@
  */
 
 import { computed, reactive } from 'vue'
-import type {
-  Conversation,
-  ConnectionState,
-  Message,
-  User,
-  VoiceAttachment,
-} from '@/types'
+import type { Conversation, User, VoiceAttachment } from '@/wire/generated'
+import type { ConnectionState, Message } from '@/client-types'
 import { CONVERSATIONS, ME, MESSAGES, USERS } from '@/mock/fixtures'
 import { countWords } from '@/lib/format'
 
@@ -268,6 +263,7 @@ export function send() {
 
   const message: Message = {
     id: `m-local-${state.nextSeq}`,
+    logSeq: state.nextSeq,
     seq: state.nextSeq++,
     conversationId: state.activeId,
     authorId: state.me,
@@ -332,7 +328,7 @@ export function discard(messageId: string) {
 function previewOf(m: Message): {
   kind: 'text' | 'voice' | 'image' | 'link'
   preview: string
-  durationSec?: number
+  durationMs?: number
   url?: string
 } {
   const voice = voiceOf(m)
@@ -340,7 +336,7 @@ function previewOf(m: Message): {
     return {
       kind: 'voice',
       preview: voice.transcript.text ?? '',
-      durationSec: voice.durationSec,
+      durationMs: voice.durationMs,
     }
   }
   const image = m.attachments?.find((a) => a.kind === 'image')
@@ -430,6 +426,7 @@ export function stopRecording(sendIt: boolean) {
   // here it lands as a pending-transcript voice note.
   state.messages.push({
     id: `m-local-${state.nextSeq}`,
+    logSeq: state.nextSeq,
     seq: state.nextSeq++,
     conversationId: state.activeId,
     authorId: state.me,
@@ -438,7 +435,11 @@ export function stopRecording(sendIt: boolean) {
     attachments: [
       {
         kind: 'voice',
-        durationSec: state.composer.recordingSec || 1,
+        // No real media URL until the upload completes — CANT-36/CANT-48
+        // decide what a not-yet-uploaded voice note's local URL actually is
+        // (most likely a Blob object URL). Empty is the honest placeholder.
+        url: '',
+        durationMs: (state.composer.recordingSec || 1) * 1000,
         peaks: [],
         transcript: { state: 'pending', etaSec: 20 },
       },
@@ -467,7 +468,10 @@ export function togglePlay(messageId: string) {
   playTicker = setInterval(() => {
     const voice = voiceOf(messageById(p.messageId ?? ''))
     if (!voice) return
-    p.progress += (0.1 * p.rate) / voice.durationSec
+    // 100ms of wall-clock time per tick, scaled by rate, over the clip's own
+    // duration — both sides in milliseconds now, so the fraction is the same
+    // ratio the seconds-based version computed.
+    p.progress += (100 * p.rate) / voice.durationMs
     if (p.progress >= 1) {
       p.progress = 1
       p.playing = false
@@ -500,7 +504,7 @@ export interface SearchHit {
   type: 'TXT' | 'VOX'
   snippet: string
   /** Voice hits seek the audio to the matched word, not just the message. */
-  jumpToSec?: number
+  jumpToMs?: number
   /** A pending transcript still appears — labelled as not-yet-searchable. */
   notSearchableYet?: boolean
 }
@@ -531,7 +535,7 @@ export const searchHits = computed<SearchHit[]>(() => {
           conversation,
           type: 'VOX',
           snippet: ellipsize(text, q),
-          jumpToSec: segment?.at,
+          jumpToMs: segment?.atMs,
         })
         continue
       }
@@ -548,7 +552,7 @@ export const searchHits = computed<SearchHit[]>(() => {
           message: m,
           conversation,
           type: 'VOX',
-          snippet: `matched on filename and sender only · ${voice.durationSec}`,
+          snippet: `matched on filename and sender only · ${voice.durationMs}`,
           notSearchableYet: true,
         })
       }
@@ -586,7 +590,7 @@ export function closeSearch() {
 }
 
 /** Jump to a message from search or a reply stub, and play the arrival wash. */
-export function jumpTo(messageId: string, seekSec?: number) {
+export function jumpTo(messageId: string, seekMs?: number) {
   const m = messageById(messageId)
   if (!m) return
   state.activeId = m.conversationId
@@ -594,8 +598,8 @@ export function jumpTo(messageId: string, seekSec?: number) {
   state.arrivedAt = messageId
 
   const voice = voiceOf(m)
-  if (voice && seekSec !== undefined) {
-    seek(messageId, seekSec / voice.durationSec)
+  if (voice && seekMs !== undefined) {
+    seek(messageId, seekMs / voice.durationMs)
   }
 
   // The rule stays until the next scroll; the wash fades on its own.

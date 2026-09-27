@@ -8,7 +8,8 @@
  * mock of one moment.
  */
 
-import type { Conversation, Message, User } from '@/types'
+import type { Conversation, User } from '@/wire/generated'
+import type { Message } from '@/client-types'
 import { peaksFromSeed } from '@/lib/waveform'
 
 export const ME = 'u-hollis'
@@ -70,6 +71,15 @@ function at(daysAgo: number, hm: string): string {
   return d.toISOString()
 }
 
+/** CANT-34 — `log_seq` is required and server-global on the wire (CANT-14's
+ *  two ordinals); nothing in this app reads its value, only its presence, so
+ *  a plain ascending counter across the whole fixture set is all fidelity
+ *  this mock owes it. Declaration order below is call order. */
+let nextLogSeq = 9001
+function logSeq(): number {
+  return nextLogSeq++
+}
+
 const ILSE_TRANSCRIPT =
   'Okay so I talked to Ted about the delivery and the short version is Thursday ' +
   'still works but they want everything staged by two, which means somebody has ' +
@@ -78,15 +88,16 @@ const ILSE_TRANSCRIPT =
   'weekend and I’d rather not. Also the tension gauge came back from the ' +
   'shop, it’s in the blue case on the bench.'
 
-/** Word offsets, so search can JUMP TO the matched word rather than the message. */
+/** Word offsets in milliseconds (`TranscriptSegment.atMs`), so search can
+ *  JUMP TO the matched word rather than the message. */
 const ILSE_SEGMENTS = [
-  { at: 0, text: 'Okay so I talked to Ted about the delivery and' },
-  { at: 6, text: 'the short version is Thursday still works but they want' },
-  { at: 13, text: 'everything staged by two, which means somebody has to be' },
-  { at: 20, text: 'at the shed in the morning to sign for the pallet.' },
-  { at: 27, text: 'If nobody can do that I’ll ask them to hold it until Friday,' },
-  { at: 33, text: 'but then we’re into the weekend and I’d rather not.' },
-  { at: 38, text: 'Also the tension gauge came back from the shop, it’s in the blue case on the bench.' },
+  { atMs: 0, text: 'Okay so I talked to Ted about the delivery and' },
+  { atMs: 6_000, text: 'the short version is Thursday still works but they want' },
+  { atMs: 13_000, text: 'everything staged by two, which means somebody has to be' },
+  { atMs: 20_000, text: 'at the shed in the morning to sign for the pallet.' },
+  { atMs: 27_000, text: 'If nobody can do that I’ll ask them to hold it until Friday,' },
+  { atMs: 33_000, text: 'but then we’re into the weekend and I’d rather not.' },
+  { atMs: 38_000, text: 'Also the tension gauge came back from the shop, it’s in the blue case on the bench.' },
 ]
 
 /* CANT-90 — `state` on YOUR OWN message says what everyone else has done.
@@ -109,23 +120,24 @@ const ILSE_SEGMENTS = [
 export const MESSAGES: Message[] = [
   // ── Kitchen Table ──────────────────────────────────────────────────────
   {
-    id: 'm-1181', seq: 1181, conversationId: 'c-kitchen', authorId: 'u-nadia',
+    id: 'm-1181', seq: 1181, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-nadia',
     at: at(0, '13:41'), state: 'read',
     text: 'Anyone know whether the co-op still does the Thursday pickup, or did that move for the summer? I’ve got a standing order I’d rather not lose.',
   },
   {
-    id: 'm-1182', seq: 1182, conversationId: 'c-kitchen', authorId: ME,
+    id: 'm-1182', seq: 1182, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: ME,
     at: at(0, '13:52'), state: 'read', readBy: 7,
     text: 'Still Thursday. They moved the window, not the day — 2 to 6 now instead of noon.',
   },
   // ── 3 NEW falls here (firstUnreadSeq 1183) ─────────────────────────────
   {
-    id: 'm-1183', seq: 1183, conversationId: 'c-kitchen', authorId: 'u-ilse',
+    id: 'm-1183', seq: 1183, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-ilse',
     at: at(0, '14:12'), state: 'delivered',
     attachments: [
       {
         kind: 'voice',
-        durationSec: 38,
+        url: 'https://media.catenary.invalid/v/9931.opus',
+        durationMs: 38_000,
         peaks: peaksFromSeed(9931, 96),
         transcript: {
           state: 'ready',
@@ -138,39 +150,43 @@ export const MESSAGES: Message[] = [
     ],
   },
   {
-    id: 'm-1184', seq: 1184, conversationId: 'c-kitchen', authorId: 'u-ilse',
+    id: 'm-1184', seq: 1184, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-ilse',
     at: at(0, '14:13'), state: 'delivered',
     text: 'photo from this morning, the whole run is re-tensioned',
   },
   {
-    id: 'm-1185', seq: 1185, conversationId: 'c-kitchen', authorId: 'u-ilse',
+    id: 'm-1185', seq: 1185, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-ilse',
     at: at(0, '14:13'), state: 'delivered',
     attachments: [
-      { kind: 'image', filename: 'IMG_4471.HEIC', width: 3024, height: 2016, bytes: 2_202_009 },
+      {
+        kind: 'image', url: 'https://media.catenary.invalid/i/4471.jpg',
+        filename: 'IMG_4471.HEIC', width: 3024, height: 2016, bytes: 2_202_009,
+      },
     ],
   },
   {
-    id: 'm-1186', seq: 1186, conversationId: 'c-kitchen', authorId: ME,
+    id: 'm-1186', seq: 1186, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: ME,
     at: at(0, '14:15'), state: 'read', readBy: 4,
     text: 'I can be there at eight to sign for it.',
   },
   {
-    id: 'm-1187', seq: 1187, conversationId: 'c-kitchen', authorId: ME,
+    id: 'm-1187', seq: 1187, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: ME,
     at: at(0, '14:16'), state: 'read', readBy: 2,
     text: 'bringing coffee for whoever else shows up',
   },
   {
-    id: 'm-1188', seq: 1188, conversationId: 'c-kitchen', authorId: 'u-nadia',
+    id: 'm-1188', seq: 1188, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-nadia',
     at: at(0, '14:20'), state: 'delivered',
     text: 'depot hours are here if anyone needs them — riverline.org/depot-hours',
   },
   {
-    id: 'm-1189', seq: 1189, conversationId: 'c-kitchen', authorId: 'u-marek',
+    id: 'm-1189', seq: 1189, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-marek',
     at: at(0, '14:28'), state: 'delivered',
     attachments: [
       {
         kind: 'voice',
-        durationSec: 52,
+        url: 'https://media.catenary.invalid/v/6151.opus',
+        durationMs: 52_000,
         peaks: peaksFromSeed(6151, 96),
         // Pending: playable immediately, not searchable yet, stub says so.
         transcript: { state: 'pending', etaSec: 20 },
@@ -178,86 +194,90 @@ export const MESSAGES: Message[] = [
     ],
   },
   {
-    id: 'm-1190', seq: 1190, conversationId: 'c-kitchen', authorId: 'u-nadia',
+    id: 'm-1190', seq: 1190, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-nadia',
     at: at(0, '14:31'), state: 'delivered',
     text: 'Perfect, that’s the one I needed. Standing order is safe then.',
     replyTo: { messageId: 'm-1182', authorId: ME, kind: 'text', preview: 'Still Thursday. They moved the window, not the day — 2 to 6 now instead of noon.' },
   },
   {
-    id: 'm-1191', seq: 1191, conversationId: 'c-kitchen', authorId: ME,
+    id: 'm-1191', seq: 1191, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: ME,
     at: at(0, '14:33'), state: 'sent', readBy: 1,
     text: 'Staging by two is fine. I’ll be at the shed from eight.',
-    replyTo: { messageId: 'm-1183', authorId: 'u-ilse', kind: 'voice', durationSec: 38, preview: ILSE_TRANSCRIPT },
+    replyTo: { messageId: 'm-1183', authorId: 'u-ilse', kind: 'voice', durationMs: 38_000, preview: ILSE_TRANSCRIPT },
   },
   {
-    id: 'm-1192', seq: 1192, conversationId: 'c-kitchen', authorId: 'u-marek',
+    id: 'm-1192', seq: 1192, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-marek',
     at: at(0, '14:35'), state: 'delivered',
     text: 'That span looks straighter than it did in March.',
     replyTo: { messageId: 'm-1185', authorId: 'u-ilse', kind: 'image', preview: 'IMG_4471.HEIC' },
   },
   {
-    id: 'm-1193', seq: 1193, conversationId: 'c-kitchen', authorId: 'u-ted',
+    id: 'm-1193', seq: 1193, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-ted',
     at: at(0, '14:38'), state: 'delivered',
     text: 'This is out of date — they haven’t updated it since the window moved.',
     replyTo: { messageId: 'm-1188', authorId: 'u-nadia', kind: 'link', preview: 'riverline.org/depot-hours', url: 'https://riverline.org/depot-hours' },
   },
   {
-    id: 'm-1194', seq: 1194, conversationId: 'c-kitchen', authorId: 'u-rosa',
+    id: 'm-1194', seq: 1194, logSeq: logSeq(), conversationId: 'c-kitchen', authorId: 'u-rosa',
     at: at(0, '14:41'), state: 'delivered',
     text: 'Listened to it, I’ll take Friday morning.',
     // Source transcript is still pending — the stub says so rather than
     // showing an empty quote, and back-fills in place when it lands.
-    replyTo: { messageId: 'm-1189', authorId: 'u-marek', kind: 'voice', durationSec: 52, preview: '' },
+    replyTo: { messageId: 'm-1189', authorId: 'u-marek', kind: 'voice', durationMs: 52_000, preview: '' },
   },
 
   // ── Bergen Hill Co-op ──────────────────────────────────────────────────
   // CANT-138 — an old message from a since-deactivated author (u-petra). Her
   // membership row stays, so it keeps her name; the row dims it.
   {
-    id: 'm-b411', seq: 411, conversationId: 'c-bergen', authorId: 'u-petra',
+    id: 'm-b411', seq: 411, logSeq: logSeq(), conversationId: 'c-bergen', authorId: 'u-petra',
     at: at(6, '10:02'), state: 'delivered',
     text: 'handed the spare gate key to Ted before rotation ends — deliveries can go through him from here',
   },
   {
-    id: 'm-b412', seq: 412, conversationId: 'c-bergen', authorId: 'u-ted',
+    id: 'm-b412', seq: 412, logSeq: logSeq(), conversationId: 'c-bergen', authorId: 'u-ted',
     at: at(0, '13:55'), state: 'delivered',
     text: 'pallet is confirmed for the 2 to 6 window, depot said they’ll call ahead',
   },
   {
-    id: 'm-b413', seq: 413, conversationId: 'c-bergen', authorId: 'u-ted',
+    id: 'm-b413', seq: 413, logSeq: logSeq(), conversationId: 'c-bergen', authorId: 'u-ted',
     at: at(0, '13:58'), state: 'delivered',
     text: 'the delivery window moved to Thursday afternoon, I’ll confirm with the depot in the morning',
   },
 
   // ── Sunday Dinner ──────────────────────────────────────────────────────
   {
-    id: 'm-s087', seq: 87, conversationId: 'c-sunday', authorId: 'u-rosa',
+    id: 'm-s087', seq: 87, logSeq: logSeq(), conversationId: 'c-sunday', authorId: 'u-rosa',
     at: at(4, '20:14'), state: 'delivered',
     text: 'every Thursday since March, same table, same time',
   },
   {
-    id: 'm-s088', seq: 88, conversationId: 'c-sunday', authorId: ME,
+    id: 'm-s088', seq: 88, logSeq: logSeq(), conversationId: 'c-sunday', authorId: ME,
     at: at(0, '11:20'), state: 'read', readBy: 9,
     text: 'bringing the big pot',
   },
 
   // ── Shed Projects (muted) ──────────────────────────────────────────────
   {
-    id: 'm-h240', seq: 240, conversationId: 'c-shed', authorId: 'u-marek',
+    id: 'm-h240', seq: 240, logSeq: logSeq(), conversationId: 'c-shed', authorId: 'u-marek',
     at: at(5, '16:02'), state: 'delivered',
     attachments: [
-      { kind: 'image', filename: 'shed_wall.jpg', width: 2016, height: 3024, bytes: 3_355_443 },
+      {
+        kind: 'image', url: 'https://media.catenary.invalid/i/shed-wall.jpg',
+        filename: 'shed_wall.jpg', width: 2016, height: 3024, bytes: 3_355_443,
+      },
     ],
   },
 
   // ── DM: Ilse — unread voice note, transcript still pending ─────────────
   {
-    id: 'm-i077', seq: 77, conversationId: 'c-ilse', authorId: 'u-ilse',
+    id: 'm-i077', seq: 77, logSeq: logSeq(), conversationId: 'c-ilse', authorId: 'u-ilse',
     at: at(0, '14:04'), state: 'delivered',
     attachments: [
       {
         kind: 'voice',
-        durationSec: 72,
+        url: 'https://media.catenary.invalid/v/4477.opus',
+        durationMs: 72_000,
         peaks: peaksFromSeed(4477, 96),
         transcript: { state: 'pending', etaSec: 20 },
       },
@@ -266,27 +286,28 @@ export const MESSAGES: Message[] = [
 
   // ── DM: Marek ──────────────────────────────────────────────────────────
   {
-    id: 'm-k051', seq: 51, conversationId: 'c-marek', authorId: ME,
+    id: 'm-k051', seq: 51, logSeq: logSeq(), conversationId: 'c-marek', authorId: ME,
     at: at(0, '12:47'), state: 'sent',
     text: 'sent it to your inbox instead',
   },
 
   // ── DM: Nadia ──────────────────────────────────────────────────────────
   {
-    id: 'm-n132', seq: 132, conversationId: 'c-nadia', authorId: 'u-nadia',
+    id: 'm-n132', seq: 132, logSeq: logSeq(), conversationId: 'c-nadia', authorId: 'u-nadia',
     at: at(1, '18:03'), state: 'delivered',
     attachments: [
       {
         kind: 'voice',
-        durationSec: 107,
+        url: 'https://media.catenary.invalid/v/1777.opus',
+        durationMs: 107_000,
         peaks: peaksFromSeed(1777, 96),
         transcript: {
           state: 'ready',
           text: 'I can juggle the pickup either way, just tell me which day. If it’s Thursday I can take the truck, otherwise somebody else has to, because I’ve got the closing shift and no rush on any of it, truly.',
           segments: [
-            { at: 0, text: 'I can juggle the pickup either way, just tell me which day.' },
-            { at: 66, text: 'If it’s Thursday I can take the truck, otherwise somebody else has to,' },
-            { at: 88, text: 'because I’ve got the closing shift and no rush on any of it, truly.' },
+            { atMs: 0, text: 'I can juggle the pickup either way, just tell me which day.' },
+            { atMs: 66_000, text: 'If it’s Thursday I can take the truck, otherwise somebody else has to,' },
+            { atMs: 88_000, text: 'because I’ve got the closing shift and no rush on any of it, truly.' },
           ],
           engine: 'whisper-l3',
           language: 'en',
@@ -295,20 +316,21 @@ export const MESSAGES: Message[] = [
     ],
   },
   {
-    id: 'm-n133', seq: 133, conversationId: 'c-nadia', authorId: 'u-nadia',
+    id: 'm-n133', seq: 133, logSeq: logSeq(), conversationId: 'c-nadia', authorId: 'u-nadia',
     at: at(0, '09:41'), state: 'delivered',
     text: 'no rush on any of it, truly',
   },
 
   // ── DM: Ted — the failed send the rail reports ─────────────────────────
   {
-    id: 'm-t019', seq: 19, conversationId: 'c-ted', authorId: ME,
+    id: 'm-t019', seq: 19, logSeq: logSeq(), conversationId: 'c-ted', authorId: ME,
     at: at(3, '14:24'), state: 'failed',
     error: 'Send failed — server rejected upload (413)',
     attachments: [
       {
         kind: 'voice',
-        durationSec: 22,
+        url: 'https://media.catenary.invalid/v/2281.opus',
+        durationMs: 22_000,
         peaks: peaksFromSeed(2281, 96),
         transcript: { state: 'pending' },
       },
@@ -317,14 +339,14 @@ export const MESSAGES: Message[] = [
 
   // ── DM: Rosa ───────────────────────────────────────────────────────────
   {
-    id: 'm-r064', seq: 64, conversationId: 'c-rosa', authorId: 'u-rosa',
+    id: 'm-r064', seq: 64, logSeq: logSeq(), conversationId: 'c-rosa', authorId: 'u-rosa',
     at: at(5, '19:30'), state: 'delivered',
     text: 'that’s the one, thank you',
   },
 
   // ── DM: Petra — the other half is deactivated ───────────────────────────
   {
-    id: 'm-p005', seq: 5, conversationId: 'c-petra', authorId: 'u-petra',
+    id: 'm-p005', seq: 5, logSeq: logSeq(), conversationId: 'c-petra', authorId: 'u-petra',
     at: at(9, '16:20'), state: 'delivered',
     text: 'sent the last invoice through Ilse, easier that way',
   },
@@ -333,17 +355,18 @@ export const MESSAGES: Message[] = [
   // Both messages are state.me's own: the author-scan guess otherMember()
   // used to fall back to has no foreign author to find here, on either DM.
   {
-    id: 'm-oskar1', seq: 1, conversationId: 'c-oskar', authorId: ME,
+    id: 'm-oskar1', seq: 1, logSeq: logSeq(), conversationId: 'c-oskar', authorId: ME,
     at: at(2, '10:05'), state: 'sent',
     text: 'still spelunking through the archive for that old permit',
   },
   {
-    id: 'm-oskar2', seq: 2, conversationId: 'c-oskar', authorId: ME,
+    id: 'm-oskar2', seq: 2, logSeq: logSeq(), conversationId: 'c-oskar', authorId: ME,
     at: at(2, '10:07'), state: 'sent',
     attachments: [
       {
         kind: 'voice',
-        durationSec: 14,
+        url: 'https://media.catenary.invalid/v/5501.opus',
+        durationMs: 14_000,
         peaks: peaksFromSeed(5501, 96),
         transcript: { state: 'pending', etaSec: 20 },
       },
@@ -352,17 +375,18 @@ export const MESSAGES: Message[] = [
 
   // ── DM: "Petra Lindqvist" (c-wren) — really Wren, active ────────────────
   {
-    id: 'm-wren1', seq: 1, conversationId: 'c-wren', authorId: ME,
+    id: 'm-wren1', seq: 1, logSeq: logSeq(), conversationId: 'c-wren', authorId: ME,
     at: at(2, '11:15'), state: 'sent',
     text: 'the kombucha starter is ready whenever you want a jar',
   },
   {
-    id: 'm-wren2', seq: 2, conversationId: 'c-wren', authorId: ME,
+    id: 'm-wren2', seq: 2, logSeq: logSeq(), conversationId: 'c-wren', authorId: ME,
     at: at(2, '11:18'), state: 'sent',
     attachments: [
       {
         kind: 'voice',
-        durationSec: 9,
+        url: 'https://media.catenary.invalid/v/5502.opus',
+        durationMs: 9_000,
         peaks: peaksFromSeed(5502, 96),
         transcript: { state: 'pending', etaSec: 20 },
       },

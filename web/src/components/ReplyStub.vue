@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ReplyRef } from '@/types'
+import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
 import { jumpTo, messageById, user, voiceOf } from '@/store'
 
@@ -56,7 +56,7 @@ const preview = computed(() => {
         v-else-if="reply.kind === 'voice'"
         class="chip"
         :class="pending ? 'dim' : 'accent'"
-        >▶ VOICE {{ duration(reply.durationSec ?? 0) }}</span
+        >▶ VOICE {{ duration(reply.durationMs ?? 0) }}</span
       >
       <span v-else-if="reply.kind === 'link'" class="chip accent">↗ LINK</span>
 
