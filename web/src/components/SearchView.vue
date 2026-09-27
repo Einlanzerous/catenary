@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { duration, fullStamp } from '@/lib/format'
 import {
   closeSearch,
+  conversationTitle,
   hitCounts,
   jumpTo,
   searchHits,
@@ -110,6 +111,7 @@ function onKeydown(event: KeyboardEvent) {
         :key="hit.message.id"
         class="hit"
         :class="{ vox: hit.type === 'VOX' }"
+        :data-conversation-id="hit.conversation.id"
         @click="open(hit)"
       >
         <span class="tag" :class="hit.type.toLowerCase()">{{ hit.type }}</span>
@@ -174,7 +176,7 @@ function onKeydown(event: KeyboardEvent) {
         </span>
 
         <span class="where meta tnum">
-          <span class="room">{{ hit.conversation.name }}</span>
+          <span class="room">{{ conversationTitle(hit.conversation) }}</span>
           <span>{{ fullStamp(hit.message.at) }}</span>
           <!-- Seeks the audio to the matched word, not just the message. -->
           <span v-if="hit.jumpToSec !== undefined" class="jump">

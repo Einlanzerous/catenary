@@ -5,6 +5,7 @@ import { dayLabel, sameDay } from '@/lib/format'
 import {
   activeConversation,
   activeMessages,
+  conversationTitle,
   newCount,
   otherMember,
   state,
@@ -19,6 +20,12 @@ interface UnreadRule { kind: 'unread'; key: string; label: string }
 interface Row { kind: 'message'; key: string; message: Message; previous?: Message }
 
 const conversation = computed(() => activeConversation.value)
+
+/** The header's title and what Composer's placeholder names (CANT-141): the
+ *  other member's live name once it is known, `conversation.name` only as
+ *  the fallback until it is. See conversationTitle's own doc for why one
+ *  helper rather than reading `conversation.name` here directly. */
+const title = computed(() => conversationTitle(conversation.value))
 
 /** CANT-138: the other half of a direct conversation cannot read what is
  *  being typed at them — the header says so, quietly, when it is true. */
@@ -89,7 +96,7 @@ watch(
 <template>
   <section class="thread">
     <header class="head">
-      <h1 class="title">{{ conversation.name }}</h1>
+      <h1 class="title">{{ title }}</h1>
       <!-- Quiet and factual, never the copper accent: this reads "cannot
            read this any more", not an alarm. -->
       <span v-if="otherDeactivated" class="deactivated-tag">DEACTIVATED</span>
@@ -144,7 +151,7 @@ watch(
       </div>
     </div>
 
-    <Composer :conversation-name="conversation.name" />
+    <Composer :conversation-name="title" />
   </section>
 </template>
 

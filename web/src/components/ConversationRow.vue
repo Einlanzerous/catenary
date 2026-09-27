@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import type { Conversation } from '@/types'
 import { duration, railStamp, sameDay } from '@/lib/format'
 import {
+  conversationTitle,
   isMine,
   lastMessageOf,
   select,
@@ -15,6 +16,9 @@ import {
 const props = defineProps<{ conversation: Conversation }>()
 
 const active = computed(() => state.activeId === props.conversation.id)
+/** The rail label: the other member's live name for a direct, once known
+ *  (CANT-141) — see conversationTitle's own doc. */
+const title = computed(() => conversationTitle(props.conversation))
 const last = computed(() => lastMessageOf(props.conversation.id))
 const unread = computed(() => unreadCount(props.conversation))
 
@@ -75,12 +79,17 @@ const quiet = computed(() => {
 </script>
 
 <template>
-  <button class="row" :class="{ active }" @click="select(conversation.id)">
+  <button
+    class="row"
+    :class="{ active }"
+    :data-conversation-id="conversation.id"
+    @click="select(conversation.id)"
+  >
     <!-- 3px accent spine, the active marker. -->
     <span class="spine" />
     <span class="cell">
       <span class="top">
-        <span class="name" :class="{ quiet }">{{ conversation.name }}</span>
+        <span class="name" :class="{ quiet }">{{ title }}</span>
         <span
           class="stamp meta tnum"
           :class="{ unread: unread > 0 }"

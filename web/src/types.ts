@@ -110,7 +110,23 @@ export interface Message {
 export interface Conversation {
   id: string
   kind: ConversationKind
+  /**
+   * REQUIRED. For a group, the room's own stored name. For a direct, the
+   * other member's display name AS OF THE SERVE THAT CARRIED IT — a fallback
+   * for a client that cannot yet resolve otherMemberId (CANT-141), never the
+   * title once it can: a held Conversation is not re-emitted when the other
+   * member's display name changes, while the renamed User record is, so a
+   * client that titled a direct from this string alone could show a name the
+   * server has already corrected everywhere else.
+   */
   name: string
+  /**
+   * Present iff kind is 'direct'; absent for 'group' (CANT-141). Resolved
+   * server-side the same way name is. A client titles a direct by the User
+   * this id names, read fresh on every render — see otherMember and
+   * conversationTitle in @/store — not by name above.
+   */
+  otherMemberId?: string
   memberCount: number
   muted?: boolean
   /**
