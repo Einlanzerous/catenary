@@ -113,18 +113,37 @@ export const rooms = computed(() => byRecency(state.conversations.filter((c) => 
 export const directs = computed(() => byRecency(state.conversations.filter((c) => c.kind === 'direct')))
 
 /**
- * The other party in a direct conversation. The wire's `Conversation` carries
- * no member list — CANT-139 is what decides how a client really learns this —
- * so the mock derives it from whoever besides `state.me` has posted into the
- * thread, falling back to a name match for the two DMs where only `state.me`
- * has sent anything yet: a direct conversation's fixture `name` already IS
- * the other person's display name.
+ * The other party in a direct conversation, by identity rather than guess
+ * (CANT-141). `Conversation.otherMemberId` is what the wire actually carries
+ * for this — added because the two guesses this function used to make were
+ * both wrong in reachable cases: a direct in which only `state.me` has ever
+ * spoken has no foreign author to find, and a display-name match breaks on
+ * two people sharing a name, on a bot named after a person, and on a rename
+ * (a held `Conversation.name` is not re-emitted when the other member's own
+ * name changes; their `User` record is). Neither guess is missed: this is a
+ * lookup, not a fallback chain.
  */
 export function otherMember(c: Conversation): User | undefined {
-  if (c.kind !== 'direct') return undefined
-  const theirs = messagesFor(c.id).find((m) => m.authorId !== state.me)
-  if (theirs) return user(theirs.authorId)
-  return Object.values(state.users).find((u) => u.name === c.name)
+  if (c.kind !== 'direct' || !c.otherMemberId) return undefined
+  return state.users[c.otherMemberId]
+}
+
+/**
+ * What a direct is titled: the other member's LIVE name when it is known,
+ * `Conversation.name` only as the fallback for the one case it is not yet
+ * (a `User` record not yet held — the wire's own description of
+ * `other_member_id` names this). For a group, `otherMember` returns
+ * `undefined` and this is just `c.name`, unconditionally.
+ *
+ * ONE HELPER FOR EVERY SITE THAT NAMES A DIRECT, so "titled by the identity,
+ * not the stale string" is one fact rather than five copies of the same
+ * expression that could each be missed: `Thread.vue`'s header and the
+ * placeholder it hands `Composer`, `ConversationRow.vue`'s rail label,
+ * `SearchView.vue`'s hit label, and this file's own pending-voice search
+ * fallback below.
+ */
+export function conversationTitle(c: Conversation): string {
+  return otherMember(c)?.name ?? c.name
 }
 
 function byRecency(list: Conversation[]): Conversation[] {
@@ -517,9 +536,12 @@ export const searchHits = computed<SearchHit[]>(() => {
         continue
       }
       // Silently omitting these would make search feel like it lost things.
+      // conversationTitle, not conversation.name: a direct is matched on who
+      // it is actually with, not on a string that can go stale the moment
+      // the wire carries an identity to prefer instead (CANT-141).
       if (
         voice.transcript.state === 'pending' &&
-        (conversation.name.toLowerCase().includes(q) ||
+        (conversationTitle(conversation).toLowerCase().includes(q) ||
           user(m.authorId).name.toLowerCase().includes(q))
       ) {
         hits.push({

@@ -5,6 +5,8 @@ import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import StatusLabel from '@/components/StatusLabel.vue'
 import {
+  closeSearch,
+  conversationTitle,
   newCount,
   typingLabel,
   openSearch,
@@ -308,6 +310,132 @@ async function main() {
   check('a two-member room renders bare READ', dm === 'READ', dm)
   const dmClamped = text(await label(3, 2))
   check('and stays bare even with a numerator above two', dmClamped === 'READ', dmClamped)
+
+  // 9. CANT-141 — otherMemberId, not the two guesses it replaces.
+  //
+  // c-oskar's Conversation.name reads 'Ted Almasy' — an existing ACTIVE
+  // person's name — and c-wren's reads 'Petra Lindqvist' — an existing
+  // DEACTIVATED person's. Both directs hold only state.me's own messages, so
+  // the deleted author-scan guess never had a candidate on either, and the
+  // deleted name-match guess would have found the WRONG person on both: an
+  // active Ted for a conversation whose real other half (Oskar) is
+  // deactivated, and a deactivated Petra for one whose real other half
+  // (Wren) is active. otherMemberId is immune to both, because it names the
+  // person rather than guessing from what is on screen.
+  //
+  // nearId BOUNDS AN ASSERTION TO ONE ROW, which is what "asserted by id"
+  // means on a rendered HTML string with no DOM to query: the rail lists
+  // every conversation on every page, and c-ted's and c-petra's OWN real rows
+  // still carry their own real names elsewhere on the same render — so
+  // "the stale name is absent" is never asserted globally, only that the
+  // bounded window around this one row's data-conversation-id shows the live
+  // name and not the borrowed one.
+  // Bounds an assertion to the WHOLE <button> that carries this
+  // data-conversation-id — ConversationRow's row and SearchView's hit are
+  // both one, with no nested <button> inside either template, so "the next
+  // </button> after the marker" is the element's own real close rather than
+  // a fixed radius that can end before content nested a few spans deep (the
+  // room label, the pending-note text) is reached.
+  function elementWithId(html: string, id: string): string {
+    const marker = `data-conversation-id="${id}"`
+    const at = html.indexOf(marker)
+    if (at < 0) return ''
+    const tagStart = html.lastIndexOf('<button', at)
+    const closeAt = html.indexOf('</button>', at)
+    if (tagStart < 0 || closeAt < 0) return ''
+    return html.slice(tagStart, closeAt + '</button>'.length)
+  }
+
+  // The rail is not what search or the thread pane replaces — it is a
+  // persistent sidebar, rendered on every page including a search results
+  // page, and every row on it carries the SAME data-conversation-id marker
+  // elementWithId keys on. So a search-page assertion has to look inside the
+  // results list specifically, or the first match is the rail's row for that
+  // id, not the hit — searchResultsOnly slices from SearchView's own landmark
+  // (section 3's own 'RESULTS ·', which nothing in the rail renders) onward.
+  function searchResultsOnly(html: string): string {
+    return html.slice(html.indexOf('RESULTS ·'))
+  }
+
+  // The header is not the only place its own text can appear, either — a
+  // real other person can share the words this DM's title happens to be
+  // titled with (c-ted's OWN row legitimately reads "Ted Almasy"). tagText
+  // bounds the check to the one tag that is unambiguous per render: there is
+  // exactly one `<h1 class="title">` on any page, because only one thread is
+  // ever active.
+  function tagText(html: string, openTag: string, closeTag: string): string {
+    const at = html.indexOf(openTag)
+    if (at < 0) return ''
+    const start = html.indexOf('>', at) + 1
+    const end = html.indexOf(closeTag, start)
+    return html.slice(start, end)
+  }
+
+  // The derivation itself, independent of any rendering: conversationTitle
+  // resolves each DM's REAL other member, not the string its own `name`
+  // field happens to carry.
+  const cOskar = state.conversations.find((c) => c.id === 'c-oskar')!
+  const cWren = state.conversations.find((c) => c.id === 'c-wren')!
+  check('conversationTitle(c-oskar) is Oskar\'s own name', conversationTitle(cOskar) === 'Oskar Lindgren',
+    conversationTitle(cOskar))
+  check('conversationTitle(c-wren) is Wren\'s own name', conversationTitle(cWren) === 'Wren Castellano',
+    conversationTitle(cWren))
+
+  // Site 1 (header) + site 2 (composer placeholder): only one thread is ever
+  // active per render, so no id-scoping is needed — there is nothing else on
+  // the page these strings could belong to.
+  select('c-oskar')
+  const oskarPage = await render()
+  const oskarTitle = tagText(oskarPage, '<h1 class="title"', '</h1>')
+  check('oskar\'s DM is titled by his own live name, not the DM\'s stale name',
+    oskarTitle === 'Oskar Lindgren', oskarTitle)
+  check('oskar\'s DM header marks him deactivated', oskarPage.includes('DEACTIVATED'))
+  check('the composer placeholder names oskar, not the stale name',
+    oskarPage.includes('Message Oskar Lindgren') && !oskarPage.includes('Message Ted Almasy'))
+  // Site 3 (rail row), bounded to c-oskar's own row: c-ted's real row, live
+  // elsewhere on this same page, is not what this assertion is about.
+  const oskarRow = elementWithId(oskarPage, 'c-oskar')
+  check('oskar\'s rail row is titled by his own live name', oskarRow.includes('Oskar Lindgren'), oskarRow)
+  check('and not by the DM\'s stale name', !oskarRow.includes('Ted Almasy'), oskarRow)
+
+  select('c-wren')
+  const wrenPage = await render()
+  const wrenTitle = tagText(wrenPage, '<h1 class="title"', '</h1>')
+  check('wren\'s DM is titled by her own live name, not the DM\'s stale name',
+    wrenTitle === 'Wren Castellano', wrenTitle)
+  check('wren is active, so her DM header carries no mark', !wrenPage.includes('DEACTIVATED'))
+  const wrenRow = elementWithId(wrenPage, 'c-wren')
+  check('wren\'s rail row is titled by her own live name', wrenRow.includes('Wren Castellano'), wrenRow)
+  check('and not by the DM\'s stale name', !wrenRow.includes('Petra Lindqvist'), wrenRow)
+
+  // Site 4 — the ordinary text match: the hit's room label follows the id,
+  // not the DM's stale `name`.
+  state.query = 'spelunking'
+  openSearch()
+  const oskarSearch = await render()
+  const oskarHit = elementWithId(searchResultsOnly(oskarSearch), 'c-oskar')
+  check('a text hit in oskar\'s DM is found', oskarHit !== '')
+  check('and its room label is oskar\'s live name', oskarHit.includes('Oskar Lindgren'), oskarHit)
+  check('never the DM\'s stale name', !oskarHit.includes('Ted Almasy'), oskarHit)
+
+  // Site 5 — the pending-voice name-match fallback. Searching OSKAR'S OWN
+  // name cannot match through the author branch (both messages are
+  // state.me's), so a hit here can ONLY come from conversationTitle matching
+  // — which conversation.name ('Ted Almasy') never would have.
+  state.query = 'oskar'
+  const oskarNameSearch = await render()
+  const oskarNameHit = elementWithId(searchResultsOnly(oskarNameSearch), 'c-oskar')
+  check('searching oskar\'s own name finds his pending voice note',
+    oskarNameHit.includes('NOT SEARCHABLE YET'), oskarNameHit)
+  check('by title, not by the stale conversation.name', !oskarNameHit.includes('Ted Almasy'), oskarNameHit)
+
+  state.query = 'wren'
+  const wrenNameSearch = await render()
+  const wrenNameHit = elementWithId(searchResultsOnly(wrenNameSearch), 'c-wren')
+  check('searching wren\'s own name finds her pending voice note',
+    wrenNameHit.includes('NOT SEARCHABLE YET'), wrenNameHit)
+  check('by title, not by the stale conversation.name', !wrenNameHit.includes('Petra Lindqvist'), wrenNameHit)
+  closeSearch()
 
   console.log(fail.length ? `\n${fail.length} FAILED` : '\nall green')
   process.exit(fail.length ? 1 : 0)

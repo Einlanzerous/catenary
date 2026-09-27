@@ -24,6 +24,15 @@ export const USERS: Record<string, User> = {
   // still authors an old message in Bergen Hill Co-op, and c-petra's only
   // message is hers, so both marks the ticket asks for are exercised.
   'u-petra': { id: 'u-petra', name: 'Petra Lindqvist', initials: 'PL', deactivated: true },
+  // CANT-141 — two more people, deliberately NOT named for the DM they own.
+  // c-oskar's `name` reads Ted's ('Ted Almasy'); c-wren's reads Petra's
+  // ('Petra Lindqvist'). Neither guess otherMember() used to make survives
+  // that: the author-scan finds nothing (both DMs hold only state.me's own
+  // messages), and the name-match would find the WRONG person — an active
+  // Ted for a deactivated Oskar, a deactivated Petra for an active Wren.
+  // otherMemberId is immune to both, because it names the person directly.
+  'u-oskar': { id: 'u-oskar', name: 'Oskar Lindgren', initials: 'OL', deactivated: true },
+  'u-wren': { id: 'u-wren', name: 'Wren Castellano', initials: 'WC' },
 }
 
 export const CONVERSATIONS: Conversation[] = [
@@ -31,13 +40,19 @@ export const CONVERSATIONS: Conversation[] = [
   { id: 'c-bergen', kind: 'group', name: 'Bergen Hill Co-op', memberCount: 14, firstUnreadSeq: 412, headSeq: 413 },
   { id: 'c-sunday', kind: 'group', name: 'Sunday Dinner', memberCount: 9, headSeq: 88 },
   { id: 'c-shed', kind: 'group', name: 'Shed Projects', memberCount: 5, muted: true, headSeq: 240 },
-  { id: 'c-ilse', kind: 'direct', name: 'Ilse Marchetti', memberCount: 2, firstUnreadSeq: 77, headSeq: 77 },
-  { id: 'c-marek', kind: 'direct', name: 'Marek Dubois', memberCount: 2, headSeq: 51 },
-  { id: 'c-nadia', kind: 'direct', name: 'Nadia Okonkwo', memberCount: 2, headSeq: 133 },
-  { id: 'c-ted', kind: 'direct', name: 'Ted Almasy', memberCount: 2, headSeq: 19 },
-  { id: 'c-rosa', kind: 'direct', name: 'Rosa Whitfield', memberCount: 2, headSeq: 64 },
+  { id: 'c-ilse', kind: 'direct', name: 'Ilse Marchetti', otherMemberId: 'u-ilse', memberCount: 2, firstUnreadSeq: 77, headSeq: 77 },
+  { id: 'c-marek', kind: 'direct', name: 'Marek Dubois', otherMemberId: 'u-marek', memberCount: 2, headSeq: 51 },
+  { id: 'c-nadia', kind: 'direct', name: 'Nadia Okonkwo', otherMemberId: 'u-nadia', memberCount: 2, headSeq: 133 },
+  { id: 'c-ted', kind: 'direct', name: 'Ted Almasy', otherMemberId: 'u-ted', memberCount: 2, headSeq: 19 },
+  { id: 'c-rosa', kind: 'direct', name: 'Rosa Whitfield', otherMemberId: 'u-rosa', memberCount: 2, headSeq: 64 },
   // CANT-138 — the other half is deactivated; the header has to say so.
-  { id: 'c-petra', kind: 'direct', name: 'Petra Lindqvist', memberCount: 2, headSeq: 5 },
+  { id: 'c-petra', kind: 'direct', name: 'Petra Lindqvist', otherMemberId: 'u-petra', memberCount: 2, headSeq: 5 },
+  // CANT-141 — `name` is deliberately the WRONG person's, to prove titling and
+  // search follow otherMemberId rather than this string. Both hold only
+  // state.me's own messages (see MESSAGES below), so the deleted author-scan
+  // guess never had a candidate either.
+  { id: 'c-oskar', kind: 'direct', name: 'Ted Almasy', otherMemberId: 'u-oskar', memberCount: 2, headSeq: 2 },
+  { id: 'c-wren', kind: 'direct', name: 'Petra Lindqvist', otherMemberId: 'u-wren', memberCount: 2, headSeq: 2 },
 ]
 
 /**
@@ -312,5 +327,45 @@ export const MESSAGES: Message[] = [
     id: 'm-p005', seq: 5, conversationId: 'c-petra', authorId: 'u-petra',
     at: at(9, '16:20'), state: 'delivered',
     text: 'sent the last invoice through Ilse, easier that way',
+  },
+
+  // ── DM: "Ted Almasy" (c-oskar) — really Oskar, deactivated ──────────────
+  // Both messages are state.me's own: the author-scan guess otherMember()
+  // used to fall back to has no foreign author to find here, on either DM.
+  {
+    id: 'm-oskar1', seq: 1, conversationId: 'c-oskar', authorId: ME,
+    at: at(2, '10:05'), state: 'sent',
+    text: 'still spelunking through the archive for that old permit',
+  },
+  {
+    id: 'm-oskar2', seq: 2, conversationId: 'c-oskar', authorId: ME,
+    at: at(2, '10:07'), state: 'sent',
+    attachments: [
+      {
+        kind: 'voice',
+        durationSec: 14,
+        peaks: peaksFromSeed(5501, 96),
+        transcript: { state: 'pending', etaSec: 20 },
+      },
+    ],
+  },
+
+  // ── DM: "Petra Lindqvist" (c-wren) — really Wren, active ────────────────
+  {
+    id: 'm-wren1', seq: 1, conversationId: 'c-wren', authorId: ME,
+    at: at(2, '11:15'), state: 'sent',
+    text: 'the kombucha starter is ready whenever you want a jar',
+  },
+  {
+    id: 'm-wren2', seq: 2, conversationId: 'c-wren', authorId: ME,
+    at: at(2, '11:18'), state: 'sent',
+    attachments: [
+      {
+        kind: 'voice',
+        durationSec: 9,
+        peaks: peaksFromSeed(5502, 96),
+        transcript: { state: 'pending', etaSec: 20 },
+      },
+    ],
   },
 ]
