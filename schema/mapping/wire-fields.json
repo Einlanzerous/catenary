@@ -280,7 +280,7 @@
     },
     "Conversation.other_member_id": {
       "kind": "derived",
-      "note": "Present iff kind is direct (CANT-141). Resolved by the same LATERAL join as Conversation.name's other-member string — internal/store/sync.go's otherMemberJoin, correlated on conversation_members and users, guarded ON c.kind = 'direct' inside the LATERAL's own WHERE so a group row never evaluates it. Not stored: conversation_members already answers it, and a stored id is one that can disagree with the membership it names."
+      "note": "Present iff kind is direct (CANT-141). Resolved by the same LATERAL join as Conversation.name's other-member string — internal/store/sync.go's otherMemberJoin, correlated on conversation_members and users, guarded by c.kind = 'direct' inside the LATERAL's own WHERE so a group row never evaluates it. Not stored: conversation_members already answers it, and a stored id is one that can disagree with the membership it names."
     },
     "Conversation.member_count": {
       "kind": "derived",
