@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import type { Message } from '@/types'
+import type { Message } from '@/client-types'
 import { dayLabel, sameDay } from '@/lib/format'
 import {
   activeConversation,

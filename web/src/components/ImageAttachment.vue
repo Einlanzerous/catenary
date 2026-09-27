@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import type { ImageAttachment } from '@/types'
+import type { ImageAttachment } from '@/client-types'
 import { megabytes } from '@/lib/format'
 
 const props = defineProps<{ image: ImageAttachment }>()

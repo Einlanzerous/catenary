@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Message } from '@/types'
+import type { Message } from '@/client-types'
 
 /**
  * Deliberate call 03: status as words, not tick glyphs. Rendered in a fixed

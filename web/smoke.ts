@@ -115,8 +115,8 @@ async function main() {
   state.query = 'thursday'
   const hits = searchHits.value
   check('search spans both kinds', hits.some((h) => h.type === 'TXT') && hits.some((h) => h.type === 'VOX'))
-  check('transcript hit seeks to a word', hits.some((h) => h.jumpToSec !== undefined),
-    `jump=${hits.find((h) => h.jumpToSec !== undefined)?.jumpToSec}s`)
+  check('transcript hit seeks to a word', hits.some((h) => h.jumpToMs !== undefined),
+    `jump=${hits.find((h) => h.jumpToMs !== undefined)?.jumpToMs}ms`)
   openSearch()
   const search = await render()
   check('search view renders', search.includes('RESULTS ·'))

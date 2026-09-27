@@ -15,9 +15,11 @@ export function clock(iso: string): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-/** mm:ss for audio positions and durations. */
-export function duration(sec: number): string {
-  const s = Math.max(0, Math.round(sec))
+/** mm:ss for audio positions and durations. Takes MILLISECONDS — the wire's
+ *  own unit (`DurationMs`) — so a caller reads `.durationMs` and formats it
+ *  directly, with no locally-invented seconds conversion to remember. */
+export function duration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000))
   return `${Math.floor(s / 60)}:${pad(s % 60)}`
 }
 

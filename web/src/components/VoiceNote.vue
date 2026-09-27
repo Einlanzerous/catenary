@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Message, VoiceAttachment } from '@/types'
+import type { VoiceAttachment } from '@/wire/generated'
+import type { Message } from '@/client-types'
 import { duration } from '@/lib/format'
 import {
   cycleRate,
@@ -32,7 +33,7 @@ const played = computed(() => progressFor(props.message.id))
 const playing = computed(
   () => state.playback.messageId === props.message.id && state.playback.playing,
 )
-const position = computed(() => played.value * props.voice.durationSec)
+const position = computed(() => played.value * props.voice.durationMs)
 const expanded = computed(() => isExpanded(props.message.id))
 const words = computed(() => transcriptWords(props.voice))
 
@@ -42,7 +43,7 @@ const activeSegment = computed(() => {
   if (!segments?.length || !played.value) return -1
   let index = 0
   for (let i = 0; i < segments.length; i++) {
-    if (segments[i].at <= position.value) index = i
+    if (segments[i].atMs <= position.value) index = i
   }
   return index
 })
@@ -70,9 +71,9 @@ const activeSegment = computed(() => {
 
       <span class="time meta tnum" :class="{ live: played > 0 }">
         <template v-if="played > 0">
-          {{ duration(position) }} / {{ duration(voice.durationSec) }}
+          {{ duration(position) }} / {{ duration(voice.durationMs) }}
         </template>
-        <template v-else>{{ duration(voice.durationSec) }}</template>
+        <template v-else>{{ duration(voice.durationMs) }}</template>
       </span>
 
       <button

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { ReplyRef } from '@/types'
+import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
 import { peaksFromSeed } from '@/lib/waveform'
 import {
@@ -33,7 +33,7 @@ const armed = computed<ReplyRef | null>(() => {
       messageId: source.id,
       authorId: source.authorId,
       kind: 'voice',
-      durationSec: voice.durationSec,
+      durationMs: voice.durationMs,
       preview: voice.transcript.text ?? '',
     }
   }
