@@ -22,8 +22,8 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { codecs, type SyncResponse } from '@/wire/generated'
-import type { Conversation, DeliveryState, Message } from '@/types'
+import { codecs, type Conversation, type SyncResponse } from '@/wire/generated'
+import type { DeliveryState, Message } from '@/client-types'
 import { newCount, select, state, unreadCount } from '@/store'
 
 const path = process.argv[2]
@@ -85,6 +85,7 @@ state.messages = page.messages.map(
   (m): Message => ({
     id: m.id,
     seq: m.seq,
+    logSeq: m.logSeq,
     conversationId: m.conversationId,
     authorId: m.authorId,
     at: m.at,
