@@ -43,6 +43,31 @@ func resolveBinary(cfg Config) (string, error) {
 	return out, nil
 }
 
+// resolveDriver returns the TypeScript driver bundle (CANT-153), building it
+// from the repo root if the caller did not name one — the same bargain as
+// resolveBinary, and for the same reason: a bundle left over from an earlier
+// checkout is a stale client under test. A named bundle that is missing is an
+// error, never a quiet rebuild somewhere else.
+func resolveDriver(cfg Config) (string, error) {
+	if cfg.TSDriver != "" {
+		if _, err := os.Stat(cfg.TSDriver); err != nil {
+			return "", fmt.Errorf("-ts-driver %s: %w", cfg.TSDriver, err)
+		}
+		return cfg.TSDriver, nil
+	}
+	root, err := repoRoot(cfg.RepoRoot)
+	if err != nil {
+		return "", err
+	}
+	web := filepath.Join(root, "web")
+	build := exec.Command("npm", "run", "--silent", "build:driver")
+	build.Dir = web
+	if b, err := build.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("npm run build:driver (in %s): %w\n%s", web, err, b)
+	}
+	return filepath.Join(web, "dist-transport-driver", "driver.js"), nil
+}
+
 // repoRoot finds the catenary repo root from this file's own compiled-in
 // source path — server/cmd/soakrig/serverproc.go, three directories under the
 // root — so a run started from any working directory finds ./cmd/catenary

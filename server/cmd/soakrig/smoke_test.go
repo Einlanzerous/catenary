@@ -38,3 +38,25 @@ func TestSmokeSoak(t *testing.T) {
 		t.Fatalf("no hello outcomes were captured from the server's own log — the histogram instrument produced nothing")
 	}
 }
+
+// TestSmokeSoakTS is the same smoke run with every client the TypeScript
+// transport, through its Node driver (CANT-153, CANT-35 criterion 28). Its own
+// verify.sh step builds the driver and sets CATENARY_TS_DRIVER; with the
+// variable set and no bundle there, tsDriverScript fails rather than skips.
+func TestSmokeSoakTS(t *testing.T) {
+	script := tsDriverScript(t)
+	dbURL := soakDBFixture(t)
+	cfg := Config{
+		DBURL: dbURL, N: 5, Cohort: cohortTS, TSDriver: script,
+		SteadyDuration: 2 * time.Second, SendInterval: 150 * time.Millisecond,
+		StormRounds: 2, KillMessages: 8, AwaitTimeout: 20 * time.Second,
+	}
+	res := runSoak(context.Background(), cfg)
+	t.Log(reportString(res.Report))
+	if res.Verdict != VerdictPass {
+		t.Fatalf("TypeScript smoke soak verdict = %s, want pass", res.Verdict)
+	}
+	if res.Report.ComparisonsRun != res.Report.N {
+		t.Fatalf("comparisons run = %d, want %d", res.Report.ComparisonsRun, res.Report.N)
+	}
+}

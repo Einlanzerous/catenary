@@ -236,7 +236,7 @@ result $? "$(grep -oE 'all green — .*vectors|[0-9]+ of [0-9]+ FAILED' "$LOGDIR
 # exactly what this file's own header says a step must not do.
 step "CANT-27 · soak harness smoke (N clients, a reconnect storm, a kill -9)"
 if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
-  (cd "$ROOT/server" && go test -tags soaksmoke -run TestSmokeSoak -v -count=1 ./cmd/soakrig/...) >"$LOGDIR/v-soak-smoke.log" 2>&1
+  (cd "$ROOT/server" && go test -tags soaksmoke -run '^TestSmokeSoak$' -v -count=1 ./cmd/soakrig/...) >"$LOGDIR/v-soak-smoke.log" 2>&1
   result $? "$(grep -oE 'N=[0-9]+ duration=[a-z0-9.]+ verdict=[a-z_]+' "$LOGDIR/v-soak-smoke.log" | tail -1)"
 else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the smoke run needs a real Postgres.\n'
@@ -258,6 +258,43 @@ if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   result $? "$(grep -oE -- '--- (PASS|FAIL): TestSmokeRestoreProbe \([0-9.]+s\)' "$LOGDIR/v-restoreprobe-smoke.log" | tail -1)"
 else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the smoke run needs a real Postgres.\n'
+fi
+
+# CANT-153 (CANT-35 criterion 28): the TypeScript transport as the client, out
+# of process, through its Node driver — the soak's smoke configuration with
+# every client TypeScript, the same lane with `dedupeByLogSeq` watched failing
+# and both cohorts in one room, and cmd/catenary's kill-test and restore-test
+# rigs with the driver as the client under test, clean and with each control.
+#
+# THE BUNDLE IS BUILT HERE AND NAMED BY CATENARY_TS_DRIVER, and every test in
+# the step FAILS on a named bundle that is not there rather than skipping. The
+# ordinary sweeps above and below run without the variable, so they skip these
+# tests by design; this step is the one that runs them, and it asserts that
+# none of them skipped — a `-run` pattern that matched nothing, or a lane that
+# skipped itself, would otherwise be a green line that ran nothing.
+step "CANT-153 · the TypeScript cohort — soak smoke, the soak's control, kill-test and restore-test lanes"
+if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  TS_DRIVER="$ROOT/web/dist-transport-driver/driver.js"
+  rm -f "$TS_DRIVER"
+  (cd "$ROOT/web" && npm run --silent build:driver) >"$LOGDIR/v-driver-build.log" 2>&1
+  result $? "npm run build:driver"
+  ts_lane() { # ts_lane LOG WANT_PASSES DIR PKG RUN [TAGS]
+    local log="$1" want="$2" dir="$3" pkg="$4" run="$5" tags="${6:-}"
+    (cd "$dir" && CATENARY_TS_DRIVER="$TS_DRIVER" go test ${tags:+-tags "$tags"} -run "$run" -v -count=1 "$pkg") >"$log" 2>&1
+    local rc=$?
+    local passed skipped
+    passed=$(grep -cE '^--- PASS: ' "$log")
+    skipped=$(grep -cE -- '--- SKIP: ' "$log")
+    [ $rc -eq 0 ] && [ "$passed" -eq "$want" ] && [ "$skipped" -eq 0 ]
+  }
+  ts_lane "$LOGDIR/v-ts-soak-smoke.log" 1 "$ROOT/server" ./cmd/soakrig/ '^TestSmokeSoakTS$' soaksmoke
+  result $? "TypeScript soak smoke — $(grep -oE 'N=[0-9]+ duration=[a-z0-9.]+ verdict=[a-z_]+ cohort=[a-z]+' "$LOGDIR/v-ts-soak-smoke.log" | tail -1)"
+  ts_lane "$LOGDIR/v-ts-soak-control.log" 3 "$ROOT/server" ./cmd/soakrig/ '^(TestTSSoakBaselinePasses|TestMixedSoakBaselinePasses|TestBrokenTSRunCountsAsServerFailure)$'
+  result $? "the soak: ts and mixed pass clean, and dedupeByLogSeq is caught ($(grep -oE 'verdict=[a-z_]+ cohort=[a-z]+' "$LOGDIR/v-ts-soak-control.log" | tr '\n' ' ' | sed 's/ $//'))"
+  ts_lane "$LOGDIR/v-ts-lanes.log" 4 "$ROOT" ./cmd/catenary/ '^(TestTheTSClientResumesThroughTheKillTest|TestTheKillTestCatchesABrokenTSClient|TestTheTSClientDiscardsALogTruncatedBelowItsCursor|TestTheTSClientSeversAHalfDeadSocketOnTheHeartbeat)$'
+  result $? "kill-test and restore-test lanes: clean, and cursorOnLiveFrames, endCatchUpEarly and skipWipe each caught; the heartbeat severs a black hole"
+else
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the TypeScript cohort runs against a real Postgres.\n'
 fi
 
 step "R4 · the staleness guard actually fails the build — once per generated file"

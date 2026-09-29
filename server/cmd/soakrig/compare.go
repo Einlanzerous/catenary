@@ -18,7 +18,7 @@ import (
 // len(rep.Clients).
 func (h *harness) compareAll(ctx context.Context, clients []*soakClient, rep *Report) {
 	for _, sc := range clients {
-		cr := ClientReport{Index: sc.index, DeviceName: sc.name, Provisioned: true}
+		cr := ClientReport{Index: sc.index, DeviceName: sc.name, Cohort: sc.cohort, Provisioned: true}
 
 		if h.cfg.debugSkipCompareFor[sc.index] {
 			cr.CompareError = "planted: the comparison was skipped for this client (test)"
@@ -35,7 +35,15 @@ func (h *harness) compareAll(ctx context.Context, clients []*soakClient, rep *Re
 			continue
 		}
 
-		cr.Compare = client.Compare(rows, sc.c.Snapshot())
+		snap, err := sc.snapshot()
+		if err != nil {
+			cr.CompareError = err.Error()
+			h.harnessError("read client %d's journal (%s): %v", sc.index, sc.name, err)
+			rep.Clients[sc.index] = cr
+			continue
+		}
+
+		cr.Compare = client.Compare(rows, snap)
 		cr.Compared = true
 		rep.Clients[sc.index] = cr
 		rep.ComparisonsRun++

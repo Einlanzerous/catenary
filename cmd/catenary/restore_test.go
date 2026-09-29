@@ -91,7 +91,40 @@ type restoreResult struct {
 	cursorAheadLogged     bool
 }
 
+// restoreDevice is the device under test across the restore's three
+// sessions. Each session is a new client over the SAME journal, and end is the
+// device going away. For the Go reference that is a new client.Client over one
+// client.Journal and Kill; for the TypeScript lane (tslanes_test.go) it is a
+// new transport in one driver process, whose journal lives there, and a stop.
+type restoreDevice interface {
+	session() cohortClient
+	end(c cohortClient)
+}
+
+// goDevice is the Go reference: runClient over one journal, killed between
+// sessions.
+type goDevice struct {
+	t       *testing.T
+	r       *rig
+	dev     wire.EnrollResponse
+	journal *client.Journal
+	faults  client.Faults
+}
+
+func (g *goDevice) session() cohortClient {
+	return runClient(g.t, g.r.ctx, g.r.base, g.dev, g.journal, g.faults)
+}
+
+func (g *goDevice) end(c cohortClient) { c.Kill() }
+
 func runRestore(t *testing.T, faults client.Faults) restoreResult {
+	t.Helper()
+	return runRestoreWith(t, func(r *rig, dev wire.EnrollResponse) restoreDevice {
+		return &goDevice{t: t, r: r, dev: dev, journal: client.NewJournal(), faults: faults}
+	})
+}
+
+func runRestoreWith(t *testing.T, device func(r *rig, dev wire.EnrollResponse) restoreDevice) restoreResult {
 	t.Helper()
 	r := newRig(t)
 	ada := mkUser(r.ctx, t, r.pool, "ada", "Ada")
@@ -104,8 +137,8 @@ func runRestore(t *testing.T, faults client.Faults) restoreResult {
 		}
 		return out
 	}
-	checkpoint := func(c *client.Client, fresh string) restoreCheckpoint {
-		snap := c.Snapshot()
+	checkpoint := func(c cohortClient, fresh string) restoreCheckpoint {
+		snap := snapshotOf(t, c)
 		return restoreCheckpoint{
 			status: c.Status(),
 			report: client.Compare(serverLog(r.ctx, t, r.pool, theo), snap),
@@ -114,9 +147,8 @@ func runRestore(t *testing.T, faults client.Faults) restoreResult {
 	}
 	var res restoreResult
 
-	dev := r.enroll(theo, "phone")
-	journal := client.NewJournal()
-	c := runClient(t, r.ctx, r.base, dev, journal, faults)
+	d := device(r, r.enroll(theo, "phone"))
+	c := d.session()
 	awaitClient(t, c, "the first ready", func() bool {
 		s := c.Status()
 		return s.Readys >= 1 && s.CaughtUp
@@ -131,7 +163,7 @@ func runRestore(t *testing.T, faults client.Faults) restoreResult {
 		s := c.Status()
 		return s.CaughtUp && s.Cursor == res.oldCursor && s.Messages == 20
 	})
-	c.Kill()
+	d.end(c)
 
 	// THE RESTORE, and the log regrows below the cursor while the device is
 	// away.
@@ -143,13 +175,13 @@ func runRestore(t *testing.T, faults client.Faults) restoreResult {
 		t.Fatalf("head %d is not below the cursor %d; the fixture is wrong", res.headAtDiscard, res.oldCursor)
 	}
 
-	c = runClient(t, r.ctx, r.base, dev, journal, faults)
+	c = d.session()
 	awaitClient(t, c, "the reconnect below the cursor", func() bool {
 		s := c.Status()
 		return s.Readys >= 1 && s.CaughtUp
 	})
 	res.atDiscard = checkpoint(c, "a fresh install at the discard")
-	c.Kill()
+	d.end(c)
 
 	// And past the old cursor, while it is away again.
 	for _, s := range commit(10, "regrown past the old cursor") {
@@ -157,7 +189,7 @@ func runRestore(t *testing.T, faults client.Faults) restoreResult {
 			res.regrownBelowOldCursor = append(res.regrownBelowOldCursor, wid(s.ID))
 		}
 	}
-	c = runClient(t, r.ctx, r.base, dev, journal, faults)
+	c = d.session()
 	awaitClient(t, c, "the reconnect after the regrowth", func() bool {
 		s := c.Status()
 		return s.Readys >= 1 && s.CaughtUp

@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -26,6 +27,18 @@ type Config struct {
 
 	ReportPath   string
 	ServerLogDir string
+
+	// Cohort is which client runs each account (CANT-153): "go", the
+	// internal/client reference; "ts", the TypeScript transport through its
+	// Node driver; or "mixed", the two alternating by index, so N splits
+	// evenly and both halves share the same room and one Compare. Empty is
+	// "go".
+	Cohort string
+	// TSDriver is the built driver bundle, driver.js. Empty builds it from the
+	// repo root on demand (`npm run build:driver` in web/), the way an empty
+	// CatenaryBin builds the server. Node is the node binary; empty is "node".
+	TSDriver string
+	Node     string
 
 	// Logger receives the harness's OWN progress narration. Nil discards it.
 	// Never handed to a client — see harness.go's newClient, which always
@@ -94,8 +107,40 @@ func (c *Config) validate() error {
 	if c.AwaitTimeout <= 0 {
 		c.AwaitTimeout = 30 * time.Second
 	}
+	switch c.Cohort {
+	case "":
+		c.Cohort = cohortGo
+	case cohortGo, cohortTS, cohortMixed:
+	default:
+		return fmt.Errorf("cohort %q: want go, ts or mixed", c.Cohort)
+	}
 	return nil
 }
+
+// The three cohorts -cohort names.
+const (
+	cohortGo    = "go"
+	cohortTS    = "ts"
+	cohortMixed = "mixed"
+)
+
+// cohortOf is which client runs account i. Mixed alternates, so any N splits
+// as evenly as it can and neither half is the one the kill phase's messages
+// happen to be authored by.
+func (c *Config) cohortOf(i int) string {
+	switch c.Cohort {
+	case cohortTS:
+		return cohortTS
+	case cohortMixed:
+		if i%2 == 1 {
+			return cohortTS
+		}
+	}
+	return cohortGo
+}
+
+// needsTS is whether any account runs the TypeScript driver.
+func (c *Config) needsTS() bool { return c.Cohort == cohortTS || c.Cohort == cohortMixed }
 
 func (c *Config) logger() *slog.Logger {
 	if c.Logger == nil {

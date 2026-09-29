@@ -43,13 +43,16 @@ type Report struct {
 	StartedAt time.Time
 	Duration  time.Duration
 	N         int
+	// Cohort is -cohort: go, ts or mixed (CANT-153).
+	Cohort string
 
 	Phases []PhaseReport
 
 	// MissingAtRestart is R1's "something to lose": how many messages,
 	// summed across clients, were committed-and-visible but not yet held the
 	// moment the server was killed. Zero here means the kill phase proved
-	// nothing about resume — there was nothing outstanding to lose.
+	// nothing about resume — there was nothing outstanding to lose — and
+	// classify makes it a harness failure (CANT-153).
 	MissingAtRestart int
 
 	Clients        []ClientReport
@@ -104,8 +107,10 @@ type PhaseReport struct {
 // Compared say how far it got, so a client dropped along the way is visible
 // rather than silently missing from a shorter list.
 type ClientReport struct {
-	Index          int
-	DeviceName     string
+	Index      int
+	DeviceName string
+	// Cohort is which client ran this account: go or ts.
+	Cohort         string `json:",omitempty"`
 	Provisioned    bool
 	ProvisionError string `json:",omitempty"`
 	Compared       bool
@@ -207,6 +212,13 @@ func classify(rep *Report) Verdict {
 	if len(rep.HarnessErrors) > 0 || rep.ComparisonsRun < rep.N {
 		return VerdictHarnessFailure
 	}
+	// NOTHING TO LOSE IS NOTHING PROVED (CANT-153). A run whose kill landed on
+	// a log every client already held has not exercised resume at all, and
+	// every comparison after it is clean by construction. It used to pass;
+	// now it cannot, so evidence pasted as a pass always had something to lose.
+	if rep.MissingAtRestart == 0 {
+		return VerdictHarnessFailure
+	}
 	return VerdictPass
 }
 
@@ -255,7 +267,7 @@ func writeReportFile(path string, rep *Report) error {
 // terminal, and what gets pasted into the ticket.
 func printReport(w io.Writer, rep Report) {
 	fmt.Fprintf(w, "\n=== CANT-27 soak report ===\n")
-	fmt.Fprintf(w, "N=%d duration=%s verdict=%s\n", rep.N, rep.Duration.Round(time.Second), rep.Verdict)
+	fmt.Fprintf(w, "N=%d duration=%s verdict=%s cohort=%s\n", rep.N, rep.Duration.Round(time.Second), rep.Verdict, rep.Cohort)
 
 	fmt.Fprintf(w, "\nphases:\n")
 	for _, p := range rep.Phases {
@@ -263,7 +275,11 @@ func printReport(w io.Writer, rep Report) {
 			p.Name, p.Duration.Round(100*time.Millisecond), p.MessagesSent, p.MessagesAcked,
 			p.SendErrors, p.SendRefusals, p.SendTimeouts, p.Reconnects)
 	}
-	fmt.Fprintf(w, "missing at restart (R1's \"something to lose\"): %d\n", rep.MissingAtRestart)
+	fmt.Fprintf(w, "missing at restart (R1's \"something to lose\"): %d", rep.MissingAtRestart)
+	if rep.MissingAtRestart == 0 {
+		fmt.Fprintf(w, " — NOTHING TO LOSE: a harness failure, the kill proved nothing")
+	}
+	fmt.Fprintln(w)
 
 	fmt.Fprintf(w, "\ncomparisons: %d/%d run\n", rep.ComparisonsRun, rep.N)
 	a := rep.Aggregate
@@ -289,13 +305,13 @@ func printReport(w io.Writer, rep Report) {
 	for _, c := range rep.Clients {
 		switch {
 		case !c.Provisioned:
-			fmt.Fprintf(w, "  %2d %-14s NOT PROVISIONED: %s\n", c.Index, c.DeviceName, c.ProvisionError)
+			fmt.Fprintf(w, "  %2d %-14s %-2s NOT PROVISIONED: %s\n", c.Index, c.DeviceName, c.Cohort, c.ProvisionError)
 		case !c.Compared:
-			fmt.Fprintf(w, "  %2d %-14s NOT COMPARED: %s\n", c.Index, c.DeviceName, c.CompareError)
+			fmt.Fprintf(w, "  %2d %-14s %-2s NOT COMPARED: %s\n", c.Index, c.DeviceName, c.Cohort, c.CompareError)
 		case !c.Compare.Clean():
-			fmt.Fprintf(w, "  %2d %-14s DIRTY — %s\n", c.Index, c.DeviceName, c.Compare.String())
+			fmt.Fprintf(w, "  %2d %-14s %-2s DIRTY — %s\n", c.Index, c.DeviceName, c.Cohort, c.Compare.String())
 		default:
-			fmt.Fprintf(w, "  %2d %-14s clean — %s\n", c.Index, c.DeviceName, c.Compare.String())
+			fmt.Fprintf(w, "  %2d %-14s %-2s clean — %s\n", c.Index, c.DeviceName, c.Cohort, c.Compare.String())
 		}
 	}
 	fmt.Fprintln(w)

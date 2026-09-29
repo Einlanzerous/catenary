@@ -91,8 +91,8 @@ type storeSend struct {
 	sent store.Sent
 }
 
-// socket sends over a Go client's socket and records the ack.
-func (l *ledger) socket(t *testing.T, c *client.Client, who string, conv uuid.UUID, text string) wire.ServerAck {
+// socket sends over a client's socket and records the ack.
+func (l *ledger) socket(t *testing.T, c cohortClient, who string, conv uuid.UUID, text string) wire.ServerAck {
 	t.Helper()
 	f := wire.ClientSend{ClientID: wire.Uuid(uuid.NewString()), ConversationID: wid(conv), Text: &text}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -197,7 +197,24 @@ type killResult struct {
 	replays          int
 }
 
+// theoFactory builds the client under test over an enrolled device: the Go
+// reference (goTheo), or the TypeScript transport through its driver (tsTheo,
+// in tslanes_test.go). j is the Go client's journal, which a restart reuses; a
+// TypeScript client's journal lives in its driver process and j is unused.
+type theoFactory func(k *killRig, dev wire.EnrollResponse, j *client.Journal, faults client.Faults) cohortClient
+
+func goTheo(k *killRig, dev wire.EnrollResponse, j *client.Journal, faults client.Faults) cohortClient {
+	return k.client(dev, j, faults)
+}
+
 func runKillTest(t *testing.T, mode killMode, faults client.Faults) killResult {
+	t.Helper()
+	return runKillTestWith(t, mode, faults, goTheo)
+}
+
+// runKillTestWith runs the five phases with theo built by newTheo. Ada is the
+// Go reference either way: she is the traffic, not the client under test.
+func runKillTestWith(t *testing.T, mode killMode, faults client.Faults, newTheo theoFactory) killResult {
 	t.Helper()
 	k := newKillRig(t, nil)
 	cs := k.cast()
@@ -207,7 +224,7 @@ func runKillTest(t *testing.T, mode killMode, faults client.Faults) killResult {
 	theoDev, adaDev := k.enroll(cs.theo, "theo's phone"), k.enroll(cs.ada, "ada's laptop")
 	theoTok := string(theoDev.AccessToken)
 	journal := client.NewJournal()
-	theo := k.client(theoDev, journal, faults)
+	theo := newTheo(k, theoDev, journal, faults)
 	ada := k.client(adaDev, nil, client.Faults{})
 	awaitClient(t, theo, "theo's first ready and catch-up", func() bool {
 		s := theo.Status()
@@ -223,7 +240,7 @@ func runKillTest(t *testing.T, mode killMode, faults client.Faults) killResult {
 	l.mustCommit(t, k, cs.b, cs.mal, "four")
 	l.mustCommit(t, k, cs.c, cs.ada, "five, not theo's room")
 	marker := l.mustCommit(t, k, cs.a, cs.ada, "phase 1 marker")
-	awaitClient(t, theo, "phase 1 delivered live", func() bool { return theo.Holds(wid(marker.ID)) })
+	awaitClient(t, theo, "phase 1 delivered live", func() bool { return holds(t, theo, wid(marker.ID)) })
 
 	// ... and the close lands mid-stream.
 	w := k.startWriter(l, cs)
@@ -248,7 +265,13 @@ func runKillTest(t *testing.T, mode killMode, faults client.Faults) killResult {
 			l.mustCommit(t, k, cs.c, cs.ada, fmt.Sprintf("while closed %d, not theo's room", i))
 		}
 	}
-	res.missingAtRestart = len(client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), journal.Snapshot()).Lost)
+	// A dead Go client is read through its journal; in serverStops the client
+	// is alive, whichever language it is, and is read directly.
+	held := journal.Snapshot()
+	if mode == serverStops {
+		held = snapshotOf(t, theo)
+	}
+	res.missingAtRestart = len(client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), held).Lost)
 	if res.missingAtRestart < 7 {
 		t.Fatalf("theo's journal lacks %d visible messages at restart, want at least the 7 committed while closed — there is nothing to lose", res.missingAtRestart)
 	}
@@ -260,7 +283,7 @@ func runKillTest(t *testing.T, mode killMode, faults client.Faults) killResult {
 	readys := theo.Status().Readys
 	switch mode {
 	case clientDies:
-		theo = k.client(theoDev, journal, faults)
+		theo = newTheo(k, theoDev, journal, faults)
 		readys = 0
 	case serverStops:
 		k.start()
@@ -272,20 +295,20 @@ func runKillTest(t *testing.T, mode killMode, faults client.Faults) killResult {
 	if held, failure := k.gates.upgradesHeld(); failure != "" || held != 1 {
 		t.Fatalf("the upgrade gate: held %d, failure %q — want exactly one upgrade released by its client's own /sync", held, failure)
 	}
-	res.afterReconnect = client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), theo.Snapshot())
+	res.afterReconnect = client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), snapshotOf(t, theo))
 
 	// PHASE 4 — a listener gap planted while a /sync is in flight.
 	res.gap, res.live = k.gapWhileSyncInFlight(t, theo, theoTok, l, cs)
-	res.afterGap = client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), theo.Snapshot())
+	res.afterGap = client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), snapshotOf(t, theo))
 
 	// PHASE 5 — replay every client_id, over the sockets and through the
 	// store. The head does not move and every replayed ack says so.
-	res.replays = k.replay(t, l, map[string]*client.Client{"ada": ada, "theo": theo})
-	res.final = client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), theo.Snapshot())
+	res.replays = k.replay(t, l, map[string]cohortClient{"ada": ada, "theo": theo})
+	res.final = client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), snapshotOf(t, theo))
 	return res
 }
 
-func (k *killRig) gapWhileSyncInFlight(t *testing.T, theo *client.Client, theoTok string, l *ledger, cs cast) (gap []wire.Uuid, live wire.Uuid) {
+func (k *killRig) gapWhileSyncInFlight(t *testing.T, theo cohortClient, theoTok string, l *ledger, cs cast) (gap []wire.Uuid, live wire.Uuid) {
 	t.Helper()
 	awaitClient(t, theo, "caught up before the gap", func() bool { return theo.Status().CaughtUp })
 	resyncs := theo.Status().Resyncs
@@ -312,14 +335,44 @@ func (k *killRig) gapWhileSyncInFlight(t *testing.T, theo *client.Client, theoTo
 
 	after := l.mustCommit(t, k, cs.a, cs.ada, "live while the /sync is held")
 	live = wid(after.ID)
-	awaitClient(t, theo, "the live frame above the gap", func() bool { return theo.Holds(live) })
+	awaitClient(t, theo, "the live frame above the gap", func() bool { return holds(t, theo, live) })
 
 	close(held.release)
 	awaitClient(t, theo, "catch-up after the held page", func() bool { return theo.Status().CaughtUp })
 	return gap, live
 }
 
-func (k *killRig) replay(t *testing.T, l *ledger, clients map[string]*client.Client) int {
+// holds is whether a client's journal holds a message: Client.Holds for the
+// Go reference, a snapshot read for a client whose journal is in another
+// process.
+func holds(t *testing.T, c cohortClient, id wire.Uuid) bool {
+	t.Helper()
+	if g, ok := c.(*client.Client); ok {
+		return g.Holds(id)
+	}
+	for _, m := range snapshotOf(t, c).Messages {
+		if m.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// snapshotOf reads a client's journal, and fails the test rather than hand an
+// unreadable one to Compare as empty.
+func snapshotOf(t *testing.T, c cohortClient) client.Snapshot {
+	t.Helper()
+	if s, ok := c.(tsSnapshotter); ok {
+		snap, err := s.TrySnapshot()
+		if err != nil {
+			t.Fatalf("read the client's journal: %v", err)
+		}
+		return snap
+	}
+	return c.Snapshot()
+}
+
+func (k *killRig) replay(t *testing.T, l *ledger, clients map[string]cohortClient) int {
 	t.Helper()
 	head := k.head()
 	n := 0

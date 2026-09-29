@@ -31,11 +31,29 @@ func TestClassify(t *testing.T) {
 	}{
 		{
 			name: "every comparison ran and every one is clean",
-			rep: Report{N: 2, ComparisonsRun: 2, Clients: []ClientReport{
+			rep: Report{N: 2, ComparisonsRun: 2, MissingAtRestart: 7, Clients: []ClientReport{
 				{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()},
 				{Index: 1, Provisioned: true, Compared: true, Compare: cleanCompare()},
 			}},
 			want: VerdictPass,
+		},
+		{
+			// CANT-153. The same clean run with nothing to lose at the kill:
+			// every comparison is clean by construction, and that proves
+			// nothing about resume.
+			name: "every comparison clean but nothing missing at restart is a harness failure",
+			rep: Report{N: 2, ComparisonsRun: 2, MissingAtRestart: 0, Clients: []ClientReport{
+				{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()},
+				{Index: 1, Provisioned: true, Compared: true, Compare: cleanCompare()},
+			}},
+			want: VerdictHarnessFailure,
+		},
+		{
+			name: "a dirty comparison with nothing missing at restart is still a server failure",
+			rep: Report{N: 1, ComparisonsRun: 1, MissingAtRestart: 0, Clients: []ClientReport{
+				{Index: 0, Provisioned: true, Compared: true, Compare: dirtyCompare()},
+			}},
+			want: VerdictServerFailure,
 		},
 		{
 			name: "zero comparisons ran is never a pass, even with no errors on record",
@@ -114,14 +132,14 @@ func TestClassify(t *testing.T) {
 		},
 		{
 			name: "acked-zero in the KILL phase is not a server failure — the server is legitimately down for part of it",
-			rep: Report{N: 1, ComparisonsRun: 1,
+			rep: Report{N: 1, ComparisonsRun: 1, MissingAtRestart: 3,
 				Phases:  []PhaseReport{{Name: killPhase, MessagesSent: 12, MessagesAcked: 0}},
 				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
 			want: VerdictPass,
 		},
 		{
 			name: "some acked in steady traffic is not the all-refused case",
-			rep: Report{N: 1, ComparisonsRun: 1,
+			rep: Report{N: 1, ComparisonsRun: 1, MissingAtRestart: 3,
 				Phases:  []PhaseReport{{Name: steadyTrafficPhase, MessagesSent: 40, MessagesAcked: 3}},
 				Clients: []ClientReport{{Index: 0, Provisioned: true, Compared: true, Compare: cleanCompare()}}},
 			want: VerdictPass,

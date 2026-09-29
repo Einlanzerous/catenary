@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -16,14 +18,28 @@ import (
 	"github.com/magos/catenary/internal/store"
 )
 
-// soakClient is one provisioned account's device: the client.Client running
-// it and the identity the harness needs to query its own view of the log.
+// soakClient is one provisioned account's device: the client running it and
+// the identity the harness needs to query its own view of the log. c is a
+// *client.Client for the Go cohort and a *tsDriver for the TypeScript one
+// (CANT-153); j, the Go client's journal, is nil for a TypeScript client,
+// whose journal lives in its own process.
 type soakClient struct {
 	index  int
 	name   string
-	c      *client.Client
+	cohort string
+	c      cohortClient
 	j      *client.Journal
 	userID uuid.UUID
+}
+
+// snapshot reads a client's journal for a comparison. A TypeScript client's is
+// read over stdio, and a read that failed is an error here — never an empty
+// journal, which Compare would report as every message lost.
+func (sc *soakClient) snapshot() (client.Snapshot, error) {
+	if t, ok := sc.c.(tsSnapshotter); ok {
+		return t.TrySnapshot()
+	}
+	return sc.c.Snapshot(), nil
 }
 
 // harness is the state one call to runSoak builds and tears down. Not reused
@@ -36,6 +52,7 @@ type harness struct {
 	store *store.Store
 
 	bin     string
+	driver  string
 	port    int
 	baseURL string
 
@@ -62,7 +79,7 @@ type closer interface{ Close() error }
 // disqualifying on its own; there is no separate fatal-error path to keep in
 // sync with it.
 func runSoak(ctx context.Context, cfg Config) Result {
-	rep := Report{StartedAt: time.Now(), N: cfg.N, Clients: make([]ClientReport, cfg.N)}
+	rep := Report{StartedAt: time.Now(), N: cfg.N, Cohort: cfg.Cohort, Clients: make([]ClientReport, cfg.N)}
 	for i := range rep.Clients {
 		rep.Clients[i] = ClientReport{Index: i}
 	}
@@ -74,6 +91,7 @@ func runSoak(ctx context.Context, cfg Config) Result {
 		h.harnessError("config: %v", err)
 		return h.finish(&rep)
 	}
+	rep.Cohort = h.cfg.Cohort
 
 	bin, err := resolveBinary(h.cfg)
 	if err != nil {
@@ -81,6 +99,15 @@ func runSoak(ctx context.Context, cfg Config) Result {
 		return h.finish(&rep)
 	}
 	h.bin = bin
+
+	if h.cfg.needsTS() {
+		script, err := resolveDriver(h.cfg)
+		if err != nil {
+			h.harnessError("resolve the TypeScript driver: %v", err)
+			return h.finish(&rep)
+		}
+		h.driver = script
+	}
 
 	port, err := freePort()
 	if err != nil {
@@ -123,9 +150,16 @@ func runSoak(ctx context.Context, cfg Config) Result {
 			// messages missing, which is a symptom and not the cause. The
 			// likeliest one here is a server that predates CANT-122's 4002,
 			// whose hello timeout is still a bare 1008.
+			//
+			// A TypeScript client can also stop because its driver PROCESS
+			// died, which a Go client in this process cannot. That is named
+			// too, with the driver's own last words, for the same reason.
 			var term *client.TerminalError
-			if err := sc.c.Run(runCtx); errors.As(err, &term) {
+			switch err := sc.c.Run(runCtx); {
+			case errors.As(err, &term):
 				h.harnessError("client %d (%s) went terminal and will not reconnect: %v", sc.index, sc.name, err)
+			case errors.Is(err, errTSDriverGone):
+				h.harnessError("client %d (%s): the TypeScript driver process died: %v", sc.index, sc.name, err)
 			}
 		}(sc)
 	}
@@ -164,9 +198,10 @@ func runSoak(ctx context.Context, cfg Config) Result {
 func (h *harness) buildClients(provisioned []provisionedClient, rep *Report) []*soakClient {
 	var clients []*soakClient
 	for _, p := range provisioned {
+		cohort := h.cfg.cohortOf(p.index)
 		if p.err != nil {
 			h.harnessError("provision client %d (%s): %v", p.index, p.name, p.err)
-			rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, ProvisionError: p.err.Error()}
+			rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, Cohort: cohort, ProvisionError: p.err.Error()}
 			continue
 		}
 		j := client.NewJournal()
@@ -176,29 +211,62 @@ func (h *harness) buildClients(provisioned []provisionedClient, rep *Report) []*
 		}
 		if err != nil {
 			h.harnessError("enroll client %d's journal (%s): %v", p.index, p.name, err)
-			rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, ProvisionError: err.Error()}
+			rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, Cohort: cohort, ProvisionError: err.Error()}
 			continue
 		}
-		c, err := client.New(client.Config{
-			BaseURL:    h.baseURL,
-			ClientInfo: "cant-27-soakrig", Journal: j,
-			Faults:     h.cfg.debugFaults[p.index],
-			BackoffMin: 100 * time.Millisecond, BackoffMax: 2 * time.Second,
-			// A client's own internal narration is per-heartbeat noise at N
-			// clients; the report's Stats already summarize it. The
-			// harness's own logger (h.cfg.Logger) is for THIS process's
-			// progress, never handed down to a client.
-			Logger: nil,
-		})
+		var c cohortClient
+		if cohort == cohortTS {
+			c, err = h.newTSClient(p)
+			j = nil
+		} else {
+			c, err = client.New(client.Config{
+				BaseURL:    h.baseURL,
+				ClientInfo: "cant-27-soakrig", Journal: j,
+				Faults:     h.cfg.debugFaults[p.index],
+				BackoffMin: soakBackoffMin, BackoffMax: soakBackoffMax,
+				// A client's own internal narration is per-heartbeat noise at N
+				// clients; the report's Stats already summarize it. The
+				// harness's own logger (h.cfg.Logger) is for THIS process's
+				// progress, never handed down to a client.
+				Logger: nil,
+			})
+		}
 		if err != nil {
-			h.harnessError("construct client %d (%s): %v", p.index, p.name, err)
-			rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, ProvisionError: err.Error()}
+			h.harnessError("construct client %d (%s, %s): %v", p.index, p.name, cohort, err)
+			rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, Cohort: cohort, ProvisionError: err.Error()}
 			continue
 		}
-		clients = append(clients, &soakClient{index: p.index, name: p.name, c: c, j: j, userID: p.userID})
-		rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, Provisioned: true}
+		clients = append(clients, &soakClient{index: p.index, name: p.name, cohort: cohort, c: c, j: j, userID: p.userID})
+		rep.Clients[p.index] = ClientReport{Index: p.index, DeviceName: p.name, Cohort: cohort, Provisioned: true}
 	}
 	return clients
+}
+
+// soakBackoffMin and soakBackoffMax are BOTH cohorts' dial ramp, so the two
+// storm alike: Go's Config.BackoffMin/BackoffMax, and the TypeScript
+// transport's backoffMinMs/backoffMaxMs, which exist for rigs only.
+const (
+	soakBackoffMin = 100 * time.Millisecond
+	soakBackoffMax = 2 * time.Second
+)
+
+// newTSClient starts one TypeScript client's driver process over an
+// enrollment. The credential rides the start command inline: `soak` enrolls
+// in memory and writes no credential file.
+func (h *harness) newTSClient(p provisionedClient) (*tsDriver, error) {
+	cfg := tsDriverConfig{
+		Node: h.cfg.Node, Script: h.driver, BaseURL: h.baseURL,
+		Faults:     h.cfg.debugFaults[p.index],
+		BackoffMin: soakBackoffMin, BackoffMax: soakBackoffMax,
+	}
+	cfg.enrolled(p.enroll)
+	if h.cfg.ServerLogDir != "" {
+		if f, err := os.Create(filepath.Join(h.cfg.ServerLogDir, fmt.Sprintf("driver-%d.stderr.log", p.index))); err == nil {
+			cfg.Stderr = f
+			h.logFiles = append(h.logFiles, f)
+		}
+	}
+	return newTSDriver(cfg)
 }
 
 // awaitAllCaughtUp waits, per client and in parallel, for ready+caught-up,
