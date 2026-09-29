@@ -277,6 +277,15 @@ step "R4 · web smoke test (render assertions + conformance)"
 (cd "$ROOT/web" && npm run --silent smoke) >"$LOGDIR/v-smoke.log" 2>&1
 result $? "$(grep -cE '^ok  ' "$LOGDIR/v-smoke.log") assertions passed"
 
+# CANT-35 · the TypeScript transport's own unit tests: node:test over a
+# vite-ssr bundle (ruling 9 → A), against a fake clock, socket and server. No
+# database and no network, so it always runs — here and in CI, which runs this
+# file whole. `npm run build` and `npm run smoke` are the typecheck and the
+# render half, already stepped above; neither is listed twice.
+step "CANT-35 · the web transport — session, heartbeat, close table, backoff, catch-up, journal"
+(cd "$ROOT/web" && npm run --silent test:transport) >"$LOGDIR/v-transport.log" 2>&1
+result $? "npm run test:transport ($(grep -oE '^ℹ (pass|fail) [0-9]+' "$LOGDIR/v-transport.log" | sed 's/ℹ //' | tr '\n' ',' | sed 's/,$//; s/,/, /g'))"
+
 step "R4 · a REAL server response validates against the generated decoder"
 (cd "$ROOT/web" && npm run --silent validate SyncResponse "$ROOT/spike/r1-websocket/captured-sync-response.json") >"$LOGDIR/v-validate.log" 2>&1
 result $? "captured /sync from the Go rig decodes as SyncResponse"

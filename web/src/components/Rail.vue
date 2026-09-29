@@ -195,7 +195,8 @@ const me = user(state.me)
 .live.resyncing {
   animation: catPulse 1.2s ease-in-out infinite;
 }
-.live.offline {
+.live.offline,
+.live.terminal {
   background: var(--text-disabled);
 }
 </style>

@@ -5,6 +5,8 @@ dist-smoke/
 dist-conformance/
 dist-validate/
 dist-readstate/
+dist-transport-test/
+dist-transport-driver/
 server/bin/
 dart/.dart_tool/
 
