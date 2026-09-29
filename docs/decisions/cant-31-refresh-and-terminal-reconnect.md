@@ -79,7 +79,7 @@ Six sites closed `1008` with **no** preceding `error` frame, and five still do. 
 | `socket.go:593` | a second hello | client bug |
 | `socket.go:765` | a malformed frame | client bug |
 | `socket.go:435` | `resume_from_log_seq` negative | client bug, decoder-unreachable |
-| `hub.go:953` | `up_to_seq` below 1 | client bug, decoder-unreachable |
+| the `ErrSeqOutOfRange` arm of `Hub.read` (`internal/hub/hub.go`) | `up_to_seq` below 1 | client bug, decoder-unreachable |
 
 The last two are unreachable behind the generated decoder (`Seq` carries `minimum: 1`).
 
