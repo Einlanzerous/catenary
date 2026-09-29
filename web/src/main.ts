@@ -49,8 +49,16 @@ onEnrolled(() => {
   })()
 })
 
-void start().then((started) => {
-  // Not started AND nothing else started one meanwhile: a login that
-  // overtook this read has already left the account view where it wants.
-  if (!started && !liveTransport()) openAccount()
-})
+void start().then(
+  (started) => {
+    // Not started AND nothing else started one meanwhile: a login that
+    // overtook this read has already left the account view where it wants.
+    if (!started && !liveTransport()) openAccount()
+  },
+  (e: unknown) => {
+    // The credential store would not open. The login form is still the
+    // honest screen — a blank app says nothing at all.
+    console.error('catenary: could not read this device\'s credential', e)
+    openAccount()
+  },
+)

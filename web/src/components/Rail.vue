@@ -62,8 +62,12 @@ const me = computed(() => user(state.me))
       <span class="name">{{ me?.name }}</span>
       <!-- CANT-38: log in, name a device, see sessions, revoke one. -->
       <button class="devices-link" @click="openAccount">DEVICES</button>
-      <span class="link-state">LINKED</span>
-      <span class="live" :class="state.connection.state" />
+      <!-- Only for an enrolled device: before one, nothing is linked and
+           nothing is dialling, and a lamp would claim both. -->
+      <template v-if="state.me">
+        <span class="link-state">LINKED</span>
+        <span class="live" :class="state.connection.state" />
+      </template>
     </footer>
   </nav>
 </template>
