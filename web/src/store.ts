@@ -666,7 +666,8 @@ export function jumpTo(messageId: string, seekMs?: number) {
 /* ── the outbox's wiring ────────────────────────────────────────────────── */
 
 let current: Outbox | null = null
-/** The adapter `configureOutbox` built itself, detached on a reconfigure. */
+/** The adapter the current outbox is wired to, when this module built it;
+ *  detached on a reconfigure. */
 let adapter: TransportOutbox | null = null
 let shipped: Transport | null = null
 
@@ -706,8 +707,12 @@ export async function configureOutbox(
 ): Promise<Outbox> {
   current?.close()
   current = null
+  // Detach the previous adapter and build this one BEFORE the first await, so
+  // a reconfigure that overtakes this one while the store opens still finds
+  // it — and closes it — rather than leaving it attached.
   adapter?.close()
   adapter = null
+  const transport = seams.transport ?? (adapter = new TransportOutbox(shippedTransport()))
   const browser = typeof window !== 'undefined'
   // Where IndexedDB is absent or refuses to open (SSR, or a private window),
   // the outbox still works for this page's life — and with no storage API
@@ -736,7 +741,7 @@ export async function configureOutbox(
   const nav = typeof navigator !== 'undefined' ? navigator : undefined
   const outbox = await Outbox.open({
     store,
-    transport: seams.transport ?? (adapter = new TransportOutbox(shippedTransport())),
+    transport,
     accountId: state.me,
     lock: seams.lock ?? (nav?.locks ? new WebLockDrainLock(nav.locks) : new InProcessLockHub().lock()),
     channel: seams.channel !== undefined ? seams.channel : browser && typeof BroadcastChannel !== 'undefined' ? new BroadcastOutboxChannel() : null,
@@ -769,6 +774,8 @@ export function useOutbox(seams: Parameters<typeof configureOutbox>[0]): Promise
 export function useTransport(transport: Transport): Promise<Outbox> {
   const a = new TransportOutbox(transport, consoleLogger)
   const ready = useOutbox({ transport: a })
+  // `configureOutbox` has run to its first await, so this is recorded after
+  // it detached the previous adapter, and the next reconfigure detaches it.
   adapter = a
   return ready
 }
