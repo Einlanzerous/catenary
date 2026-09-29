@@ -27,6 +27,43 @@ export { EMPTY_PROJECTION, project, projectApplied } from './project'
 export type { Projection } from './project'
 export { heldCredential, isCatenaryUnauthorized } from './credential'
 export type { Credential, CredentialHost, CredentialSeam, CredentialStatus, RefreshHold } from './credential'
+export {
+  createRefreshingCredential,
+  mintProposal,
+  RefreshingCredential,
+  refreshDue,
+  refreshThreshold,
+  REFRESH_FLOOR_MS,
+} from './refresh'
+export type { DueInput, RefreshingCredentialConfig, RefreshOutcome } from './refresh'
+export {
+  CHAIN_WARN_LENGTH,
+  gateOpen,
+  nextRefreshAt,
+  readStamp,
+  refreshDelay,
+  refreshHoldAt,
+  REFRESH_BACKOFF_BASE_MS,
+  REFRESH_BACKOFF_CAP_MS,
+} from './hold'
+export type { HoldInput } from './hold'
+export { refusedHoldAt } from './refused'
+export type { RefusedInput } from './refused'
+export {
+  credentialFromEnroll,
+  credentialLockName,
+  CredentialHeld,
+  enrollCredential,
+  IdbCredentialStore,
+  MemoryCredentialStore,
+  NoCredential,
+  reenrollCredential,
+} from './credential-store'
+export type { ChainLink, CredentialStore, StoredCredential } from './credential-store'
+export { enrollDevice, EnrollRefused } from './enroll'
+export type { EnrollOptions } from './enroll'
+export { CATENARY_DB, CREDENTIAL_STORE, openCatenaryDb, UPGRADES } from './db'
+export type { OpenCatenaryDbOptions, UpgradeStep } from './db'
 export { classifyClose, closeStatusKey, CLOSE_POLICY_VIOLATION, CLOSE_REVOKED } from './closes'
 export type { CloseVerdict } from './closes'
 export {
@@ -44,6 +81,7 @@ export { NOT_TERMINAL } from './terminal'
 export type { Terminal, TerminalKind } from './terminal'
 export {
   browserLifecycle,
+  browserLock,
   browserTimers,
   consoleLogger,
   cryptoRandom,

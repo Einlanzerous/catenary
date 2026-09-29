@@ -13,9 +13,10 @@
  * §6's terminal states (terminal.ts), and CANT-35's rulings 3, 4 and 5
  * (backoff.ts, and the receipt and lifecycle arms below).
  *
- * THE CREDENTIAL IS PRESENTED AS HELD in this row, as Go's `Refresh: false`
- * does. Every refresh hook is on `CredentialSeam` (credential.ts), called
- * where Go calls its counterpart; CANT-152 fills them in.
+ * THE CREDENTIAL IS A SEAM. Every refresh hook is on `CredentialSeam`
+ * (credential.ts), called where Go calls its counterpart: `heldCredential` is
+ * Go's `Refresh: false`, and `RefreshingCredential` (refresh.ts, CANT-152) is
+ * CANT-31 §1–§6 with CANT-127's hold and CANT-129's refused wait.
  */
 
 import {
@@ -79,7 +80,8 @@ const SYNC_TIMEOUT_MS = 30_000
 export interface TransportConfig {
   /** The server's origin, `http://` or `https://`. `/ws` and `/sync` are appended. */
   baseUrl: string
-  /** The credential layer. `heldCredential(...)` in this row; CANT-152's next. */
+  /** The credential layer: `createRefreshingCredential(...)` in the app,
+   *  `heldCredential(...)` where the pair is presented as held (the rigs). */
   credential: CredentialSeam
   /** Default: a fresh in-memory journal (CANT-35 ruling 2 → B). */
   journal?: Journal
@@ -1044,11 +1046,20 @@ class SocketTransport implements Transport {
       this.heartbeat.pingNow()
       return
     }
+    // CANT-129 FIRST: a wake signal is a dial source, and while the token is
+    // refused it is withheld and COUNTED, whichever other rule would also have
+    // stood it down — the refused wait's own poll included, which waits at the
+    // maximum and is never shortened by a wake signal.
+    if (this.cred.refused()) {
+      this.stats.dialsWithheld++
+      this.notify()
+      return
+    }
     const w = this.dialWait
     const interval = this.learnedIntervalSec
     if (!w || interval === null || w.atMax) return
     const now = this.now()
-    if (this.cred.refused() || (this.lastEarlyDialAt !== null && now - this.lastEarlyDialAt < interval * 1000)) {
+    if (this.lastEarlyDialAt !== null && now - this.lastEarlyDialAt < interval * 1000) {
       this.stats.dialsWithheld++
       this.notify()
       return

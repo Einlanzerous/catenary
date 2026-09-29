@@ -2,12 +2,12 @@
  * (`Credential`) and the hooks refresh.go, hold.go and refused.go hang on
  * `Client.Run`, `catchUpLoop` and `fetchWith`.
  *
- * THIS ROW PRESENTS THE CREDENTIAL AS HELD, as Go's `Config.Refresh: false`
- * does: `heldCredential` never refreshes, never refuses, never withholds. CANT-31
- * §1–§6, CANT-127's hold and CANT-129's refused wait are CANT-152's, and they
- * arrive as a second implementation of `CredentialSeam` — the transport calls
- * every hook below at the point Go calls its counterpart, so that ticket fills
- * the hooks in and changes no line of the session loop.
+ * TWO IMPLEMENTATIONS. `heldCredential` presents the credential as held, as
+ * Go's `Config.Refresh: false` does: it never refreshes, never refuses, never
+ * withholds — what the rigs run (CANT-31 criterion 39). `RefreshingCredential`
+ * (refresh.ts, CANT-152) is CANT-31 §1–§6, CANT-127's hold and CANT-129's
+ * refused wait, over a durable `CredentialStore` (credential-store.ts). The
+ * transport calls every hook below at the point Go calls its counterpart.
  */
 
 import type { Uuid } from '@/wire/generated'
