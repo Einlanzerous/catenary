@@ -172,8 +172,9 @@ async function main() {
   // scripted transport that acks it, and the assertion reads the row rendered
   // for that clientId.
   //
-  // First the shipped wiring: the NullTransport is never ready, so a send is
-  // kept and renders QUEUED — never SENT by an ack nobody sent.
+  // First the shipped wiring: the outbox's adapter over CANT-35's transport,
+  // which nothing starts until CANT-39 wires the live server — never ready, so
+  // a send is kept and renders QUEUED, never SENT by an ack nobody sent.
   select('c-kitchen')
   state.composer.draft = 'kept, not sent'
   const keptId = await send()
