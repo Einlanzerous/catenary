@@ -248,6 +248,9 @@ func (h *harness) killAndRestart(ctx context.Context, clients []*soakClient, roo
 	if err := h.startServer(ctx); err != nil {
 		h.harnessError("restart the server after kill -9: %v", err)
 	}
+	if d := h.cfg.debugSendAfterRestart; d > 0 {
+		time.Sleep(d) // broken_test.go only; see Config
+	}
 
 	close(stopBg)
 	wg.Wait()

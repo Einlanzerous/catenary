@@ -179,6 +179,7 @@ func runSoak(ctx context.Context, cfg Config) Result {
 	rep.Phases = append(rep.Phases, killPhase)
 	rep.MissingAtRestart = missing
 
+	h.awaitHeld(ctx, clients)
 	h.compareAll(ctx, clients, &rep)
 
 	rep.CloseStatuses = map[int]int{}
@@ -310,6 +311,58 @@ func (h *harness) awaitAllCaughtUpBounded(ctx context.Context, clients []*soakCl
 			if err := sc.c.Await(actx, func() bool { s := sc.c.Status(); return s.Ready && s.CaughtUp }); err != nil {
 				h.harnessError("client %d (%s) did not reach ready+caught-up after %s (bound %s): %v — status %+v",
 					sc.index, sc.name, phase, timeout, err, sc.c.Status())
+			}
+		}(sc)
+	}
+	wg.Wait()
+}
+
+// heldPoll is how often awaitHeld re-reads a client that is still missing
+// something. Convergence is normally immediate, so one read is the usual cost.
+const heldPoll = 50 * time.Millisecond
+
+// awaitHeld is the second half of the final settle (CANT-172): it waits, per
+// client and under the same bound as awaitFinalSettle, until the client holds
+// every message the server's log has for it.
+//
+// READY+CAUGHT-UP IS NOT ENOUGH ON ITS OWN. A kill-phase send can be acked by
+// the restarted server just before the background senders stop, and its live
+// fan-out — commit, pg_notify, the hub's own fetch, a socket write per member —
+// runs behind that ack. A live frame is not a catch-up trigger, so every client
+// whose reconnect /sync already finished reads as settled while the frame is
+// still on its way, and a Compare taken then reports the message Lost:
+// verdict=server_failure for a message that arrives a few milliseconds later.
+//
+// ONLY LOST IS WAITED ON, because only Lost can heal by waiting; a phantom, a
+// duplicate or a seq conflict is final the moment it is held. And a timeout
+// here is NOT a harness error: a message still missing when the bound expires
+// is the finding itself, and compareAll reports it as Lost. The wait can only
+// take away a comparison made too early, never a real loss.
+func (h *harness) awaitHeld(ctx context.Context, clients []*soakClient) {
+	actx, cancel := context.WithTimeout(ctx, max(h.cfg.AwaitTimeout, minFinalSettle))
+	defer cancel()
+	var wg sync.WaitGroup
+	for _, sc := range clients {
+		wg.Add(1)
+		go func(sc *soakClient) {
+			defer wg.Done()
+			for {
+				rows, err := h.serverLogFor(actx, sc.userID)
+				if err == nil {
+					var snap client.Snapshot
+					if snap, err = sc.snapshot(); err == nil && len(client.Compare(rows, snap).Lost) == 0 {
+						return
+					}
+				}
+				// A read that failed is compareAll's to record; this wait
+				// just tries again until its bound, like any other miss.
+				select {
+				case <-actx.Done():
+					h.logf("a client still misses messages at the end of the final settle; compareAll reports them",
+						"client", sc.index, "name", sc.name)
+					return
+				case <-time.After(heldPoll):
+				}
 			}
 		}(sc)
 	}
