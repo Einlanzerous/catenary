@@ -54,6 +54,8 @@ func run(args []string) int {
 		return runProvisionCmd(args[1:])
 	case "idle":
 		return runIdleCmd(args[1:])
+	case "restoreprobe":
+		return runRestoreProbeCmd(args[1:])
 	case "-h", "--help", "help":
 		usage()
 		return 0
@@ -89,7 +91,16 @@ usage:
                                against a deployed environment, is a person's
                                act.
 
-run 'soakrig soak -h', 'soakrig provision -h' or 'soakrig idle -h' for that mode's flags.
+  soakrig restoreprobe [flags]  CANT-165: against a served, already-restored
+                               instance, provision one new account into an
+                               existing conversation, dial with a cursor set
+                               above the counter's own head, observe the
+                               discard-and-rebootstrap, then send one message
+                               and check its ack's ordinals. Refuses to run
+                               against a database that was not explicitly
+                               acknowledged as scratch. CANT-68's row 1.
+
+run 'soakrig soak -h', 'soakrig provision -h', 'soakrig idle -h' or 'soakrig restoreprobe -h' for that mode's flags.
 `)
 }
 
@@ -307,6 +318,81 @@ is your act, not this tool's.
 		// a real finding about the deployed path, the same weight
 		// exitServerFailure carries for `soak`.
 		return exitServerFailure
+	}
+}
+
+func runRestoreProbeCmd(args []string) int {
+	fs := flag.NewFlagSet("restoreprobe", flag.ContinueOnError)
+	var cfg RestoreProbeConfig
+	fs.StringVar(&cfg.DBURL, "db-url", firstNonEmpty(os.Getenv("CATENARY_DATABASE_URL"), os.Getenv("DATABASE_URL")),
+		"Postgres URL this process reads and writes directly (CATENARY_DATABASE_URL, DATABASE_URL). Required. "+
+			"Never pass this on argv when it carries a real password — let it come from the environment, the way "+
+			"CANT-68's own rollout runs `soak` against catenary_drill.")
+	fs.StringVar(&cfg.BaseURL, "base-url", "", "the served, already-restored instance's origin to probe, e.g. http://127.0.0.1:4112. Required.")
+	fs.StringVar(&cfg.ScratchOk, "scratch-ok", "",
+		"repeat the EXACT database name -db-url names, to acknowledge it is a scratch database. Required, and refused "+
+			"outright for \"catenary\" or \"postgres\" whatever this says.")
+	fs.StringVar(&cfg.Conversation, "conversation", "", "the name of the existing conversation the probe account joins. Required.")
+	fs.StringVar(&cfg.Handle, "handle", "", "the probe account's handle. Empty generates one — this is a one-off account nobody needs to type again.")
+	fs.Int64Var(&cfg.Ahead, "ahead", 1000, "N: the cursor dialed with is log_counter's value, read once, plus N. Must be at least 1.")
+	fs.StringVar(&cfg.CredFile, "cred-file", "", "where to write the probe device's credential, at mode 0600. Required. Never printed.")
+	fs.DurationVar(&cfg.AwaitTimeout, "await-timeout", 30*time.Second, "bound on waiting for the client to reach ready and caught-up")
+	var cfID, cfSecret string
+	fs.StringVar(&cfID, "cf-access-client-id", os.Getenv("CF_ACCESS_CLIENT_ID"),
+		"Cloudflare Access service token client ID, sent as the CF-Access-Client-Id header (env CF_ACCESS_CLIENT_ID)")
+	fs.StringVar(&cfSecret, "cf-access-client-secret", os.Getenv("CF_ACCESS_CLIENT_SECRET"),
+		"Cloudflare Access service token client secret, sent as the CF-Access-Client-Secret header (env CF_ACCESS_CLIENT_SECRET). Never logged.")
+	var quiet bool
+	fs.BoolVar(&quiet, "quiet", false, "suppress the probe's own progress logging on stderr (the report on stdout is unaffected)")
+	fs.Usage = func() {
+		fmt.Fprint(os.Stderr, `soakrig restoreprobe — CANT-165: drive a client and one send against a served, restored instance
+
+Provisions ONE new account into an existing conversation (CANT-109's
+direct-insert-and-real-enroll path, reused rather than reimplemented),
+dials with a cursor set -ahead above log_counter's own head, and reports
+whether the discard-and-rebootstrap fired. It then sends one message and
+checks the ack's log_seq and seq against what the database held immediately
+before the send. Refuses to run at all against a database that -scratch-ok
+did not explicitly name. Output is counts and ordinals only; a credential
+never reaches stdout, stderr or the logger.
+
+`)
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if !quiet {
+		cfg.Logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	}
+	cfg.Headers = cfAccessHeaders(cfID, cfSecret)
+
+	// CHECKED HERE, BEFORE ANYTHING RUNS, so a bad flag or an unacknowledged
+	// database exits exitUsage rather than being folded into
+	// VerdictHarnessFailure's exitHarnessFailure — runRestoreProbe repeats
+	// both checks for a caller that reaches it directly (its own tests
+	// included), the same double-check runSoakCmd/runSoak already use.
+	if err := cfg.validate(); err != nil {
+		fmt.Fprintf(os.Stderr, "soakrig restoreprobe: %v\n", err)
+		fs.Usage()
+		return exitUsage
+	}
+	if _, err := checkScratchDatabase(cfg.DBURL, cfg.ScratchOk); err != nil {
+		fmt.Fprintf(os.Stderr, "soakrig restoreprobe: %v\n", err)
+		return exitUsage
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	res := runRestoreProbe(ctx, cfg)
+	printRestoreProbeReport(os.Stdout, res.Report)
+	switch res.Verdict {
+	case VerdictPass:
+		return exitPass
+	case VerdictServerFailure:
+		return exitServerFailure
+	default:
+		return exitHarnessFailure
 	}
 }
 

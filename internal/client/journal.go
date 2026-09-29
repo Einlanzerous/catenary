@@ -401,6 +401,31 @@ func (j *Journal) Credential() (Credential, bool) {
 	return j.credential, j.hasCredential
 }
 
+// SeedCursor sets a fresh journal's cursor without any page ever landing —
+// CANT-165's restoreprobe needs to dial with a cursor ITS CALLER chose
+// (log_counter's value, read once, plus an offset), rather than one a real
+// catch-up produced, so the very first `ready` it gets is exactly the shape
+// obligation 4 is written against: a cursor already above the server's head.
+//
+// REFUSED ONCE THE JOURNAL HOLDS ANYTHING A CALLER COULD CONFUSE THIS WITH
+// CONTINUING — a cursor already set, a message already held, or a wipe
+// already counted. Seeding is for a journal that has never synced; it is not
+// a shortcut around a real catch-up for one that has, and letting it
+// overwrite either would let a caller silently discard a cursor obligation 2
+// promises only ever moves forward.
+func (j *Journal) SeedCursor(cursor int64) error {
+	if cursor < 0 {
+		return errors.New("client: SeedCursor: cursor must not be negative")
+	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if j.hasCursor || len(j.messages) > 0 || j.wipes > 0 {
+		return errors.New("client: SeedCursor: the journal already holds cursor state")
+	}
+	j.cursor, j.hasCursor = cursor, true
+	return nil
+}
+
 // resetLocked is obligation 4's wipe: messages, conversations, users and the
 // cursor, all of them — and NOT the credential (see Journal.credential). The
 // caller holds mu and bumps wipes.

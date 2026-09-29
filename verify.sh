@@ -242,6 +242,24 @@ else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the smoke run needs a real Postgres.\n'
 fi
 
+# CANT-165: soakrig restoreprobe's truncated-restore and broken-counter
+# scenarios, against a real subprocess and a real Postgres. NOT behind its
+# own build tag because a subprocess is otherwise absent from "R4 · Go"'s
+# unconditional `go test ./...` sweep — that sweep already starts one, in
+# restoreprobe_cli_test.go's TestRestoreProbeCmdAgainstALocalServer, and runs
+# a full passing probe against a fresh database every time
+# (checkScratchDatabase's own safety tests need no database at all and run
+# unconditionally too). What this step pays for once is the SCENARIO: seeding
+# thirty messages, truncating the log, and deliberately breaking the counter,
+# which the ordinary sweep's fresh-database probe does not exercise.
+step "CANT-165 · soakrig restoreprobe smoke (a truncateLog restore, the discard, the ordinals, a broken counter)"
+if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  (cd "$ROOT/server" && go test -tags restoreprobesmoke -run TestSmokeRestoreProbe -v -count=1 ./cmd/soakrig/...) >"$LOGDIR/v-restoreprobe-smoke.log" 2>&1
+  result $? "$(grep -oE -- '--- (PASS|FAIL): TestSmokeRestoreProbe \([0-9.]+s\)' "$LOGDIR/v-restoreprobe-smoke.log" | tail -1)"
+else
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the smoke run needs a real Postgres.\n'
+fi
+
 step "R4 · the staleness guard actually fails the build — once per generated file"
 # CANT-12 criterion 3: proved PER PIPELINE, not once overall. The check has
 # always walked every target; the PROOF used to touch one file, so three of the
