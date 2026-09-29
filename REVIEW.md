@@ -244,6 +244,18 @@ line what got fixed, then move on.
 Check that a fix was applied **at the layer that owns the invariant**, not at the
 call site that happened to be reported.
 
+## Reviewing a plan
+
+Everything above is for a **diff**. Switchyard's adversarial plan pass reviews
+a **plan** — the document, before any code — against a checkout of this
+repository, and what a CANT plan has to get right is written for it in
+[`docs/plan-review.md`](docs/plan-review.md): the checks it performs from this
+tree plus the plan JSON alone, its standing (advisory on a passing check,
+blocking only for a hole a person would bounce, never a pick), its posture
+toward rulings, and the exit condition the automatic loop reads. It lives in
+its own file because this one is the PR reviewer's prompt, and a plan doctrine
+here would ride along on every diff review.
+
 ## Summary shape
 
 Open with a one-line tally — `2 important, 1 nit` — or **No blocking issues**.
