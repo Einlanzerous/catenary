@@ -34,6 +34,12 @@ import (
 // cohortClient is exactly what the rigs call on a client: the soak's phases,
 // and CatchUp for the kill test. *client.Client satisfies it unchanged; the
 // Go-only journal a rig may also hold stays outside it.
+//
+// A RIG THAT COMPARES does not call Snapshot on a cohortClient directly: it
+// reads through tsSnapshotter when the client has one (soakClient.snapshot in
+// soakrig, snapshotOf in cmd/catenary), because a TypeScript journal is read
+// over stdio and that read can fail. tsDriver.Snapshot panics on a failed read
+// rather than hand Compare an empty journal.
 type cohortClient interface {
 	Run(ctx context.Context) error
 	Await(ctx context.Context, pred func() bool) error
@@ -409,10 +415,16 @@ func (d *tsDriver) Status() client.Status {
 	return s
 }
 
-// Snapshot is TrySnapshot for the interface. Rigs that compare call
-// TrySnapshot, so a failed read is never compared as an empty journal.
+// Snapshot is TrySnapshot for the interface, and PANICS on a failed read. An
+// empty client.Snapshot is the one wrong answer here: Compare would report
+// every committed message as lost, a server failure nobody committed. Rigs that
+// compare call TrySnapshot and name the failure; a caller that reaches for
+// Snapshot instead fails loudly rather than falsely.
 func (d *tsDriver) Snapshot() client.Snapshot {
-	s, _ := d.TrySnapshot()
+	s, err := d.TrySnapshot()
+	if err != nil {
+		panic("ts driver: the journal could not be read, and an empty one would read as every message lost: " + err.Error())
+	}
 	return s
 }
 
