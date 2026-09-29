@@ -80,6 +80,14 @@ type tsDriverConfig struct {
 	// which exist for rigs only, as Go's Config.BackoffMin/BackoffMax do.
 	BackoffMin, BackoffMax time.Duration
 
+	// JournalFile, when set, launches the driver with --journal=<file>: the
+	// durable IdbJournal over fake-indexeddb, persisted to that file after
+	// every completed transaction (CANT-169). A driver launched again over the
+	// same file resumes from what the last one committed, which is the
+	// relaunch after a Kill. Empty is a journal in memory, which dies with the
+	// process.
+	JournalFile string
+
 	// Log turns the transport's own structured log on, to Stderr.
 	Log bool
 	// Stderr receives the driver's stderr. Nil discards it; the last few KiB
@@ -146,7 +154,11 @@ func newTSDriver(cfg tsDriverConfig) (*tsDriver, error) {
 		node = "node"
 	}
 	d := &tsDriver{cfg: cfg, tail: &tsTail{max: 16 << 10}, pending: map[int64]chan tsResponse{}, exited: make(chan struct{})}
-	d.cmd = exec.Command(node, cfg.Script)
+	args := []string{cfg.Script}
+	if cfg.JournalFile != "" {
+		args = append(args, "--journal="+cfg.JournalFile)
+	}
+	d.cmd = exec.Command(node, args...)
 	if cfg.Stderr != nil {
 		d.cmd.Stderr = io.MultiWriter(d.tail, cfg.Stderr)
 	} else {
@@ -454,9 +466,27 @@ func (d *tsDriver) TrySnapshot() (client.Snapshot, error) {
 	return s, nil
 }
 
+// ReadPersisted is what a driver launched with a JournalFile left on disk —
+// what its relaunch will resume from — read by launching a second driver over
+// the same file, reading its journal without starting a transport, and ending
+// it. It is how a rig reads a TypeScript client that is dead, as it reads a dead
+// Go client through the Journal it kept.
+func (d *tsDriver) ReadPersisted() (client.Snapshot, error) {
+	if d.cfg.JournalFile == "" {
+		return client.Snapshot{}, errors.New("ts driver: no journal file — a journal in memory died with its process")
+	}
+	r, err := newTSDriver(d.cfg)
+	if err != nil {
+		return client.Snapshot{}, err
+	}
+	defer r.Kill()
+	return r.TrySnapshot()
+}
+
 // Kill is `kill -9` on the driver: SIGKILL, and nothing it had in flight
-// reaches anything after. Its journal dies with it — CANT-35 ruling 2 → B keeps
-// the TypeScript journal in memory — so a relaunch starts from nothing.
+// reaches anything after. A journal in memory dies with it, so a relaunch
+// starts from nothing; one in a JournalFile (CANT-169) is what the dead driver
+// had committed, and a relaunch over the file resumes from it.
 func (d *tsDriver) Kill() {
 	d.mu.Lock()
 	d.killed = true

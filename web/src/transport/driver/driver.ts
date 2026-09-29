@@ -39,6 +39,13 @@
  * nothing here can observe it — which is the point. Closing stdin ends the
  * process too, so a rig that dies without cleaning up leaves no driver behind.
  *
+ * THE JOURNAL is in memory (`MemoryJournal`) and dies with the process, unless
+ * the driver is launched with `--journal=<file>` (CANT-169): then it is the
+ * durable `IdbJournal` over fake-indexeddb, persisted to that file after every
+ * completed transaction (persist.ts), and a driver launched again over the same
+ * file — after a SIGKILL — resumes from what the dead one had committed. That
+ * is the TypeScript `clientDies` lane's relaunch.
+ *
  * THE CREDENTIAL IS HELD (`heldCredential`, Go's `Refresh: false`), which is
  * what the rigs run (CANT-31 criterion 39). CANT-152's credential layer is not
  * needed by any lane here: no run outlives the access token it enrolled with.
@@ -55,7 +62,8 @@ import {
 } from '@/wire/generated'
 import { heldCredential, type Credential } from '../credential'
 import { type Faults, NO_FAULTS } from '../faults'
-import { MemoryJournal } from '../journal'
+import { MemoryJournal, type StagedJournal } from '../journal'
+import { openFileJournal } from './persist'
 import { type Logger, type WebSocketCtor, manualLifecycle, silentLogger } from '../seams'
 import type { TransportStatus } from '../status'
 import { type Transport, SendRefused, createTransport } from '../transport'
@@ -112,9 +120,18 @@ function until(t: Transport, pred: (s: TransportStatus) => boolean, ms: number):
   })
 }
 
+export interface ServeOptions {
+  /** `--journal=<file>`: the durable journal persisted there. Absent is a
+   *  journal in memory. */
+  journalFile?: string
+}
+
 /** Runs the driver until its input ends. */
-export function serve(io: DriverIO): void {
-  const journal = new MemoryJournal()
+export function serve(io: DriverIO, opts: ServeOptions = {}): void {
+  // Every request waits for the journal: reading a file back is not instant,
+  // and nothing may run over a journal that is not open yet.
+  const opened: Promise<StagedJournal> = opts.journalFile ? openFileJournal(opts.journalFile) : Promise.resolve(new MemoryJournal())
+  let journal: StagedJournal = new MemoryJournal()
   let transport: Transport | null = null
   let proxy: TcpProxy | null = null
   let proxyTarget = ''
@@ -240,7 +257,10 @@ export function serve(io: DriverIO): void {
       answer(req.id, { ok: false, error: { kind: 'UnknownCommand', message: `driver: unknown command ${req.cmd}` } })
       return
     }
-    h(req.args ?? {}).then(
+    opened.then((j) => {
+      journal = j
+      return h(req.args ?? {})
+    }).then(
       (result) => answer(req.id, { ok: true, result }),
       (e: unknown) => {
         const err =

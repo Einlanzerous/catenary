@@ -557,7 +557,7 @@ async function main() {
       terminal: NOT_TERMINAL, refreshHold: 'none', tokenRefused: false, nextRefreshAt: null,
       connected: true, ready: true, sessionId: 'smoke', heartbeatIntervalSec: 35, missedPongLimit: 2,
       caughtUp: false, cursor: 0, attempt: 0, nextDialAt: null, stats: emptyStats(),
-      messages: 0, wipes: 0, headSeqTotal: 0, ...extra,
+      messages: 0, wipes: 0, headSeqTotal: 0, journalError: null, ...extra,
     })
     // `synced`/`total`/`roomsPending` are genuinely absent, not 0, whenever
     // `connectionInfo` omits them — the banner's `v-if="c.total !== undefined"`

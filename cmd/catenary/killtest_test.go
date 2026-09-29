@@ -194,13 +194,16 @@ type killResult struct {
 	// missingAtRestart is what Theo's journal lacked when it came back: the
 	// "something to lose" R1 insists on.
 	missingAtRestart int
-	replays          int
+	// heldAtRestart is that journal itself: what a relaunch resumes from.
+	heldAtRestart client.Snapshot
+	replays       int
 }
 
 // theoFactory builds the client under test over an enrolled device: the Go
-// reference (goTheo), or the TypeScript transport through its driver (tsTheo,
-// in tslanes_test.go). j is the Go client's journal, which a restart reuses; a
-// TypeScript client's journal lives in its driver process and j is unused.
+// reference (goTheo), or the TypeScript transport through its driver (tsTheo
+// and tsDurableTheo, in tslanes_test.go). j is the Go client's journal, which a
+// restart reuses; a TypeScript client's journal lives in its driver process, or
+// in the file a durable driver persists it to, and j is unused.
 type theoFactory func(k *killRig, dev wire.EnrollResponse, j *client.Journal, faults client.Faults) cohortClient
 
 func goTheo(k *killRig, dev wire.EnrollResponse, j *client.Journal, faults client.Faults) cohortClient {
@@ -265,12 +268,19 @@ func runKillTestWith(t *testing.T, mode killMode, faults client.Faults, newTheo 
 			l.mustCommit(t, k, cs.c, cs.ada, fmt.Sprintf("while closed %d, not theo's room", i))
 		}
 	}
-	// A dead Go client is read through its journal; in serverStops the client
-	// is alive, whichever language it is, and is read directly.
+	// A dead Go client is read through its journal, and a dead TypeScript one
+	// through the file its journal persisted to; in serverStops the client is
+	// alive, whichever language it is, and is read directly.
 	held := journal.Snapshot()
 	if mode == serverStops {
 		held = snapshotOf(t, theo)
+	} else if p, ok := theo.(persistedJournal); ok {
+		var err error
+		if held, err = p.ReadPersisted(); err != nil {
+			t.Fatalf("read the dead client's persisted journal: %v", err)
+		}
 	}
+	res.heldAtRestart = held
 	res.missingAtRestart = len(client.Compare(serverLog(k.ctx, t, k.pool, cs.theo), held).Lost)
 	if res.missingAtRestart < 7 {
 		t.Fatalf("theo's journal lacks %d visible messages at restart, want at least the 7 committed while closed — there is nothing to lose", res.missingAtRestart)
@@ -356,6 +366,13 @@ func holds(t *testing.T, c cohortClient, id wire.Uuid) bool {
 		}
 	}
 	return false
+}
+
+// persistedJournal is a client whose journal outlives its process on disk: a
+// TypeScript driver with a journal file (CANT-169). Read after a Kill, it is
+// what the relaunch will resume from.
+type persistedJournal interface {
+	ReadPersisted() (client.Snapshot, error)
 }
 
 // snapshotOf reads a client's journal, and fails the test rather than hand an

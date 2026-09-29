@@ -3,9 +3,9 @@
  * a struct in memory and here is a database on disk.
  *
  * THIS IS THE ONLY CODE THAT OPENS `catenary`, and the database holds only
- * CANT-35's stores: `credential` today (CANT-31 §2 and §3 require it durable),
- * and a journal's stores if the durable-journal follow-up lands. CANT-36's
- * outbox lives in its own database, so the two never bump one version.
+ * CANT-35's stores: `credential` (CANT-31 §2 and §3 require it durable), and
+ * the journal's five (CANT-169, idb-journal.ts). CANT-36's outbox lives in its
+ * own database, so the two never bump one version.
  *
  * AN UPGRADE IS A STEP APPENDED TO `UPGRADES`, never an edit to one already
  * shipped: the database's version is the list's length, and `onupgradeneeded`
@@ -16,6 +16,17 @@
 export const CATENARY_DB = 'catenary'
 export const CREDENTIAL_STORE = 'credential'
 
+/** The journal's stores (CANT-169). Messages, conversations and users are held
+ *  as wire JSON keyed by `id`; `journal` holds the cursor and the wipe count,
+ *  one record each, keyed by `key`; `counted` is the evidence log, keyed by
+ *  its position `n`. */
+export const MESSAGES_STORE = 'messages'
+export const CONVERSATIONS_STORE = 'conversations'
+export const USERS_STORE = 'users'
+export const JOURNAL_STORE = 'journal'
+export const COUNTED_STORE = 'counted'
+export const JOURNAL_STORES = [MESSAGES_STORE, CONVERSATIONS_STORE, USERS_STORE, JOURNAL_STORE, COUNTED_STORE] as const
+
 /** One upgrade step: runs once, inside the versionchange transaction. */
 export type UpgradeStep = (db: IDBDatabase, tx: IDBTransaction) => void
 
@@ -23,6 +34,15 @@ export const UPGRADES: readonly UpgradeStep[] = [
   // 1 · the credential: one record per device, keyed by its id (CANT-31 §2).
   (db) => {
     db.createObjectStore(CREDENTIAL_STORE, { keyPath: 'deviceId' })
+  },
+  // 2 · the durable journal (CANT-169): cursor, messages, conversations, users
+  // and the evidence log, written one transaction per page.
+  (db) => {
+    db.createObjectStore(MESSAGES_STORE, { keyPath: 'id' })
+    db.createObjectStore(CONVERSATIONS_STORE, { keyPath: 'id' })
+    db.createObjectStore(USERS_STORE, { keyPath: 'id' })
+    db.createObjectStore(JOURNAL_STORE, { keyPath: 'key' })
+    db.createObjectStore(COUNTED_STORE, { keyPath: 'n' })
   },
 ]
 

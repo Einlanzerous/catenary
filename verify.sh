@@ -264,7 +264,9 @@ fi
 # of process, through its Node driver — the soak's smoke configuration with
 # every client TypeScript, the same lane with `dedupeByLogSeq` watched failing
 # and both cohorts in one room, and cmd/catenary's kill-test and restore-test
-# rigs with the driver as the client under test, clean and with each control.
+# rigs with the driver as the client under test, clean and with each control —
+# the kill test in both modes, the client's death over the durable journal a
+# relaunched driver reopens from its file (CANT-169).
 #
 # THE BUNDLE IS BUILT HERE AND NAMED BY CATENARY_TS_DRIVER, and every test in
 # the step FAILS on a named bundle that is not there rather than skipping. The
@@ -291,8 +293,8 @@ if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   result $? "TypeScript soak smoke — $(grep -oE 'N=[0-9]+ duration=[a-z0-9.]+ verdict=[a-z_]+ cohort=[a-z]+' "$LOGDIR/v-ts-soak-smoke.log" | tail -1)"
   ts_lane "$LOGDIR/v-ts-soak-control.log" 3 "$ROOT/server" ./cmd/soakrig/ '^(TestTSSoakBaselinePasses|TestMixedSoakBaselinePasses|TestBrokenTSRunCountsAsServerFailure)$'
   result $? "the soak: ts and mixed pass clean, and dedupeByLogSeq is caught ($(grep -oE 'verdict=[a-z_]+ cohort=[a-z]+' "$LOGDIR/v-ts-soak-control.log" | tr '\n' ' ' | sed 's/ $//'))"
-  ts_lane "$LOGDIR/v-ts-lanes.log" 4 "$ROOT" ./cmd/catenary/ '^(TestTheTSClientResumesThroughTheKillTest|TestTheKillTestCatchesABrokenTSClient|TestTheTSClientDiscardsALogTruncatedBelowItsCursor|TestTheTSClientSeversAHalfDeadSocketOnTheHeartbeat)$'
-  result $? "kill-test and restore-test lanes: clean, and cursorOnLiveFrames, endCatchUpEarly and skipWipe each caught; the heartbeat severs a black hole"
+  ts_lane "$LOGDIR/v-ts-lanes.log" 5 "$ROOT" ./cmd/catenary/ '^(TestTheTSClientResumesThroughTheKillTest|TestTheTSClientSurvivesItsOwnDeathOverADurableJournal|TestTheKillTestCatchesABrokenTSClient|TestTheTSClientDiscardsALogTruncatedBelowItsCursor|TestTheTSClientSeversAHalfDeadSocketOnTheHeartbeat)$'
+  result $? "kill-test and restore-test lanes: clean with the server stopped and with the client killed and relaunched over its durable journal (CANT-169), and cursorOnLiveFrames and endCatchUpEarly (in both modes) and skipWipe each caught; the heartbeat severs a black hole"
 else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the TypeScript cohort runs against a real Postgres.\n'
 fi

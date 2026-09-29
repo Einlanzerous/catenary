@@ -100,6 +100,16 @@ export interface TransportStatus {
    *  never a spinner. Grows as catch-up discovers conversations it has not
    *  touched yet, same as `messages` does. */
   headSeqTotal: number
+  /** The last journal write's failure, null once one lands again (CANT-169).
+   *  A `QuotaExceededError` from IndexedDB is here by name: the journal does
+   *  not fall back to memory, it says it could not write. */
+  journalError: JournalError | null
+}
+
+/** A journal write that did not land, by the error's name and message. */
+export interface JournalError {
+  name: string
+  message: string
 }
 
 export function emptyStats(): Stats {
