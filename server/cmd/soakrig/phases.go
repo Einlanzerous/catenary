@@ -151,7 +151,8 @@ func (h *harness) steadyTraffic(ctx context.Context, clients []*soakClient, room
 
 // reconnectStorm is phase two: cfg.StormRounds rounds of severing EVERY
 // client's socket at once — client.Sever, CANT-27's addition to
-// internal/client — then waiting for the whole cohort to reconnect and catch
+// internal/client, or for a TypeScript client the driver's `sever`, which
+// drops both TCP legs through its proxy with no close frame — then waiting for the whole cohort to reconnect and catch
 // up before the next round. The server never restarts here; only the network
 // does, cfg.StormRounds times.
 func (h *harness) reconnectStorm(ctx context.Context, clients []*soakClient) PhaseReport {
@@ -276,7 +277,12 @@ func (h *harness) snapshotLostCount(ctx context.Context, clients []*soakClient) 
 			h.harnessError("read the server log for client %d (%s) while the server was down: %v", sc.index, sc.name, err)
 			continue // best-effort evidence; the final compareAll is the claim of record
 		}
-		total += len(client.Compare(rows, sc.c.Snapshot()).Lost)
+		snap, err := sc.snapshot()
+		if err != nil {
+			h.harnessError("read client %d's journal (%s) while the server was down: %v", sc.index, sc.name, err)
+			continue
+		}
+		total += len(client.Compare(rows, snap).Lost)
 	}
 	return total
 }

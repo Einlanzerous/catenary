@@ -18,7 +18,11 @@
 //	       real POST /enroll path, runs three phases — steady traffic, a
 //	       reconnect storm, a kill -9 and restart under continuing traffic —
 //	       and compares every client's journal against the server's own
-//	       committed log with client.Compare. This is CANT-27.
+//	       committed log with client.Compare. This is CANT-27. -cohort
+//	       picks the client: go (internal/client), ts (the TypeScript
+//	       transport, run as `node web/dist-transport-driver/driver.js`
+//	       and driven over stdio — tsdriver.go), or mixed, the two
+//	       alternating in one room under one Compare (CANT-153).
 //
 //	idle   CANT-23's remaining clause: one client, no local server, held open
 //	       and pinging against a base URL and a real device token an operator
@@ -73,7 +77,9 @@ usage:
   soakrig soak [flags]        N clients against a real, local catenary serve:
                                steady traffic, a reconnect storm, a kill -9 and
                                restart, then every client's journal compared
-                               against the server's committed log.
+                               against the server's committed log. -cohort=go,
+                               ts or mixed picks the Go client, the TypeScript
+                               transport through its Node driver, or both.
 
   soakrig provision [flags]   create ONE new account and device against a
                                database this process reaches directly, and
@@ -140,6 +146,13 @@ func runSoakCmd(args []string) int {
 	fs.DurationVar(&cfg.AwaitTimeout, "await-timeout", 30*time.Second, "bound on every phase-completion wait (a client reaching ready and caught-up)")
 	fs.StringVar(&cfg.ReportPath, "out", "", "also write the JSON report here")
 	fs.StringVar(&cfg.ServerLogDir, "server-log-dir", "", "write the server subprocess's stdout/stderr here, one file per instance (across the restart)")
+	fs.StringVar(&cfg.Cohort, "cohort", cohortGo,
+		"which client runs each account: go (internal/client), ts (the TypeScript transport, through its Node driver), "+
+			"or mixed (the two alternating by index, in the same room, judged by one Compare)")
+	fs.StringVar(&cfg.TSDriver, "ts-driver", os.Getenv("CATENARY_TS_DRIVER"),
+		"the built TypeScript driver bundle, web/dist-transport-driver/driver.js (CATENARY_TS_DRIVER). "+
+			"Empty builds it from the repo root on demand. Only read for -cohort=ts or mixed.")
+	fs.StringVar(&cfg.Node, "node", "", "the node binary the TypeScript driver runs under. Empty is node on PATH.")
 	var quiet bool
 	fs.BoolVar(&quiet, "quiet", false, "suppress the harness's own progress logging on stderr (the report on stdout is unaffected)")
 	fs.Usage = func() {

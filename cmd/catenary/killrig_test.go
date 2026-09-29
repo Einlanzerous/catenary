@@ -513,8 +513,9 @@ func runClient(t *testing.T, ctx context.Context, base string, dev wire.EnrollRe
 	return c
 }
 
-// awaitClient waits, with a bound, for a client to reach a state.
-func awaitClient(t *testing.T, c *client.Client, what string, pred func() bool) {
+// awaitClient waits, with a bound, for a client to reach a state. A
+// cohortClient, so the TypeScript lanes (CANT-153) wait the same way.
+func awaitClient(t *testing.T, c cohortClient, what string, pred func() bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
