@@ -135,6 +135,10 @@ export function connectionInfo(status: TransportStatus, env: { now: number; onli
   const extra = {
     refreshHold: status.refreshHold,
     tokenRefused: status.tokenRefused,
+    // CANT-169's write failure, beside whatever state the session is in: a
+    // journal that could not write is a fact about this browser's storage,
+    // not about the connection, and it holds until a write lands again.
+    ...(status.journalError ? { journalError: { ...status.journalError } } : {}),
   }
   if (status.terminal.kind !== 'none') {
     return { state: 'terminal', terminal: { kind: status.terminal.kind, reason: status.terminal.reason }, ...extra }

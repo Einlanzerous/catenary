@@ -1,20 +1,23 @@
 # Catenary — web client
 
-First-pass implementation of the **Catenary Web Client** design canvas, against mock data. Vue 3 + TypeScript + Vite, per **D3**.
+The **Catenary Web Client** design canvas, realised against a live server. Vue 3 + TypeScript + Vite, per **D3**.
 
 ```
 npm install
-npm run dev        # http://localhost:4009
-npm run smoke      # headless render + logic checks, then conformance and the outbox
+npm run dev        # http://localhost:4009, proxying the API to CATENARY_DEV_API (default http://127.0.0.1:4012)
+npm run smoke      # the headless render against a live, seeded server, then conformance and the outbox
+                   # (needs Go and CATENARY_TEST_DATABASE_URL — see below)
 npm run outbox     # the outbox's criteria, and every named fault required to fail one (node:test)
 npm run typecheck
 ```
 
 ## What this is, and what it is not
 
-This is the design realised as a working client. It is **not** the Catenary project: there is no repo, no `CANT` project key, and no server. **IDEA-23** is a spike whose six P0 gates — R1 WebSockets through the tunnel, R2 push, R3 whisper.cpp, R4 one wire schema, R5 Android distribution, R6 Purser connector fit — decide whether Catenary gets built at all. Graduating before those clear is the failure mode the spike names explicitly.
+There is no mock data (CANT-39). Every record on screen came from a server: `main.ts` reads the enrolled credential, `startSession` in `store.ts` starts the transport over it with the durable IndexedDB journal, and CANT-35's projection puts the journal into `state`. A device with no credential starts nothing and opens on the login form; a login or a re-enrollment restarts the session (`onEnrolled` in `account.ts`).
 
-So: no transport, no auth, no persistence. `src/mock/fixtures.ts` holds the canvas's corpus, a send goes into the outbox (`src/outbox/`, CANT-36) over a transport that is never ready, so it renders QUEUED and is kept in IndexedDB until CANT-163 wires a real one, and a **HARNESS** strip in the bottom-right switches connection state and theme because there is nothing real to disconnect from yet. Delete `DevToolbar.vue` the day a transport lands.
+`npm run dev` needs a `catenary serve` to talk to. Vite proxies `/ws`, `/sync`, `/enroll`, `/refresh`, `/devices` and `/conversations` to it with `changeOrigin` off, so the browser only ever talks to its own origin — the WebSocket door refuses an `Origin` that is not the request's `Host`, and that check is not loosened for a dev server.
+
+`npm run smoke` renders against a live server too. `cmd/catenary/websmoke_test.go` resets `CATENARY_TEST_DATABASE_URL`, seeds the canvas's corpus through the store, serves it through the same composition root `catenary serve` runs, and runs the built `dist-smoke/smoke.js`, which logs in through the real `/enroll` and renders what its transport caught up on. Without a database it refuses rather than skips; `verify.sh` runs it in its database lane.
 
 ## Layout
 
@@ -23,11 +26,11 @@ So: no transport, no auth, no persistence. `src/mock/fixtures.ts` holds the canv
 | `src/styles/tokens.css` | The token contract. Names are shared with the Flutter client; values are per-theme. Dark is primary, light derived. A raw hex in a component is a bug. |
 | `src/types.ts` | Wire types — **hand-written, and temporary**. R4 says these are generated from one schema alongside the Dart equivalents *before either client is written*. This file is a draft of that contract, not the contract. |
 | `src/store.ts` | One `reactive` object. Not Pinia; the dependency list stays at `vue`. |
-| `src/transport/` | The WebSocket transport (CANT-35): session loop, heartbeat, CANT-31 §4 close table, backoff, `/sync` catch-up and the in-memory journal, and the credential layer (CANT-152: CANT-31 §1–§6 refresh, the chain, CANT-127's hold and CANT-129's refused wait, over IndexedDB database `catenary` under a per-credential Web Lock), with no Vue import and every clock, socket and timer injected. Each module names the `internal/client` file it mirrors. `npm run test:transport` runs its unit tests; CANT-39 wires it into `store.ts`. |
-| `src/lib/waveform.ts` | Renders stored peaks. `peaksFromSeed` reproduces the canvas generator for fixtures only — see the portability note in that file. |
+| `src/transport/` | The WebSocket transport (CANT-35): session loop, heartbeat, CANT-31 §4 close table, backoff, `/sync` catch-up and the in-memory journal, and the credential layer (CANT-152: CANT-31 §1–§6 refresh, the chain, CANT-127's hold and CANT-129's refused wait, over IndexedDB database `catenary` under a per-credential Web Lock), with no Vue import and every clock, socket and timer injected. Each module names the `internal/client` file it mirrors. `npm run test:transport` runs its unit tests; `startSession` in `store.ts` wires it into the app. |
+| `src/lib/waveform.ts` | Renders stored peaks. `peaksFromSeed` reproduces the canvas generator for the recording animation only — see the portability note in that file. |
 | `src/components/` | One component per object in the canvas. |
 | `src/outbox/` | Unacked sends (CANT-36, rules in `docs/decisions/cant-36-outbox.md`): the `OutboxStore` and `OutboxTransport` seams, the state machine, the render projection, IndexedDB database `catenary-outbox`. |
-| `smoke.ts` | SSRs the app and asserts the canvas's landmarks are actually on screen. |
+| `smoke.ts` | SSRs the app, caught up from a live server, and asserts the canvas's landmarks are actually on screen. |
 | `outbox.test.ts` | `npm run outbox`: each outbox criterion as written, then each named fault, which must make its criterion fail. |
 
 ## Sections covered

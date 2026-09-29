@@ -4,8 +4,12 @@
  * STORES THE CREDENTIAL AND SHOWS THE FORMS. It reuses CANT-152's credential
  * layer (`@/transport`) — `enrollDevice`, `IdbCredentialStore`,
  * `enrollCredential`/`reenrollCredential`, `store.read()` — rather than a
- * second store, and it does NOT start the live transport: per CANT-35 ruling
- * 8→A, wiring `createTransport` into `store.ts`'s live path is CANT-39's job.
+ * second store, and it does NOT start the live transport itself: that is
+ * `store.ts`'s `startSession` (CANT-39). The seam between the two is
+ * `onEnrolled` — a login or a re-enrollment that has written a new pair to
+ * the store says so, and whoever composed the app (main.ts) restarts the
+ * session over it. This module never imports the transport wiring, so the
+ * forms stay testable over a scripted fetch with no socket in sight.
  *
  * `createRefreshingCredential` IS used here, for the authenticated reads
  * below (`GET /devices`, `POST /devices/{id}/revoke`) — that is CANT-31 §1–§3's
@@ -121,6 +125,23 @@ function openStore(): Promise<CredentialStore> {
   return storePromise
 }
 
+/** The credential store these forms write — the one `startSession` must
+ *  read, so a login and the session it starts agree on which pair is held. */
+export const credentialStore = (): Promise<CredentialStore> => openStore()
+
+const enrolledFns = new Set<() => void>()
+
+/**
+ * Called after every login or re-enrollment that has written a new pair to
+ * the store — the moment the app must start (or restart) its transport over
+ * it. Returns the unsubscribe. A listener that throws does not stop the
+ * others, and never turns a successful login into a failed one.
+ */
+export function onEnrolled(fn: () => void): () => void {
+  enrolledFns.add(fn)
+  return () => enrolledFns.delete(fn)
+}
+
 async function credential(): Promise<CredentialSeam> {
   if (cred) return cred
   const store = await openStore()
@@ -202,6 +223,13 @@ export async function login(enrollmentToken: string, deviceName: string): Promis
     accountState.terminal = NOT_TERMINAL
     accountState.mode = 'sessions'
     accountState.deviceId = stored.deviceId
+    for (const fn of [...enrolledFns]) {
+      try {
+        fn()
+      } catch (e) {
+        console.error('catenary account: an onEnrolled listener threw', e)
+      }
+    }
     await loadDevices()
     return true
   } catch (e) {

@@ -6,8 +6,12 @@
  * The shape here is the shape the sync protocol implies: messages are an
  * append-only log keyed by a per-conversation `seq`, sends carry an
  * idempotency key, and nothing is ever mutated in place except a message's
- * own delivery state. Swapping the mock transport for a WebSocket should not
- * require reshaping any of this.
+ * own delivery state.
+ *
+ * EVERY RECORD IN HERE CAME FROM A SERVER (CANT-39). `state.messages`,
+ * `conversations` and `users` are the transport's journal, projected by
+ * CANT-35's `project`/`projectApplied` — there is no fixture corpus behind
+ * them any more, and before a device is enrolled they are simply empty.
  *
  * WHAT YOU HAVE WRITTEN AND THE SERVER HAS NOT YET STORED IS NOT IN HERE.
  * `state.messages` holds server records only; an unacked send lives in the
@@ -21,12 +25,10 @@ import type { Conversation, ReplyRef, User, VoiceAttachment } from '@/wire/gener
 import {
   isOutboxMessage,
   type ConnectionInfo,
-  type ConnectionState,
   type Message,
   type OutboxMessage,
   type RenderedMessage,
 } from '@/client-types'
-import { CONVERSATIONS, ME, MESSAGES, OUTBOX_SEED, USERS } from '@/mock/fixtures'
 import { countWords } from '@/lib/format'
 import {
   BroadcastOutboxChannel,
@@ -41,7 +43,24 @@ import {
   type OutboxStore,
   type OutboxView,
 } from '@/outbox'
-import { consoleLogger, createTransport, heldCredential, type Transport } from '@/transport'
+import {
+  EMPTY_PROJECTION,
+  connectionInfo,
+  consoleLogger,
+  createRefreshingCredential,
+  createTransport,
+  heldCredential,
+  project as projectJournal,
+  projectApplied,
+  type CredentialStore,
+  type Journal,
+  type Lock,
+  type Logger,
+  type Projection,
+  type Transport,
+  type TransportStatus,
+  type WebSocketCtor,
+} from '@/transport'
 
 export type View = 'thread' | 'search' | 'account'
 export type Theme = 'dark' | 'light'
@@ -63,25 +82,21 @@ interface Composer {
 }
 
 const state = reactive({
-  me: ME,
-  users: USERS,
-  conversations: [...CONVERSATIONS] as Conversation[],
-  messages: [...MESSAGES] as Message[],
+  /** The enrolled account's user id; '' until a credential has been read. */
+  me: '',
+  users: {} as Record<string, User>,
+  conversations: [] as Conversation[],
+  messages: [] as Message[],
 
-  activeId: 'c-kitchen',
+  /** '' until the first projection names a conversation to open on. */
+  activeId: '',
   view: 'thread' as View,
   theme: 'dark' as Theme,
 
-  connection: {
-    state: 'live',
-    attempt: 0,
-    retryInSec: 0,
-    synced: 0,
-    total: 0,
-    roomsPending: 0,
-    // The mock's own counters are always present; the real transport's
-    // `connectionInfo` fills only what it knows (CANT-39 swaps it in).
-  } as ConnectionInfo & Required<Pick<ConnectionInfo, 'attempt' | 'retryInSec' | 'synced' | 'total' | 'roomsPending'>>,
+  /** `connectionInfo` over the live transport's status — it fills only what
+   *  it knows, so `synced`/`total`/`roomsPending` are absent, not 0, whenever
+   *  there is no number to show. */
+  connection: { state: 'reconnecting' } as ConnectionInfo,
 
   composer: {
     draft: '',
@@ -104,8 +119,9 @@ const state = reactive({
    *  "N NEW" rule are two different things, so they are two different facts. */
   read: new Set<string>(),
 
-  /** Who is typing, per conversation, in the order they started. */
-  typing: { 'c-kitchen': ['u-nadia'] } as Record<string, string[]>,
+  /** Who is typing, per conversation, in the order they started — the
+   *  server's `typing` frame, verbatim (the order is normative). */
+  typing: {} as Record<string, string[]>,
 
   query: '',
   /** The message a search result or reply stub jumped to; drives the wash. */
@@ -119,8 +135,10 @@ const messagesFor = (conversationId: string) =>
     .filter((m) => m.conversationId === conversationId)
     .sort((a, b) => a.seq - b.seq)
 
-export const activeConversation = computed(
-  () => state.conversations.find((c) => c.id === state.activeId)!,
+/** Undefined until a server has named a conversation — App renders the
+ *  thread pane only once there is one. */
+export const activeConversation = computed<Conversation | undefined>(() =>
+  state.conversations.find((c) => c.id === state.activeId),
 )
 
 export const activeMessages = computed(() => messagesFor(state.activeId))
@@ -317,20 +335,6 @@ export function typingLabel(conversationId: string): string | null {
   return ids.map((id) => user(id)?.name.split(' ')[0]).join(', ')
 }
 
-/** Harness only: the canvas ships three typing cards, so make all three
- *  reachable without a peer to type at you. */
-export function cycleTyping() {
-  const steps = [
-    [],
-    ['u-nadia'],
-    ['u-nadia', 'u-ted'],
-    ['u-nadia', 'u-ted', 'u-marek', 'u-rosa'],
-  ]
-  const now = typingIn(state.activeId).length
-  const next = steps.find((s) => s.length > now) ?? steps[0]
-  state.typing[state.activeId] = next
-}
-
 /** CANT-31 §6: a terminal client drains nothing, so nothing is created as
  *  `queued` while it is one (Invariant 3; CANT-35 criterion 30). The draft
  *  stays in the box, which is the honest place for it. What the outbox
@@ -421,53 +425,39 @@ function previewOf(m: Message): {
 
 /* ── connection ────────────────────────────────────────────────────────── */
 
-let ticker: ReturnType<typeof setInterval> | null = null
-
-export function setConnection(next: ConnectionState) {
-  if (ticker) clearInterval(ticker)
-  ticker = null
-
-  const c = state.connection
-  c.state = next
-
-  if (next === 'live') {
-    // What the outbox holds goes out on the TRANSPORT's ready, not on this
-    // banner's: until CANT-39 starts the transport, it never is, and every
-    // entry stays honestly QUEUED whatever the dev toolbar says.
-    c.attempt = 0
-    c.retryInSec = 0
-    return
-  }
-
-  if (next === 'reconnecting') {
-    // The banner counts: attempt number and a retry countdown, not a spinner.
-    c.attempt = 3
-    c.retryInSec = 8
-    ticker = setInterval(() => {
-      if (c.retryInSec > 0) {
-        c.retryInSec--
-      } else {
-        c.attempt++
-        c.retryInSec = 8
-      }
-    }, 1000)
-    return
-  }
-
-  if (next === 'resyncing') {
-    c.synced = 0
-    c.total = 1180
-    c.roomsPending = 4
-    ticker = setInterval(() => {
-      c.synced = Math.min(c.total, c.synced + 37)
-      c.roomsPending = Math.max(0, 4 - Math.floor((c.synced / c.total) * 5))
-      if (c.synced >= c.total) setConnection('live')
-    }, 120)
-  }
+/**
+ * The rooms still behind their `head_seq`: a conversation holds fewer
+ * messages than its head says exist. DERIVED, NEVER STORED (CANT-37's loose
+ * end) — from the same two facts `connectionInfo`'s `synced / total` is, per
+ * room rather than summed, so the two cannot disagree about whether there is
+ * anything left to fetch.
+ */
+export function roomsPendingIn(conversations: readonly Conversation[], messages: readonly Message[]): number {
+  const held = new Map<string, number>()
+  for (const m of messages) held.set(m.conversationId, (held.get(m.conversationId) ?? 0) + 1)
+  return conversations.filter((c) => (held.get(c.id) ?? 0) < c.headSeq).length
 }
 
+/** The banner's facts, from the transport's status. `roomsPending` rides
+ *  only beside a real `total`: "0 ROOMS PENDING" before a page has landed
+ *  would be the same false claim a 0 / 0 is. */
+function showStatus(s: TransportStatus) {
+  const info = connectionInfo(s, {
+    now: Date.now(),
+    online: typeof navigator !== 'undefined' ? navigator.onLine : undefined,
+  })
+  if (info.state === 'resyncing' && info.total !== undefined) {
+    info.roomsPending = roomsPendingIn(state.conversations, state.messages)
+  }
+  state.connection = info
+  // A typing list is a fact about a live session; one that has ended says
+  // nothing about who is typing now.
+  if (!s.ready) state.typing = {}
+}
+
+/** RETRY NOW / RECONNECT: dial at once rather than at the end of the wait. */
 export function retryNow() {
-  setConnection('resyncing')
+  live?.transport.retryNow()
 }
 
 /* ── recording ─────────────────────────────────────────────────────────── */
@@ -681,38 +671,33 @@ let adapter: TransportOutbox | null = null
 let shipped: Transport | null = null
 
 /**
- * The app's CANT-35 transport, BUILT AND NEVER STARTED. The outbox is wired to
- * it through its own adapter (CANT-163), so every fact the outbox acts on
- * already comes from CANT-35's `subscribe` / `onSessionEnd` / `send` /
- * `onApply`. Wiring the SPA to a live server — an enrolled credential,
- * `start()`, the journal projected into `state`, the mock deleted — is
- * CANT-39's (CANT-35 ruling 8 → A), and it hands its transport to
- * `useTransport`. Until then no socket opens, `ready` never goes true, and
- * every entry renders honestly QUEUED. The credential refuses rather than
- * inventing an identity, so a stray `start()` fails its dial and claims
- * nothing.
+ * The transport the outbox is wired to BEFORE A DEVICE IS ENROLLED: built and
+ * never started. Until `startSession` hands `useTransport` a live one, no
+ * socket opens, `ready` never goes true, and every entry renders honestly
+ * QUEUED. The credential refuses rather than inventing an identity, so a
+ * stray `start()` fails its dial and claims nothing.
  */
 function shippedTransport(): Transport {
   shipped ??= createTransport({
     baseUrl: typeof location !== 'undefined' ? location.origin : 'http://localhost',
     credential: heldCredential(() => {
-      throw new Error('no enrolled device: the live transport is wired by CANT-39')
+      throw new Error('no enrolled device: startSession() has not run')
     }),
   })
   return shipped
 }
 
 /**
- * Build the outbox this app renders. Every seam is replaceable: `smoke.ts`
- * passes a MemoryOutboxStore and a ScriptedTransport, and `useTransport` an
- * adapter over a live CANT-35 transport.
+ * Build the outbox this app renders. Every seam is replaceable: the outbox's
+ * own tests pass a MemoryOutboxStore and a ScriptedTransport, and
+ * `useTransport` an adapter over a live CANT-35 transport.
  *
  * The defaults are the shipped app's: IndexedDB `catenary-outbox` where it
  * exists, the Web Lock and BroadcastChannel where they exist, and the adapter
- * over the app's CANT-35 transport, which is not started.
+ * over the unstarted transport above until `startSession` replaces it.
  */
 export async function configureOutbox(
-  seams: Partial<Omit<OutboxOptions, 'onChange' | 'accountId'>> & { seed?: boolean } = {},
+  seams: Partial<Omit<OutboxOptions, 'onChange' | 'accountId'>> = {},
 ): Promise<Outbox> {
   current?.close()
   current = null
@@ -737,15 +722,6 @@ export async function configureOutbox(
       durable = false
       store = new MemoryOutboxStore()
     }
-  }
-  // The canvas's failed send (fixtures), and ONLY into a store that dies with
-  // the page. A fixture put into `catenary-outbox` would outlive a DELETE —
-  // absent is exactly when it would be put back — and its fixed `order` would
-  // then collide with a real entry's under the unique index, refusing every
-  // load after it. A durable store holds what was authored, nothing else.
-  if ((seams.seed ?? true) && !(store instanceof IdbOutboxStore)) {
-    const held = new Set((await store.list()).map((e) => e.clientId))
-    for (const e of OUTBOX_SEED) if (!held.has(e.clientId)) await store.put(e)
   }
   const nav = typeof navigator !== 'undefined' ? navigator : undefined
   const outbox = await Outbox.open({
@@ -777,16 +753,157 @@ export function useOutbox(seams: Parameters<typeof configureOutbox>[0]): Promise
   return outboxReady
 }
 
-/** Rebuild the outbox over a CANT-35 transport — CANT-39's one call once it
- *  has built and started the live one. The transport stays the caller's to
- *  stop; a reconfigure detaches the adapter from it. */
-export function useTransport(transport: Transport): Promise<Outbox> {
-  const a = new TransportOutbox(transport, consoleLogger)
+/** Rebuild the outbox over a CANT-35 transport — `startSession`'s one call
+ *  once it has built and started the live one. The transport stays the
+ *  caller's to stop; a reconfigure detaches the adapter from it. */
+export function useTransport(transport: Transport, logger: Logger = consoleLogger): Promise<Outbox> {
+  const a = new TransportOutbox(transport, logger)
   const ready = useOutbox({ transport: a })
   // `configureOutbox` has run to its first await, so this is recorded after
   // it detached the previous adapter, and the next reconfigure detaches it.
   adapter = a
   return ready
+}
+
+/* ── the live session (CANT-39) ─────────────────────────────────────────── */
+
+export interface SessionSeams {
+  /** The server's origin, `http://` or `https://` — `location.origin` in the
+   *  app, where the Go binary (or Vite's dev proxy) serves both. */
+  baseUrl: string
+  /** Where the enrolled credential is held: `IdbCredentialStore` in a
+   *  browser (account.ts's `credentialStore()`), a memory store in the smoke. */
+  store: CredentialStore
+  /** Default: a fresh in-memory journal, the transport's own. */
+  journal?: Journal
+  lock?: Lock
+  fetch?: typeof globalThis.fetch
+  WebSocket?: WebSocketCtor
+  logger?: Logger
+}
+
+interface LiveSession {
+  transport: Transport
+  end(): void
+}
+
+let live: LiveSession | null = null
+/** Bumped by every start and end, so a start overtaken while it awaited the
+ *  credential store abandons itself rather than running beside its successor. */
+let sessionRun = 0
+
+/** The live transport, or null before a device is enrolled. */
+export const liveTransport = (): Transport | null => live?.transport ?? null
+
+/**
+ * Wire this app to a live server (CANT-35 ruling 8 → A): the enrolled
+ * credential, `start()`, the journal projected into `state`, and the outbox
+ * rebuilt over the same transport. Resolves true once the transport is
+ * started, false when this device holds no credential — the one case that
+ * starts no transport at all (CANT-152), and the caller's cue to show the
+ * login form.
+ *
+ * ENDS ANY SESSION ALREADY RUNNING FIRST, so the same call is also the
+ * restart a login or a re-enrollment needs: a credential terminal ends only
+ * on a relaunch or a re-enrollment (CANT-31 §6), and a terminal transport
+ * refuses `start()` — a new credential gets a new transport.
+ *
+ * THE PROJECTION IS CANT-35's, NOT A SECOND ONE: `project` over whatever the
+ * journal already holds (a durable journal holds the last visit), then
+ * `projectApplied` folded over every `Applied` after it — the equivalence
+ * CANT-151 tests is what makes the two a single view.
+ */
+export async function startSession(seams: SessionSeams): Promise<boolean> {
+  endSession()
+  const run = sessionRun
+  const held = await seams.store.read()
+  if (run !== sessionRun || !held) return false
+
+  // Another account's records are not this one's, whatever a reused journal
+  // says; a fresh start for the same account keeps what is on screen until
+  // the journal's own projection replaces it.
+  if (state.me !== held.userId) {
+    state.me = held.userId
+    state.users = {}
+    state.conversations = []
+    state.messages = []
+    state.activeId = ''
+    state.read.clear()
+  }
+  state.typing = {}
+
+  const logger = seams.logger ?? consoleLogger
+  const transport = createTransport({
+    baseUrl: seams.baseUrl,
+    credential: createRefreshingCredential({
+      baseUrl: seams.baseUrl,
+      store: seams.store,
+      logger,
+      ...(seams.lock ? { lock: seams.lock } : {}),
+      ...(seams.fetch ? { fetch: seams.fetch } : {}),
+    }),
+    logger,
+    ...(seams.journal ? { journal: seams.journal } : {}),
+    ...(seams.fetch ? { fetch: seams.fetch } : {}),
+    ...(seams.WebSocket ? { WebSocket: seams.WebSocket } : {}),
+  })
+
+  let projection: Projection = EMPTY_PROJECTION
+  const show = (next: Projection) => {
+    projection = next
+    showProjection(projection)
+    showStatus(transport.status())
+  }
+  show(projectJournal(transport.snapshot()))
+
+  // The countdown the banner reads ticks between status changes, so the
+  // status is re-read once a second while nothing else moves it.
+  const ticker = setInterval(() => showStatus(transport.status()), 1000)
+  const offs = [
+    transport.onApply((applied) => show(projectApplied(projection, applied))),
+    transport.subscribe(showStatus),
+    transport.onTyping((f) => {
+      state.typing[f.conversationId] = [...f.userIds]
+    }),
+  ]
+  live = {
+    transport,
+    end() {
+      clearInterval(ticker)
+      for (const off of offs) off()
+      transport.stop()
+    },
+  }
+  transport.start()
+  showStatus(transport.status())
+  await useTransport(transport, logger)
+  return true
+}
+
+/** Stop the live transport and stop listening to it. What it projected stays
+ *  on screen: ending a session is not forgetting what the server said. */
+export function endSession() {
+  sessionRun++
+  live?.end()
+  live = null
+}
+
+/**
+ * Put a projection on screen, and — the first time there is anything to open
+ * — open on the top of the rail, exactly as the old boot did with its fixed
+ * Kitchen Table: the conversation you open with is, by definition, one you
+ * are reading, so it carries no badge, and its "N NEW" rule stays put for the
+ * visit.
+ */
+function showProjection(p: Projection) {
+  state.messages = p.messages
+  state.conversations = p.conversations
+  state.users = p.users
+  if (!state.conversations.some((c) => c.id === state.activeId)) {
+    const first = rooms.value[0] ?? directs.value[0]
+    state.activeId = first?.id ?? ''
+    if (first) state.read.add(first.id)
+  }
 }
 
 export { isOutboxMessage, state }

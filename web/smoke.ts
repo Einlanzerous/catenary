@@ -1,26 +1,54 @@
+/* `npm run smoke` — the app, server-side rendered, asserting that the design
+ * canvas's landmarks are actually on screen.
+ *
+ * AGAINST A LIVE SERVER (CANT-39). The landmarks used to come from
+ * `web/src/mock/fixtures.ts`; that file is gone, and every record rendered
+ * below arrived the way a browser's would: a real `POST /enroll` through the
+ * login form's own `login()`, `startSession()` over the credential it stored,
+ * the transport's WebSocket and `/sync` catch-up, and CANT-35's projection of
+ * the journal into `state`. The server is `catenary`'s own composition root
+ * over a real Postgres, seeded with the canvas's corpus through the store —
+ * `cmd/catenary/websmoke_test.go`, which builds nothing by hand that the store
+ * has an API for, runs this bundle, and hands it the two facts below.
+ *
+ * So this file does not start without them: run `npm run smoke`, which starts
+ * that server, rather than this bundle on its own.
+ *
+ * THE LIVE HALF ENDS AT SECTION 6. From there on the sections build pages a
+ * server WOULD serve — a room with an offboarded member, a read fraction a
+ * rename cannot yet produce — on top of what this one did, and a live session
+ * re-projecting underneath them would erase what they add. So the session is
+ * ended first, and what it projected stays on screen.
+ */
+
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createSSRApp } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import StatusLabel from '@/components/StatusLabel.vue'
+import type { Conversation, User } from '@/wire/generated'
 import {
   closeAccount,
   closeSearch,
   conversationTitle,
+  endSession,
   lastMessageOf,
+  liveTransport,
   newCount,
   outboxMessages,
   outboxReady,
+  roomsPendingIn,
+  typingIn,
   typingLabel,
   openAccount,
   openSearch,
   searchHits,
   select,
   send,
+  startSession,
   state,
   unreadCount,
-  useOutbox,
 } from '@/store'
 import {
   accountState,
@@ -29,14 +57,14 @@ import {
   configureAccount,
   loadDevices,
   login,
+  onEnrolled,
   requestReenrollBeforeMount,
   revokeDevice,
 } from '@/account'
-import { OUTBOX_SEED } from '@/mock/fixtures'
-import { MemoryOutboxStore, ScriptedTransport } from '@/outbox'
 import { MemoryCredentialStore } from '@/transport/credential-store'
 import { connectionInfo, emptyStats, type TransportStatus } from '@/transport/status'
 import { NOT_TERMINAL } from '@/transport/terminal'
+import type { Logger } from '@/transport/seams'
 
 const fail: string[] = []
 const check = (name: string, ok: boolean, detail = '') => {
@@ -58,10 +86,90 @@ function messageRow(html: string, id: string): string {
 }
 const rowText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
 
+/** Waits for something the live server does, or fails the run naming it. A
+ *  hang is not a verdict: every wait here is bounded. */
+async function until(what: string, pred: () => boolean, ms = 20_000): Promise<void> {
+  const deadline = Date.now() + ms
+  while (!pred()) {
+    if (Date.now() > deadline) {
+      console.log(`FAIL  timed out waiting: ${what}`)
+      console.log(`\n${fail.length + 1} FAILED`)
+      process.exit(1)
+    }
+    await new Promise((r) => setTimeout(r, 25))
+  }
+}
+
+/** The transport's structured lines, kept out of the assertion log unless
+ *  something went wrong enough to warn about. */
+const quiet: Logger = {
+  info: () => {},
+  warn: (msg, fields) => console.warn(`transport: ${msg}`, fields ?? {}),
+}
+
 async function main() {
-  // The outbox loads asynchronously, like any IndexedDB read; the first
-  // render is of the loaded app, as it is in a browser.
-  await outboxReady
+  const baseUrl = process.env.CATENARY_SMOKE_BASE_URL
+  const enrollmentToken = process.env.CATENARY_SMOKE_ENROLLMENT_TOKEN
+  if (!baseUrl || !enrollmentToken) {
+    console.error(
+      'smoke: CATENARY_SMOKE_BASE_URL and CATENARY_SMOKE_ENROLLMENT_TOKEN are unset.\n' +
+        'The smoke renders against a live server: run `npm run smoke`, which seeds one and starts this bundle.',
+    )
+    process.exit(2)
+  }
+
+  // 0. Log in and connect, exactly as the app does: the login form's own
+  // `login()` against the real /enroll, and `onEnrolled` starting the session
+  // over the pair it stored — the seam main.ts wires.
+  const credentials = new MemoryCredentialStore()
+  configureAccount({ baseUrl, store: credentials })
+  const offEnrolled = onEnrolled(() => void startSession({ baseUrl, store: credentials, logger: quiet }))
+  check('the real /enroll accepts the seeded enrollment token', await login(enrollmentToken, 'Web smoke'),
+    accountState.error ?? '')
+  closeAccount()
+  await until('the live transport to be ready and caught up', () =>
+    liveTransport() !== null && state.connection.state === 'live' && state.conversations.length > 0)
+  check('the transport is live over a real WebSocket', liveTransport()!.status().ready)
+  check('state.me is the enrolled account', state.me === (await credentials.read())?.userId)
+
+  // Everything below is found by what a person sees — a room's name, a
+  // person's name — because the ids are whatever the server minted.
+  const person = (name: string): User => {
+    const u = Object.values(state.users).find((x) => x.name === name)
+    if (!u) throw new Error(`no user named ${name} was served`)
+    return u
+  }
+  const room = (name: string): Conversation => {
+    const c = state.conversations.find((x) => x.kind === 'group' && x.name === name)
+    if (!c) throw new Error(`no room named ${name} was served`)
+    return c
+  }
+  const directWith = (name: string): Conversation => {
+    const id = person(name).id
+    const c = state.conversations.find((x) => x.kind === 'direct' && x.otherMemberId === id)
+    if (!c) throw new Error(`no direct with ${name} was served`)
+    return c
+  }
+  const KITCHEN = room('Kitchen Table').id
+  const BERGEN = room('Bergen Hill Co-op').id
+  const NADIA = person('Nadia Okonkwo').id
+  const TED = person('Ted Almasy').id
+  const MAREK = person('Marek Dubois').id
+  const ROSA = person('Rosa Whitfield').id
+  const TED_DM = directWith('Ted Almasy').id
+
+  // A real peer: the server relays Nadia's `typing` from her own socket.
+  await until('Nadia\'s typing frame, relayed by the server', () => typingIn(KITCHEN).includes(NADIA))
+
+  // The canvas's failed send in Ted's DM, made the real way: a send the
+  // server refuses outright (`message_too_large` fails at once, CANT-36 §6).
+  // It is an outbox entry and never a record — the server stored nothing.
+  const refused = await (await outboxReady).compose({
+    conversationId: TED_DM,
+    text: 'the co-op minutes, pasted whole: ' + 'motion carried, seconded, noted. '.repeat(600),
+  })
+  await until('the server to refuse the oversized send and the outbox to fail it', () =>
+    outboxMessages.value.some((m) => m.id === refused.clientId && m.state === 'failed'))
 
   // 1. The default screen mounts and carries the design's landmarks.
   const main = await render()
@@ -89,26 +197,26 @@ async function main() {
     'typing sits below the last message and above the composer',
     iLastMessage > 0 && iLastMessage < iTyping && iTyping < iComposer,
   )
-  const kitchen = state.conversations.find((c) => c.id === 'c-kitchen')!
+  const kitchen = state.conversations.find((c) => c.id === KITCHEN)!
   const expectedNew = newCount(kitchen)
   check('unread rule drawn', main.includes(`${expectedNew} NEW`), `${expectedNew} NEW`)
   // You cannot have an unread message you sent.
   const mineAfterRule = state.messages.filter(
     (m) =>
-      m.conversationId === 'c-kitchen' &&
+      m.conversationId === KITCHEN &&
       m.seq >= kitchen.firstUnreadSeq! &&
       m.authorId === state.me,
   ).length
   check('own messages excluded from the count', mineAfterRule > 0 && expectedNew ===
     state.messages.filter(
-      (m) => m.conversationId === 'c-kitchen' && m.seq >= kitchen.firstUnreadSeq!,
+      (m) => m.conversationId === KITCHEN && m.seq >= kitchen.firstUnreadSeq!,
     ).length - mineAfterRule, `${mineAfterRule} of mine skipped`)
   // Deliberate call 03: status as words, not tick glyphs. The two words this
   // render can show are SENT and READ — StatusLabel is guarded `v-if="mine"`
   // and CANT-90 made your own message a two-rung ladder, so `delivered` is
   // only ever the answer for somebody else's message. This asserts the two
   // that appear and that the third does not; the LIVE ladder is checked in
-  // section 5, because this render is static and a timer cannot reach it.
+  // section 5, over a send this run makes.
   check('status words, not glyphs', main.includes('SENT') && main.includes('READ'))
   check('and DELIVERED is not one of them', !main.includes('DELIVERED'))
   check('read fraction in a room', main.includes('READ 7/7'))
@@ -127,18 +235,20 @@ async function main() {
     `${(main.match(/height:\s*\d+%/g) ?? []).length} bars`,
   )
 
-  // 1b. The three typing cases are a rule, not a string.
+  // 1b. The three typing cases are a rule, not a string. The list is set by
+  // hand here — one live peer cannot be four — and the next live frame would
+  // replace it, which is why each case reads it back at once.
   const typing = (ids: string[]) => {
-    state.typing['c-kitchen'] = ids
-    return typingLabel('c-kitchen')
+    state.typing[KITCHEN] = ids
+    return typingLabel(KITCHEN)
   }
-  check('typing · one is a first name', typing(['u-nadia']) === 'Nadia')
+  check('typing · one is a first name', typing([NADIA]) === 'Nadia')
   check('typing · two, in the order they started',
-    typing(['u-nadia', 'u-ted']) === 'Nadia, Ted')
+    typing([NADIA, TED]) === 'Nadia, Ted')
   check('typing · three still name everyone',
-    typing(['u-nadia', 'u-ted', 'u-marek']) === 'Nadia, Ted, Marek')
+    typing([NADIA, TED, MAREK]) === 'Nadia, Ted, Marek')
   check('typing · four or more drop names',
-    typing(['u-nadia', 'u-ted', 'u-marek', 'u-rosa']) === 'Several people')
+    typing([NADIA, TED, MAREK, ROSA]) === 'Several people')
   check('typing · nobody renders nothing', typing([]) === null)
 
   // 2. Rail previews derive from the last message, per conversation kind.
@@ -146,13 +256,12 @@ async function main() {
   check('own preview says You', main.includes('You: sent it to your inbox instead'))
   // THE FAILED ROW IS AN OUTBOX ENTRY (CANT-161). A send the server never
   // stored cannot be a record in the log — it would need a seq of its own —
-  // so the canvas's failed voice note in Ted's DM is seeded into the outbox
-  // store, and the rail's FAILED marker is fed by the outbox tail merge.
-  const tedRow = elementWithId(main, 'c-ted')
-  check('failed conversation marked', tedRow.includes('FAILED'), tedRow.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+  // and this one is the refusal section 0 provoked from the live server.
+  const tedRow = elementWithId(main, TED_DM)
+  check('failed conversation marked', tedRow.includes('FAILED'), tedRow.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120))
   check('and FAILED as a fault, not a label', /class="(fault marker|marker fault)"/.test(tedRow))
   check('the failed row comes from the outbox store',
-    lastMessageOf('c-ted')?.id === OUTBOX_SEED[0].clientId)
+    lastMessageOf(TED_DM)?.id === refused.clientId)
   check('no record in the log is failed — only an outbox entry can be',
     !state.messages.some((m) => m.state === 'failed'))
   check('muted conversation marked', main.includes('MUTED'))
@@ -170,48 +279,49 @@ async function main() {
   check('JUMP TO present', search.includes('JUMP TO'))
 
   // 4. Selecting a conversation clears its badge but keeps its unread rule.
-  const bergen = state.conversations.find((c) => c.id === 'c-bergen')!
+  const bergen = state.conversations.find((c) => c.id === BERGEN)!
   check('unread before opening', unreadCount(bergen) > 0, `${unreadCount(bergen)}`)
-  select('c-bergen')
+  select(BERGEN)
   check('reading clears the badge', unreadCount(bergen) === 0)
   check('but keeps the rule', newCount(bergen) > 0, `${newCount(bergen)} NEW`)
 
   // 5. A send reaches SENT on an ack, and never DELIVERED — on the RENDERED row.
   //
-  // CANT-90'S GUARD, KEPT ON THE PATH A PERSON SEES. This used to wait 2.2 s
-  // for a timer to walk a local message up a ladder, and checked the state
-  // field; there is no timer now (CANT-161 deleted `advance()`), and nothing
-  // moves a send to `sent` except an ack. So the send goes out over a
-  // scripted transport that acks it, and the assertion reads the row rendered
-  // for that clientId.
-  //
-  // First the shipped wiring: the outbox's adapter over CANT-35's transport,
-  // which nothing starts until CANT-39 wires the live server — never ready, so
-  // a send is kept and renders QUEUED, never SENT by an ack nobody sent.
-  select('c-kitchen')
+  // CANT-90'S GUARD, KEPT ON THE PATH A PERSON SEES, and now over the live
+  // server's own ack. Nothing moves a send to `sent` except an ack (CANT-161
+  // deleted the timer that used to), so the transport is stopped first: the
+  // send is kept and renders QUEUED, and only once `start()` has brought the
+  // session back does the server's ack walk it to SENT.
+  select(KITCHEN)
+  const transport = liveTransport()!
+  transport.stop()
+  await until('the stopped transport to stop being ready', () => !transport.status().ready)
   state.composer.draft = 'kept, not sent'
   const keptId = await send()
   const keptRow = messageRow(await render(), keptId!)
-  check('the shipped app renders a send QUEUED', keptRow.includes('QUEUED'), rowText(keptRow))
+  check('with no session, a send renders QUEUED', keptRow.includes('QUEUED'), rowText(keptRow))
   check('and never SENT without an ack', !keptRow.includes('SENT'), rowText(keptRow))
   check('a send is never put in the log', !state.messages.some((m) => m.clientId === keptId))
 
-  const transport = new ScriptedTransport()
-  transport.autoAck = true
-  await useOutbox({ store: new MemoryOutboxStore(), transport, storage: null })
-  transport.open()
-  state.composer.draft = 'does this walk past sent'
-  const sentId = await send()
-  await new Promise((r) => setTimeout(r, 0))
-  check('one frame, under the clientId the entry was minted with',
-    transport.frames.length === 1 && transport.frames[0].clientId === sentId,
-    `${transport.frames.length} frame(s)`)
+  transport.start()
+  await until('the kept send to be acked by the live server once the session is back', () =>
+    outboxMessages.value.some((m) => m.id === keptId && m.state === 'sent') ||
+      state.messages.some((m) => m.clientId === keptId))
   const sentPage = await render()
-  const sentRow = messageRow(sentPage, sentId!)
+  const record = state.messages.find((m) => m.clientId === keptId)
+  const sentRow = messageRow(sentPage, record?.id ?? keptId!)
   check('send authors it as mine', sentRow.includes('You'), rowText(sentRow))
   check('my own message renders SENT on the ack', sentRow.includes('SENT'), rowText(sentRow))
   check('and the rendered row never invents DELIVERED', !sentRow.includes('DELIVERED'), rowText(sentRow))
   check('nor does the page', !sentPage.includes('DELIVERED'))
+  await until('the server\'s own record of the send to reach the journal', () =>
+    state.messages.some((m) => m.clientId === keptId))
+  check('the server stored it under the clientId the entry was minted with',
+    state.messages.filter((m) => m.clientId === keptId).length === 1)
+
+  // The live half ends here; see the header. What it projected stays.
+  endSession()
+  offEnrolled()
 
   // 6. CANT-137 — a deactivated member is not one the header claims.
   //
@@ -269,9 +379,10 @@ async function main() {
   // 7. CANT-138 — a deactivated person's old message, and the DM whose other
   //    half is deactivated, are marked; an active person's is not.
   //
-  // u-petra is deactivated but her membership rows stay (CANT-33 ruling 7):
-  // she keeps authorship of her old message in Bergen Hill Co-op, and
-  // c-petra's only message is hers. Both must carry the quiet textual
+  // Petra is deactivated but her membership rows stay (CANT-33 ruling 7):
+  // she keeps authorship of her old message in Bergen Hill Co-op, and her
+  // direct's only message is hers — the server deactivated her after both
+  // were sent, through the store's own DeactivateUser. Both must carry the quiet textual
   // marker this ticket adds, and MAIN — captured at the top against Kitchen
   // Table, where nobody is deactivated — proves an active author gets none.
   check(
@@ -279,14 +390,14 @@ async function main() {
     !main.includes('DEACTIVATED'),
   )
 
-  select('c-bergen')
+  select(BERGEN)
   const bergenPage = await render()
   check(
     'a deactivated author is dimmed in a group room',
     bergenPage.includes('Petra Lindqvist') && bergenPage.includes('DEACTIVATED'),
   )
 
-  select('c-petra')
+  select(directWith('Petra Lindqvist').id)
   const petraDm = await render()
   check(
     'the DM header marks a deactivated other half',
@@ -294,7 +405,7 @@ async function main() {
   )
 
   // An active DM's header carries no mark — same component, other member.
-  select('c-ilse')
+  select(directWith('Ilse Marchetti').id)
   const ilseDm = await render()
   check('an active DM header carries no mark', !ilseDm.includes('DEACTIVATED'))
 
@@ -379,9 +490,15 @@ async function main() {
 
   // 9. CANT-141 — otherMemberId, not the two guesses it replaces.
   //
-  // c-oskar's Conversation.name reads 'Ted Almasy' — an existing ACTIVE
-  // person's name — and c-wren's reads 'Petra Lindqvist' — an existing
-  // DEACTIVATED person's. Both directs hold only state.me's own messages, so
+  // Oskar's direct is held with a Conversation.name reading 'Ted Almasy' — an
+  // existing ACTIVE person's name — and Wren's with 'Petra Lindqvist' — an
+  // existing DEACTIVATED person's. That is the record a client holds after a
+  // rename: the wire says a held Conversation is NOT re-emitted when the other
+  // member's name changes, while their User record is. This server has no
+  // rename yet (nothing may UPDATE display_name outside metadata.go, and
+  // metadata.go has no rename), so the stale half is stamped on the held
+  // record below, after the live session has ended — the one thing in this
+  // section a server did not send. Both directs hold only state.me's own messages, so
   // the deleted author-scan guess never had a candidate on either, and the
   // deleted name-match guess would have found the WRONG person on both: an
   // active Ted for a conversation whose real other half (Oskar) is
@@ -440,8 +557,14 @@ async function main() {
   // The derivation itself, independent of any rendering: conversationTitle
   // resolves each DM's REAL other member, not the string its own `name`
   // field happens to carry.
-  const cOskar = state.conversations.find((c) => c.id === 'c-oskar')!
-  const cWren = state.conversations.find((c) => c.id === 'c-wren')!
+  const cOskar = directWith('Oskar Lindgren')
+  const cWren = directWith('Wren Castellano')
+  check('the server serves a direct\'s name fresh, so a stale one is a held record\'s',
+    cOskar.name === 'Oskar Lindgren' && cWren.name === 'Wren Castellano', `${cOskar.name}, ${cWren.name}`)
+  cOskar.name = 'Ted Almasy'
+  cWren.name = 'Petra Lindqvist'
+  const OSKAR_DM = cOskar.id
+  const WREN_DM = cWren.id
   check('conversationTitle(c-oskar) is Oskar\'s own name', conversationTitle(cOskar) === 'Oskar Lindgren',
     conversationTitle(cOskar))
   check('conversationTitle(c-wren) is Wren\'s own name', conversationTitle(cWren) === 'Wren Castellano',
@@ -450,7 +573,7 @@ async function main() {
   // Site 1 (header) + site 2 (composer placeholder): only one thread is ever
   // active per render, so no id-scoping is needed — there is nothing else on
   // the page these strings could belong to.
-  select('c-oskar')
+  select(OSKAR_DM)
   const oskarPage = await render()
   const oskarTitle = tagText(oskarPage, '<h1 class="title"', '</h1>')
   check('oskar\'s DM is titled by his own live name, not the DM\'s stale name',
@@ -460,17 +583,17 @@ async function main() {
     oskarPage.includes('Message Oskar Lindgren') && !oskarPage.includes('Message Ted Almasy'))
   // Site 3 (rail row), bounded to c-oskar's own row: c-ted's real row, live
   // elsewhere on this same page, is not what this assertion is about.
-  const oskarRow = elementWithId(oskarPage, 'c-oskar')
+  const oskarRow = elementWithId(oskarPage, OSKAR_DM)
   check('oskar\'s rail row is titled by his own live name', oskarRow.includes('Oskar Lindgren'), oskarRow)
   check('and not by the DM\'s stale name', !oskarRow.includes('Ted Almasy'), oskarRow)
 
-  select('c-wren')
+  select(WREN_DM)
   const wrenPage = await render()
   const wrenTitle = tagText(wrenPage, '<h1 class="title"', '</h1>')
   check('wren\'s DM is titled by her own live name, not the DM\'s stale name',
     wrenTitle === 'Wren Castellano', wrenTitle)
   check('wren is active, so her DM header carries no mark', !wrenPage.includes('DEACTIVATED'))
-  const wrenRow = elementWithId(wrenPage, 'c-wren')
+  const wrenRow = elementWithId(wrenPage, WREN_DM)
   check('wren\'s rail row is titled by her own live name', wrenRow.includes('Wren Castellano'), wrenRow)
   check('and not by the DM\'s stale name', !wrenRow.includes('Petra Lindqvist'), wrenRow)
 
@@ -479,7 +602,7 @@ async function main() {
   state.query = 'spelunking'
   openSearch()
   const oskarSearch = await render()
-  const oskarHit = elementWithId(searchResultsOnly(oskarSearch), 'c-oskar')
+  const oskarHit = elementWithId(searchResultsOnly(oskarSearch), OSKAR_DM)
   check('a text hit in oskar\'s DM is found', oskarHit !== '')
   check('and its room label is oskar\'s live name', oskarHit.includes('Oskar Lindgren'), oskarHit)
   check('never the DM\'s stale name', !oskarHit.includes('Ted Almasy'), oskarHit)
@@ -490,14 +613,14 @@ async function main() {
   // — which conversation.name ('Ted Almasy') never would have.
   state.query = 'oskar'
   const oskarNameSearch = await render()
-  const oskarNameHit = elementWithId(searchResultsOnly(oskarNameSearch), 'c-oskar')
+  const oskarNameHit = elementWithId(searchResultsOnly(oskarNameSearch), OSKAR_DM)
   check('searching oskar\'s own name finds his pending voice note',
     oskarNameHit.includes('NOT SEARCHABLE YET'), oskarNameHit)
   check('by title, not by the stale conversation.name', !oskarNameHit.includes('Ted Almasy'), oskarNameHit)
 
   state.query = 'wren'
   const wrenNameSearch = await render()
-  const wrenNameHit = elementWithId(searchResultsOnly(wrenNameSearch), 'c-wren')
+  const wrenNameHit = elementWithId(searchResultsOnly(wrenNameSearch), WREN_DM)
   check('searching wren\'s own name finds her pending voice note',
     wrenNameHit.includes('NOT SEARCHABLE YET'), wrenNameHit)
   check('by title, not by the stale conversation.name', !wrenNameHit.includes('Petra Lindqvist'), wrenNameHit)
@@ -509,9 +632,9 @@ async function main() {
   // so a message composed in one drains nowhere. Every non-live state used to
   // read as "will queue" (Composer's `offline`, store's `queued`), which the
   // moment `terminal` exists is the claim Invariant 3 forbids. The state is set
-  // directly rather than through setConnection, whose mock timers are for the
-  // three states that move on their own.
-  select('c-kitchen')
+  // directly: the live session has ended, so nothing overwrites it, and a
+  // real terminal is the transport's own tests' to provoke (CANT-151).
+  select(KITCHEN)
   const queueClaims = (html: string) =>
     ['messages will queue', 'will send when reconnected'].filter((p) => html.includes(p))
       .concat(/>\s*QUEUE\s*</.test(html) ? ['a QUEUE button'] : [])
@@ -549,8 +672,9 @@ async function main() {
 
   // 11. CANT-37 — resync shows real numeric progress toward `head_seq`, never
   // a spinner, and never a 0 / 0 claim. Driven here by fake `TransportStatus`
-  // values through the real `connectionInfo` adapter, not a live transport —
-  // CANT-39 wires that into this store.
+  // values through the real `connectionInfo` adapter — the one `startSession`
+  // feeds the live transport's status through — because a live resync is over
+  // before a render could catch it.
   {
     const now = 1_000_000
     const fixture = (extra: Partial<TransportStatus>): TransportStatus => ({
@@ -591,6 +715,30 @@ async function main() {
     check('once it reaches head_seq the resync banner is gone', !caughtUpPage.includes('catching up'))
     check('and the state reads live', state.connection.state === 'live')
 
+    // CANT-169: a journal write that did not land is said, beside the
+    // session's own state and never instead of it, until a write lands.
+    state.connection = connectionInfo(fixture({
+      caughtUp: true, journalError: { name: 'QuotaExceededError', message: 'the quota was exceeded' },
+    }), { now })
+    const quotaPage = await render()
+    check('a journal write that failed is on the page, by name',
+      quotaPage.includes('could not save messages') && quotaPage.includes('QuotaExceededError'))
+    check('and the session state beside it is still its own', state.connection.state === 'live')
+    state.connection = connectionInfo(fixture({ caughtUp: true }), { now })
+    check('and the line is gone once a write lands', !(await render()).includes('could not save messages'))
+
+    // ROOMS PENDING is derived from the records held (CANT-37's loose end,
+    // closed by CANT-39): a room is pending while it holds fewer messages
+    // than its head_seq says exist. Over what the live server served, every
+    // room is whole; a room whose head has moved past what is held is not.
+    const served = state.conversations.filter((c) => !c.id.startsWith('c-'))
+    const heldServed = state.messages.filter((m) => served.some((c) => c.id === m.conversationId))
+    check('every room the server served is whole, so none is pending',
+      roomsPendingIn(served, heldServed) === 0, `${roomsPendingIn(served, heldServed)} of ${served.length}`)
+    const behind = served.map((c) => (c.id === KITCHEN ? { ...c, headSeq: c.headSeq + 40 } : c))
+    check('a room whose head_seq is past what is held counts as pending',
+      roomsPendingIn(behind, heldServed) === 1)
+
     state.connection.synced = 0
     state.connection.total = 0
     state.connection.roomsPending = 0
@@ -613,7 +761,8 @@ async function main() {
   // the same idiom every other section above already uses (select(), send(),
   // typingLabel()). The credential layer is CANT-152's; this only exercises
   // what CANT-38 adds on top of it, over a scripted fetch rather than a
-  // server. Per CANT-35 ruling 8→A, none of this starts the live transport.
+  // server. Section 0's `onEnrolled` listener is gone by now, so none of
+  // these logins starts a transport against a server that is not there.
   {
     const GOOD_TOKEN = 'a-real-enrollment-token'
     // Wire Uuids, not slugs — the generated decoder enforces the schema's

@@ -88,6 +88,9 @@ export interface ConnectionInfo {
   refreshHold?: 'none' | 'unreachable' | 'backoff'
   /** CANT-129: Catenary refused the access token held now. */
   tokenRefused?: boolean
+  /** CANT-169: the journal's last write did not land (a quota refused, a
+   *  transaction aborted) — by the error's name — until one does. */
+  journalError?: { name: string; message: string }
   /** reconnecting: which attempt, and how long until the next one. */
   attempt?: number
   retryInSec?: number

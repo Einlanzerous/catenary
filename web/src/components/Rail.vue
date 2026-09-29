@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { directs, openAccount, openSearch, rooms, state, totalUnread, user } from '@/store'
 import Avatar from './Avatar.vue'
 import ConversationRow from './ConversationRow.vue'
@@ -9,7 +10,8 @@ import Logomark from './Logomark.vue'
  * column with the same row anatomy — no separate server rail, because with
  * thirty people there is nothing to navigate between.
  */
-const me = user(state.me)
+/** Computed: `state.me` is '' until a credential has been read. */
+const me = computed(() => user(state.me))
 </script>
 
 <template>
