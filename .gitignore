@@ -7,6 +7,7 @@ dist-validate/
 dist-readstate/
 dist-transport-test/
 dist-transport-driver/
+dist-outbox/
 server/bin/
 dart/.dart_tool/
 

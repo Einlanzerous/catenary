@@ -8,13 +8,39 @@
  * idempotency key, and nothing is ever mutated in place except a message's
  * own delivery state. Swapping the mock transport for a WebSocket should not
  * require reshaping any of this.
+ *
+ * WHAT YOU HAVE WRITTEN AND THE SERVER HAS NOT YET STORED IS NOT IN HERE.
+ * `state.messages` holds server records only; an unacked send lives in the
+ * outbox (`@/outbox`, CANT-36), in its own IndexedDB database, and is rendered
+ * as a tail after the log rather than placed in it — it has no `seq` of its
+ * own to be placed by. Nothing here moves a send to `sent` except an ack.
  */
 
-import { computed, reactive } from 'vue'
-import type { Conversation, User, VoiceAttachment } from '@/wire/generated'
-import type { ConnectionInfo, ConnectionState, Message } from '@/client-types'
-import { CONVERSATIONS, ME, MESSAGES, USERS } from '@/mock/fixtures'
+import { computed, reactive, shallowRef } from 'vue'
+import type { Conversation, ReplyRef, User, VoiceAttachment } from '@/wire/generated'
+import {
+  isOutboxMessage,
+  type ConnectionInfo,
+  type ConnectionState,
+  type Message,
+  type OutboxMessage,
+  type RenderedMessage,
+} from '@/client-types'
+import { CONVERSATIONS, ME, MESSAGES, OUTBOX_SEED, USERS } from '@/mock/fixtures'
 import { countWords } from '@/lib/format'
+import {
+  BroadcastOutboxChannel,
+  IdbOutboxStore,
+  InProcessLockHub,
+  MemoryOutboxStore,
+  NullTransport,
+  Outbox,
+  WebLockDrainLock,
+  project,
+  type OutboxOptions,
+  type OutboxStore,
+  type OutboxView,
+} from '@/outbox'
 
 export type View = 'thread' | 'search'
 export type Theme = 'dark' | 'light'
@@ -83,8 +109,6 @@ const state = reactive({
   query: '',
   /** The message a search result or reply stub jumped to; drives the wash. */
   arrivedAt: null as string | null,
-
-  nextSeq: 2000,
 })
 
 /* ── derived ───────────────────────────────────────────────────────────── */
@@ -100,9 +124,61 @@ export const activeConversation = computed(
 
 export const activeMessages = computed(() => messagesFor(state.activeId))
 
-export const lastMessageOf = (conversationId: string): Message | undefined => {
+/* ── the outbox, as rendered ───────────────────────────────────────────── */
+
+/** The outbox's last emitted view. Replaced wholesale on every change. */
+const outboxView = shallowRef<OutboxView>({ items: [], persist: 'unknown' })
+
+/** Every entry of the enrolled account, projected, in `order`. */
+export const outboxMessages = computed<OutboxMessage[]>(() => outboxView.value.items.map(project))
+
+/** Acked entries sit in the log at the SERVER's seq, in the ack's
+ *  conversation, until their record replaces them. */
+const ackedFor = (conversationId: string) =>
+  outboxMessages.value.filter((m) => m.seq !== undefined && m.conversationId === conversationId)
+
+/** The tail: unacked entries, after the log, in `order`. */
+const tailFor = (conversationId: string) =>
+  outboxMessages.value.filter((m) => m.seq === undefined && m.conversationId === conversationId)
+
+/** The thread's log — server records plus acked entries, by seq. The unread
+ *  rules never read this; they read `messagesFor`. */
+export const activeLog = computed<RenderedMessage[]>(() =>
+  [...activeMessages.value, ...ackedFor(state.activeId)].sort((a, b) => a.seq! - b.seq!),
+)
+
+export const activeTail = computed(() => tailFor(state.activeId))
+
+/**
+ * §9 of the decision record: while the browser has not granted persistence
+ * and this thread holds an unsent entry, its tail says so — one standing
+ * line, never a toast. A QUEUED row implies the message will go out, and the
+ * client must not imply more durability than the browser has granted.
+ */
+export const persistNotice = computed(() =>
+  outboxView.value.persist === 'refused' &&
+  outboxMessages.value.some(
+    (m) => m.conversationId === state.activeId && (m.state === 'queued' || m.state === 'sending' || m.state === 'failed'),
+  )
+    ? 'Unsent messages are kept in this browser, which may clear them if storage runs low.'
+    : null,
+)
+
+/**
+ * The rail's last item: the newer of the conversation's last server record
+ * and its newest unsettled outbox entry, so a send moves the preview, the
+ * marker and the room's position the moment it is composed — offline
+ * included. An unacked entry is dated by `composedAt`, the device clock, for
+ * this local ordering only; an acked one by `ack.at`.
+ */
+export const lastMessageOf = (conversationId: string): RenderedMessage | undefined => {
   const list = messagesFor(conversationId)
-  return list[list.length - 1]
+  const record: RenderedMessage | undefined = list[list.length - 1]
+  const entries = outboxMessages.value.filter((m) => m.conversationId === conversationId)
+  const entry = entries[entries.length - 1]
+  if (!entry) return record
+  if (!record) return entry
+  return entry.at >= record.at ? entry : record
 }
 
 /** Rooms above DMs, both in one column with the same row anatomy. */
@@ -176,11 +252,11 @@ export const totalUnread = computed(() =>
 
 export const user = (id: string) => state.users[id]
 
-export const isMine = (m: Message) => m.authorId === state.me
+export const isMine = (m: RenderedMessage) => m.authorId === state.me
 
 export const messageById = (id: string) => state.messages.find((m) => m.id === id)
 
-export const voiceOf = (m: Message | undefined): VoiceAttachment | undefined =>
+export const voiceOf = (m: RenderedMessage | undefined): VoiceAttachment | undefined =>
   m?.attachments?.find((a): a is VoiceAttachment => a.kind === 'voice')
 
 /** Transcript word count, derived rather than stored — "EXPAND · 96 W" has to
@@ -256,86 +332,67 @@ export function cycleTyping() {
 
 /** CANT-31 §6: a terminal client drains nothing, so nothing is created as
  *  `queued` while it is one (Invariant 3; CANT-35 criterion 30). The draft
- *  stays in the box, which is the honest place for it. */
+ *  stays in the box, which is the honest place for it. What the outbox
+ *  already holds stays there too — a terminal state never deletes it. */
 const cannotSend = () => state.connection.state === 'terminal'
 
-export function send() {
+/**
+ * Compose into the outbox. Resolves with the entry's clientId.
+ *
+ * THE DRAFT IS TAKEN BEFORE THE FIRST AWAIT. The entry renders only once its
+ * strict write has committed, and a second `send()` inside that window — a
+ * second Enter, a key-repeat, Enter plus SEND — must find nothing to send,
+ * or the same text is authored twice under two clientIds, which no server
+ * dedup can merge. If the write is refused, the text and the armed reply go
+ * back where they were, unless something new has been typed since.
+ */
+export async function send(): Promise<string | undefined> {
   const text = state.composer.draft.trim()
-  if (!text || cannotSend()) return
-
-  const offline = state.connection.state !== 'live'
-  const source = state.composer.replyToId
-    ? messageById(state.composer.replyToId)
-    : undefined
-
-  const message: Message = {
-    id: `m-local-${state.nextSeq}`,
-    // Required and unread by anything here — CANT-36/CANT-48 decide what a
-    // locally-composed message's logSeq means before the real server assigns
-    // one. Deliberately NOT the same counter as seq: log_seq is server-global
-    // and sparse where seq is per-conversation and dense (invariant 1), and a
-    // shared counter here would read as that relationship rather than as the
-    // placeholder it is.
-    logSeq: state.nextSeq + 1_000_000,
-    seq: state.nextSeq++,
-    conversationId: state.activeId,
-    authorId: state.me,
-    at: new Date().toISOString(),
-    text,
-    state: offline ? 'queued' : 'sending',
-    clientId: cryptoKey(),
-    ...(source
-      ? {
-          replyTo: {
-            messageId: source.id,
-            authorId: source.authorId,
-            ...previewOf(source),
-          },
-        }
-      : {}),
-  }
-
-  state.messages.push(message)
+  if (!text || cannotSend()) return undefined
+  const draft = state.composer.draft
+  const replyToId = state.composer.replyToId
+  const conversationId = state.activeId
   state.composer.draft = ''
   state.composer.replyToId = null
 
-  if (!offline) advance(message)
+  const source = replyToId ? messageById(replyToId) : undefined
+  const replyPreview: ReplyRef | undefined = source
+    ? { messageId: source.id, authorId: source.authorId, ...previewOf(source) }
+    : undefined
+
+  try {
+    const outbox = await outboxReady
+    const entry = await outbox.compose({
+      conversationId,
+      text,
+      ...(source ? { replyToMessageId: source.id, replyPreview } : {}),
+    })
+    return entry.clientId
+  } catch (e) {
+    if (!state.composer.draft) {
+      state.composer.draft = draft
+      state.composer.replyToId = replyToId
+    }
+    throw e
+  }
 }
 
-/** Walks the mock message up the ladder. A real client advances on server acks.
- *
- * IT STOPS AT `sent`, AND THAT IS THE WHOLE LADDER FOR A MESSAGE YOU WROTE.
- * `advance` is only ever called on your own message — `send` authors it as
- * `state.me`, and `retry` re-runs it — and CANT-90 settled that your own
- * message is `sent` until another member's receipt passes it and `read` after,
- * never `delivered`. D1 declined delivery receipts, so no response can carry
- * that rung and a client inventing it is exactly the claim Invariant 3
- * forbids. The wire schema is explicit about which states a client may author
- * on its own: `sending`, `queued` and `failed`. `delivered` is not among them.
- *
- * This used to walk `sent` → `delivered` after 1800ms, so two seconds after
- * hitting send your own message rendered DELIVERED. It was the moving version
- * of the still picture CANT-90 removed from `mock/fixtures.ts`.
- *
- * What replaces the missing rung is a receipt from somebody else, which is the
- * server's to send: CANT-66 renders it and CANT-89 decides what delivers it. */
-function advance(message: Message) {
-  setTimeout(() => {
-    if (message.state === 'sending') message.state = 'sent'
-  }, 600)
+/* NOTHING LOCALLY MOVES A SEND TO `sent` EXCEPT AN ACK, and nothing ever moves
+ * your own message to `delivered`. CANT-90 settled that your own message is
+ * `sent` until another member's receipt passes it and `read` after: D1
+ * declined delivery receipts, so no response can carry that rung, and a
+ * client inventing it is exactly the claim Invariant 3 forbids. The timer
+ * that used to walk a send up the ladder is gone with the ladder. */
+
+/** RETRY on a failed entry: back to pending, same clientId. */
+export async function retry(clientId: string) {
+  if (cannotSend()) return
+  await (await outboxReady).retry(clientId)
 }
 
-export function retry(messageId: string) {
-  const m = messageById(messageId)
-  if (!m || cannotSend()) return
-  m.error = undefined
-  m.state = 'sending'
-  advance(m)
-}
-
-export function discard(messageId: string) {
-  const i = state.messages.findIndex((m) => m.id === messageId)
-  if (i >= 0) state.messages.splice(i, 1)
+/** DELETE on a failed entry — the local copy only. */
+export async function discard(clientId: string) {
+  await (await outboxReady).discard(clientId)
 }
 
 function previewOf(m: Message): {
@@ -361,10 +418,6 @@ function previewOf(m: Message): {
   return { kind: 'text', preview: m.text ?? '' }
 }
 
-function cryptoKey(): string {
-  return crypto.randomUUID()
-}
-
 /* ── connection ────────────────────────────────────────────────────────── */
 
 let ticker: ReturnType<typeof setInterval> | null = null
@@ -377,15 +430,11 @@ export function setConnection(next: ConnectionState) {
   c.state = next
 
   if (next === 'live') {
+    // What the outbox holds goes out on the TRANSPORT's ready, not on this
+    // banner's: until CANT-163 wires one, the NullTransport never is, and
+    // every entry stays honestly QUEUED whatever the dev toolbar says.
     c.attempt = 0
     c.retryInSec = 0
-    // Anything the outbox held goes out.
-    for (const m of state.messages) {
-      if (m.state === 'queued') {
-        m.state = 'sending'
-        advance(m)
-      }
-    }
     return
   }
 
@@ -430,33 +479,23 @@ export function startRecording() {
   recordTicker = setInterval(() => state.composer.recordingSec++, 1000)
 }
 
-export function stopRecording(sendIt: boolean) {
+export async function stopRecording(sendIt: boolean) {
   if (recordTicker) clearInterval(recordTicker)
   recordTicker = null
   state.composer.recording = false
   if (!sendIt || cannotSend()) return
-  // A real client uploads the Opus blob and the server schedules transcription;
-  // here it lands as a pending-transcript voice note.
-  state.messages.push({
-    id: `m-local-${state.nextSeq}`,
-    // See send()'s own comment: a placeholder, deliberately not sharing seq's
-    // counter.
-    logSeq: state.nextSeq + 1_000_000,
-    seq: state.nextSeq++,
+  // There is no recorder yet, so the clip is empty; the entry is real. It is
+  // held rather than sent until an upload handle exists — the upload queue is
+  // CANT-162's, gated on CANT-48.
+  const outbox = await outboxReady
+  await outbox.compose({
     conversationId: state.activeId,
-    authorId: state.me,
-    at: new Date().toISOString(),
-    state: state.connection.state === 'live' ? 'sending' : 'queued',
     attachments: [
       {
         kind: 'voice',
-        // No real media URL until the upload completes — CANT-36/CANT-48
-        // decide what a not-yet-uploaded voice note's local URL actually is
-        // (most likely a Blob object URL). Empty is the honest placeholder.
-        url: '',
+        blob: new Blob([], { type: 'audio/ogg' }),
         durationMs: (state.composer.recordingSec || 1) * 1000,
-        peaks: [],
-        transcript: { state: 'pending', etaSec: 20 },
+        upload: 'pending',
       },
     ],
   })
@@ -623,4 +662,77 @@ export function jumpTo(messageId: string, seekMs?: number) {
   }, 4000)
 }
 
-export { state }
+/* ── the outbox's wiring ────────────────────────────────────────────────── */
+
+let current: Outbox | null = null
+
+/**
+ * Build the outbox this app renders. Every seam is replaceable: `smoke.ts`
+ * passes a MemoryOutboxStore and a ScriptedTransport, and CANT-163 passes its
+ * adapter over CANT-35's transport in place of the NullTransport.
+ *
+ * The defaults are the shipped app's: IndexedDB `catenary-outbox` where it
+ * exists, the Web Lock and BroadcastChannel where they exist, and a transport
+ * that is never ready.
+ */
+export async function configureOutbox(
+  seams: Partial<Omit<OutboxOptions, 'onChange' | 'accountId'>> & { seed?: boolean } = {},
+): Promise<Outbox> {
+  current?.close()
+  current = null
+  const browser = typeof window !== 'undefined'
+  // Where IndexedDB is absent or refuses to open (SSR, or a private window),
+  // the outbox still works for this page's life — and with no storage API
+  // handed to it, the standing line says unsent messages may not be kept.
+  let durable = typeof indexedDB !== 'undefined'
+  let store: OutboxStore
+  if (seams.store) store = seams.store
+  else if (!durable) store = new MemoryOutboxStore()
+  else {
+    try {
+      store = await IdbOutboxStore.open()
+    } catch {
+      durable = false
+      store = new MemoryOutboxStore()
+    }
+  }
+  // The canvas's failed send (fixtures), and ONLY into a store that dies with
+  // the page. A fixture put into `catenary-outbox` would outlive a DELETE —
+  // absent is exactly when it would be put back — and its fixed `order` would
+  // then collide with a real entry's under the unique index, refusing every
+  // load after it. A durable store holds what was authored, nothing else.
+  if ((seams.seed ?? true) && !(store instanceof IdbOutboxStore)) {
+    const held = new Set((await store.list()).map((e) => e.clientId))
+    for (const e of OUTBOX_SEED) if (!held.has(e.clientId)) await store.put(e)
+  }
+  const nav = typeof navigator !== 'undefined' ? navigator : undefined
+  const outbox = await Outbox.open({
+    store,
+    transport: seams.transport ?? new NullTransport(),
+    accountId: state.me,
+    lock: seams.lock ?? (nav?.locks ? new WebLockDrainLock(nav.locks) : new InProcessLockHub().lock()),
+    channel: seams.channel !== undefined ? seams.channel : browser && typeof BroadcastChannel !== 'undefined' ? new BroadcastOutboxChannel() : null,
+    storage: seams.storage !== undefined ? seams.storage : durable ? (nav?.storage ?? null) : null,
+    ...(seams.clock ? { clock: seams.clock } : {}),
+    ...(seams.random ? { random: seams.random } : {}),
+    ...(seams.faults ? { faults: seams.faults } : {}),
+    onChange: (view) => {
+      outboxView.value = view
+    },
+  })
+  current = outbox
+  outboxView.value = outbox.view()
+  return outbox
+}
+
+/** Resolves once the outbox has loaded. Every action that touches it waits
+ *  on this; a reconfigure replaces it. */
+export let outboxReady: Promise<Outbox> = configureOutbox()
+
+/** Rebuild the outbox over new seams, and make every action use it. */
+export function useOutbox(seams: Parameters<typeof configureOutbox>[0]): Promise<Outbox> {
+  outboxReady = configureOutbox(seams)
+  return outboxReady
+}
+
+export { isOutboxMessage, state }

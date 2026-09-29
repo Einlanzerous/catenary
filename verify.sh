@@ -291,9 +291,11 @@ for gen in web/src/wire/generated.ts dart/lib/src/generated.dart internal/wire/g
 done
 trap - EXIT INT TERM
 
-step "R4 · web smoke test (render assertions + conformance)"
+# `smoke` chains CANT-161's `npm run outbox` (node:test): the criteria as
+# written, then every named fault required to fail its criterion.
+step "R4 · web smoke test (render assertions + conformance + outbox)"
 (cd "$ROOT/web" && npm run --silent smoke) >"$LOGDIR/v-smoke.log" 2>&1
-result $? "$(grep -cE '^ok  ' "$LOGDIR/v-smoke.log") assertions passed"
+result $? "$(grep -cE '^ok  ' "$LOGDIR/v-smoke.log") assertions passed; outbox $(grep -oE 'pass [0-9]+' "$LOGDIR/v-smoke.log" | tail -1) tests"
 
 # CANT-35 · the TypeScript transport's own unit tests: node:test over a
 # vite-ssr bundle (ruling 9 → A), against a fake clock, socket and server. No

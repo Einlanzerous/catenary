@@ -1,13 +1,15 @@
 <script setup lang="ts">
 import { computed, nextTick, ref, watch } from 'vue'
-import type { Message } from '@/client-types'
+import { isOutboxMessage, type RenderedMessage } from '@/client-types'
 import { dayLabel, sameDay } from '@/lib/format'
 import {
   activeConversation,
-  activeMessages,
+  activeLog,
+  activeTail,
   conversationTitle,
   newCount,
   otherMember,
+  persistNotice,
   state,
   typingLabel,
 } from '@/store'
@@ -17,7 +19,7 @@ import MessageRow from './MessageRow.vue'
 
 interface DateRule { kind: 'date'; key: string; label: string }
 interface UnreadRule { kind: 'unread'; key: string; label: string }
-interface Row { kind: 'message'; key: string; message: Message; previous?: Message }
+interface Row { kind: 'message'; key: string; message: RenderedMessage; previous?: RenderedMessage }
 
 const conversation = computed(() => activeConversation.value)
 
@@ -38,10 +40,15 @@ const otherDeactivated = computed(() => {
  * The two rules that break the run of messages: a date change, and the point
  * the reader had got to. The unread rule is placed from `firstUnreadSeq`
  * rather than from a count, so it lands correctly after a resync.
+ *
+ * After the log comes the outbox's tail (CANT-36): unacked entries, in the
+ * order they were composed, never sorted in among the seqs — they have none.
+ * An acked entry is already in the log at the server's seq. Neither kind can
+ * place the unread rule; only a server record can.
  */
 const rows = computed<(Row | DateRule | UnreadRule)[]>(() => {
   const out: (Row | DateRule | UnreadRule)[] = []
-  const messages = activeMessages.value
+  const messages = [...activeLog.value, ...activeTail.value]
   const firstUnread = conversation.value?.firstUnreadSeq
   let unreadDrawn = false
 
@@ -52,7 +59,12 @@ const rows = computed<(Row | DateRule | UnreadRule)[]>(() => {
       out.push({ kind: 'date', key: `d-${message.id}`, label: dayLabel(message.at) })
     }
 
-    if (firstUnread !== undefined && !unreadDrawn && message.seq >= firstUnread) {
+    if (
+      firstUnread !== undefined &&
+      !unreadDrawn &&
+      !isOutboxMessage(message) &&
+      message.seq >= firstUnread
+    ) {
       const count = newCount(conversation.value)
       if (count > 0) {
         out.push({ kind: 'unread', key: `u-${message.id}`, label: `${count} NEW` })
@@ -71,7 +83,7 @@ const typing = computed(() => typingLabel(state.activeId))
 const scroller = ref<HTMLElement | null>(null)
 
 watch(
-  () => [state.activeId, activeMessages.value.length],
+  () => [state.activeId, activeLog.value.length, activeTail.value.length],
   async () => {
     await nextTick()
     const el = scroller.value
@@ -134,6 +146,10 @@ watch(
           :member-count="conversation.memberCount"
         />
       </template>
+
+      <!-- CANT-36 §9: the browser has not granted persistence, and something
+           here is unsent. A standing line in the tail, never a toast. -->
+      <p v-if="persistNotice" class="persist-notice">{{ persistNotice }}</p>
 
       <!-- Deliberate call 10a: typing is the thread's own last row, in the
            message column — not a strip under the composer. The area you type
@@ -236,6 +252,14 @@ watch(
   background: var(--line-hair);
 }
 
+.persist-notice {
+  margin: 6px 0 0;
+  padding: 0 var(--s6) 0 calc(var(--gutter-w) + var(--s4));
+  font: var(--type-meta);
+  font-size: 10.5px;
+  color: var(--text-meta);
+}
+
 .typing {
   display: grid;
   grid-template-columns: var(--gutter-w) 1fr;
@@ -304,6 +328,9 @@ watch(
   }
   .typing-gutter {
     display: none;
+  }
+  .persist-notice {
+    padding: 0 var(--s4);
   }
   .head {
     padding: 0 var(--s4);

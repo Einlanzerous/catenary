@@ -10,6 +10,7 @@
 
 import type { Conversation, User } from '@/wire/generated'
 import type { Message } from '@/client-types'
+import type { OutboxEntry } from '@/outbox'
 import { peaksFromSeed } from '@/lib/waveform'
 
 export const ME = 'u-hollis'
@@ -44,7 +45,7 @@ export const CONVERSATIONS: Conversation[] = [
   { id: 'c-ilse', kind: 'direct', name: 'Ilse Marchetti', otherMemberId: 'u-ilse', memberCount: 2, firstUnreadSeq: 77, headSeq: 77 },
   { id: 'c-marek', kind: 'direct', name: 'Marek Dubois', otherMemberId: 'u-marek', memberCount: 2, headSeq: 51 },
   { id: 'c-nadia', kind: 'direct', name: 'Nadia Okonkwo', otherMemberId: 'u-nadia', memberCount: 2, headSeq: 133 },
-  { id: 'c-ted', kind: 'direct', name: 'Ted Almasy', otherMemberId: 'u-ted', memberCount: 2, headSeq: 19 },
+  { id: 'c-ted', kind: 'direct', name: 'Ted Almasy', otherMemberId: 'u-ted', memberCount: 2, headSeq: 18 },
   { id: 'c-rosa', kind: 'direct', name: 'Rosa Whitfield', otherMemberId: 'u-rosa', memberCount: 2, headSeq: 64 },
   // CANT-138 — the other half is deactivated; the header has to say so.
   { id: 'c-petra', kind: 'direct', name: 'Petra Lindqvist', otherMemberId: 'u-petra', memberCount: 2, headSeq: 5 },
@@ -321,22 +322,6 @@ export const MESSAGES: Message[] = [
     text: 'no rush on any of it, truly',
   },
 
-  // ── DM: Ted — the failed send the rail reports ─────────────────────────
-  {
-    id: 'm-t019', seq: 19, logSeq: logSeq(), conversationId: 'c-ted', authorId: ME,
-    at: at(3, '14:24'), state: 'failed',
-    error: 'Send failed — server rejected upload (413)',
-    attachments: [
-      {
-        kind: 'voice',
-        url: 'https://media.catenary.invalid/v/2281.opus',
-        durationMs: 22_000,
-        peaks: peaksFromSeed(2281, 96),
-        transcript: { state: 'pending' },
-      },
-    ],
-  },
-
   // ── DM: Rosa ───────────────────────────────────────────────────────────
   {
     id: 'm-r064', seq: 64, logSeq: logSeq(), conversationId: 'c-rosa', authorId: 'u-rosa',
@@ -391,5 +376,36 @@ export const MESSAGES: Message[] = [
         transcript: { state: 'pending', etaSec: 20 },
       },
     ],
+  },
+]
+
+/**
+ * The failed send the rail reports, in Ted's DM — and it is an OUTBOX ENTRY,
+ * not a row in MESSAGES (CANT-161). A message the server never stored has no
+ * `seq` and no `logSeq`, and `failed` describes its relationship to this
+ * device's outbox, which the server has no opinion on; it used to sit in the
+ * seq-sorted log as `m-t019` with a seq of its own, which is exactly the
+ * fabricated-ordinal shape CANT-36 removed. c-ted's `headSeq` is 18 for the
+ * same reason: seq 19 never existed.
+ *
+ * A voice note, so it is never drained here: its attachment has no upload
+ * handle, and the upload queue that would give it one is CANT-162's.
+ */
+export const OUTBOX_SEED: OutboxEntry[] = [
+  {
+    v: 1,
+    clientId: '6f1d2a8e-5b1c-4e1a-9c3b-2281c0de7ed0',
+    accountId: ME,
+    conversationId: 'c-ted',
+    order: 1,
+    composedAt: at(3, '14:24'),
+    attachments: [
+      { kind: 'voice', blob: new Blob([]), durationMs: 22_000, upload: 'pending' },
+    ],
+    status: 'failed',
+    attempts: 1,
+    internalRetries: 0,
+    reuploads: 0,
+    lastError: { kind: 'upload', message: 'Send failed — server rejected upload (413)' },
   },
 ]

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { VoiceAttachment } from '@/wire/generated'
-import type { Message } from '@/client-types'
+import type { RenderedMessage } from '@/client-types'
 import { duration } from '@/lib/format'
 import {
   cycleRate,
@@ -19,7 +19,7 @@ import Waveform from './Waveform.vue'
  *  blocks playback, in any of the three states. */
 const props = withDefaults(
   defineProps<{
-    message: Message
+    message: RenderedMessage
     voice: VoiceAttachment
     maxWidth?: number
     bars?: number

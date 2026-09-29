@@ -5,7 +5,8 @@ First-pass implementation of the **Catenary Web Client** design canvas, against 
 ```
 npm install
 npm run dev        # http://localhost:4009
-npm run smoke      # headless render + logic checks (29 assertions)
+npm run smoke      # headless render + logic checks, then conformance and the outbox
+npm run outbox     # the outbox's criteria, and every named fault required to fail one (node:test)
 npm run typecheck
 ```
 
@@ -13,7 +14,7 @@ npm run typecheck
 
 This is the design realised as a working client. It is **not** the Catenary project: there is no repo, no `CANT` project key, and no server. **IDEA-23** is a spike whose six P0 gates — R1 WebSockets through the tunnel, R2 push, R3 whisper.cpp, R4 one wire schema, R5 Android distribution, R6 Purser connector fit — decide whether Catenary gets built at all. Graduating before those clear is the failure mode the spike names explicitly.
 
-So: no transport, no auth, no persistence. `src/mock/fixtures.ts` holds the canvas's corpus, `src/store.ts` walks messages up the delivery ladder on a timer, and a **HARNESS** strip in the bottom-right switches connection state and theme because there is nothing real to disconnect from yet. Delete `DevToolbar.vue` the day a transport lands.
+So: no transport, no auth, no persistence. `src/mock/fixtures.ts` holds the canvas's corpus, a send goes into the outbox (`src/outbox/`, CANT-36) over a transport that is never ready, so it renders QUEUED and is kept in IndexedDB until CANT-163 wires a real one, and a **HARNESS** strip in the bottom-right switches connection state and theme because there is nothing real to disconnect from yet. Delete `DevToolbar.vue` the day a transport lands.
 
 ## Layout
 
@@ -25,7 +26,9 @@ So: no transport, no auth, no persistence. `src/mock/fixtures.ts` holds the canv
 | `src/transport/` | The WebSocket transport (CANT-35): session loop, heartbeat, CANT-31 §4 close table, backoff, `/sync` catch-up and the in-memory journal, with no Vue import and every clock, socket and timer injected. Each module names the `internal/client` file it mirrors. `npm run test:transport` runs its unit tests; CANT-39 wires it into `store.ts`. |
 | `src/lib/waveform.ts` | Renders stored peaks. `peaksFromSeed` reproduces the canvas generator for fixtures only — see the portability note in that file. |
 | `src/components/` | One component per object in the canvas. |
+| `src/outbox/` | Unacked sends (CANT-36, rules in `docs/decisions/cant-36-outbox.md`): the `OutboxStore` and `OutboxTransport` seams, the state machine, the render projection, IndexedDB database `catenary-outbox`. |
 | `smoke.ts` | SSRs the app and asserts the canvas's landmarks are actually on screen. |
+| `outbox.test.ts` | `npm run outbox`: each outbox criterion as written, then each named fault, which must make its criterion fail. |
 
 ## Sections covered
 

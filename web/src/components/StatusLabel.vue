@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { Message } from '@/client-types'
+import { isOutboxMessage, type RenderedMessage } from '@/client-types'
 
 /**
  * Deliberate call 03: status as words, not tick glyphs. Rendered in a fixed
@@ -12,15 +12,17 @@ import type { Message } from '@/client-types'
  * as is the rail's READ. Four renderings against one legend: this follows the
  * renderings. Flip `.read` below if the legend was the intent.
  */
-const props = defineProps<{ message: Message; memberCount: number }>()
+const props = defineProps<{ message: RenderedMessage; memberCount: number }>()
 
 const text = computed(() => {
   const m = props.message
   switch (m.state) {
+    // Ruling 3 C: a send held under backoff past its third retryable
+    // refusal says so, rather than looking like any other queued row.
     case 'sending':
-      return 'SENDING'
+      return isOutboxMessage(m) && m.retrying ? 'RETRYING' : 'SENDING'
     case 'queued':
-      return 'QUEUED'
+      return isOutboxMessage(m) && m.retrying ? 'RETRYING' : 'QUEUED'
     case 'sent':
       return 'SENT'
     case 'delivered':
