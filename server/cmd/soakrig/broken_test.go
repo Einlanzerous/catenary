@@ -85,6 +85,30 @@ func TestSoakBaselinePasses(t *testing.T) {
 	}
 }
 
+// CANT-172 — a live fan-out still in flight when the run compares is not a
+// loss. Keeping the kill phase's senders going past the restart gets sends
+// acked by the new server right up to the final settle; each one's fan-out to
+// the other sockets runs behind its ack, and before awaitHeld a Compare taken
+// in that gap reported it Lost, as verdict=server_failure. Seven of thirty
+// runs did with the window held open like this, and none do now. It cannot
+// fail every time without the fix, since the gap is a race, but a pass here
+// is deterministic.
+func TestInFlightFanoutIsNotLoss(t *testing.T) {
+	dbURL := soakDBFixture(t)
+	cfg := tinyConfig(dbURL)
+	cfg.N = 5
+	cfg.debugSendAfterRestart = 400 * time.Millisecond
+	res := runSoak(context.Background(), cfg)
+	if res.Verdict != VerdictPass {
+		t.Fatalf("verdict = %s, want pass\n%s", res.Verdict, reportString(res.Report))
+	}
+	for _, p := range res.Report.Phases {
+		if p.Name == killPhase && p.MessagesAcked == 0 {
+			t.Fatalf("no kill-phase send was acked after the restart — this test did not open the window it claims:\n%s", reportString(res.Report))
+		}
+	}
+}
+
 // COUNTER-PROOF — a comparison that DID run and found real dirt is reported
 // as a server failure, whatever actually caused the dirt. client.Faults
 // breaks client 0's OWN bookkeeping (DedupeByLogSeq: a /sync page that

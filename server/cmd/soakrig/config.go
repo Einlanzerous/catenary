@@ -75,10 +75,17 @@ type Config struct {
 	//                          comparison can be clean (nothing either side
 	//                          disagrees about) while the traffic that
 	//                          mattered never landed at all.
-	debugFaults         map[int]client.Faults
-	debugFailProvision  map[int]bool
-	debugSkipCompareFor map[int]bool
-	debugRejectAllSends bool
+	//   debugSendAfterRestart  keeps the kill phase's background senders going
+	//                          this long AFTER the restart, so sends are acked
+	//                          by the new server right up to the final settle.
+	//                          Not a failure, the opposite: proves a live
+	//                          fan-out still in flight at compare time is not
+	//                          reported as loss (CANT-172).
+	debugFaults           map[int]client.Faults
+	debugFailProvision    map[int]bool
+	debugSkipCompareFor   map[int]bool
+	debugRejectAllSends   bool
+	debugSendAfterRestart time.Duration
 }
 
 // validate fills in defaults and checks what it can before anything slow
