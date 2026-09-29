@@ -21,7 +21,8 @@ interface DateRule { kind: 'date'; key: string; label: string }
 interface UnreadRule { kind: 'unread'; key: string; label: string }
 interface Row { kind: 'message'; key: string; message: RenderedMessage; previous?: RenderedMessage }
 
-const conversation = computed(() => activeConversation.value)
+/** App renders this pane only while there is an active conversation. */
+const conversation = computed(() => activeConversation.value!)
 
 /** The header's title and what Composer's placeholder names (CANT-141): the
  *  other member's live name once it is known, `conversation.name` only as

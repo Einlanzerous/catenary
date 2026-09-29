@@ -48,7 +48,7 @@ const terminal = computed(() => {
     <span class="dot pulse" />
     <span class="text">Connection lost — reconnecting</span>
     <span class="count tnum">
-      attempt {{ c.attempt }} · retry in {{ duration(c.retryInSec) }}
+      attempt {{ c.attempt }} · retry in {{ duration(c.retryInSec ?? 0) }}
     </span>
     <button class="action" @click="retryNow">RETRY NOW</button>
   </div>
@@ -80,6 +80,15 @@ const terminal = computed(() => {
     </div>
     <div class="track"><i :style="{ width: `${percent}%` }" /></div>
   </div>
+
+  <!-- CANT-169: beside any of the above, never instead of it. The journal
+       does not fall back to memory when a write fails, so what is on screen
+       may be missing what that write carried; this says so until one lands. -->
+  <div v-if="c.journalError" class="banner lost journal">
+    <span class="dot" />
+    <span class="text">This browser could not save messages it was sent — what is shown may be incomplete until a save succeeds.</span>
+    <span class="count">{{ c.journalError.name }}</span>
+  </div>
 </template>
 
 <style scoped>
@@ -96,7 +105,8 @@ const terminal = computed(() => {
   border-bottom-color: var(--accent-rule);
 }
 
-.banner.terminal .count {
+.banner.terminal .count,
+.banner.journal .count {
   margin-left: auto;
   letter-spacing: var(--track-label);
 }

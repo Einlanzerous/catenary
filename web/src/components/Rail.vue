@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { directs, openAccount, openSearch, rooms, state, totalUnread, user } from '@/store'
 import Avatar from './Avatar.vue'
 import ConversationRow from './ConversationRow.vue'
@@ -9,7 +10,8 @@ import Logomark from './Logomark.vue'
  * column with the same row anatomy — no separate server rail, because with
  * thirty people there is nothing to navigate between.
  */
-const me = user(state.me)
+/** Computed: `state.me` is '' until a credential has been read. */
+const me = computed(() => user(state.me))
 </script>
 
 <template>
@@ -60,8 +62,12 @@ const me = user(state.me)
       <span class="name">{{ me?.name }}</span>
       <!-- CANT-38: log in, name a device, see sessions, revoke one. -->
       <button class="devices-link" @click="openAccount">DEVICES</button>
-      <span class="link-state">LINKED</span>
-      <span class="live" :class="state.connection.state" />
+      <!-- Only for an enrolled device: before one, nothing is linked and
+           nothing is dialling, and a lamp would claim both. -->
+      <template v-if="state.me">
+        <span class="link-state">LINKED</span>
+        <span class="live" :class="state.connection.state" />
+      </template>
     </footer>
   </nav>
 </template>

@@ -6,7 +6,7 @@
 # R1's tunnel run (spike/r1-websocket), and R2/R5, which need an Android device
 # and a willing friend. There are no steps for those.
 #
-# FOUR STEPS HERE SKIP rather than fail when what they need is absent, and a
+# FIVE STEPS HERE SKIP rather than fail when what they need is absent, and a
 # skip is not a pass:
 #
 #   Dart            both the analyze and the conformance runner — and the
@@ -17,6 +17,9 @@
 #   the served page CANT-26's client-rule check, on the same condition — its
 #                   input is a page captured from a real Postgres or it is a
 #                   fixture, and a fixture would prove nothing.
+#   the web render  CANT-39's smoke render, on the same condition — it runs
+#                   against a live, seeded server. Its conformance and outbox
+#                   halves still run.
 #   R6              when the Purser checkout the spike's `replace` points at is
 #                   absent, which is every machine but one.
 #
@@ -332,9 +335,26 @@ trap - EXIT INT TERM
 
 # `smoke` chains CANT-161's `npm run outbox` (node:test): the criteria as
 # written, then every named fault required to fail its criterion.
-step "R4 · web smoke test (render assertions + conformance + outbox)"
-(cd "$ROOT/web" && npm run --silent smoke) >"$LOGDIR/v-smoke.log" 2>&1
-result $? "$(grep -cE '^ok  ' "$LOGDIR/v-smoke.log") assertions passed; outbox $(grep -oE 'pass [0-9]+' "$LOGDIR/v-smoke.log" | tail -1) tests"
+#
+# CANT-39: THE RENDER HALF RUNS AGAINST A LIVE SERVER, so it lives in the
+# database lane. `npm run smoke` builds the bundle and runs
+# cmd/catenary/websmoke_test.go, which seeds the canvas's corpus through the
+# store, serves it through setup(), and runs the bundle against it — and it
+# asserts the Go test PASSED rather than skipped, because a skipped render is
+# a green line that rendered nothing. Without a database the other two halves
+# still run, and the render is announced as skipped rather than absent.
+if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  step "R4 · web smoke test (render against a live server + conformance + outbox)"
+  (cd "$ROOT/web" && npm run --silent smoke) >"$LOGDIR/v-smoke.log" 2>&1
+  rc=$?
+  grep -qE -- '^--- PASS: TestTheWebSmokeRendersTheCanvasFromALiveServer ' "$LOGDIR/v-smoke.log" || rc=1
+  result $rc "$(grep -cE '^ok    ' "$LOGDIR/v-smoke.log") render assertions passed against a live server; outbox $(grep -oE 'pass [0-9]+' "$LOGDIR/v-smoke.log" | tail -1) tests"
+else
+  step "R4 · web smoke test (conformance + outbox; the render needs a live server)"
+  (cd "$ROOT/web" && npm run --silent gen:check && npm run --silent conformance && npm run --silent outbox) >"$LOGDIR/v-smoke.log" 2>&1
+  result $? "conformance and outbox $(grep -oE 'pass [0-9]+' "$LOGDIR/v-smoke.log" | tail -1) tests"
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the render runs against a live server, and a live server needs a database.\n'
+fi
 
 # CANT-35 · the TypeScript transport's own unit tests: node:test over a
 # vite-ssr bundle (ruling 9 → A), against a fake clock, socket and server. No

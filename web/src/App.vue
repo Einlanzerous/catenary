@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
-import { closeSearch, openSearch, state } from '@/store'
+import { activeConversation, closeSearch, openSearch, state } from '@/store'
 import AccountView from './components/AccountView.vue'
-import DevToolbar from './components/DevToolbar.vue'
 import Rail from './components/Rail.vue'
 import SearchView from './components/SearchView.vue'
 import Thread from './components/Thread.vue'
@@ -33,11 +32,12 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <Rail class="pane-rail" />
     <SearchView v-if="state.view === 'search'" class="pane-main" />
     <AccountView v-else-if="state.view === 'account'" class="pane-main" />
-    <Thread v-else class="pane-main" />
+    <Thread v-else-if="activeConversation" class="pane-main" />
+    <!-- Nothing to open yet: no device enrolled, or the first page has not
+         landed. An empty pane rather than an invented conversation. -->
+    <main v-else class="pane-main empty" />
 
     <button class="back-to-rail" @click="railOpen = true">‹ ALL</button>
-
-    <DevToolbar />
   </div>
 </template>
 

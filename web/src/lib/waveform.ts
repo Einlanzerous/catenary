@@ -5,15 +5,16 @@
  * therefore *renders* a stored array and never derives one — see the Waveform
  * component, which takes `peaks` as data.
  *
- * `peaksFromSeed` below reproduces the design canvas's generator so the mock
- * corpus draws the same bars the canvas does. It is fixture code and belongs
- * to the mock layer only.
+ * `peaksFromSeed` below reproduces the design canvas's generator. Its one
+ * caller is the composer's recording animation, which has no stored clip to
+ * draw; every message's peaks are the server's (CANT-39's smoke seeds them
+ * with the same generator, in Go, where it is exact).
  *
  * A note for whoever ports this: the generator is NOT portable as written.
  * `s * 1103515245` with s near 2^31 lands around 2^61, past the 2^53 where a
  * JS double stops being an exact integer — so JS silently rounds where Dart's
  * 64-bit int would not, and the two produce different bars from the same seed.
- * That does not matter here (fixtures only) and would matter enormously if
+ * That does not matter here (an animation only) and would matter enormously if
  * anyone "helpfully" moved generation into the clients. Peaks come from the
  * server.
  */

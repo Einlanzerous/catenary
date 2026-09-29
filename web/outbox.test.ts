@@ -70,6 +70,40 @@ type Faults = OutboxFaults & StoreFaults
 const ME = 'u-hollis'
 const CONV = 'c-kitchen'
 
+/* THE CORPUS THESE CRITERIA RENDER OVER. `store.ts` holds no fixtures since
+ * CANT-39 deleted the mock — its records are whatever a live server's journal
+ * projected, and there is no server here — so the few records the rail and
+ * thread criteria (5, 6, 16) need are put into `state` directly, the way
+ * `readstate.ts` puts a captured page there. A room with an unread run, and
+ * three directs whose last messages are an hour apart so the column has a
+ * top and a bottom to move between. */
+{
+  const hour = (n: number) => new Date(Date.parse('2026-09-29T08:00:00.000Z') + n * 3_600_000).toISOString()
+  state.me = ME
+  state.users = Object.fromEntries(
+    [[ME, 'Hollis Byrne', 'HB'], ['u-ilse', 'Ilse Marchetti', 'IM'], ['u-nadia', 'Nadia Okonkwo', 'NO'], ['u-ted', 'Ted Almasy', 'TA']]
+      .map(([id, name, initials]) => [id, { id, name, initials }]),
+  )
+  state.conversations = [
+    { id: CONV, kind: 'group', name: 'Kitchen Table', memberCount: 4, firstUnreadSeq: 2, headSeq: 3 },
+    { id: 'c-ilse', kind: 'direct', name: 'Ilse Marchetti', otherMemberId: 'u-ilse', memberCount: 2, headSeq: 1 },
+    { id: 'c-nadia', kind: 'direct', name: 'Nadia Okonkwo', otherMemberId: 'u-nadia', memberCount: 2, headSeq: 1 },
+    { id: 'c-ted', kind: 'direct', name: 'Ted Almasy', otherMemberId: 'u-ted', memberCount: 2, headSeq: 1 },
+  ]
+  let logSeq = 1
+  const msg = (conversationId: string, seq: number, authorId: string, at: string, text: string) =>
+    ({ id: `m-${conversationId}-${seq}`, seq, logSeq: logSeq++, conversationId, authorId, at, state: 'delivered' as const, text })
+  state.messages = [
+    msg(CONV, 1, ME, hour(0), 'read already'),
+    msg(CONV, 2, 'u-nadia', hour(1), 'new one'),
+    msg(CONV, 3, 'u-ilse', hour(2), 'new two'),
+    msg('c-ilse', 1, 'u-ilse', hour(3), 'the newest direct'),
+    msg('c-nadia', 1, 'u-nadia', hour(2), 'the middle direct'),
+    msg('c-ted', 1, 'u-ted', hour(1), 'the oldest direct'),
+  ]
+  state.activeId = CONV
+}
+
 const idb = () => ({
   factory: new FakeIDBFactory() as unknown as IDBFactory,
   keyRange: FakeIDBKeyRange as unknown as typeof IDBKeyRange,
@@ -462,7 +496,7 @@ async function c5(_f: Faults) {
   assert.ok(!/\badvance\s*\(/.test(source), "advance()'s timer is gone")
 
   const transport = new ScriptedTransport()
-  await useOutbox({ store: new MemoryOutboxStore(), transport, storage: null, seed: false })
+  await useOutbox({ store: new MemoryOutboxStore(), transport, storage: null })
   select(CONV)
   const kitchen = state.conversations.find((c) => c.id === CONV)!
   state.read.delete(CONV)
@@ -505,7 +539,7 @@ async function c6(_f: Faults) {
   clock.t = Math.max(...state.messages.map((m) => Date.parse(m.at))) + 3_600_000
   const transport = new ScriptedTransport()
   transport.server.at = () => new Date(clock.t + 60_000).toISOString()
-  await useOutbox({ store: new MemoryOutboxStore(), transport, storage: null, seed: false, clock })
+  await useOutbox({ store: new MemoryOutboxStore(), transport, storage: null, clock })
   const column = directs.value
   const bottom = column[column.length - 1]
   assert.notEqual(column[0].id, bottom.id)
@@ -541,7 +575,8 @@ async function c6(_f: Faults) {
 
   // smoke.ts's half of this criterion: sections 2 and 5 exist as rewritten.
   const smoke = readFileSync(resolve(process.cwd(), 'smoke.ts'), 'utf8')
-  assert.ok(smoke.includes('never invents DELIVERED') && smoke.includes('ScriptedTransport'), 'smoke section 5 drives an acking transport')
+  // Since CANT-39 the acking transport is a live server's, not a script's.
+  assert.ok(smoke.includes('never invents DELIVERED') && smoke.includes('liveTransport()'), 'smoke section 5 drives an acking transport')
   assert.ok(smoke.includes('the failed row comes from the outbox store'), "smoke section 2's FAILED comes from the outbox")
 }
 
@@ -868,7 +903,7 @@ async function c16(_f: Faults) {
   ]
   select(CONV)
   for (const c of cases) {
-    await useOutbox({ store: new MemoryOutboxStore(), transport: new ScriptedTransport(), storage: c.storage, seed: false })
+    await useOutbox({ store: new MemoryOutboxStore(), transport: new ScriptedTransport(), storage: c.storage })
     if (c.compose) {
       state.composer.draft = `unsent: ${c.name}`
       await send()
@@ -950,7 +985,7 @@ test('the shipped wiring never seeds a durable store, so a reload after DELETE t
 
 test('a second send() while the first is still writing sends nothing', async () => {
   const store = new MemoryOutboxStore()
-  await useOutbox({ store, transport: new ScriptedTransport(), storage: null, seed: false })
+  await useOutbox({ store, transport: new ScriptedTransport(), storage: null })
   select(CONV)
   state.composer.draft = 'twice'
   const ids = await Promise.all([send(), send()])
@@ -964,7 +999,7 @@ test('a refused write puts the draft back', async () => {
   store.add = async () => {
     throw new Error('quota exceeded')
   }
-  await useOutbox({ store, transport: new ScriptedTransport(), storage: null, seed: false })
+  await useOutbox({ store, transport: new ScriptedTransport(), storage: null })
   select(CONV)
   state.composer.draft = 'keep me'
   await assert.rejects(send())
