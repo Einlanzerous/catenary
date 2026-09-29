@@ -7,9 +7,12 @@
 
 import { serve } from './src/transport/driver/driver'
 
+// `--journal=<file>`: the durable journal, persisted there (CANT-169).
+const journalFile = process.argv.slice(2).find((a) => a.startsWith('--journal='))?.slice('--journal='.length)
+
 serve({
   input: process.stdin,
   write: (line) => process.stdout.write(line + '\n'),
   log: (line) => process.stderr.write(line + '\n'),
   exit: () => process.exit(0),
-})
+}, { journalFile })

@@ -112,7 +112,11 @@ var (
 // nothing is observable (Status, Holds, Snapshot, the Await wake-up) until the
 // lock is released. There is no window in which a message is shown or counted
 // and the cursor that covers it is not written. On real storage that is a
-// transaction or an fsync, and proving it there is CANT-35's and CANT-42's.
+// transaction or an fsync. The TypeScript half is CANT-169's: IdbJournal
+// (web/src/transport/idb-journal.ts) writes each page in one IndexedDB
+// transaction and shows nothing before its oncomplete, and the kill test's
+// TypeScript clientDies lane relaunches its driver over the journal it
+// persisted. The Dart half is CANT-42's.
 type Journal struct {
 	mu sync.Mutex
 

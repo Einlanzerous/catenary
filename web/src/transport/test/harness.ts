@@ -12,7 +12,7 @@
 import { decodeClientFrame, encodeServerFrame, encodeSyncResponse } from '@/wire/generated'
 import type { ClientFrame, Conversation, Message, ServerFrame, SyncResponse, User } from '@/wire/generated'
 import { heldCredential, type Credential } from '../credential'
-import { MemoryJournal } from '../journal'
+import { MemoryJournal, type StagedJournal } from '../journal'
 import { manualLifecycle, type Logger, type Timers, type WebSocketLike } from '../seams'
 import { createTransport, type Transport, type TransportConfig } from '../transport'
 import type { Faults } from '../faults'
@@ -248,7 +248,7 @@ export interface Rig {
   net: FakeNet
   sync: FakeSync
   lifecycle: ReturnType<typeof manualLifecycle>
-  journal: MemoryJournal
+  journal: StagedJournal
   logs: LogLine[]
   credential: Credential
   /** Opens the newest socket and answers its hello with `ready`. */
@@ -257,7 +257,7 @@ export interface Rig {
 
 export interface RigOptions {
   faults?: Partial<Faults>
-  journal?: MemoryJournal
+  journal?: StagedJournal
   random?: (n: number) => Uint8Array
   backoffMinMs?: number
   backoffMaxMs?: number

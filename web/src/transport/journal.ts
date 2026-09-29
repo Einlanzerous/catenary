@@ -1,19 +1,24 @@
 /* The journal — mirrors internal/client/journal.go (its message store; the
  * credential half is credential.ts).
  *
- * CANT-35 RULING 2 → B: THE JOURNAL IS IN MEMORY. The credential is durable
- * (CANT-31 §2 and §3 require it, and CANT-152 builds it); cursor, messages,
- * conversations and users live here, behind the `Journal` interface, so a page
- * load bootstraps from 0. The durable journal is a follow-up ticket, and it
- * replaces `MemoryJournal` without touching a caller.
+ * TWO IMPLEMENTATIONS OF ONE INTERFACE, AND ONE COPY OF THE RULES. `Journal` is
+ * what the transport calls; `StagedJournal` holds the rules every
+ * implementation shares — dedupe by id, the cursor forward only and on a page
+ * only, the faults that break each — and stages every write on a copy of its
+ * state. What differs is `commit`, the one step in which a staged write lands:
  *
- * OBLIGATION 1 — PERSIST BEFORE RENDER — IS ORDERING HERE, NOT DURABILITY. A
- * page's messages, conversations, users and cursor are staged and then land in
- * one step, and nothing is observable (`snapshot()`, the `Applied` the
- * transport emits) until that step has completed. In memory that proves the
- * ordering within one apply and nothing about surviving a reload; the durable
- * half belongs to the durable journal's ticket, which is what `journal.go`'s
- * "proving it there is CANT-35's and CANT-42's" now points at.
+ *   - `MemoryJournal` (CANT-151) swaps the copy in. A page load bootstraps
+ *     from 0 (CANT-35 ruling 2 → B), and rigs and tests use it.
+ *   - `IdbJournal` (CANT-169, idb-journal.ts) writes the page to CANT-35's
+ *     `catenary` IndexedDB database in one transaction and swaps the copy in
+ *     only after `oncomplete`, so a page load resumes from the stored cursor.
+ *
+ * OBLIGATION 1 — PERSIST BEFORE RENDER. A page's messages, conversations,
+ * users and cursor are staged and then land in one step, and nothing is
+ * observable (`snapshot()`, the `Applied` the transport emits) until that step
+ * has completed. In memory that is the ordering within one apply (CANT-35
+ * criterion 25); over IndexedDB it is also the durable half (criterion 32),
+ * because the step is the transaction.
  *
  * Writes are serialized by the transport, one at a time, so an implementation
  * never sees two in flight.
@@ -85,30 +90,52 @@ export interface Journal {
   headSeqTotal(): number
 }
 
-/** What `MemoryJournal` holds; replaced wholesale on commit. */
-interface State {
+/** What a journal holds, in memory; replaced wholesale on commit. */
+export interface JournalState {
   cursor: number | null
   messages: Map<Uuid, Message>
   conversations: Map<Uuid, Conversation>
   users: Map<Uuid, User>
+  /** R1's evidence log since the last wipe; see `StagedJournal.counted()`. */
   counted: Uuid[]
   wipes: number
 }
 
-export interface MemoryJournalOptions {
-  /**
-   * Awaited between staging a write and landing it. Production passes nothing.
-   * It exists so a test can hold a write open and watch that nothing it carries
-   * — the page's messages, its cursor, its `Applied` — is observable before it
-   * lands (CANT-35 criterion 25).
-   */
-  beforeCommit?: (source: Applied['source']) => Promise<void>
+/**
+ * What one staged write changes, for an implementation that writes deltas
+ * rather than whole states: the records it upserts, the ids it newly counted,
+ * and the cursor and wipe count after it. `wiped` says everything held before
+ * it goes first.
+ */
+export interface JournalDelta {
+  source: Applied['source']
+  wiped: boolean
+  messages: Message[]
+  conversations: Conversation[]
+  users: User[]
+  /** Appended to the evidence log, in order, after `countedFrom` entries. */
+  counted: Uuid[]
+  countedFrom: number
+  cursor: number | null
+  wipes: number
 }
 
-export class MemoryJournal implements Journal {
-  private s: State = empty(0)
+/**
+ * The rules, once. Every write is staged on a copy of the state and handed to
+ * `commit` with the delta it amounts to; `commit` lands it, and only then does
+ * the state (and so `snapshot()`, `cursor()` and the rest) show it. A `commit`
+ * that rejects leaves the state as it was, and the write's promise rejects.
+ */
+export abstract class StagedJournal implements Journal {
+  protected s: JournalState
 
-  constructor(private readonly opts: MemoryJournalOptions = {}) {}
+  protected constructor(initial: JournalState = emptyState(0)) {
+    this.s = initial
+  }
+
+  /** THE ONE STEP IN WHICH A WRITE LANDS. Resolves once it has; everything
+   *  before it is staged on a copy nobody else can see. */
+  protected abstract commit(next: JournalState, delta: JournalDelta): Promise<void>
 
   cursor(): number | null {
     return this.s.cursor
@@ -139,13 +166,13 @@ export class MemoryJournal implements Journal {
   }
 
   async applyPage(page: SyncResponse, faults: JournalFaults): Promise<Applied> {
-    const next = clone(this.s)
+    const next = cloneState(this.s)
     const messages: Message[] = []
     for (const m of page.messages) if (record(next, m, faults)) messages.push(m)
     for (const c of page.conversations) next.conversations.set(c.id, c)
     for (const u of page.users) next.users.set(u.id, u)
     if (next.cursor === null || page.logSeq > next.cursor) next.cursor = page.logSeq
-    await this.commit(next, 'page')
+    await this.land(next, 'page', messages, page.conversations, page.users)
     return {
       source: 'page', cursor: next.cursor, messages,
       conversations: [...page.conversations], users: [...page.users], receipts: [], wiped: false,
@@ -153,7 +180,7 @@ export class MemoryJournal implements Journal {
   }
 
   async applyLive(write: LiveWrite, faults: JournalFaults): Promise<Applied> {
-    const next = clone(this.s)
+    const next = cloneState(this.s)
     const messages: Message[] = []
     for (const m of write.messages ?? []) {
       if (!record(next, m, faults)) continue
@@ -162,7 +189,7 @@ export class MemoryJournal implements Journal {
     }
     for (const c of write.conversations ?? []) next.conversations.set(c.id, c)
     for (const u of write.users ?? []) next.users.set(u.id, u)
-    await this.commit(next, 'live')
+    await this.land(next, 'live', messages, write.conversations ?? [], write.users ?? [])
     return {
       source: 'live', cursor: next.cursor, messages,
       conversations: [...(write.conversations ?? [])], users: [...(write.users ?? [])], receipts: [], wiped: false,
@@ -170,7 +197,12 @@ export class MemoryJournal implements Journal {
   }
 
   async wipe(): Promise<Applied> {
-    await this.commit(empty(this.s.wipes + 1), 'wipe')
+    const next = emptyState(this.s.wipes + 1)
+    await this.commit(next, {
+      source: 'wipe', wiped: true, messages: [], conversations: [], users: [],
+      counted: [], countedFrom: 0, cursor: null, wipes: next.wipes,
+    })
+    this.s = next
     return { source: 'wipe', cursor: null, messages: [], conversations: [], users: [], receipts: [], wiped: true }
   }
 
@@ -201,11 +233,36 @@ export class MemoryJournal implements Journal {
     }
   }
 
-  /** THE ONE STEP IN WHICH A WRITE LANDS. Everything before it is staged on a
-   *  copy nobody else can see. */
-  private async commit(next: State, source: Applied['source']): Promise<void> {
-    if (this.opts.beforeCommit) await this.opts.beforeCommit(source)
+  private async land(
+    next: JournalState, source: Applied['source'], messages: Message[], conversations: Conversation[], users: User[],
+  ): Promise<void> {
+    const countedFrom = this.s.counted.length
+    await this.commit(next, {
+      source, wiped: false, messages, conversations, users,
+      counted: next.counted.slice(countedFrom), countedFrom, cursor: next.cursor, wipes: next.wipes,
+    })
     this.s = next
+  }
+}
+
+export interface MemoryJournalOptions {
+  /**
+   * Awaited between staging a write and landing it. Production passes nothing.
+   * It exists so a test can hold a write open and watch that nothing it carries
+   * — the page's messages, its cursor, its `Applied` — is observable before it
+   * lands (CANT-35 criterion 25).
+   */
+  beforeCommit?: (source: Applied['source']) => Promise<void>
+}
+
+/** The journal in memory: a commit is the swap `StagedJournal` does after it. */
+export class MemoryJournal extends StagedJournal {
+  constructor(private readonly opts: MemoryJournalOptions = {}) {
+    super()
+  }
+
+  protected async commit(_next: JournalState, delta: JournalDelta): Promise<void> {
+    if (this.opts.beforeCommit) await this.opts.beforeCommit(delta.source)
   }
 }
 
@@ -214,7 +271,7 @@ export class MemoryJournal implements Journal {
  * and a later record for a held id replaces it without a count — a CANT-92
  * re-emission is exactly that. Returns whether the record was written.
  */
-function record(s: State, m: Message, faults: JournalFaults): boolean {
+function record(s: JournalState, m: Message, faults: JournalFaults): boolean {
   if (faults.dedupeByLogSeq) {
     if (s.cursor !== null && m.logSeq <= s.cursor) return false
     s.messages.set(m.id, m)
@@ -226,11 +283,11 @@ function record(s: State, m: Message, faults: JournalFaults): boolean {
   return true
 }
 
-function empty(wipes: number): State {
+export function emptyState(wipes: number): JournalState {
   return { cursor: null, messages: new Map(), conversations: new Map(), users: new Map(), counted: [], wipes }
 }
 
-function clone(s: State): State {
+function cloneState(s: JournalState): JournalState {
   return {
     cursor: s.cursor,
     messages: new Map(s.messages),

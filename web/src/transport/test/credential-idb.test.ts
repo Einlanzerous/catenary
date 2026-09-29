@@ -11,7 +11,7 @@ import { IDBFactory } from 'fake-indexeddb'
 import {
   CredentialHeld, enrollCredential, IdbCredentialStore, reenrollCredential, type StoredCredential,
 } from '../credential-store'
-import { CATENARY_DB, CREDENTIAL_STORE, openCatenaryDb, UPGRADES, type UpgradeStep } from '../db'
+import { CATENARY_DB, CREDENTIAL_STORE, JOURNAL_STORES, openCatenaryDb, UPGRADES, type UpgradeStep } from '../db'
 import { createRefreshingCredential } from '../refresh'
 import { browserLock } from '../seams'
 import { credRig, enrolled, noReplays, padToken } from './credential-harness'
@@ -31,11 +31,17 @@ test('criterion 29 · the Web Locks wrapper is the platform’s, not a fallback'
 
 test('criterion 29 · openCatenaryDb creates the stores at version 1 and runs each upgrade step exactly once', async () => {
   const factory = new IDBFactory()
+  // Version 1 is the credential alone; CANT-169's journal is step 2.
+  const v1 = await openCatenaryDb({ factory, steps: UPGRADES.slice(0, 1) })
+  assert.equal(v1.version, 1)
+  assert.deepEqual([...v1.objectStoreNames], [CREDENTIAL_STORE])
+  v1.close()
   const db = await openCatenaryDb({ factory })
   assert.equal(db.name, CATENARY_DB)
   assert.equal(db.version, UPGRADES.length)
-  assert.equal(db.version, 1)
+  assert.equal(db.version, 2)
   assert.ok(db.objectStoreNames.contains(CREDENTIAL_STORE))
+  for (const name of JOURNAL_STORES) assert.ok(db.objectStoreNames.contains(name), `step 2 created ${name}`)
   db.close()
 
   const ran: number[] = []
@@ -48,20 +54,21 @@ test('criterion 29 · openCatenaryDb creates the stores at version 1 and runs ea
   again.close()
   assert.deepEqual(ran, [])
   // A step appended is run once, and only it.
-  const steps = [...UPGRADES.map((s, i) => counted(i + 1, s)), counted(2, (d) => void d.createObjectStore('later'))]
+  const later = UPGRADES.length + 1
+  const steps = [...UPGRADES.map((s, i) => counted(i + 1, s)), counted(later, (d) => void d.createObjectStore('later'))]
   const bumped = await openCatenaryDb({ factory, steps })
-  assert.equal(bumped.version, 2)
+  assert.equal(bumped.version, later)
   assert.ok(bumped.objectStoreNames.contains('later'))
   bumped.close()
   const third = await openCatenaryDb({ factory, steps })
   third.close()
-  assert.deepEqual(ran, [2], 'step 2 once; step 1 never again')
+  assert.deepEqual(ran, [later], 'the new step once; the shipped ones never again')
 
   // A fresh database runs every step, in order, once.
   const fresh = new IDBFactory()
   ran.length = 0
   ;(await openCatenaryDb({ factory: fresh, steps })).close()
-  assert.deepEqual(ran, [1, 2])
+  assert.deepEqual(ran, [...UPGRADES.map((_, i) => i + 1), later])
 })
 
 test('criterion 29 · enroll refuses over a held pair; re-enroll replaces it, one record per device', async () => {

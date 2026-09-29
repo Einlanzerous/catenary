@@ -76,7 +76,7 @@ function status(extra: Partial<TransportStatus>): TransportStatus {
   return {
     terminal: NOT_TERMINAL, refreshHold: 'none', tokenRefused: false, nextRefreshAt: null, connected: false,
     ready: false, sessionId: null, heartbeatIntervalSec: null, missedPongLimit: null, caughtUp: true, cursor: null,
-    attempt: 0, nextDialAt: null, stats: emptyStats(), messages: 0, wipes: 0, headSeqTotal: 0, ...extra,
+    attempt: 0, nextDialAt: null, stats: emptyStats(), messages: 0, wipes: 0, headSeqTotal: 0, journalError: null, ...extra,
   }
 }
 

@@ -66,7 +66,7 @@ import {
   consoleLogger,
   cryptoRandom,
 } from './seams'
-import { type Stats, type TransportStatus, emptyStats } from './status'
+import { type JournalError, type Stats, type TransportStatus, emptyStats } from './status'
 import { NOT_TERMINAL, type Terminal } from './terminal'
 
 export const SUBPROTOCOL_V1 = 'catenary.v1'
@@ -83,7 +83,9 @@ export interface TransportConfig {
   /** The credential layer: `createRefreshingCredential(...)` in the app,
    *  `heldCredential(...)` where the pair is presented as held (the rigs). */
   credential: CredentialSeam
-  /** Default: a fresh in-memory journal (CANT-35 ruling 2 → B). */
+  /** Default: a fresh in-memory journal (CANT-35 ruling 2 → B). The app
+   *  passes `await IdbJournal.open()` to resume from the stored cursor
+   *  (CANT-169). */
   journal?: Journal
   /** Goes on the hello as `catenary-web/<version>`. Never parsed. */
   clientVersion?: string
@@ -277,6 +279,8 @@ class SocketTransport implements Transport {
   /** Journal writes, one at a time, in arrival order. */
   private writes: Promise<void> = Promise.resolve()
   private pendingWrites = 0
+  /** The last journal write's failure, until a write succeeds (CANT-169). */
+  private journalError: JournalError | null = null
   /** Bumped when a wipe is decided: a page requested in an earlier epoch is
    *  dropped, not applied over the empty store (obligation 4). */
   private epoch = 0
@@ -413,6 +417,7 @@ class SocketTransport implements Transport {
       messages: this.journal.messageCount(),
       wipes: this.wipes,
       headSeqTotal: this.journal.headSeqTotal(),
+      journalError: this.journalError ? { ...this.journalError } : null,
     }
   }
 
@@ -953,7 +958,20 @@ class SocketTransport implements Transport {
     this.pendingWrites++
     const p = this.writes
       .then(op)
-      .catch((e) => this.log.warn('journal write failed', { error: e instanceof Error ? e.message : String(e) }))
+      .then(
+        () => {
+          this.journalError = null
+        },
+        (e: unknown) => {
+          // SURFACED, NOT SWALLOWED: a write that did not land (an IndexedDB
+          // transaction aborted, a quota refused) is in status until one does.
+          this.journalError = {
+            name: e instanceof Error ? e.name : 'Error',
+            message: e instanceof Error ? e.message : String(e),
+          }
+          this.log.warn('journal write failed', { error: this.journalError.message, name: this.journalError.name })
+        },
+      )
       .finally(() => {
         this.pendingWrites--
         this.notify()
@@ -968,13 +986,22 @@ class SocketTransport implements Transport {
   }
 
   private async applyPage(page: SyncResponse, epoch: number): Promise<boolean> {
-    let applied = false
+    const out = { applied: false, failed: false, error: undefined as unknown }
     await this.enqueue(async () => {
       if (epoch !== this.epoch) return
-      this.emitApply(await this.journal.applyPage(page, this.faults))
-      applied = true
+      try {
+        this.emitApply(await this.journal.applyPage(page, this.faults))
+      } catch (e) {
+        out.failed = true
+        out.error = e
+        throw e
+      }
+      out.applied = true
     })
-    return applied
+    // A page that did not land is a failed catch-up, retried on its backoff —
+    // never "a wipe intervened", which would ask again at once, forever.
+    if (out.failed) throw out.error
+    return out.applied
   }
 
   /** Only ever called after the write it describes has landed. */
