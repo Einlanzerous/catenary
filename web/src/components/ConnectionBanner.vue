@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { duration } from '@/lib/format'
-import { retryNow, state } from '@/store'
+import { requestReenrollBeforeMount } from '@/account'
+import { openAccount, retryNow, state } from '@/store'
+
+/** Opens the account view landed on the login form, not wherever
+ *  `checkExistingCredential()`'s own read of the store would otherwise send
+ *  it — see `requestReenrollBeforeMount`'s own comment for why the two calls
+ *  cannot be collapsed into one. */
+function reenroll() {
+  requestReenrollBeforeMount()
+  openAccount()
+}
 
 /**
  * Deliberate call 09: the reconnect banner counts. Attempt number and retry
@@ -19,15 +29,17 @@ const n = (value: number | undefined) => (value ?? 0).toLocaleString('en-US')
  * FLOOR, NOT THE DESIGN (CANT-35 criterion 30): nothing queued will drain from
  * here, so this branch says so and offers no retry — `retryNow()` cannot end a
  * terminal state, and a button that looked like it could would be the claim
- * Invariant 3 forbids. CANT-38 designs the real experience, re-enrollment
- * included.
+ * Invariant 3 forbids. CANT-38 is the real experience: a CREDENTIAL terminal
+ * gets a RE-ENROLL action into the account view built there; a PROTOCOL one
+ * does not, because re-enrolling cannot fix a client the server refuses to
+ * speak to at all.
  */
 const terminal = computed(() => {
   const t = c.value.terminal
   if (c.value.state !== 'terminal' || !t) return null
   return t.kind === 'credential'
-    ? { label: 'CREDENTIAL', text: 'This device is no longer signed in — re-enroll it to reconnect. Nothing sends until then.' }
-    : { label: 'PROTOCOL', text: 'This app cannot talk to the server — update it, or report a bug. Nothing sends until then.' }
+    ? { kind: t.kind, label: 'CREDENTIAL', text: 'This device is no longer signed in — re-enroll it to reconnect. Nothing sends until then.' }
+    : { kind: t.kind, label: 'PROTOCOL', text: 'This app cannot talk to the server — update it, or report a bug. Nothing sends until then.' }
 })
 </script>
 
@@ -50,6 +62,7 @@ const terminal = computed(() => {
   <div v-else-if="terminal" class="banner lost terminal">
     <span class="dot" />
     <span class="text">{{ terminal.text }}</span>
+    <button v-if="terminal.kind === 'credential'" class="action" @click="reenroll">RE-ENROLL</button>
     <span class="count">{{ terminal.label }}</span>
   </div>
 
@@ -86,6 +99,14 @@ const terminal = computed(() => {
 .banner.terminal .count {
   margin-left: auto;
   letter-spacing: var(--track-label);
+}
+
+/* .count's margin-left: auto above already claims the free space, so
+ * RE-ENROLL — right before it in the credential case — stays in normal flow
+ * beside the message rather than splitting that space with a second auto
+ * margin of its own. */
+.banner.terminal .action {
+  margin-left: 0;
 }
 
 .banner.catchup {

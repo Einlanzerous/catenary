@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { closeSearch, openSearch, state } from '@/store'
+import AccountView from './components/AccountView.vue'
 import DevToolbar from './components/DevToolbar.vue'
 import Rail from './components/Rail.vue'
 import SearchView from './components/SearchView.vue'
@@ -31,6 +32,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
   <div class="app" :class="{ 'rail-open': railOpen }">
     <Rail class="pane-rail" />
     <SearchView v-if="state.view === 'search'" class="pane-main" />
+    <AccountView v-else-if="state.view === 'account'" class="pane-main" />
     <Thread v-else class="pane-main" />
 
     <button class="back-to-rail" @click="railOpen = true">‹ ALL</button>

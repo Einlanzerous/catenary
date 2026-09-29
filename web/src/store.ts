@@ -43,7 +43,7 @@ import {
 } from '@/outbox'
 import { consoleLogger, createTransport, heldCredential, type Transport } from '@/transport'
 
-export type View = 'thread' | 'search'
+export type View = 'thread' | 'search' | 'account'
 export type Theme = 'dark' | 'light'
 
 interface Playback {
@@ -641,6 +641,15 @@ export function openSearch() {
 }
 
 export function closeSearch() {
+  state.view = 'thread'
+}
+
+/** CANT-38 — login, device naming and the session list. */
+export function openAccount() {
+  state.view = 'account'
+}
+
+export function closeAccount() {
   state.view = 'thread'
 }
 
