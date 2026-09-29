@@ -46,7 +46,11 @@ export interface Stats {
   refreshesHeldUnreachable: number
   refreshesHeldBackoff: number
   /** Requests CANT-129's refused wait did not make — one per poll — and the
-   *  browser-only triggers it suppressed. Counted, never logged per attempt. */
+   *  browser-only triggers it suppressed. `dialsWithheld` ALSO counts wake
+   *  signals the early dial's once-per-interval limit suppressed, because
+   *  CANT-35's plan (*Observability*) puts both there; Go has no wake signals,
+   *  so a Go cohort's count and a TS cohort's that saw none mean the same.
+   *  Counted, never logged per attempt. */
   dialsWithheld: number
   syncsWithheld: number
   /** Message events that were not a frame: a `WireFormatError`, text

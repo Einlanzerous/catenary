@@ -276,3 +276,19 @@ test('criterion 16 · closeStatuses keys a browser 1006 under -1, and a dial fai
   assert.deepEqual(st.stats.closeStatuses, { '-1': 1, '1001': 1 })
   assert.equal(st.stats.dialErrors, 1)
 })
+
+test('criterion 16 · a close this client made on stop() is not counted as one the peer sent', async () => {
+  const r = rig()
+  r.sync.answer = () => bootstrapPage()
+  const ends: SessionEnd[] = []
+  r.t.onSessionEnd((e) => ends.push(e))
+  r.t.start()
+  await r.connect()
+  r.t.stop()
+  await flush()
+  assert.deepEqual(r.t.status().stats.closeStatuses, {})
+  assert.equal(ends.length, 1, 'the outbox still learns the session ended')
+  assert.equal(ends[0].closeCode, null)
+  assert.equal(ends[0].bare1008, false)
+  assert.equal(r.net.last.closedByClient?.code, 1000, 'a clean close on the wire')
+})

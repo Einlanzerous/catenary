@@ -118,7 +118,8 @@ export interface SessionEnd {
   opened: boolean
   readied: boolean
   /** The close status the peer sent; null for none (a browser's 1006 or 1005,
-   *  Go's -1), which includes a socket this client severed itself. */
+   *  Go's -1), which includes a socket this client severed itself and one it
+   *  closed on `stop()` or on entering a terminal state. */
   closeCode: number | null
   /** CANT-31 §4's *preceded by*: the last message event before the close, if
    *  it was an `error` carrying no `client_id`. */
@@ -674,11 +675,15 @@ class SocketTransport implements Transport {
     this.waiters.clear()
     for (const w of waiters) w.reject(new SessionEnded())
 
-    const key = closeStatusKey(rawCode)
+    // A close this client made itself is not one the peer sent: it is
+    // neither counted nor classified, and its SessionEnd carries no code.
+    const key = closeStatusKey(stopping ? null : rawCode)
     const closeCode = key === -1 ? null : key
     let verdict: CloseVerdict = 'reconnect'
     let reason = ''
-    if (s.opened) {
+    if (stopping) {
+      this.stats.lastClose = 'closed by this client'
+    } else if (s.opened) {
       this.stats.closeStatuses[key] = (this.stats.closeStatuses[key] ?? 0) + 1
       this.stats.lastClose = closeCode === null ? 'closed with no close frame' : `close ${closeCode}`
       ;({ verdict, reason } = classifyClose(closeCode, s.preceding))
@@ -688,7 +693,7 @@ class SocketTransport implements Transport {
         verdict = 'terminal_protocol'
         reason = 'fault: every close is terminal'
       }
-    } else if (!stopping) {
+    } else {
       // A pure dial failure: never a close status (Go's CANT-27 review found
       // it double-counted into -1 once), and never a verdict to read.
       this.stats.dialErrors++
