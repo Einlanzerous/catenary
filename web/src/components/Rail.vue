@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { directs, openSearch, rooms, state, totalUnread, user } from '@/store'
+import { directs, openAccount, openSearch, rooms, state, totalUnread, user } from '@/store'
 import Avatar from './Avatar.vue'
 import ConversationRow from './ConversationRow.vue'
 import Logomark from './Logomark.vue'
@@ -58,6 +58,8 @@ const me = user(state.me)
     <footer class="me">
       <Avatar :user-id="state.me" :size="22" />
       <span class="name">{{ me?.name }}</span>
+      <!-- CANT-38: log in, name a device, see sessions, revoke one. -->
+      <button class="devices-link" @click="openAccount">DEVICES</button>
       <span class="link-state">LINKED</span>
       <span class="live" :class="state.connection.state" />
     </footer>
@@ -177,8 +179,14 @@ const me = user(state.me)
   color: var(--text-primary);
 }
 
-.link-state {
+.devices-link {
   margin-left: auto;
+  font: var(--type-label);
+  letter-spacing: var(--track-label);
+  color: var(--accent-wire);
+}
+
+.link-state {
   font: var(--type-label);
   letter-spacing: 0.1em;
   color: var(--text-meta);

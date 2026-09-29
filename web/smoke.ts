@@ -5,6 +5,7 @@ import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import StatusLabel from '@/components/StatusLabel.vue'
 import {
+  closeAccount,
   closeSearch,
   conversationTitle,
   lastMessageOf,
@@ -12,6 +13,7 @@ import {
   outboxMessages,
   outboxReady,
   typingLabel,
+  openAccount,
   openSearch,
   searchHits,
   select,
@@ -20,8 +22,18 @@ import {
   unreadCount,
   useOutbox,
 } from '@/store'
+import {
+  accountState,
+  beginReenroll,
+  checkExistingCredential,
+  configureAccount,
+  loadDevices,
+  login,
+  revokeDevice,
+} from '@/account'
 import { OUTBOX_SEED } from '@/mock/fixtures'
 import { MemoryOutboxStore, ScriptedTransport } from '@/outbox'
+import { MemoryCredentialStore } from '@/transport/credential-store'
 import { connectionInfo, emptyStats, type TransportStatus } from '@/transport/status'
 import { NOT_TERMINAL } from '@/transport/terminal'
 
@@ -510,6 +522,12 @@ async function main() {
     check(`terminal ${kind} · the page says nothing will queue`, claims.length === 0, claims.join(', '))
     check(`terminal ${kind} · the banner names the kind`, page.includes(kind.toUpperCase()) && page.includes('Nothing sends until then'))
     check(`terminal ${kind} · and offers no retry it cannot keep`, !page.includes('RETRY NOW') && !page.includes('RECONNECT<'))
+    // CANT-38: a CREDENTIAL terminal is the one ConnectionBanner can actually
+    // do something about — RE-ENROLL opens the account view built there. A
+    // PROTOCOL terminal offers no such button; re-enrolling cannot fix a
+    // client the server refuses to speak to at all.
+    check(`terminal ${kind} · RE-ENROLL appears only for a credential terminal`,
+      page.includes('RE-ENROLL') === (kind === 'credential'))
     const before = state.messages.length
     // Since CANT-161 a send lands in the outbox, never in state.messages, so
     // the outbox is where "not created" has to be read.
@@ -587,6 +605,148 @@ async function main() {
   check('reconnecting still says it will send when reconnected',
     reconnectingPage.includes('will send when reconnected') && reconnectingPage.includes('Connection lost — reconnecting'))
   state.connection.state = 'live'
+
+  // 12. CANT-38 — the auth UI: log in (enroll), name the device, see the
+  // session list, revoke one. Conventional forms over CANT-28/29/30/117's
+  // REST endpoints, driven directly rather than through simulated clicks —
+  // the same idiom every other section above already uses (select(), send(),
+  // typingLabel()). The credential layer is CANT-152's; this only exercises
+  // what CANT-38 adds on top of it, over a scripted fetch rather than a
+  // server. Per CANT-35 ruling 8→A, none of this starts the live transport.
+  {
+    const GOOD_TOKEN = 'a-real-enrollment-token'
+    // Wire Uuids, not slugs — the generated decoder enforces the schema's
+    // pattern (CANT-106), and the whole point of using it here rather than a
+    // hand-rolled parse is that a malformed id is caught the same way a real
+    // server's would be.
+    const USER = '00000000-0000-4000-8000-000000000001'
+    const DEVICE_NEW = '00000000-0000-4000-8000-00000000000a'
+    const DEVICE_LIVE = '00000000-0000-4000-8000-00000000000b'
+    const DEVICE_GONE = '00000000-0000-4000-8000-00000000000c'
+    const DEVICE_EXISTING = '00000000-0000-4000-8000-00000000000d'
+    // The wire's Token is exactly 43 characters of unpadded base64url
+    // (CANT-28) — same trick the credential layer's own test harness uses
+    // (`transport/test/credential-harness.ts`'s padToken) rather than a
+    // literal 43-character string nobody could tell apart at a glance.
+    const padToken = (name: string): string => name + '_'.repeat(43 - name.length)
+    const rawDevices = [
+      { id: DEVICE_LIVE, name: "Rosa Pixel 8", created_at: '2026-09-01T10:00:00.000Z' },
+      { id: DEVICE_GONE, name: 'Old iPad', created_at: '2026-08-01T10:00:00.000Z', revoked_at: '2026-09-15T09:00:00.000Z' },
+    ]
+    let revoked: string | null = null
+    const scripted = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      const url = String(input)
+      if (url.endsWith('/enroll')) {
+        const body = JSON.parse(String(init?.body)) as { enrollment_token: string; device_name: string }
+        if (body.enrollment_token !== GOOD_TOKEN || !body.device_name) {
+          return new Response(JSON.stringify({ code: 'unauthorized' }), { status: 401 })
+        }
+        const now = Date.now()
+        return new Response(
+          JSON.stringify({
+            user_id: USER, device_id: DEVICE_NEW, access_token: padToken('access-smoke-1'),
+            access_expires_at: new Date(now + 900_000).toISOString(), refresh_token: padToken('refresh-smoke-1'),
+            refresh_expires_at: new Date(now + 86_400_000).toISOString(),
+          }),
+          { status: 200, headers: { Date: new Date(now).toUTCString() } },
+        )
+      }
+      if (/\/devices\/[^/]+\/revoke$/.test(url)) {
+        revoked = url.match(/\/devices\/([^/]+)\/revoke$/)![1]
+        return new Response(null, { status: 204 })
+      }
+      if (url.endsWith('/devices')) {
+        const devices = rawDevices.map((d) => (d.id === revoked ? { ...d, revoked_at: new Date().toISOString() } : d))
+        return new Response(JSON.stringify({ devices }), { status: 200 })
+      }
+      return new Response('not found', { status: 404 })
+    }) as typeof fetch
+
+    // 12a. Landmarks: default mode is 'login', the honest render before
+    // anything durable has been read (AccountView's onMounted, which would
+    // check the store, never fires under renderToString).
+    configureAccount({ baseUrl: 'http://smoke.test', fetch: scripted, store: new MemoryCredentialStore() })
+    openAccount()
+    const loginPage = await render()
+    check('devices entry point sits in the rail footer', loginPage.includes('DEVICES'))
+    check('login heading', loginPage.includes('SIGN IN'))
+    check('enrollment token field', loginPage.includes('ENROLLMENT TOKEN'))
+    check('device name field', loginPage.includes('DEVICE NAME'))
+    check('enroll submit button', loginPage.includes('ENROLL DEVICE'))
+    closeAccount()
+
+    // 12b. CANT-28's one refusal shape: a bad token gets one message, and the
+    // form stays put rather than pretending to have moved on.
+    const refused = await login('not-the-real-token', 'My Phone')
+    check('a bad enrollment token is refused', refused === false)
+    check('and the login form is still what would render', accountState.mode === 'login')
+    check('with an error a person can read', typeof accountState.error === 'string' && accountState.error.length > 0)
+
+    // 12c. A good token enrolls, names the device, stores the credential and
+    // moves straight to the session list — which is also where it loads from.
+    const ok = await login(GOOD_TOKEN, "Rosa Pixel 8")
+    check('a good enrollment token logs in', ok === true)
+    check('and switches to the session list', accountState.mode === 'sessions')
+    check('and the error from the earlier refusal is gone', accountState.error === null)
+    check('the session list carries the live device by name', accountState.devices.some((d) => d.name === "Rosa Pixel 8"))
+    check('and the already-revoked one too — revoked devices stay in the list (CANT-117)',
+      accountState.devices.some((d) => d.name === 'Old iPad' && d.revokedAt !== undefined))
+
+    openAccount()
+    const sessionsPage = await render()
+    check('sessions heading', sessionsPage.includes('SESSIONS'))
+    check('a live device is listed by name', sessionsPage.includes("Rosa Pixel 8"))
+    check('and offers REVOKE', sessionsPage.includes('REVOKE'))
+    check('a revoked device carries the REVOKED marker', sessionsPage.includes('REVOKED'))
+    closeAccount()
+
+    // 12d. Revoking takes effect on the next read (CANT-117's route is
+    // idempotent 204 either way, so this re-reads the list rather than
+    // trusting an id it was handed).
+    await revokeDevice(DEVICE_LIVE)
+    check('revoking reaches the server', revoked === DEVICE_LIVE)
+    check('and the list re-read afterward shows it revoked', accountState.devices.find((d) => d.id === DEVICE_LIVE)?.revokedAt !== undefined)
+
+    // 12e. A device that already holds a credential skips the form entirely —
+    // checkExistingCredential() is AccountView's onMounted check.
+    const preEnrolled = new MemoryCredentialStore({
+      userId: USER, deviceId: DEVICE_EXISTING, accessToken: 'access-existing',
+      accessExpiresAt: Date.now() + 900_000, refreshToken: 'refresh-existing', refreshExpiresAt: Date.now() + 86_400_000,
+      accessIssuedAt: Date.now(), clockOffsetMs: 0, chain: [], lastSentAt: null,
+    })
+    configureAccount({ baseUrl: 'http://smoke.test', fetch: scripted, store: preEnrolled })
+    await checkExistingCredential()
+    check('a device that already holds a credential goes straight to the session list',
+      accountState.mode === 'sessions')
+    check('loading it on mount', accountState.devices.length > 0)
+
+    // 12f. A server that will not answer /devices at all — never a 401, just
+    // gone — surfaces a readable error rather than an unhandled rejection or
+    // a page that silently keeps showing stale data.
+    const deadFetch = (async () => {
+      throw new TypeError('fetch failed')
+    }) as typeof fetch
+    configureAccount({ baseUrl: 'http://smoke.test', fetch: deadFetch, store: preEnrolled })
+    await loadDevices()
+    check('an unreachable server surfaces a readable error', typeof accountState.error === 'string' && accountState.error.length > 0)
+    check('rather than throwing past loadDevices()', true)
+
+    // 12g. The credential terminal (CANT-31 §5, entered by the credential
+    // layer itself): the session list explains it and offers RE-ENROLL, which
+    // reopens the login form without clearing anything (CANT-31 §6 — only
+    // reenrollCredential ever replaces a held pair).
+    configureAccount({ baseUrl: 'http://smoke.test', fetch: scripted, store: new MemoryCredentialStore() })
+    accountState.mode = 'sessions'
+    accountState.terminal = { kind: 'credential', reason: 'smoke: a dead refresh token' }
+    openAccount()
+    const terminalPage = await render()
+    check('a credential terminal is explained on the session list', terminalPage.includes('re-enroll'))
+    check('and offers RE-ENROLL', terminalPage.includes('RE-ENROLL'))
+    closeAccount()
+    beginReenroll()
+    const modeAfterReenroll: string = accountState.mode
+    check('RE-ENROLL returns to the login form', modeAfterReenroll === 'login')
+  }
 
   console.log(fail.length ? `\n${fail.length} FAILED` : '\nall green')
   process.exit(fail.length ? 1 : 0)
