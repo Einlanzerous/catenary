@@ -51,6 +51,12 @@ interface AccountState {
   /** The caller's own devices, oldest first, revoked ones included — exactly
    *  as `GET /devices` serves them (CANT-117). */
   devices: Device[]
+  /** This browser's own device id — `EnrollResponse.device_id` /
+   *  `StoredCredential.deviceId` — set whenever a credential is minted or
+   *  read. Lets the session list mark which row is THIS device: CANT-117
+   *  allows revoking it, and doing so ends the tab making the request, which
+   *  is worth a person seeing before they click rather than discovering it. */
+  deviceId: string | null
   /** Set only by the credential layer's own terminal callback: a refresh
    *  Catenary itself refused (CANT-31 §5). ConnectionBanner names this "CANT-38
    *  designs the real experience, re-enrollment included" — the sessions view
@@ -63,6 +69,7 @@ export const accountState: AccountState = reactive({
   busy: false,
   error: null,
   devices: [],
+  deviceId: null,
   terminal: NOT_TERMINAL,
 })
 
@@ -101,6 +108,7 @@ export function configureAccount(next: AccountSeams = {}): void {
   accountState.busy = false
   accountState.error = null
   accountState.devices = []
+  accountState.deviceId = null
   accountState.terminal = NOT_TERMINAL
 }
 
@@ -131,15 +139,31 @@ function httpFetch(path: string, init?: RequestInit): Promise<Response> {
   return (seams.fetch ?? globalThis.fetch)(path, init)
 }
 
+/** Set by `beginReenroll()` and consumed by the very next
+ *  `checkExistingCredential()` — the one AccountView's `onMounted` runs. A
+ *  held (possibly dead) credential is exactly what a re-enroll is replacing,
+ *  so THIS one mount must not auto-navigate past the form it was opened to
+ *  show. Module-level rather than on `accountState` itself: it is intent for
+ *  the next mount, not something a render should ever read. */
+let pendingReenroll = false
+
 /**
  * Checked once on mount (AccountView's `onMounted` — never during SSR, since
  * IndexedDB does not exist there): a credential already on this device skips
- * straight to the session list rather than asking to log in again.
+ * straight to the session list rather than asking to log in again — UNLESS
+ * this mount was opened by `requestReenrollBeforeMount()` (ConnectionBanner's
+ * RE-ENROLL, clicked before the account view exists at all), in which case
+ * staying on the login form is the entire point of the click.
  */
 export async function checkExistingCredential(): Promise<void> {
+  if (pendingReenroll) {
+    pendingReenroll = false
+    return
+  }
   const store = await openStore()
   const held = await store.read()
   accountState.mode = held ? 'sessions' : 'login'
+  accountState.deviceId = held?.deviceId ?? null
   if (held) await loadDevices()
 }
 
@@ -177,6 +201,7 @@ export async function login(enrollmentToken: string, deviceName: string): Promis
     cred = null
     accountState.terminal = NOT_TERMINAL
     accountState.mode = 'sessions'
+    accountState.deviceId = stored.deviceId
     await loadDevices()
     return true
   } catch (e) {
@@ -272,12 +297,25 @@ export async function revokeDevice(id: string): Promise<void> {
   }
 }
 
-/** Back to the login form after a credential terminal (the only place this is
- *  wired: ConnectionBanner's and AccountView's own RE-ENROLL buttons, both
- *  gated on `terminal.kind === 'credential'`). Nothing is cleared here —
+/** Back to the login form after a credential terminal — AccountView's own
+ *  RE-ENROLL banner, called on an already-mounted view. Nothing is cleared:
  *  `reenrollCredential` is the only thing that ever replaces a held pair
  *  (CANT-31 §6), and `login()` reaches it because a credential is still held. */
 export function beginReenroll(): void {
   accountState.mode = 'login'
   accountState.error = null
+}
+
+/**
+ * The same, for ConnectionBanner's RE-ENROLL — clicked from OUTSIDE the
+ * account view, which is about to mount for the first time. `beginReenroll`
+ * alone is not enough here: AccountView's `onMounted` runs
+ * `checkExistingCredential()` right after, which would find the held (dead)
+ * credential and navigate straight past the very form this click opened —
+ * the pr-review finding this closes. `pendingReenroll` is consumed by that
+ * one mount, so it never lingers past it.
+ */
+export function requestReenrollBeforeMount(): void {
+  pendingReenroll = true
+  beginReenroll()
 }

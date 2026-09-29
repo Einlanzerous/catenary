@@ -28,6 +28,14 @@ async function submit() {
  *  reorders here. */
 const devices = computed<Device[]>(() => accountState.devices)
 
+/** Revoking your own current device is allowed and not special-cased on the
+ *  server (CANT-117) — but it ends THIS tab's session, which is worth
+ *  confirming rather than discovering. Every other row revokes at once. */
+function confirmedRevoke(d: Device) {
+  if (d.id === accountState.deviceId && !window.confirm(`Revoke ${d.name}? This is the device you're using now — you'll be signed out immediately.`)) return
+  void revokeDevice(d.id)
+}
+
 // Never runs during smoke.ts's SSR render (onMounted does not fire under
 // renderToString), so the app's first paint is always the honest default —
 // the login form — and the real check happens once this mounts for real.
@@ -99,7 +107,8 @@ onMounted(() => {
         <li v-for="d in devices" :key="d.id" class="device" :data-device-id="d.id">
           <div class="top">
             <span class="name">{{ d.name }}</span>
-            <button v-if="!d.revokedAt" class="revoke" :disabled="accountState.busy" @click="revokeDevice(d.id)">REVOKE</button>
+            <span v-if="d.id === accountState.deviceId" class="this-device">THIS DEVICE</span>
+            <button v-if="!d.revokedAt" class="revoke" :disabled="accountState.busy" @click="confirmedRevoke(d)">REVOKE</button>
           </div>
           <div class="bottom">
             <span class="meta">ENROLLED {{ fullStamp(d.createdAt) }}</span>
@@ -253,6 +262,16 @@ onMounted(() => {
 }
 .marker.fault {
   color: var(--signal-fault);
+}
+
+.this-device {
+  flex: none;
+  padding: 2px 6px;
+  font: var(--type-label);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--text-meta);
+  border: 1px solid var(--line-edge);
 }
 
 .revoke {

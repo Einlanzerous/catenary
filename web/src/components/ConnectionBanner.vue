@@ -1,7 +1,17 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { duration } from '@/lib/format'
+import { requestReenrollBeforeMount } from '@/account'
 import { openAccount, retryNow, state } from '@/store'
+
+/** Opens the account view landed on the login form, not wherever
+ *  `checkExistingCredential()`'s own read of the store would otherwise send
+ *  it — see `requestReenrollBeforeMount`'s own comment for why the two calls
+ *  cannot be collapsed into one. */
+function reenroll() {
+  requestReenrollBeforeMount()
+  openAccount()
+}
 
 /**
  * Deliberate call 09: the reconnect banner counts. Attempt number and retry
@@ -52,7 +62,7 @@ const terminal = computed(() => {
   <div v-else-if="terminal" class="banner lost terminal">
     <span class="dot" />
     <span class="text">{{ terminal.text }}</span>
-    <button v-if="terminal.kind === 'credential'" class="action" @click="openAccount">RE-ENROLL</button>
+    <button v-if="terminal.kind === 'credential'" class="action" @click="reenroll">RE-ENROLL</button>
     <span class="count">{{ terminal.label }}</span>
   </div>
 

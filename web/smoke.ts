@@ -29,6 +29,7 @@ import {
   configureAccount,
   loadDevices,
   login,
+  requestReenrollBeforeMount,
   revokeDevice,
 } from '@/account'
 import { OUTBOX_SEED } from '@/mock/fixtures'
@@ -620,8 +621,12 @@ async function main() {
     // hand-rolled parse is that a malformed id is caught the same way a real
     // server's would be.
     const USER = '00000000-0000-4000-8000-000000000001'
-    const DEVICE_NEW = '00000000-0000-4000-8000-00000000000a'
     const DEVICE_LIVE = '00000000-0000-4000-8000-00000000000b'
+    // Same id: the device 12c enrolls IS the live row /devices already lists
+    // for this account — a real GET /devices includes the caller's own
+    // current device alongside every other one, which is what lets 12h
+    // assert the session list's THIS DEVICE marker against a real row.
+    const DEVICE_NEW = DEVICE_LIVE
     const DEVICE_GONE = '00000000-0000-4000-8000-00000000000c'
     const DEVICE_EXISTING = '00000000-0000-4000-8000-00000000000d'
     // The wire's Token is exactly 43 characters of unpadded base64url
@@ -691,12 +696,19 @@ async function main() {
     check('the session list carries the live device by name', accountState.devices.some((d) => d.name === "Rosa Pixel 8"))
     check('and the already-revoked one too — revoked devices stay in the list (CANT-117)',
       accountState.devices.some((d) => d.name === 'Old iPad' && d.revokedAt !== undefined))
+    check("and this browser's own device id is recorded", accountState.deviceId === DEVICE_LIVE)
 
     openAccount()
     const sessionsPage = await render()
     check('sessions heading', sessionsPage.includes('SESSIONS'))
     check('a live device is listed by name', sessionsPage.includes("Rosa Pixel 8"))
     check('and offers REVOKE', sessionsPage.includes('REVOKE'))
+    // pr-review nit on #109: the row you are reading this on is marked, so
+    // revoking it is a choice rather than a surprise.
+    const rosaRow = sessionsPage.slice(sessionsPage.indexOf('Rosa Pixel 8'), sessionsPage.indexOf('Old iPad'))
+    check("the caller's own device is marked THIS DEVICE", rosaRow.includes('THIS DEVICE'))
+    const oldIpadRow = sessionsPage.slice(sessionsPage.indexOf('Old iPad'))
+    check('and no other row is', !oldIpadRow.includes('THIS DEVICE'))
     check('a revoked device carries the REVOKED marker', sessionsPage.includes('REVOKED'))
     closeAccount()
 
@@ -746,6 +758,26 @@ async function main() {
     beginReenroll()
     const modeAfterReenroll: string = accountState.mode
     check('RE-ENROLL returns to the login form', modeAfterReenroll === 'login')
+
+    // 12h. pr-review nit on #109: ConnectionBanner's RE-ENROLL is clicked from
+    // OUTSIDE the account view — it does not exist yet — so opening it must
+    // not let AccountView's own onMounted check immediately navigate straight
+    // past the login form this click asked for. requestReenrollBeforeMount()
+    // is the fix; checkExistingCredential() is the onMounted call it guards.
+    configureAccount({ baseUrl: 'http://smoke.test', fetch: scripted, store: preEnrolled })
+    requestReenrollBeforeMount()
+    const modeAfterRequest: string = accountState.mode
+    check('requesting a re-enroll lands on the login form immediately', modeAfterRequest === 'login')
+    await checkExistingCredential()
+    const modeAfterGuardedMount: string = accountState.mode
+    check("and the account view's own mount check — which would otherwise find the held credential and skip past it — honors the request",
+      modeAfterGuardedMount === 'login')
+    // The flag is consumed by that one mount, not left to leak into the next
+    // ordinary visit: an unrelated later mount still auto-detects normally.
+    await checkExistingCredential()
+    const modeAfterOrdinaryMount: string = accountState.mode
+    check('a later, unrelated mount is unaffected — it still goes straight to the session list',
+      modeAfterOrdinaryMount === 'sessions')
   }
 
   console.log(fail.length ? `\n${fail.length} FAILED` : '\nall green')
