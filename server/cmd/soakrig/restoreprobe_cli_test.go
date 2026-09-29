@@ -67,11 +67,17 @@ func TestRestoreProbeCmdAgainstALocalServer(t *testing.T) {
 
 	t.Run("passes, writes a 0600 credential file, and never prints a secret", func(t *testing.T) {
 		credFile := filepath.Join(t.TempDir(), "creds.json")
+		// NO -quiet HERE, deliberately: -quiet leaves cfg.Logger nil, which
+		// falls back to slog.DiscardHandler and means nothing this run logs
+		// — the probe's own log.Warn calls, or internal/client's "ready"
+		// line, which carries the SAME logger — ever reaches stderr. The
+		// stderr assertion below is only a real check on the logger path
+		// with the logger actually on.
 		args := []string{
 			"-db-url", dbURL, "-base-url", h.baseURL,
 			"-scratch-ok", dbName,
 			"-conversation", roomName, "-ahead", "10",
-			"-cred-file", credFile, "-quiet",
+			"-cred-file", credFile,
 		}
 		var code int
 		stdout, stderr := captureStdIO(t, func() { code = runRestoreProbeCmd(args) })
@@ -80,6 +86,9 @@ func TestRestoreProbeCmdAgainstALocalServer(t *testing.T) {
 		}
 		if !strings.Contains(stdout, "ordinals match:        true") {
 			t.Errorf("stdout does not report matching ordinals: %q", stdout)
+		}
+		if stderr == "" {
+			t.Fatal("stderr is empty with -quiet off — the logger path was not actually exercised, so the checks below would not catch a leak through it")
 		}
 
 		info, err := os.Stat(credFile)

@@ -6,10 +6,14 @@ package main
 // real subprocess, a real Postgres, a real truncateLog-shaped restore, and
 // restoreprobe run against it exactly as CANT-167's drill will run it.
 //
-// BEHIND A BUILD TAG, the same reason smoke_test.go's TestSmokeSoak is: it
-// builds and starts a real `catenary serve` subprocess, which is worth
-// paying for once, from its own named verify.sh step, rather than a second
-// time inside this package's ordinary `go test ./...` sweep.
+// BEHIND A BUILD TAG, but NOT because a real subprocess is otherwise absent
+// from the ordinary sweep — restoreprobe_cli_test.go's own
+// TestRestoreProbeCmdAgainstALocalServer already starts one and runs a full
+// passing probe on every DB-lane `go test ./...`. What this file pays for
+// ONCE, from its own named verify.sh step, is the truncated-restore and
+// broken-counter SCENARIOS specifically: seeding thirty messages, truncating
+// the log, and deliberately breaking the counter, on top of the subprocess
+// the ordinary sweep already starts for a fresh database.
 //
 // checkScratchDatabase itself — the hard safety requirement — is proved
 // separately and unconditionally in restoreprobe_safety_test.go, which needs
