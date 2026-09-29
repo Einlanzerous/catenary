@@ -33,14 +33,15 @@ import {
   IdbOutboxStore,
   InProcessLockHub,
   MemoryOutboxStore,
-  NullTransport,
   Outbox,
+  TransportOutbox,
   WebLockDrainLock,
   project,
   type OutboxOptions,
   type OutboxStore,
   type OutboxView,
 } from '@/outbox'
+import { consoleLogger, createTransport, heldCredential, type Transport } from '@/transport'
 
 export type View = 'thread' | 'search'
 export type Theme = 'dark' | 'light'
@@ -431,8 +432,8 @@ export function setConnection(next: ConnectionState) {
 
   if (next === 'live') {
     // What the outbox holds goes out on the TRANSPORT's ready, not on this
-    // banner's: until CANT-163 wires one, the NullTransport never is, and
-    // every entry stays honestly QUEUED whatever the dev toolbar says.
+    // banner's: until CANT-39 starts the transport, it never is, and every
+    // entry stays honestly QUEUED whatever the dev toolbar says.
     c.attempt = 0
     c.retryInSec = 0
     return
@@ -665,21 +666,48 @@ export function jumpTo(messageId: string, seekMs?: number) {
 /* ── the outbox's wiring ────────────────────────────────────────────────── */
 
 let current: Outbox | null = null
+/** The adapter `configureOutbox` built itself, detached on a reconfigure. */
+let adapter: TransportOutbox | null = null
+let shipped: Transport | null = null
+
+/**
+ * The app's CANT-35 transport, BUILT AND NEVER STARTED. The outbox is wired to
+ * it through its own adapter (CANT-163), so every fact the outbox acts on
+ * already comes from CANT-35's `subscribe` / `onSessionEnd` / `send` /
+ * `onApply`. Wiring the SPA to a live server — an enrolled credential,
+ * `start()`, the journal projected into `state`, the mock deleted — is
+ * CANT-39's (CANT-35 ruling 8 → A), and it hands its transport to
+ * `useTransport`. Until then no socket opens, `ready` never goes true, and
+ * every entry renders honestly QUEUED. The credential refuses rather than
+ * inventing an identity, so a stray `start()` fails its dial and claims
+ * nothing.
+ */
+function shippedTransport(): Transport {
+  shipped ??= createTransport({
+    baseUrl: typeof location !== 'undefined' ? location.origin : 'http://localhost',
+    credential: heldCredential(() => {
+      throw new Error('no enrolled device: the live transport is wired by CANT-39')
+    }),
+  })
+  return shipped
+}
 
 /**
  * Build the outbox this app renders. Every seam is replaceable: `smoke.ts`
- * passes a MemoryOutboxStore and a ScriptedTransport, and CANT-163 passes its
- * adapter over CANT-35's transport in place of the NullTransport.
+ * passes a MemoryOutboxStore and a ScriptedTransport, and `useTransport` an
+ * adapter over a live CANT-35 transport.
  *
  * The defaults are the shipped app's: IndexedDB `catenary-outbox` where it
- * exists, the Web Lock and BroadcastChannel where they exist, and a transport
- * that is never ready.
+ * exists, the Web Lock and BroadcastChannel where they exist, and the adapter
+ * over the app's CANT-35 transport, which is not started.
  */
 export async function configureOutbox(
   seams: Partial<Omit<OutboxOptions, 'onChange' | 'accountId'>> & { seed?: boolean } = {},
 ): Promise<Outbox> {
   current?.close()
   current = null
+  adapter?.close()
+  adapter = null
   const browser = typeof window !== 'undefined'
   // Where IndexedDB is absent or refuses to open (SSR, or a private window),
   // the outbox still works for this page's life — and with no storage API
@@ -708,7 +736,7 @@ export async function configureOutbox(
   const nav = typeof navigator !== 'undefined' ? navigator : undefined
   const outbox = await Outbox.open({
     store,
-    transport: seams.transport ?? new NullTransport(),
+    transport: seams.transport ?? (adapter = new TransportOutbox(shippedTransport())),
     accountId: state.me,
     lock: seams.lock ?? (nav?.locks ? new WebLockDrainLock(nav.locks) : new InProcessLockHub().lock()),
     channel: seams.channel !== undefined ? seams.channel : browser && typeof BroadcastChannel !== 'undefined' ? new BroadcastOutboxChannel() : null,
@@ -733,6 +761,16 @@ export let outboxReady: Promise<Outbox> = configureOutbox()
 export function useOutbox(seams: Parameters<typeof configureOutbox>[0]): Promise<Outbox> {
   outboxReady = configureOutbox(seams)
   return outboxReady
+}
+
+/** Rebuild the outbox over a CANT-35 transport — CANT-39's one call once it
+ *  has built and started the live one. The transport stays the caller's to
+ *  stop; a reconfigure detaches the adapter from it. */
+export function useTransport(transport: Transport): Promise<Outbox> {
+  const a = new TransportOutbox(transport, consoleLogger)
+  const ready = useOutbox({ transport: a })
+  adapter = a
+  return ready
 }
 
 export { isOutboxMessage, state }

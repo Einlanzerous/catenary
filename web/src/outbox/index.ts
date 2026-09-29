@@ -24,4 +24,5 @@ export {
   LOCK_NAME,
 } from './coordination'
 export { NullTransport, ScriptedServer, ScriptedTransport } from './transports'
+export { TransportOutbox } from './transport-adapter'
 export { errorText, project } from './projection'

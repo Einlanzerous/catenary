@@ -1,8 +1,10 @@
 /* Two `OutboxTransport`s that are not the real one.
  *
- * `NullTransport` is what the shipped app wires until CANT-163 adapts CANT-35's
- * transport: it is never `ready`, so every entry composed renders honestly
- * QUEUED, is kept durably, and is never shown SENT by an ack nobody sent.
+ * `NullTransport` is a session that never exists: it is never `ready`, so
+ * every entry composed renders honestly QUEUED, is kept durably, and is never
+ * shown SENT by an ack nobody sent. The shipped app wired it until CANT-163
+ * put `TransportOutbox` over CANT-35's transport in its place; it stays for
+ * whatever needs an outbox with no transport at all.
  *
  * `ScriptedTransport` is the tests' server. Its dedup follows the server's
  * stated semantics — `UNIQUE (author_id, client_id)`, a replay answered with

@@ -60,6 +60,9 @@ import {
   useOutbox,
 } from '@/store'
 
+// CANT-163: the outbox over CANT-35's transport, through its adapter.
+import './src/outbox/test/transport-adapter.test'
+
 type Faults = OutboxFaults & StoreFaults
 
 /* ── harness ─────────────────────────────────────────────────────────────── */
