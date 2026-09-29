@@ -76,7 +76,7 @@ function status(extra: Partial<TransportStatus>): TransportStatus {
   return {
     terminal: NOT_TERMINAL, refreshHold: 'none', tokenRefused: false, nextRefreshAt: null, connected: false,
     ready: false, sessionId: null, heartbeatIntervalSec: null, missedPongLimit: null, caughtUp: true, cursor: null,
-    attempt: 0, nextDialAt: null, stats: emptyStats(), messages: 0, wipes: 0, ...extra,
+    attempt: 0, nextDialAt: null, stats: emptyStats(), messages: 0, wipes: 0, headSeqTotal: 0, ...extra,
   }
 }
 
@@ -97,4 +97,33 @@ test('criterion 16 · connectionInfo maps every transport state onto the banner\
   const held = connectionInfo(status({ refreshHold: 'backoff', tokenRefused: true }), { now })
   assert.equal(held.refreshHold, 'backoff')
   assert.equal(held.tokenRefused, true)
+})
+
+test('CANT-37 · resync counts toward head_seq, never a spinner, and never a 0 / 0 claim', () => {
+  const now = 1_000_000
+  const resyncing = (extra: Partial<TransportStatus>) => status({ connected: true, ready: true, caughtUp: false, ...extra })
+
+  // No page has landed yet: there is no target to count towards, so the
+  // numbers stay absent rather than reading 0 / 0 — which would claim
+  // "nothing to do" before this client has looked.
+  const nothingYet = connectionInfo(resyncing({}), { now })
+  assert.equal(nothingYet.state, 'resyncing')
+  assert.equal(nothingYet.synced, undefined)
+  assert.equal(nothingYet.total, undefined)
+
+  // A client back from six hours offline: it already held 823 of what the
+  // conversations touched so far say is a 1,000-message log.
+  const partway = connectionInfo(resyncing({ messages: 823, headSeqTotal: 1000 }), { now })
+  assert.equal(partway.synced, 823)
+  assert.equal(partway.total, 1000)
+
+  // A live frame for an already-held conversation can land between pages
+  // without that conversation's head_seq catching up with it — only a page
+  // is guaranteed to re-carry it. `synced` never passes `total` regardless.
+  const skewed = connectionInfo(resyncing({ messages: 1001, headSeqTotal: 1000 }), { now })
+  assert.equal(skewed.synced, 1000)
+  assert.equal(skewed.total, 1000)
+
+  // It reaches head_seq: caughtUp flips, and the numbers give way to 'live'.
+  assert.equal(connectionInfo(status({ connected: true, ready: true, caughtUp: true, messages: 1000, headSeqTotal: 1000 }), { now }).state, 'live')
 })
