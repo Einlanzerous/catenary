@@ -31,6 +31,12 @@ export interface Faults {
    *  end condition, so a catch-up that ends on an in-flight page bounded below
    *  the triggering message never returns it. */
   ignoreRetrigger: boolean
+  /** CANT-175, TS-only: `IdbJournal`'s stale refusal (idb-journal.ts) has no
+   *  Go counterpart, so this is not a Go switch either. A live journal write
+   *  refused with `JournalStale` does not pull a catch-up, so the refused
+   *  record sits above the stored cursor, unseen, until some other trigger
+   *  happens to come along. */
+  skipStaleCatchUp: boolean
 
   /* CANT-31 §2, §3 and §5, and CANT-127/129. Declared here so the switch list
    * is Go's whole list; the credential layer (CANT-152) is what reads them. */
@@ -53,6 +59,7 @@ export const NO_FAULTS: Readonly<Faults> = Object.freeze({
   endCatchUpEarly: false,
   skipWipe: false,
   ignoreRetrigger: false,
+  skipStaleCatchUp: false,
   refreshUnlocked: false,
   noChain: false,
   proposeAfresh: false,

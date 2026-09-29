@@ -21,7 +21,7 @@ export {
 export type { SessionEnd, Transport, TransportConfig } from './transport'
 export { MemoryJournal, StagedJournal } from './journal'
 export type { Applied, Journal, JournalSnapshot, LiveWrite, MemoryJournalOptions } from './journal'
-export { IdbJournal, JournalWriteAborted } from './idb-journal'
+export { IdbJournal, JournalStale, JournalWriteAborted } from './idb-journal'
 export type { IdbJournalOptions } from './idb-journal'
 export { connectionInfo, emptyStats } from './status'
 export type { JournalError, Stats, TransportStatus } from './status'

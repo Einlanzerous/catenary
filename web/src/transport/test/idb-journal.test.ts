@@ -318,3 +318,69 @@ test('two tabs · a tab behind the stored cursor never moves it backward', async
   assert.equal(next.messageCount(), 2)
   next.close()
 })
+
+/**
+ * CANT-175, filed by CANT-169: a live write's `JournalStale` (above) sat above
+ * the stored cursor, unseen by the tab it was refused in, until whatever
+ * trigger happened along next. These two run the same two-tab wipe through a
+ * transport rather than a bare journal, to show the fix's trigger and its
+ * negative control side by side.
+ */
+test('two tabs · a live journal write refused as stale pulls a catch-up, and the refused message is shown within one /sync', async () => {
+  const factory = new IDBFactory()
+  const a = await IdbJournal.open({ factory })
+  const r = rig({ journal: a })
+  r.sync.answer = () => bootstrapPage(3, [message(1), message(2), message(3)])
+  r.t.start()
+  await r.connect()
+  await settle()
+  assert.equal(r.t.status().cursor, 3, 'tab A holds the bootstrap page')
+
+  // Tab B wipes the shared journal underneath A; A's own mirror has not
+  // reloaded yet, so it still believes it holds CONV and OTHER.
+  const b = await IdbJournal.open({ factory })
+  await b.wipe()
+  b.close()
+
+  const live = message(4)
+  r.sync.answer = () => bootstrapPage(4, [message(1), message(2), message(3), live])
+  const before = r.sync.requests.length
+  r.net.last.frame(messageFrame(live))
+  await settle()
+
+  assert.equal(r.sync.requests.length, before + 1, 'the stale refusal pulled exactly one catch-up')
+  assert.equal(r.sync.requests[before].after, 0, 'A’s mirror reloaded to the wiped, empty store first')
+  assert.equal(r.t.status().journalError, null, 'a stale refusal is not surfaced as a journal error')
+  assert.equal(r.t.status().cursor, 4)
+  assert.ok(r.t.snapshot().messages.some((m) => m.id === live.id), 'the refused message is shown, within that one /sync')
+
+  r.t.stop()
+  a.close()
+})
+
+test('two tabs · negative control skipStaleCatchUp: the refused message sits unseen with no other trigger', async () => {
+  const factory = new IDBFactory()
+  const a = await IdbJournal.open({ factory })
+  const r = rig({ journal: a, faults: { skipStaleCatchUp: true } })
+  r.sync.answer = () => bootstrapPage(3, [message(1), message(2), message(3)])
+  r.t.start()
+  await r.connect()
+  await settle()
+
+  const b = await IdbJournal.open({ factory })
+  await b.wipe()
+  b.close()
+
+  const live = message(4)
+  r.sync.answer = () => bootstrapPage(4, [message(1), message(2), message(3), live])
+  const before = r.sync.requests.length
+  r.net.last.frame(messageFrame(live))
+  await settle()
+
+  assert.equal(r.sync.requests.length, before, 'the current behavior: no catch-up follows the refusal')
+  assert.equal(r.t.status().journalError?.name, 'JournalStale', 'the refusal surfaces as a journal error instead')
+  assert.ok(!r.t.snapshot().messages.some((m) => m.id === live.id), 'and the refused message is not held')
+
+  r.t.stop()
+  a.close()
+})
