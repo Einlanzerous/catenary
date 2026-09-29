@@ -82,8 +82,10 @@ plan lean on it: `Glob` the path, `Grep` the symbol, `Read` the cited line.
   CANT-127 rev 1 described CANT-118 as "stopped on a question" that a person
   had settled after the plan was submitted, and rev 2 still said "PR #77 is
   open" after it merged. Where a plan cites a PR, a constant or a sibling
-  ticket's state, check the tree for what actually landed
-  (`git log --oneline -- <path>`).
+  ticket's state, read the tree for the artefact: does the constant, file or
+  test that change would have landed exist on `main` now? Not `git log` — the
+  pass runs on a one-commit checkout, where a path's history is the tip or
+  nothing, and an empty history would read as "nothing changed".
 
 ### 2. The two ordinals — blocking
 
