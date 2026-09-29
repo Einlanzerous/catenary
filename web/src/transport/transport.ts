@@ -51,7 +51,8 @@ import { type CloseVerdict, classifyClose, closeStatusKey } from './closes'
 import { type Credential, type CredentialSeam, isCatenaryUnauthorized } from './credential'
 import { type Faults, NO_FAULTS } from './faults'
 import { Heartbeat } from './heartbeat'
-import { type Applied, type Journal, type JournalSnapshot, MemoryJournal } from './journal'
+import { JournalStale } from './idb-journal'
+import { type Applied, type Journal, type JournalSnapshot, type LiveWrite, MemoryJournal } from './journal'
 import {
   type Clock,
   type Lifecycle,
@@ -794,10 +795,16 @@ class SocketTransport implements Transport {
         break
       case 'conversation':
         // CANT-103: applied idempotently by id; moves no cursor.
-        this.enqueue(async () => this.emitApply(await this.journal.applyLive({ conversations: [f.conversation] }, this.faults)))
+        this.enqueue(async () => {
+          const a = await this.applyLiveWrite({ conversations: [f.conversation] })
+          if (a) this.emitApply(a)
+        })
         break
       case 'user':
-        this.enqueue(async () => this.emitApply(await this.journal.applyLive({ users: [f.user] }, this.faults)))
+        this.enqueue(async () => {
+          const a = await this.applyLiveWrite({ users: [f.user] })
+          if (a) this.emitApply(a)
+        })
         break
       case 'receipt':
         this.onReceipt(f)
@@ -869,10 +876,34 @@ class SocketTransport implements Transport {
         this.catchup.trigger()
         return
       }
-      const a = await this.journal.applyLive({ messages: [m] }, this.faults)
+      const a = await this.applyLiveWrite({ messages: [m] })
+      if (!a) return
       this.stats.liveFrames++
       this.emitApply(a)
     })
+  }
+
+  /**
+   * CANT-175. A live write `IdbJournal` refuses with `JournalStale` — another
+   * tab wiped the shared journal since this one's mirror was last read — has
+   * already reloaded that mirror (idb-journal.ts): what it carried is not
+   * lost, only unseen here. So this pulls a catch-up, the same trigger
+   * CANT-103's introduction discard above uses, rather than letting it fall
+   * through to `enqueue`'s generic handling, which would only surface it as
+   * `journalError` and leave it for whatever trigger happens along next.
+   * `MemoryJournal` never throws this, so every other caller is unaffected.
+   * `skipStaleCatchUp` is the negative control: the write is left to reject
+   * as it did before this ticket.
+   */
+  private async applyLiveWrite(write: LiveWrite): Promise<Applied | null> {
+    if (this.faults.skipStaleCatchUp) return this.journal.applyLive(write, this.faults)
+    try {
+      return await this.journal.applyLive(write, this.faults)
+    } catch (e) {
+      if (!(e instanceof JournalStale)) throw e
+      this.catchup.trigger()
+      return null
+    }
   }
 
   /**
