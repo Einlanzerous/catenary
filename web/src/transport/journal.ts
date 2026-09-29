@@ -76,6 +76,13 @@ export interface Journal {
   snapshot(): JournalSnapshot
   /** How many messages are held; `snapshot().messages.length` without the copy. */
   messageCount(): number
+  /** Sum of `head_seq` over every conversation currently held — the resync
+   *  progress bar's target (CANT-37). A conversation not yet touched by this
+   *  catch-up isn't counted, so the total grows as one is discovered, same as
+   *  `messageCount()` does; every message held belongs to a held conversation
+   *  (CANT-103 rule 4 discards anything that doesn't), so the two are always
+   *  comparable without a second pass over `messages`. */
+  headSeqTotal(): number
 }
 
 /** What `MemoryJournal` holds; replaced wholesale on commit. */
@@ -169,6 +176,12 @@ export class MemoryJournal implements Journal {
 
   messageCount(): number {
     return this.s.messages.size
+  }
+
+  headSeqTotal(): number {
+    let total = 0
+    for (const c of this.s.conversations.values()) total += c.headSeq
+    return total
   }
 
   snapshot(): JournalSnapshot {

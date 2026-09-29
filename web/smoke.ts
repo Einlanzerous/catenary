@@ -22,6 +22,8 @@ import {
 } from '@/store'
 import { OUTBOX_SEED } from '@/mock/fixtures'
 import { MemoryOutboxStore, ScriptedTransport } from '@/outbox'
+import { connectionInfo, emptyStats, type TransportStatus } from '@/transport/status'
+import { NOT_TERMINAL } from '@/transport/terminal'
 
 const fail: string[] = []
 const check = (name: string, ok: boolean, detail = '') => {
@@ -524,6 +526,55 @@ async function main() {
     state.composer.draft = ''
   }
   state.connection.terminal = undefined
+
+  // 11. CANT-37 — resync shows real numeric progress toward `head_seq`, never
+  // a spinner, and never a 0 / 0 claim. Driven here by fake `TransportStatus`
+  // values through the real `connectionInfo` adapter, not a live transport —
+  // CANT-39 wires that into this store.
+  {
+    const now = 1_000_000
+    const fixture = (extra: Partial<TransportStatus>): TransportStatus => ({
+      terminal: NOT_TERMINAL, refreshHold: 'none', tokenRefused: false, nextRefreshAt: null,
+      connected: true, ready: true, sessionId: 'smoke', heartbeatIntervalSec: 35, missedPongLimit: 2,
+      caughtUp: false, cursor: 0, attempt: 0, nextDialAt: null, stats: emptyStats(),
+      messages: 0, wipes: 0, headSeqTotal: 0, ...extra,
+    })
+    // `synced`/`total`/`roomsPending` are genuinely absent, not 0, whenever
+    // `connectionInfo` omits them — the banner's `v-if="c.total !== undefined"`
+    // is what tells a real absence from a real zero, so the test must too.
+    const apply = (info: ReturnType<typeof connectionInfo>) => {
+      state.connection.state = info.state
+      state.connection.synced = info.synced as number
+      state.connection.total = info.total as number
+      state.connection.roomsPending = info.roomsPending as number
+    }
+
+    // Before any page has landed there is no target yet — 0 / 0 would claim
+    // "nothing to do" before this client has looked, so the banner shows no
+    // number at all rather than a false one.
+    apply(connectionInfo(fixture({}), { now }))
+    const nothingYetPage = await render()
+    check('resyncing with no page landed yet shows no number, not 0 / 0',
+      nothingYetPage.includes('Reconnected — catching up') && !/\d+ \/ \d+ messages/.test(nothingYetPage))
+
+    // A client back from six hours offline: it already held 823 of what the
+    // conversations it has learned about so far say is a 1,000-message log.
+    apply(connectionInfo(fixture({ messages: 823, headSeqTotal: 1000 }), { now }))
+    const resyncPage = await render()
+    check('resyncing banner counts real progress toward head_seq, not a spinner',
+      resyncPage.includes('823 / 1,000 messages'))
+
+    // It reaches head_seq: the transport reports caughtUp, and the resync
+    // line is gone.
+    apply(connectionInfo(fixture({ caughtUp: true, messages: 1000, headSeqTotal: 1000 }), { now }))
+    const caughtUpPage = await render()
+    check('once it reaches head_seq the resync banner is gone', !caughtUpPage.includes('catching up'))
+    check('and the state reads live', state.connection.state === 'live')
+
+    state.connection.synced = 0
+    state.connection.total = 0
+    state.connection.roomsPending = 0
+  }
 
   // The two states that DO drain keep their wording exactly.
   state.connection.state = 'offline'

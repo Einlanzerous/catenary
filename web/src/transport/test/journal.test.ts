@@ -327,3 +327,41 @@ test('criterion 25 · obligation 1: nothing a page carries is observable before 
   assert.equal(r.t.snapshot().messages.length, 3)
   assert.equal(r.t.snapshot().cursor, 3)
 })
+
+// --- CANT-37: resync progress against head_seq -------------------------------------
+
+test('CANT-37 · status().headSeqTotal and .messages count towards head_seq, discovered page by page, and reach it exactly', async () => {
+  const r = rig()
+  const C2 = uuid(105)
+  const held = deferred<SyncResponse>()
+  r.sync.answer = (req) => {
+    if (req.after === 0) {
+      return page({
+        logSeq: 3, hasMore: true,
+        messages: [message(1), message(2), message(3)],
+        conversations: [conversation(CONV, { headSeq: 3 })],
+        users: [user(OTHER)],
+      })
+    }
+    if (req.after === 3) return held.promise
+    return page({ logSeq: req.after })
+  }
+  r.t.start()
+  await r.connect()
+  await flush()
+
+  // Only the first conversation has been touched so far: the target is its
+  // own head_seq, and every message it named has already landed — a client
+  // back from six hours offline can say exactly how far through it is.
+  assert.equal(r.t.status().headSeqTotal, 3, 'the target grows as conversations are discovered')
+  assert.equal(r.t.status().messages, 3)
+  assert.equal(r.t.status().caughtUp, false, 'a second page is still in flight (hasMore was true)')
+
+  const c2 = [1, 2].map((n) => message(n, { id: uuid(2000 + n), conversationId: C2, seq: n, logSeq: 3 + n }))
+  held.resolve(page({ logSeq: 5, messages: c2, conversations: [conversation(C2, { headSeq: 2 })], users: [user(OTHER)] }))
+  await flush()
+
+  assert.equal(r.t.status().headSeqTotal, 5, 'the newly discovered conversation adds its own head_seq')
+  assert.equal(r.t.status().messages, 5, 'and its messages land with it')
+  assert.equal(r.t.status().caughtUp, true, 'resync reaches head_seq exactly')
+})

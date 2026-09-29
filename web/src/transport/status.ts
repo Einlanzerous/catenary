@@ -94,6 +94,12 @@ export interface TransportStatus {
    *  through in this transport's life. */
   messages: number
   wipes: number
+  /** `journal.headSeqTotal()` — no Go counterpart, because the Go client
+   *  renders nothing. Together with `messages` above, this is the resync
+   *  progress bar's fraction (CANT-37): `messages` toward `headSeqTotal`,
+   *  never a spinner. Grows as catch-up discovers conversations it has not
+   *  touched yet, same as `messages` does. */
+  headSeqTotal: number
 }
 
 export function emptyStats(): Stats {
@@ -124,7 +130,25 @@ export function connectionInfo(status: TransportStatus, env: { now: number; onli
     return { state: 'terminal', terminal: { kind: status.terminal.kind, reason: status.terminal.reason }, ...extra }
   }
   if (env.online === false) return { state: 'offline', ...extra }
-  if (status.ready) return { state: status.caughtUp ? 'live' : 'resyncing', ...extra }
+  if (status.ready) {
+    if (status.caughtUp) return { state: 'live', ...extra }
+    // A count toward `head_seq`, never a spinner (CANT-37) — but only once
+    // there is a real number to show. `headSeqTotal` is 0 until the first
+    // page has named a conversation, and a 0 / 0 would itself be a claim: it
+    // reads as "nothing to do" before this client has looked. `synced` is
+    // clamped to `total` because a live frame for an already-held
+    // conversation can land between pages without that conversation's
+    // `head_seq` catching up with it (only a page, not every live message,
+    // is guaranteed to re-carry it) — a transient fact about ordering, never
+    // one this client should show as passing the target it is counting to.
+    if (status.headSeqTotal <= 0) return { state: 'resyncing', ...extra }
+    return {
+      state: 'resyncing',
+      synced: Math.min(status.messages, status.headSeqTotal),
+      total: status.headSeqTotal,
+      ...extra,
+    }
+  }
   return {
     state: 'reconnecting',
     attempt: Math.max(1, status.attempt),

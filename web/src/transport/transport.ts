@@ -410,6 +410,7 @@ class SocketTransport implements Transport {
       stats,
       messages: this.journal.messageCount(),
       wipes: this.wipes,
+      headSeqTotal: this.journal.headSeqTotal(),
     }
   }
 
