@@ -7,7 +7,9 @@ import StatusLabel from '@/components/StatusLabel.vue'
 import {
   closeSearch,
   conversationTitle,
+  lastMessageOf,
   newCount,
+  outboxReady,
   typingLabel,
   openSearch,
   searchHits,
@@ -15,7 +17,10 @@ import {
   send,
   state,
   unreadCount,
+  useOutbox,
 } from '@/store'
+import { OUTBOX_SEED } from '@/mock/fixtures'
+import { MemoryOutboxStore, ScriptedTransport } from '@/outbox'
 
 const fail: string[] = []
 const check = (name: string, ok: boolean, detail = '') => {
@@ -25,7 +30,22 @@ const check = (name: string, ok: boolean, detail = '') => {
 
 const render = () => renderToString(createSSRApp(App))
 
+/** One thread row, bounded by its own `data-message` and the next one (or the
+ *  end of the stream). */
+function messageRow(html: string, id: string): string {
+  const at = html.indexOf(`data-message="${id}"`)
+  if (at < 0) return ''
+  const ends = ['data-message="', 'class="persist-notice', 'class="typing', 'class="composer']
+    .map((marker) => html.indexOf(marker, at + 1))
+    .filter((i) => i > 0)
+  return html.slice(at, ends.length ? Math.min(...ends) : undefined)
+}
+const rowText = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+
 async function main() {
+  // The outbox loads asynchronously, like any IndexedDB read; the first
+  // render is of the loaded app, as it is in a browser.
+  await outboxReady
 
   // 1. The default screen mounts and carries the design's landmarks.
   const main = await render()
@@ -108,7 +128,17 @@ async function main() {
   // 2. Rail previews derive from the last message, per conversation kind.
   check('room preview carries a name', main.includes('Rosa: Listened to it'))
   check('own preview says You', main.includes('You: sent it to your inbox instead'))
-  check('failed conversation marked', main.includes('FAILED'))
+  // THE FAILED ROW IS AN OUTBOX ENTRY (CANT-161). A send the server never
+  // stored cannot be a record in the log — it would need a seq of its own —
+  // so the canvas's failed voice note in Ted's DM is seeded into the outbox
+  // store, and the rail's FAILED marker is fed by the outbox tail merge.
+  const tedRow = elementWithId(main, 'c-ted')
+  check('failed conversation marked', tedRow.includes('FAILED'), tedRow.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim())
+  check('and FAILED as a fault, not a label', /class="(fault marker|marker fault)"/.test(tedRow))
+  check('the failed row comes from the outbox store',
+    lastMessageOf('c-ted')?.id === OUTBOX_SEED[0].clientId)
+  check('no record in the log is failed — only an outbox entry can be',
+    !state.messages.some((m) => m.state === 'failed'))
   check('muted conversation marked', main.includes('MUTED'))
 
   // 3. Search finds text and transcripts in one list.
@@ -130,24 +160,41 @@ async function main() {
   check('reading clears the badge', unreadCount(bergen) === 0)
   check('but keeps the rule', newCount(bergen) > 0, `${newCount(bergen)} NEW`)
 
-  // 5. The mock ladder your own message actually walks ends at `sent`.
+  // 5. A send reaches SENT on an ack, and never DELIVERED — on the RENDERED row.
   //
-  // SECTION 1 CANNOT SEE THIS. It renders once, so `advance`'s timers never
-  // fire and a client-invented `delivered` would sit behind a green static
-  // assertion — which is exactly what it did until CANT-90's review found it.
-  // Driving `send` and waiting past the last timer is the only thing here that
-  // watches the state a message reaches on its own.
+  // CANT-90'S GUARD, KEPT ON THE PATH A PERSON SEES. This used to wait 2.2 s
+  // for a timer to walk a local message up a ladder, and checked the state
+  // field; there is no timer now (CANT-161 deleted `advance()`), and nothing
+  // moves a send to `sent` except an ack. So the send goes out over a
+  // scripted transport that acks it, and the assertion reads the row rendered
+  // for that clientId.
+  //
+  // First the shipped wiring: the NullTransport is never ready, so a send is
+  // kept and renders QUEUED — never SENT by an ack nobody sent.
   select('c-kitchen')
+  state.composer.draft = 'kept, not sent'
+  const keptId = await send()
+  const keptRow = messageRow(await render(), keptId!)
+  check('the shipped app renders a send QUEUED', keptRow.includes('QUEUED'), rowText(keptRow))
+  check('and never SENT without an ack', !keptRow.includes('SENT'), rowText(keptRow))
+  check('a send is never put in the log', !state.messages.some((m) => m.clientId === keptId))
+
+  const transport = new ScriptedTransport()
+  transport.autoAck = true
+  await useOutbox({ store: new MemoryOutboxStore(), transport, storage: null })
+  transport.open()
   state.composer.draft = 'does this walk past sent'
-  send()
-  const sent = state.messages[state.messages.length - 1]
-  check('send authors it as mine', sent.authorId === state.me)
-  await new Promise((r) => setTimeout(r, 2200))
-  check(
-    'my own message settles at SENT and never invents DELIVERED',
-    sent.state === 'sent',
-    `settled at ${sent.state}`,
-  )
+  const sentId = await send()
+  await new Promise((r) => setTimeout(r, 0))
+  check('one frame, under the clientId the entry was minted with',
+    transport.frames.length === 1 && transport.frames[0].clientId === sentId,
+    `${transport.frames.length} frame(s)`)
+  const sentPage = await render()
+  const sentRow = messageRow(sentPage, sentId!)
+  check('send authors it as mine', sentRow.includes('You'), rowText(sentRow))
+  check('my own message renders SENT on the ack', sentRow.includes('SENT'), rowText(sentRow))
+  check('and the rendered row never invents DELIVERED', !sentRow.includes('DELIVERED'), rowText(sentRow))
+  check('nor does the page', !sentPage.includes('DELIVERED'))
 
   // 6. CANT-137 — a deactivated member is not one the header claims.
   //

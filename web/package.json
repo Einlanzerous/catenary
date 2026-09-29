@@ -9,14 +9,15 @@
     "build": "npm run gen:check && vue-tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
-    "smoke": "npm run gen:check && vite build --ssr smoke.ts --outDir dist-smoke --logLevel warn && node dist-smoke/smoke.js && npm run conformance",
+    "smoke": "npm run gen:check && vite build --ssr smoke.ts --outDir dist-smoke --logLevel warn && node dist-smoke/smoke.js && npm run conformance && npm run outbox",
     "gen": "node ../schema/codegen/generate.mjs",
     "gen:check": "node ../schema/codegen/generate.mjs --check",
     "gen:test": "node --test ../schema/codegen/generate.test.mjs",
     "conformance": "vite build --ssr conformance.ts --outDir dist-conformance --logLevel warn && node dist-conformance/conformance.js",
     "validate": "vite build --ssr validate.ts --outDir dist-validate --logLevel warn && node dist-validate/validate.js",
     "readstate": "vite build --ssr readstate.ts --outDir dist-readstate --logLevel warn && node dist-readstate/readstate.js",
-    "test:transport": "vite build --ssr transport.test.ts --outDir dist-transport-test --logLevel warn && node --test dist-transport-test/transport.test.js"
+    "test:transport": "vite build --ssr transport.test.ts --outDir dist-transport-test --logLevel warn && node --test dist-transport-test/transport.test.js",
+    "outbox": "vite build --ssr outbox.test.ts --outDir dist-outbox --logLevel warn && node --test dist-outbox/outbox.test.js"
   },
   "dependencies": {
     "vue": "^3.5.13"
@@ -25,6 +26,7 @@
     "@types/node": "^26.2.0",
     "@vitejs/plugin-vue": "^5.2.1",
     "@vue/server-renderer": "^3.5.41",
+    "fake-indexeddb": "^6.2.5",
     "typescript": "~5.7.2",
     "vite": "^6.0.7",
     "vue-tsc": "^2.2.0"

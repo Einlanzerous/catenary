@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import type { ImageAttachment, Message } from '@/client-types'
+import { isOutboxMessage, type ImageAttachment, type RenderedMessage } from '@/client-types'
 import { clock } from '@/lib/format'
 import { discard, isMine, jumpTo, replyTo, retry, state, user, voiceOf } from '@/store'
 import Avatar from './Avatar.vue'
@@ -10,8 +10,8 @@ import StatusLabel from './StatusLabel.vue'
 import VoiceNote from './VoiceNote.vue'
 
 const props = defineProps<{
-  message: Message
-  previous?: Message
+  message: RenderedMessage
+  previous?: RenderedMessage
   memberCount: number
 }>()
 
@@ -37,6 +37,9 @@ const startsGroup = computed(
 )
 
 const failed = computed(() => props.message.state === 'failed')
+/** An outbox entry: its id is a clientId, so nothing replies to it or jumps
+ *  to it until the server's record replaces it. */
+const pending = computed(() => isOutboxMessage(props.message))
 const arrived = computed(() => state.arrivedAt === props.message.id)
 
 /** Jumping backward in a long thread should never cost you your place. */
@@ -84,7 +87,7 @@ const returnTo = computed(() => {
         <button v-if="returnTo" class="back" @click="jumpTo(returnTo.id)">
           ↓ BACK TO {{ clock(returnTo.at) }}
         </button>
-        <button class="reply-action" @click="replyTo(message.id)">REPLY</button>
+        <button v-if="!pending" class="reply-action" @click="replyTo(message.id)">REPLY</button>
       </div>
 
       <ReplyStub v-if="message.replyTo" :reply="message.replyTo" />
@@ -106,7 +109,9 @@ const returnTo = computed(() => {
         />
       </div>
 
-      <!-- Failure is a row, not a toast: toasts expire, failures don't. -->
+      <!-- Failure is a row, not a toast: toasts expire, failures don't. Only
+           an outbox entry can be failed, so both actions are the outbox's:
+           RETRY resends under the same clientId, DELETE drops the local copy. -->
       <div v-if="failed" class="fault">
         <span class="fault-text">{{ message.error }}</span>
         <button class="retry" @click="retry(message.id)">RETRY</button>

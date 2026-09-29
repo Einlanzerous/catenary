@@ -49,6 +49,26 @@ export type Message = Omit<WireMessage, 'state' | 'attachments'> & {
   error?: string
 }
 
+/**
+ * An outbox entry as the thread and the rail render it (CANT-36). NOT a
+ * `Message`: it has no `logSeq`, and no `seq` until the server acks it — an
+ * entry is never given an ordinal of its own, because `seq` is dense and a
+ * locally invented one reads as a gap that does not exist (invariant 1). Its
+ * `id` is its `clientId`, and `pending` marks it as something nothing may
+ * jump to or reply to. `retrying` is ruling 3 C's RETRYING label, derived.
+ */
+export type OutboxMessage = Omit<Message, 'seq' | 'logSeq'> & {
+  seq?: number
+  pending: true
+  retrying: boolean
+}
+
+/** What a row renders: a server record, or an outbox entry's projection. */
+export type RenderedMessage = Message | OutboxMessage
+
+export const isOutboxMessage = (m: RenderedMessage): m is OutboxMessage =>
+  'pending' in m && m.pending === true
+
 /** The reconnect state machine's own labels. No wire equivalent — a session
  *  either is or isn't attached, and everything in between (backing off,
  *  resyncing) is this client's own bookkeeping about getting there.
