@@ -18,6 +18,7 @@ package main
 // uses.
 
 import (
+	"bufio"
 	"context"
 	"io"
 	"log/slog"
@@ -109,9 +110,17 @@ func waitForProxyConnection(t *testing.T, p *severingProxy) {
 	t.Fatal("the client never established a connection through the proxy")
 }
 
-// flakyStartProxy refuses the first refuseFirst TCP connections outright —
-// closed before a single byte is read, the shape of a cold edge refusing a
+// flakyStartProxy refuses the first refuseFirst WebSocket UPGRADES outright —
+// closed before a single byte of answer, the shape of a cold edge refusing a
 // connection — then passes every one after that straight through.
+//
+// UPGRADES, NOT TCP CONNECTIONS (CANT-173). The client pulls a catch-up before
+// every dial, so a GET /sync goes out beside each upgrade and competes for the
+// same refusals. Counting connections, one of the two refusals always landed
+// on /sync, and a dial goroutine descheduled past the /sync retry let BOTH
+// land there: the first upgrade went straight through and the test failed
+// with Dials = 1. The request line says which is which, so anything that is
+// not an upgrade is forwarded untouched, and exactly refuseFirst dials fail.
 type flakyStartProxy struct {
 	ln     net.Listener
 	target string
@@ -139,18 +148,42 @@ func (p *flakyStartProxy) accept() {
 		if err != nil {
 			return
 		}
-		if n := p.refuse.Add(-1); n >= 0 {
-			_ = c.Close()
-			continue
-		}
-		up, err := net.Dial("tcp", p.target)
-		if err != nil {
-			_ = c.Close()
-			continue
-		}
-		go func() { _, _ = io.Copy(up, c); _ = up.Close(); _ = c.Close() }()
-		go func() { _, _ = io.Copy(c, up); _ = c.Close(); _ = up.Close() }()
+		go p.serve(c)
 	}
+}
+
+// serve reads one connection's request line, refuses it if it is an upgrade
+// still owed a refusal, and otherwise pipes it through — the line it already
+// read first, then the rest of the connection, buffered bytes included.
+func (p *flakyStartProxy) serve(c net.Conn) {
+	br := bufio.NewReader(c)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	if isUpgradeLine(line) && p.refuse.Add(-1) >= 0 {
+		_ = c.Close()
+		return
+	}
+	up, err := net.Dial("tcp", p.target)
+	if err != nil {
+		_ = c.Close()
+		return
+	}
+	if _, err := io.WriteString(up, line); err != nil {
+		_ = up.Close()
+		_ = c.Close()
+		return
+	}
+	go func() { _, _ = io.Copy(up, br); _ = up.Close(); _ = c.Close() }()
+	go func() { _, _ = io.Copy(c, up); _ = c.Close(); _ = up.Close() }()
+}
+
+// isUpgradeLine reports whether an HTTP request line asks for the client's
+// socket, /ws — the one path internal/client dials an upgrade on.
+func isUpgradeLine(line string) bool {
+	return strings.HasPrefix(line, "GET /ws ") || strings.HasPrefix(line, "GET /ws?")
 }
 
 // targetHost strips the http:// a harness base URL carries, for a proxy
