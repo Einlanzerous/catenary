@@ -21,6 +21,9 @@ const box = ref<HTMLTextAreaElement | null>(null)
 
 /** The app never pretends a message left the building. */
 const offline = computed(() => state.connection.state !== 'live')
+/** CANT-31 §6: nothing composed now will drain until a relaunch or a
+ *  re-enrollment, so the composer does not offer to queue it (Invariant 3). */
+const terminal = computed(() => state.connection.state === 'terminal')
 /** The armed bar quotes the message being replied *to* — not that message's
  *  own reply, which is what a naive `message.replyTo` would show. */
 const armed = computed<ReplyRef | null>(() => {
@@ -116,9 +119,11 @@ const grow = () => {
           class="input"
           rows="1"
           :placeholder="
-            offline
-              ? `Message ${props.conversationName} — will send when reconnected`
-              : `Message ${props.conversationName}`
+            terminal
+              ? `Message ${props.conversationName} — this device cannot send; see the banner`
+              : offline
+                ? `Message ${props.conversationName} — will send when reconnected`
+                : `Message ${props.conversationName}`
           "
           @input="grow"
           @keydown="onKeydown"
@@ -129,17 +134,20 @@ const grow = () => {
           <button class="ghost" :class="{ off: offline }" :disabled="offline">
             ATTACH
           </button>
-          <button class="ghost" @click="startRecording">RECORD</button>
+          <button class="ghost" :class="{ off: terminal }" :disabled="terminal" @click="startRecording">
+            RECORD
+          </button>
           <button class="ghost hide-narrow">MARKDOWN</button>
           <span class="keys">
             {{ armed ? 'ESC CLEARS REPLY' : '⏎ SEND · ⇧⏎ NEWLINE' }}
           </span>
           <button
             class="primary"
-            :class="{ queue: offline }"
+            :class="{ queue: offline && !terminal }"
+            :disabled="terminal"
             @click="send"
           >
-            {{ offline ? 'QUEUE' : 'SEND' }}
+            {{ offline && !terminal ? 'QUEUE' : 'SEND' }}
           </button>
         </div>
       </div>
@@ -235,6 +243,12 @@ const grow = () => {
 }
 .primary.queue {
   background: var(--accent-queue);
+}
+/* Terminal: nothing sends, so the one accent does not sit on this button. */
+.primary:disabled {
+  color: var(--text-disabled);
+  background: var(--surface-base);
+  cursor: not-allowed;
 }
 
 .record {

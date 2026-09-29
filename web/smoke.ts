@@ -292,7 +292,9 @@ async function main() {
     id: 'c-clamped', kind: 'group', name: 'Allotment Seven', memberCount: 6, headSeq: 1,
   })
   state.messages.push({
-    id: 'm-clamped', seq: 1, conversationId: 'c-clamped', authorId: state.me,
+    // logSeq is required on the wire type and unread by anything this section
+    // asserts; any value above the fixtures' own is honest (CANT-34 leftover).
+    id: 'm-clamped', seq: 1, logSeq: 1_000_001, conversationId: 'c-clamped', authorId: state.me,
     at: '2026-09-24T00:00:00.000Z', state: 'read', readBy: 7,
     text: 'read by all seven, then one of them was deprovisioned',
   })
@@ -436,6 +438,49 @@ async function main() {
     wrenNameHit.includes('NOT SEARCHABLE YET'), wrenNameHit)
   check('by title, not by the stale conversation.name', !wrenNameHit.includes('Petra Lindqvist'), wrenNameHit)
   closeSearch()
+
+  // 10. CANT-35 criterion 30 — a terminal client claims nothing will queue.
+  //
+  // CANT-31 §6: a terminal state ends only on a relaunch or a re-enrollment,
+  // so a message composed in one drains nowhere. Every non-live state used to
+  // read as "will queue" (Composer's `offline`, store's `queued`), which the
+  // moment `terminal` exists is the claim Invariant 3 forbids. The state is set
+  // directly rather than through setConnection, whose mock timers are for the
+  // three states that move on their own.
+  select('c-kitchen')
+  const queueClaims = (html: string) =>
+    ['messages will queue', 'will send when reconnected'].filter((p) => html.includes(p))
+      .concat(/>\s*QUEUE\s*</.test(html) ? ['a QUEUE button'] : [])
+  for (const kind of ['credential', 'protocol'] as const) {
+    state.connection.state = 'terminal'
+    state.connection.terminal = { kind, reason: `smoke: a ${kind} terminal` }
+    const page = await render()
+    const claims = queueClaims(page)
+    check(`terminal ${kind} · the page says nothing will queue`, claims.length === 0, claims.join(', '))
+    check(`terminal ${kind} · the banner names the kind`, page.includes(kind.toUpperCase()) && page.includes('Nothing sends until then'))
+    check(`terminal ${kind} · and offers no retry it cannot keep`, !page.includes('RETRY NOW') && !page.includes('RECONNECT<'))
+    const before = state.messages.length
+    state.composer.draft = `composed while ${kind} terminal`
+    send()
+    const created = state.messages.slice(before)
+    check(`terminal ${kind} · a send composed now is not created as queued`,
+      created.every((m) => m.state !== 'queued'), `${created.length} created: ${created.map((m) => m.state).join(',')}`)
+    check(`terminal ${kind} · and the draft stays where the person can see it`,
+      state.composer.draft === `composed while ${kind} terminal`)
+    state.composer.draft = ''
+  }
+  state.connection.terminal = undefined
+
+  // The two states that DO drain keep their wording exactly.
+  state.connection.state = 'offline'
+  const offlinePage = await render()
+  check('offline still says messages will queue', offlinePage.includes('Offline — messages will queue'))
+  check('offline composer still offers QUEUE', /\>\s*QUEUE\s*\</.test(offlinePage))
+  state.connection.state = 'reconnecting'
+  const reconnectingPage = await render()
+  check('reconnecting still says it will send when reconnected',
+    reconnectingPage.includes('will send when reconnected') && reconnectingPage.includes('Connection lost — reconnecting'))
+  state.connection.state = 'live'
 
   console.log(fail.length ? `\n${fail.length} FAILED` : '\nall green')
   process.exit(fail.length ? 1 : 0)

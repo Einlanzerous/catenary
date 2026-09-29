@@ -22,6 +22,7 @@ So: no transport, no auth, no persistence. `src/mock/fixtures.ts` holds the canv
 | `src/styles/tokens.css` | The token contract. Names are shared with the Flutter client; values are per-theme. Dark is primary, light derived. A raw hex in a component is a bug. |
 | `src/types.ts` | Wire types — **hand-written, and temporary**. R4 says these are generated from one schema alongside the Dart equivalents *before either client is written*. This file is a draft of that contract, not the contract. |
 | `src/store.ts` | One `reactive` object. Not Pinia; the dependency list stays at `vue`. |
+| `src/transport/` | The WebSocket transport (CANT-35): session loop, heartbeat, CANT-31 §4 close table, backoff, `/sync` catch-up and the in-memory journal, with no Vue import and every clock, socket and timer injected. Each module names the `internal/client` file it mirrors. `npm run test:transport` runs its unit tests; CANT-39 wires it into `store.ts`. |
 | `src/lib/waveform.ts` | Renders stored peaks. `peaksFromSeed` reproduces the canvas generator for fixtures only — see the portability note in that file. |
 | `src/components/` | One component per object in the canvas. |
 | `smoke.ts` | SSRs the app and asserts the canvas's landmarks are actually on screen. |

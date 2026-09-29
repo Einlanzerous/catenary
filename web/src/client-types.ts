@@ -51,11 +51,23 @@ export type Message = Omit<WireMessage, 'state' | 'attachments'> & {
 
 /** The reconnect state machine's own labels. No wire equivalent — a session
  *  either is or isn't attached, and everything in between (backing off,
- *  resyncing) is this client's own bookkeeping about getting there. */
-export type ConnectionState = 'live' | 'reconnecting' | 'resyncing' | 'offline'
+ *  resyncing) is this client's own bookkeeping about getting there.
+ *
+ *  `terminal` is CANT-31 §6's: this client will not reconnect until it is
+ *  relaunched or re-enrolled, which is not the same thing as a backoff that
+ *  has grown to its ceiling — and nothing queued will drain, so nothing may say
+ *  it will (Invariant 3, CANT-35 criterion 30). */
+export type ConnectionState = 'live' | 'reconnecting' | 'resyncing' | 'offline' | 'terminal'
 
 export interface ConnectionInfo {
   state: ConnectionState
+  /** terminal: which one, and the observation that put the client there. */
+  terminal?: { kind: 'credential' | 'protocol'; reason: string }
+  /** CANT-127: why no automatic refresh is being made — a third thing beside
+   *  a grown backoff and either terminal. */
+  refreshHold?: 'none' | 'unreachable' | 'backoff'
+  /** CANT-129: Catenary refused the access token held now. */
+  tokenRefused?: boolean
   /** reconnecting: which attempt, and how long until the next one. */
   attempt?: number
   retryInSec?: number

@@ -1,0 +1,67 @@
+/* Faults — mirrors `Faults` in internal/client/client.go, switch for switch.
+ *
+ * Each field deliberately breaks one rule. They exist so that an assertion
+ * claiming zero loss, zero duplication or a bound can be shown to fail against
+ * a client that deserves it: a measurement nobody has seen say "not zero" is a
+ * claim about the instrument, not about the system. The all-false value is a
+ * correct client. Never set outside a test or a rig proving that an assertion
+ * can fail.
+ *
+ * Go's two injection hooks, `HelloInstead` and `AfterReady`, are not mirrored:
+ * they exist so the Go tests can make a REAL server produce each close CANT-31
+ * §4 lists, and the TypeScript tests produce those closes from a fake server
+ * directly (CANT-35's plan, *Approach*).
+ */
+
+export interface Faults {
+  /** Obligation 2: a live `message` frame moves the cursor to its log_seq. */
+  cursorOnLiveFrames: boolean
+  /** Obligation 2's dedupe rule: a record counts as new exactly when its
+   *  log_seq is above the cursor, whatever its id. Counts a message twice when
+   *  a page re-carries one that arrived live, and drops a CANT-92 re-emission. */
+  dedupeByLogSeq: boolean
+  /** Obligation 3: catch-up ends on the first has_more:false page, even one
+   *  requested before the latest trigger. */
+  endCatchUpEarly: boolean
+  /** Obligation 4: on `ready.log_seq` below the cursor, re-sync from 0 and keep
+   *  the store and the (monotonic) cursor. */
+  skipWipe: boolean
+  /** CANT-103 rule 3, and the one switch Go does not have yet: a trigger that
+   *  arrives while a catch-up is running is dropped instead of re-arming the
+   *  end condition, so a catch-up that ends on an in-flight page bounded below
+   *  the triggering message never returns it. */
+  ignoreRetrigger: boolean
+
+  /* CANT-31 §2, §3 and §5, and CANT-127/129. Declared here so the switch list
+   * is Go's whole list; the credential layer (CANT-152) is what reads them. */
+  refreshUnlocked: boolean
+  noChain: boolean
+  proposeAfresh: boolean
+  unbounded: boolean
+  presentRefusedToken: boolean
+  neverPresentRefusedToken: boolean
+
+  /** CANT-31 §4's two negative controls, one in each direction: every close
+   *  reconnects, or any session that ends, ends the client. */
+  neverTerminal: boolean
+  alwaysTerminal: boolean
+}
+
+export const NO_FAULTS: Readonly<Faults> = Object.freeze({
+  cursorOnLiveFrames: false,
+  dedupeByLogSeq: false,
+  endCatchUpEarly: false,
+  skipWipe: false,
+  ignoreRetrigger: false,
+  refreshUnlocked: false,
+  noChain: false,
+  proposeAfresh: false,
+  unbounded: false,
+  presentRefusedToken: false,
+  neverPresentRefusedToken: false,
+  neverTerminal: false,
+  alwaysTerminal: false,
+})
+
+/** The journal's two switches, which is all a `Journal` implementation reads. */
+export type JournalFaults = Pick<Faults, 'cursorOnLiveFrames' | 'dedupeByLogSeq'>

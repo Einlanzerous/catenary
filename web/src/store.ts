@@ -12,7 +12,7 @@
 
 import { computed, reactive } from 'vue'
 import type { Conversation, User, VoiceAttachment } from '@/wire/generated'
-import type { ConnectionState, Message } from '@/client-types'
+import type { ConnectionInfo, ConnectionState, Message } from '@/client-types'
 import { CONVERSATIONS, ME, MESSAGES, USERS } from '@/mock/fixtures'
 import { countWords } from '@/lib/format'
 
@@ -46,13 +46,15 @@ const state = reactive({
   theme: 'dark' as Theme,
 
   connection: {
-    state: 'live' as ConnectionState,
+    state: 'live',
     attempt: 0,
     retryInSec: 0,
     synced: 0,
     total: 0,
     roomsPending: 0,
-  },
+    // The mock's own counters are always present; the real transport's
+    // `connectionInfo` fills only what it knows (CANT-39 swaps it in).
+  } as ConnectionInfo & Required<Pick<ConnectionInfo, 'attempt' | 'retryInSec' | 'synced' | 'total' | 'roomsPending'>>,
 
   composer: {
     draft: '',
@@ -252,9 +254,14 @@ export function cycleTyping() {
   state.typing[state.activeId] = next
 }
 
+/** CANT-31 §6: a terminal client drains nothing, so nothing is created as
+ *  `queued` while it is one (Invariant 3; CANT-35 criterion 30). The draft
+ *  stays in the box, which is the honest place for it. */
+const cannotSend = () => state.connection.state === 'terminal'
+
 export function send() {
   const text = state.composer.draft.trim()
-  if (!text) return
+  if (!text || cannotSend()) return
 
   const offline = state.connection.state !== 'live'
   const source = state.composer.replyToId
@@ -320,7 +327,7 @@ function advance(message: Message) {
 
 export function retry(messageId: string) {
   const m = messageById(messageId)
-  if (!m) return
+  if (!m || cannotSend()) return
   m.error = undefined
   m.state = 'sending'
   advance(m)
@@ -427,7 +434,7 @@ export function stopRecording(sendIt: boolean) {
   if (recordTicker) clearInterval(recordTicker)
   recordTicker = null
   state.composer.recording = false
-  if (!sendIt) return
+  if (!sendIt || cannotSend()) return
   // A real client uploads the Opus blob and the server schedules transcription;
   // here it lands as a pending-transcript voice note.
   state.messages.push({

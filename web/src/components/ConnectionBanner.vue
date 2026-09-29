@@ -10,9 +10,25 @@ import { retryNow, state } from '@/store'
  */
 const c = computed(() => state.connection)
 const percent = computed(() =>
-  c.value.total ? Math.round((c.value.synced / c.value.total) * 100) : 0,
+  c.value.total ? Math.round(((c.value.synced ?? 0) / c.value.total) * 100) : 0,
 )
-const n = (value: number) => value.toLocaleString('en-US')
+const n = (value: number | undefined) => (value ?? 0).toLocaleString('en-US')
+
+/**
+ * CANT-31 §6: the two terminal states, named, and what ends each. THE HONESTY
+ * FLOOR, NOT THE DESIGN (CANT-35 criterion 30): nothing queued will drain from
+ * here, so this branch says so and offers no retry — `retryNow()` cannot end a
+ * terminal state, and a button that looked like it could would be the claim
+ * Invariant 3 forbids. CANT-38 designs the real experience, re-enrollment
+ * included.
+ */
+const terminal = computed(() => {
+  const t = c.value.terminal
+  if (c.value.state !== 'terminal' || !t) return null
+  return t.kind === 'credential'
+    ? { label: 'CREDENTIAL', text: 'This device is no longer signed in — re-enroll it to reconnect. Nothing sends until then.' }
+    : { label: 'PROTOCOL', text: 'This app cannot talk to the server — update it, or report a bug. Nothing sends until then.' }
+})
 </script>
 
 <template>
@@ -31,15 +47,23 @@ const n = (value: number) => value.toLocaleString('en-US')
     <button class="action" @click="retryNow">RECONNECT</button>
   </div>
 
+  <div v-else-if="terminal" class="banner lost terminal">
+    <span class="dot" />
+    <span class="text">{{ terminal.text }}</span>
+    <span class="count">{{ terminal.label }}</span>
+  </div>
+
   <div v-else-if="c.state === 'resyncing'" class="banner catchup">
     <div class="line">
       <span class="dot" />
       <span class="text">Reconnected — catching up</span>
       <!-- Progress in this product is always numeric. -->
-      <span class="count tnum">
+      <!-- Only when there is a number to show: CANT-37 owns where the
+           transport's progress comes from, and a 0 / 0 would be a claim. -->
+      <span v-if="c.total !== undefined" class="count tnum">
         {{ n(c.synced) }} / {{ n(c.total) }} messages
       </span>
-      <span class="pending">{{ c.roomsPending }} ROOMS PENDING</span>
+      <span v-if="c.roomsPending !== undefined" class="pending">{{ c.roomsPending }} ROOMS PENDING</span>
     </div>
     <div class="track"><i :style="{ width: `${percent}%` }" /></div>
   </div>
@@ -57,6 +81,11 @@ const n = (value: number) => value.toLocaleString('en-US')
   align-items: center;
   background: var(--accent-wash);
   border-bottom-color: var(--accent-rule);
+}
+
+.banner.terminal .count {
+  margin-left: auto;
+  letter-spacing: var(--track-label);
 }
 
 .banner.catchup {
