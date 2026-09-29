@@ -64,6 +64,19 @@ export function inProcessLock(): Lock {
   }
 }
 
+/**
+ * The browser's own: a Web Lock, which every tab of the origin respects, so a
+ * refresh in one waits for a refresh in another (CANT-31 §2 — an in-memory
+ * mutex is not enough, because two tabs share a credential and not memory).
+ * Where `navigator.locks` is absent the fallback is one tab's mutex, which is
+ * all such a browser can offer.
+ */
+export function browserLock(): Lock {
+  const locks = (globalThis.navigator as { locks?: LockManager } | undefined)?.locks
+  if (!locks || typeof locks.request !== 'function') return inProcessLock()
+  return <T>(name: string, fn: () => Promise<T>): Promise<T> => locks.request(name, fn) as Promise<T>
+}
+
 /** The page lifecycle, as the transport sees it. `visible` and `hidden` are
  *  `visibilitychange`; the rest are the events of the same name. */
 export type LifecycleEvent = 'online' | 'offline' | 'visible' | 'hidden' | 'pageshow' | 'pagehide' | 'freeze' | 'resume'
