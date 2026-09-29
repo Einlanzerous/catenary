@@ -926,6 +926,48 @@ for (const [fault, n] of FAULTS) {
   })
 }
 
+/* ── the shipped wiring in store.ts (PR #103's review) ───────────────────── */
+
+test('the shipped wiring never seeds a durable store, so a reload after DELETE then compose still opens', async () => {
+  const deps = idb()
+  const first = await IdbOutboxStore.open(deps)
+  await useOutbox({ store: first, transport: new ScriptedTransport(), storage: null })
+  assert.equal((await first.list()).length, 0, 'no fixture in catenary-outbox')
+  select(CONV)
+  state.composer.draft = 'order 1, in a durable store'
+  const id = (await send())!
+  assert.equal((await stored(first, id))?.order, 1)
+  // The reload.
+  const again = await IdbOutboxStore.open(deps)
+  await within('reconfigure over the same database', useOutbox({ store: again, transport: new ScriptedTransport(), storage: null }))
+  state.composer.draft = 'and another'
+  assert.ok(await send(), 'sending still works')
+  assert.equal((await again.list()).length, 2)
+})
+
+test('a second send() while the first is still writing sends nothing', async () => {
+  const store = new MemoryOutboxStore()
+  await useOutbox({ store, transport: new ScriptedTransport(), storage: null, seed: false })
+  select(CONV)
+  state.composer.draft = 'twice'
+  const ids = await Promise.all([send(), send()])
+  assert.equal(ids.filter(Boolean).length, 1, 'one clientId')
+  assert.equal((await store.list()).filter((e) => e.text === 'twice').length, 1, 'one entry')
+  assert.equal(state.composer.draft, '', 'the draft is taken')
+})
+
+test('a refused write puts the draft back', async () => {
+  const store = new MemoryOutboxStore()
+  store.add = async () => {
+    throw new Error('quota exceeded')
+  }
+  await useOutbox({ store, transport: new ScriptedTransport(), storage: null, seed: false })
+  select(CONV)
+  state.composer.draft = 'keep me'
+  await assert.rejects(send())
+  assert.equal(state.composer.draft, 'keep me')
+})
+
 test('criterion 17: npm run outbox is part of npm run smoke', () => {
   const pkg = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8')) as {
     scripts: Record<string, string>

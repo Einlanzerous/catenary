@@ -337,28 +337,44 @@ export function cycleTyping() {
 const cannotSend = () => state.connection.state === 'terminal'
 
 /**
- * Compose into the outbox. The draft clears once the entry is durably
- * written — not before, so a refused write leaves the text where it was.
- * Resolves with the entry's clientId.
+ * Compose into the outbox. Resolves with the entry's clientId.
+ *
+ * THE DRAFT IS TAKEN BEFORE THE FIRST AWAIT. The entry renders only once its
+ * strict write has committed, and a second `send()` inside that window — a
+ * second Enter, a key-repeat, Enter plus SEND — must find nothing to send,
+ * or the same text is authored twice under two clientIds, which no server
+ * dedup can merge. If the write is refused, the text and the armed reply go
+ * back where they were, unless something new has been typed since.
  */
 export async function send(): Promise<string | undefined> {
   const text = state.composer.draft.trim()
   if (!text || cannotSend()) return undefined
+  const draft = state.composer.draft
+  const replyToId = state.composer.replyToId
+  const conversationId = state.activeId
+  state.composer.draft = ''
+  state.composer.replyToId = null
 
-  const source = state.composer.replyToId ? messageById(state.composer.replyToId) : undefined
+  const source = replyToId ? messageById(replyToId) : undefined
   const replyPreview: ReplyRef | undefined = source
     ? { messageId: source.id, authorId: source.authorId, ...previewOf(source) }
     : undefined
 
-  const outbox = await outboxReady
-  const entry = await outbox.compose({
-    conversationId: state.activeId,
-    text,
-    ...(source ? { replyToMessageId: source.id, replyPreview } : {}),
-  })
-  if (state.composer.draft.trim() === text) state.composer.draft = ''
-  if (source && state.composer.replyToId === source.id) state.composer.replyToId = null
-  return entry.clientId
+  try {
+    const outbox = await outboxReady
+    const entry = await outbox.compose({
+      conversationId,
+      text,
+      ...(source ? { replyToMessageId: source.id, replyPreview } : {}),
+    })
+    return entry.clientId
+  } catch (e) {
+    if (!state.composer.draft) {
+      state.composer.draft = draft
+      state.composer.replyToId = replyToId
+    }
+    throw e
+  }
 }
 
 /* NOTHING LOCALLY MOVES A SEND TO `sent` EXCEPT AN ACK, and nothing ever moves
@@ -680,9 +696,12 @@ export async function configureOutbox(
       store = new MemoryOutboxStore()
     }
   }
-  // The canvas's failed send (fixtures). Put only where absent, so a RETRY
-  // or a DELETE made in this browser is not undone by the next put.
-  if (seams.seed ?? true) {
+  // The canvas's failed send (fixtures), and ONLY into a store that dies with
+  // the page. A fixture put into `catenary-outbox` would outlive a DELETE —
+  // absent is exactly when it would be put back — and its fixed `order` would
+  // then collide with a real entry's under the unique index, refusing every
+  // load after it. A durable store holds what was authored, nothing else.
+  if ((seams.seed ?? true) && !(store instanceof IdbOutboxStore)) {
     const held = new Set((await store.list()).map((e) => e.clientId))
     for (const e of OUTBOX_SEED) if (!held.has(e.clientId)) await store.put(e)
   }

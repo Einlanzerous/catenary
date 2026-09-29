@@ -9,6 +9,7 @@ import {
   conversationTitle,
   lastMessageOf,
   newCount,
+  outboxMessages,
   outboxReady,
   typingLabel,
   openSearch,
@@ -507,11 +508,17 @@ async function main() {
     check(`terminal ${kind} · the banner names the kind`, page.includes(kind.toUpperCase()) && page.includes('Nothing sends until then'))
     check(`terminal ${kind} · and offers no retry it cannot keep`, !page.includes('RETRY NOW') && !page.includes('RECONNECT<'))
     const before = state.messages.length
+    // Since CANT-161 a send lands in the outbox, never in state.messages, so
+    // the outbox is where "not created" has to be read.
+    const entriesBefore = outboxMessages.value.length
     state.composer.draft = `composed while ${kind} terminal`
-    send()
+    await send()
+    await new Promise((r) => setTimeout(r, 0))
     const created = state.messages.slice(before)
     check(`terminal ${kind} · a send composed now is not created as queued`,
       created.every((m) => m.state !== 'queued'), `${created.length} created: ${created.map((m) => m.state).join(',')}`)
+    check(`terminal ${kind} · and the outbox gains no entry`, outboxMessages.value.length === entriesBefore,
+      `${outboxMessages.value.length - entriesBefore} created`)
     check(`terminal ${kind} · and the draft stays where the person can see it`,
       state.composer.draft === `composed while ${kind} terminal`)
     state.composer.draft = ''
