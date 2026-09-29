@@ -21,7 +21,9 @@
  * because the step is the transaction.
  *
  * Writes are serialized by the transport, one at a time, so an implementation
- * never sees two in flight.
+ * never sees two in flight FROM ONE TRANSPORT. Two tabs are two transports over
+ * one IndexedDB database, and `IdbJournal` guards that case itself: a wipe in
+ * one tab makes the other's next write refuse and reload (idb-journal.ts).
  */
 
 import type { Conversation, Message, ServerReceipt, SyncResponse, User, Uuid } from '@/wire/generated'

@@ -13,7 +13,7 @@ import { enrollCredential, IdbCredentialStore } from '../credential-store'
 import {
   CONVERSATIONS_STORE, COUNTED_STORE, CREDENTIAL_STORE, JOURNAL_STORE, MESSAGES_STORE, USERS_STORE, openCatenaryDb,
 } from '../db'
-import { IdbJournal, type IdbJournalOptions } from '../idb-journal'
+import { IdbJournal, JournalStale, type IdbJournalOptions } from '../idb-journal'
 import type { Applied } from '../journal'
 import { browserLock } from '../seams'
 import { enrolled } from './credential-harness'
@@ -251,4 +251,70 @@ test('a stored record the wire schema refuses is refused at open, not rendered',
   })
   db.close()
   await assert.rejects(IdbJournal.open({ factory }))
+})
+
+const NO_FAULTS = { cursorOnLiveFrames: false, dedupeByLogSeq: false }
+
+/**
+ * Two tabs over one database, each with its own mirror (CANT-35 ruling 1 → A),
+ * through a restore that shrinks the log from head 10 to head 6. Tab A wipes and
+ * bootstraps to 6; tab B, whose `ready` arrives later, wipes again — clearing
+ * A's pages — and lands only its first page (to 5) before it is closed. Then a
+ * live frame reaches A. The next page load must resume from a cursor whose
+ * every message is held (PR #110's review).
+ */
+async function twoTabsAcrossAWipe(opts: IdbJournalOptions) {
+  const factory = new IDBFactory()
+  const before = [...Array(10)].map((_, i) => message(i + 1))
+  const seed = await IdbJournal.open({ factory })
+  await seed.applyPage(bootstrapPage(10, before), NO_FAULTS)
+  seed.close()
+
+  const a = await IdbJournal.open({ factory, ...opts })
+  const b = await IdbJournal.open({ factory, ...opts })
+  const after = [...Array(7)].map((_, i) => message(i + 1, { id: uuid(5000 + i + 1) }))
+  await a.wipe()
+  await a.applyPage(bootstrapPage(6, after.slice(0, 6)), NO_FAULTS)
+  await b.wipe()
+  await b.applyPage(bootstrapPage(5, after.slice(0, 5)), NO_FAULTS)
+  b.close()
+  const live = await a.applyLive({ messages: [after[6]] }, NO_FAULTS).then(() => null, (e: unknown) => e)
+  const aCursor = a.cursor()
+  a.close()
+
+  const next = await IdbJournal.open({ factory })
+  const held = new Set(next.snapshot().messages.map((m) => m.id))
+  const cursor = next.cursor() ?? 0
+  const uncovered = after.filter((m) => m.logSeq <= cursor && !held.has(m.id)).map((m) => m.logSeq)
+  next.close()
+  return { live, aCursor, cursor, uncovered }
+}
+
+test('two tabs · a write over a journal another tab wiped is refused, and the tab reloads what is stored', async () => {
+  const r = await twoTabsAcrossAWipe({})
+  assert.ok(r.live instanceof JournalStale, 'A’s live write is refused')
+  assert.equal(r.aCursor, 5, 'and A’s mirror is now what is stored')
+  assert.equal(r.cursor, 5)
+  assert.deepEqual(r.uncovered, [], 'every message at or below the stored cursor is held')
+})
+
+test('two tabs · negative control ignoreGeneration leaves a cursor above messages the store no longer holds', async () => {
+  const r = await twoTabsAcrossAWipe({ ignoreGeneration: true })
+  assert.equal(r.live, null, 'the write went through')
+  assert.equal(r.cursor, 6)
+  assert.deepEqual(r.uncovered, [6], 'message 6 is below the cursor and will never be fetched again')
+})
+
+test('two tabs · a tab behind the stored cursor never moves it backward', async () => {
+  const factory = new IDBFactory()
+  const a = await IdbJournal.open({ factory })
+  const b = await IdbJournal.open({ factory })
+  await a.applyPage(bootstrapPage(6, [message(1), message(6)]), NO_FAULTS)
+  await b.applyPage(bootstrapPage(3, [message(1)]), NO_FAULTS)
+  a.close()
+  b.close()
+  const next = await IdbJournal.open({ factory })
+  assert.equal(next.cursor(), 6)
+  assert.equal(next.messageCount(), 2)
+  next.close()
 })

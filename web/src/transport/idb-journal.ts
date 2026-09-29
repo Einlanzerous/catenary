@@ -27,8 +27,18 @@
  * and asks `/sync` from it.
  *
  * READS ARE SYNCHRONOUS, from the mirror. The interface's reads are, and the
- * mirror is exactly what the last completed transaction left, so a read never
- * shows what the database does not hold.
+ * mirror is what this journal's last completed transaction left.
+ *
+ * TWO TABS ARE TWO WRITERS (CANT-35 ruling 1 → A: one transport per tab), each
+ * with its own mirror, over one database. Records from either are the server's
+ * and upsert harmlessly; what one tab can break for the other is a WIPE, which
+ * clears messages the other tab's mirror — and so its cursor — still covers.
+ * So a wipe stamps the journal with a fresh `generation`, and every other write
+ * reads the stored generation inside its own transaction first: a journal wiped
+ * under this tab refuses the write (`JournalStale`), reloads its mirror from
+ * what is stored, and the transport's catch-up asks again from the stored
+ * cursor. The cursor written is never below the stored one, so two tabs never
+ * move it backward (obligation 2).
  */
 
 import {
@@ -65,6 +75,21 @@ export interface IdbJournalOptions extends OpenCatenaryDbOptions {
    * them. `midWrite` fires in the second.
    */
   splitCursor?: boolean
+  /**
+   * NEGATIVE CONTROL for the two-tab rule, never set outside a test: writes
+   * skip the stored-generation check, so a tab writes its own mirror's cursor
+   * over a journal another tab wiped.
+   */
+  ignoreGeneration?: boolean
+}
+
+/** A write refused because another tab wiped the journal since this one's
+ *  mirror was read; the mirror has been reloaded from the database. */
+export class JournalStale extends Error {
+  constructor(source: Applied['source']) {
+    super(`journal: the ${source} write was refused — the journal was wiped under this tab, and it has reloaded`)
+    this.name = 'JournalStale'
+  }
 }
 
 /** A journal write whose transaction aborted with no error of its own: the
@@ -77,8 +102,8 @@ export class JournalWriteAborted extends Error {
 }
 
 interface JournalRecord {
-  key: 'cursor' | 'wipes'
-  value: number | null
+  key: 'cursor' | 'wipes' | 'generation'
+  value: number | string | null
 }
 
 interface CountedRecord {
@@ -89,11 +114,15 @@ interface CountedRecord {
 export class IdbJournal extends StagedJournal {
   private constructor(
     private readonly db: IDBDatabase,
-    initial: JournalState,
+    loaded: Loaded,
     private readonly opts: IdbJournalOptions,
   ) {
-    super(initial)
+    super(loaded.state)
+    this.generation = loaded.generation
   }
+
+  /** The wipe generation this mirror was read at, or last wrote. */
+  private generation: string | null
 
   /** Opens `catenary` (running any missing upgrade step) and reads the journal
    *  back. What it holds is what the last completed transaction left. */
@@ -113,16 +142,27 @@ export class IdbJournal extends StagedJournal {
   }
 
   protected async commit(_next: JournalState, d: JournalDelta): Promise<void> {
-    if (this.opts.splitCursor && !d.wiped) {
-      await this.write(d, 'records')
-      await this.write(d, 'cursor')
-    } else {
-      await this.write(d, 'all')
+    const generation = d.wiped ? globalThis.crypto.randomUUID() : this.generation
+    try {
+      if (this.opts.splitCursor && !d.wiped) {
+        await this.write(d, 'records', generation)
+        await this.write(d, 'cursor', generation)
+      } else {
+        await this.write(d, 'all', generation)
+      }
+    } catch (e) {
+      if (e instanceof JournalStale) {
+        const loaded = await load(this.db)
+        this.s = loaded.state
+        this.generation = loaded.generation
+      }
+      throw e
     }
+    this.generation = generation
     if (this.opts.durable) await this.opts.durable()
   }
 
-  private write(d: JournalDelta, part: 'all' | 'records' | 'cursor'): Promise<void> {
+  private write(d: JournalDelta, part: 'all' | 'records' | 'cursor', generation: string | null): Promise<void> {
     return new Promise((resolve, reject) => {
       let tx: IDBTransaction
       try {
@@ -134,26 +174,7 @@ export class IdbJournal extends StagedJournal {
       let thrown: { e: unknown } | null = null
       tx.oncomplete = () => resolve()
       tx.onabort = () => reject(thrown ? thrown.e : (tx.error ?? new JournalWriteAborted(d.source)))
-      try {
-        if (part !== 'cursor') {
-          // OBLIGATION 4's wipe: the journal's stores, and never `credential`.
-          if (d.wiped) for (const name of JOURNAL_STORES) tx.objectStore(name).clear()
-          const messages = tx.objectStore(MESSAGES_STORE)
-          for (const m of d.messages) messages.put(encodeMessage(m))
-          const conversations = tx.objectStore(CONVERSATIONS_STORE)
-          for (const c of d.conversations) conversations.put(encodeConversation(c))
-          const users = tx.objectStore(USERS_STORE)
-          for (const u of d.users) users.put(encodeUser(u))
-          const counted = tx.objectStore(COUNTED_STORE)
-          d.counted.forEach((id, i) => counted.put({ n: d.countedFrom + i, id } satisfies CountedRecord))
-        }
-        if (part !== 'records') {
-          const journal = tx.objectStore(JOURNAL_STORE)
-          journal.put({ key: 'cursor', value: d.cursor } satisfies JournalRecord)
-          journal.put({ key: 'wipes', value: d.wipes } satisfies JournalRecord)
-        }
-        if (part !== 'records') this.opts.midWrite?.(tx, d.source)
-      } catch (e) {
+      const fail = (e: unknown) => {
         thrown = { e }
         try {
           tx.abort()
@@ -161,12 +182,55 @@ export class IdbJournal extends StagedJournal {
           // Already aborted by the seam itself; its onabort carries `thrown`.
         }
       }
+      // THE STORED GENERATION AND CURSOR, read inside this transaction, so
+      // nothing another tab commits can land between the check and the write.
+      const journal = tx.objectStore(JOURNAL_STORE)
+      const heldGeneration = journal.get('generation')
+      const heldCursor = journal.get('cursor')
+      heldCursor.onsuccess = () => {
+        try {
+          const storedGeneration = ((heldGeneration.result as JournalRecord | undefined)?.value ?? null) as string | null
+          const storedCursor = ((heldCursor.result as JournalRecord | undefined)?.value ?? null) as number | null
+          if (!d.wiped && !this.opts.ignoreGeneration && storedGeneration !== this.generation) throw new JournalStale(d.source)
+          const cursor = d.wiped || storedCursor === null || (d.cursor !== null && d.cursor > storedCursor) ? d.cursor : storedCursor
+          this.puts(tx, d, part, generation, cursor)
+        } catch (e) {
+          fail(e)
+        }
+      }
     })
+  }
+
+  private puts(tx: IDBTransaction, d: JournalDelta, part: 'all' | 'records' | 'cursor', generation: string | null, cursor: number | null): void {
+    if (part !== 'cursor') {
+      // OBLIGATION 4's wipe: the journal's stores, and never `credential`.
+      if (d.wiped) for (const name of JOURNAL_STORES) tx.objectStore(name).clear()
+      const messages = tx.objectStore(MESSAGES_STORE)
+      for (const m of d.messages) messages.put(encodeMessage(m))
+      const conversations = tx.objectStore(CONVERSATIONS_STORE)
+      for (const c of d.conversations) conversations.put(encodeConversation(c))
+      const users = tx.objectStore(USERS_STORE)
+      for (const u of d.users) users.put(encodeUser(u))
+      const counted = tx.objectStore(COUNTED_STORE)
+      d.counted.forEach((id, i) => counted.put({ n: d.countedFrom + i, id } satisfies CountedRecord))
+    }
+    const journal = tx.objectStore(JOURNAL_STORE)
+    if (d.wiped) journal.put({ key: 'generation', value: generation } satisfies JournalRecord)
+    if (part !== 'records') {
+      journal.put({ key: 'cursor', value: cursor } satisfies JournalRecord)
+      journal.put({ key: 'wipes', value: d.wipes } satisfies JournalRecord)
+      this.opts.midWrite?.(tx, d.source)
+    }
   }
 }
 
+interface Loaded {
+  state: JournalState
+  generation: string | null
+}
+
 /** Reads every journal store in one readonly transaction. */
-function load(db: IDBDatabase): Promise<JournalState> {
+function load(db: IDBDatabase): Promise<Loaded> {
   return new Promise((resolve, reject) => {
     const tx = db.transaction([...JOURNAL_STORES], 'readonly')
     const all = (name: string) => tx.objectStore(name).getAll()
@@ -190,7 +254,7 @@ function load(db: IDBDatabase): Promise<JournalState> {
 
 /** The stored journal, decoded through the generated codecs: a record the
  *  wire schema would refuse is refused here too, loudly, not rendered. */
-function decodeState(reqs: Record<'messages' | 'conversations' | 'users' | 'journal' | 'counted', IDBRequest>): JournalState {
+function decodeState(reqs: Record<'messages' | 'conversations' | 'users' | 'journal' | 'counted', IDBRequest>): Loaded {
   const meta = new Map((reqs.journal.result as JournalRecord[]).map((r) => [r.key, r.value]))
   const s = emptyState((meta.get('wipes') as number | null | undefined) ?? 0)
   s.cursor = (meta.get('cursor') as number | null | undefined) ?? null
@@ -208,5 +272,5 @@ function decodeState(reqs: Record<'messages' | 'conversations' | 'users' | 'jour
   }
   // getAll returns in key order, and the key is the position.
   s.counted = (reqs.counted.result as CountedRecord[]).map((r) => r.id)
-  return s
+  return { state: s, generation: (meta.get('generation') as string | null | undefined) ?? null }
 }
