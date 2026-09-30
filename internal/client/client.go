@@ -182,6 +182,15 @@ type Faults struct {
 	// the REAL server can be made to produce each close record §4 lists.
 	HelloInstead []byte
 	AfterReady   []byte
+
+	// ResetOnAnyReady and NoJitter break CANT-35 ruling 3 → B (CANT-170), one
+	// rule each, and restore the client as it was before it. ResetOnAnyReady
+	// resets the dial ramp after ANY session that reached `ready`, however
+	// briefly, so a path that answers `ready` and drops at once is redialed at
+	// the floor for ever. NoJitter waits exactly the nominal backoff, so a
+	// cohort severed together redials in step.
+	ResetOnAnyReady bool
+	NoJitter        bool
 }
 
 // Config is everything a Client needs that is not durable. BaseURL and an
@@ -225,8 +234,15 @@ type Config struct {
 
 	// BackoffMin and BackoffMax bound the reconnect and catch-up retry
 	// backoff, which doubles from the one to the other. Zero means 250 ms and
-	// 5 s.
+	// 5 s. The reconnect's wait is jittered in [0.8d, d] and its ramp resets
+	// only after a session stayed ready for a heartbeat interval (backoff.go).
 	BackoffMin, BackoffMax time.Duration
+	// Jitter is where each reconnect wait's draw comes from: four bytes per
+	// wait, read through unitFromBytes. Nil means crypto/rand. It exists so a
+	// test can hold every draw at its minimum, the worst case for dial counts.
+	// A reader that fails gives the maximum draw — the nominal wait, which is
+	// never above the ceiling.
+	Jitter io.Reader
 
 	// Refresh turns on CANT-31's record §1: a proactive refresh before a dial
 	// whenever less than max(60 s, ⅓ of the served lifetime) remains, and a
@@ -386,6 +402,14 @@ type Client struct {
 	wsURL      string
 	backoffMin time.Duration
 	backoffMax time.Duration
+	// now and sleep are Run's clock and its wait between dials: time.Now and
+	// time.After, except in a test that drives Run under a fake clock. Neither
+	// is Config.Pause, whose rigs charge a fixed cost per call. readyAt is when
+	// the current session's `ready` arrived, by now; written and read only on
+	// Run's goroutine, which is also the one session runs on.
+	now     func() time.Time
+	sleep   func(ctx context.Context, d time.Duration) bool
+	readyAt time.Time
 
 	// killed is written under j.mu (Kill), so a journal write either lands
 	// before the death or not at all.
@@ -477,6 +501,8 @@ func New(cfg Config) (*Client, error) {
 		wsURL:      ws.String(),
 		backoffMin: cfg.BackoffMin,
 		backoffMax: cfg.BackoffMax,
+		now:        time.Now,
+		sleep:      sleepFor,
 		wake:       make(chan struct{}, 1),
 		waiters:    map[wire.Uuid]chan sendResult{},
 		changed:    make(chan struct{}),
@@ -602,8 +628,14 @@ func (c *Client) Run(ctx context.Context) error {
 		c.wakeCatchUp()
 		c.notify()
 
+		c.readyAt = time.Time{}
 		opened, readied, preceding, err := c.session(ctx)
 		c.mu.Lock()
+		// RULING 3 → B'S STABILITY RULE (CANT-170), measured now, at the end:
+		// how long this session stayed ready, against the interval its own
+		// `ready` announced.
+		stable := resetsRamp(readied, c.now().Sub(c.readyAt), c.interval) ||
+			readied && c.cfg.Faults.ResetOnAnyReady
 		if err != nil {
 			c.stats.LastClose = err.Error()
 			// opened=false is a pure dial failure — DialErrors already
@@ -642,19 +674,25 @@ func (c *Client) Run(ctx context.Context) error {
 				break
 			}
 		}
-		if readied {
+		// CANT-35 RULING 3 → B, as web/src/transport does it. The ramp resets
+		// only after a session that stayed ready for a heartbeat interval; one
+		// that readied and dropped sooner advances it like a failed dial.
+		// `error{internal}` waits the maximum, and that wait is jittered too.
+		// Every wait is drawn in [0.8d, d], never above d.
+		if stable {
 			backoff = c.backoffMin
 		}
 		if verdict == reconnectAtMaximum {
 			backoff = c.backoffMax
 		}
-		c.log.Info("session ended; reconnecting", "error", err, "backoff", backoff)
-		select {
-		case <-ctx.Done():
-		case <-time.After(backoff):
+		wait := backoff
+		if !c.cfg.Faults.NoJitter {
+			wait = jitteredWait(backoff, c.draw())
 		}
-		if !readied {
-			backoff = min(backoff*2, c.backoffMax)
+		c.log.Info("session ended; reconnecting", "error", err, "backoff", wait)
+		c.sleep(ctx, wait)
+		if !stable {
+			backoff = advance(backoff, c.backoffMax)
 		}
 	}
 	cancel()
@@ -991,6 +1029,7 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, preceding *
 		switch v := f.(type) {
 		case wire.ServerReady:
 			readied = true
+			c.readyAt = c.now()
 			c.onReady(v)
 			go c.heartbeat(sctx, conn, time.Duration(v.HeartbeatIntervalSec)*time.Second, int(v.MissedPongLimit))
 			if raw := c.cfg.Faults.AfterReady; raw != nil {

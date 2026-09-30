@@ -14,7 +14,8 @@ package client
 // EACH KIND DISPATCHES TO EXACTLY ONE FUNCTION, and this runner implements no
 // rule of its own. The pure kinds call the package-level cores the methods
 // delegate to (classifyClose, refreshThreshold, refreshDue, refreshDelay,
-// readStamp, gateOpen, refreshHoldAt, refusedHoldAt). The chain kind drives the
+// readStamp, gateOpen, refreshHoldAt, refusedHoldAt, and CANT-170's resetsRamp,
+// unitFromBytes, jitteredWait and advance). The chain kind drives the
 // client's own RefreshIfDue against a scripted /refresh that answers each
 // request verbatim from the vector — not `family`, whose model of the server
 // would otherwise have to be hand-written again in TypeScript and in Dart.
@@ -27,10 +28,13 @@ package client
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -51,7 +55,10 @@ const decisionsFile = "testdata/decisions.json"
 // decisionKinds is every kind the file may hold. A case of any other kind fails,
 // and so does a kind here with no cases: a kind nobody wrote a vector for pins
 // nothing, and would read as coverage.
-var decisionKinds = []string{"close", "threshold", "due", "delay", "stamp", "gate", "hold", "refused_hold", "chain"}
+var decisionKinds = []string{
+	"close", "threshold", "due", "delay", "stamp", "gate", "hold", "refused_hold", "chain",
+	"backoff_reset", "backoff_draw", "backoff_jitter", "backoff_advance",
+}
 
 type decisionCase struct {
 	Name string          `json:"name"`
@@ -103,6 +110,11 @@ type decisions struct {
 	gate      func(answeredAt, stamp time.Time) bool
 	hold      func(links int, answeredAt, lastSent, now time.Time) RefreshHold
 	refused   func(refused bool, links int, lastSent, now time.Time) bool
+	// The dial backoff's pure pieces (CANT-170).
+	reset   func(readied bool, readiedFor, interval time.Duration) bool
+	draw    func([4]byte) float64
+	jitter  func(nominal time.Duration, unit float64) time.Duration
+	advance func(nominal, ceiling time.Duration) time.Duration
 	// faults is what the chain transcripts' client runs with.
 	faults Faults
 }
@@ -119,6 +131,10 @@ var reference = decisions{
 	gate:      gateOpen,
 	hold:      refreshHoldAt,
 	refused:   refusedHoldAt,
+	reset:     resetsRamp,
+	draw:      unitFromBytes,
+	jitter:    jitteredWait,
+	advance:   advance,
 }
 
 // The file spells answers as the TypeScript that shipped does; this is the one
@@ -290,6 +306,82 @@ func (d decisions) run(c decisionCase) error {
 
 	case "chain":
 		return d.chain(c)
+
+	case "backoff_reset":
+		var in struct {
+			ReadiedForMs *int64 `json:"readied_for_ms"`
+			IntervalSec  *int64 `json:"heartbeat_interval_sec"`
+		}
+		var want struct {
+			Resets *bool `json:"resets"`
+		}
+		if err := parseCase(c, &in, &want); err != nil {
+			return err
+		}
+		if in.IntervalSec == nil {
+			return errors.New("in.heartbeat_interval_sec is missing: a session that readied always has one")
+		}
+		var readiedFor time.Duration
+		if in.ReadiedForMs != nil {
+			readiedFor = time.Duration(*in.ReadiedForMs) * time.Millisecond
+		}
+		return same("resets", d.reset(in.ReadiedForMs != nil, readiedFor, time.Duration(*in.IntervalSec)*time.Second), want.Resets)
+
+	case "backoff_draw":
+		var in struct {
+			Bytes string `json:"bytes"`
+		}
+		var want struct {
+			Unit *float64 `json:"unit"`
+		}
+		if err := parseCase(c, &in, &want); err != nil {
+			return err
+		}
+		raw, err := hex.DecodeString(in.Bytes)
+		if err != nil || len(raw) != 4 {
+			return fmt.Errorf("in.bytes %q is not four bytes of hex", in.Bytes)
+		}
+		return same("unit", d.draw([4]byte(raw)), want.Unit)
+
+	case "backoff_jitter":
+		var in struct {
+			NominalMs int64   `json:"nominal_ms"`
+			Unit      float64 `json:"unit"`
+		}
+		var want struct {
+			WaitMs *float64 `json:"wait_ms"`
+		}
+		if err := parseCase(c, &in, &want); err != nil {
+			return err
+		}
+		if want.WaitMs == nil {
+			return errors.New("want.wait_ms is missing")
+		}
+		w := time.Duration(math.Round(*want.WaitMs * float64(time.Millisecond)))
+		if got := d.jitter(time.Duration(in.NominalMs)*time.Millisecond, in.Unit); got != w {
+			return fmt.Errorf("%d ms at draw %v waits %s, want %s", in.NominalMs, in.Unit, got, w)
+		}
+		return nil
+
+	case "backoff_advance":
+		var in struct {
+			NominalMs int64 `json:"nominal_ms"`
+			MaxMs     int64 `json:"max_ms"`
+		}
+		var want struct {
+			NextMs *int64 `json:"next_ms"`
+		}
+		if err := parseCase(c, &in, &want); err != nil {
+			return err
+		}
+		if want.NextMs == nil {
+			return errors.New("want.next_ms is missing")
+		}
+		got := d.advance(time.Duration(in.NominalMs)*time.Millisecond, time.Duration(in.MaxMs)*time.Millisecond)
+		if w := time.Duration(*want.NextMs) * time.Millisecond; got != w {
+			return fmt.Errorf("after %d ms (ceiling %d ms) comes %s, want %s", in.NominalMs, in.MaxMs, got, w)
+		}
+		return nil
 	}
 	return fmt.Errorf("unknown kind %q", c.Kind)
 }
@@ -414,6 +506,34 @@ func TestTheDecisionVectorsHaveTeeth(t *testing.T) {
 				}
 				return v
 			}
+		})},
+		{"resetsRamp resets on any ready", "backoff_reset", "backoff_reset_ready_then_drop_does_not_reset", with(func(d *decisions) {
+			d.reset = func(readied bool, _, _ time.Duration) bool { return readied }
+		})},
+		{"resetsRamp needs more than one whole interval", "backoff_reset", "backoff_reset_exactly_one_interval_resets", with(func(d *decisions) {
+			d.reset = func(readied bool, readiedFor, interval time.Duration) bool { return readied && readiedFor > interval }
+		})},
+		{"unitFromBytes reads little endian", "backoff_draw", "backoff_draw_the_high_byte_is_first", with(func(d *decisions) {
+			d.draw = func(b [4]byte) float64 { return float64(binary.LittleEndian.Uint32(b[:])) / math.MaxUint32 }
+		})},
+		{"unitFromBytes divides by 2^32", "backoff_draw", "backoff_draw_all_ones_is_the_maximum", with(func(d *decisions) {
+			d.draw = func(b [4]byte) float64 { return float64(binary.BigEndian.Uint32(b[:])) / (1 << 32) }
+		})},
+		{"jitteredWait has no jitter", "backoff_jitter", "backoff_jitter_minimum_draw_is_0_8d", with(func(d *decisions) {
+			d.jitter = func(nominal time.Duration, _ float64) time.Duration { return nominal }
+		})},
+		{"jitteredWait draws in rev 1's [d/2, d]", "backoff_jitter", "backoff_jitter_minimum_draw_is_0_8d", with(func(d *decisions) {
+			d.jitter = func(nominal time.Duration, unit float64) time.Duration {
+				return time.Duration(math.Round(float64(nominal) * (0.5 + 0.5*min(1, max(0, unit)))))
+			}
+		})},
+		{"jitteredWait does not clamp the draw", "backoff_jitter", "backoff_jitter_a_draw_above_one_is_clamped", with(func(d *decisions) {
+			d.jitter = func(nominal time.Duration, unit float64) time.Duration {
+				return time.Duration(math.Round(float64(nominal) * (jitterFloor + (1-jitterFloor)*unit)))
+			}
+		})},
+		{"advance has no ceiling", "backoff_advance", "backoff_advance_is_capped_at_the_ceiling", with(func(d *decisions) {
+			d.advance = func(nominal, _ time.Duration) time.Duration { return nominal * 2 }
 		})},
 		{"Faults{NoChain}: a proposal minted and forgotten", "chain", "chain_a_newest_first_then_one_step_back_reusing_the_original_proposal",
 			with(func(d *decisions) { d.faults = Faults{NoChain: true} })},

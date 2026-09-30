@@ -1,7 +1,7 @@
 /* CANT-35 criteria 9 and 17: the dial backoff under ruling 3 → B, the
  * wake-signal early dial, and the browser lifecycle (row 1's half). Mirrors
- * the backoff in internal/client/client.go's Run, which has no wake signals and
- * no stability rule yet (the Go port is a follow-up). */
+ * the backoff in internal/client/client.go's Run, which has the stability rule
+ * and the jitter since CANT-170 (backoff_test.go) and no wake signals. */
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -134,7 +134,7 @@ test('criterion 9 · a path that answers ready and drops at once stays within th
   await r.clock.advance(TEN_MINUTES)
   const dials = r.t.status().stats.dials
   t.diagnostic(`ready-then-drop: ${dials} dials in ten minutes`)
-  assert.ok(dials <= 156, `${dials} dials in ten minutes (Go's reset-on-any-ready would make ~2400)`)
+  assert.ok(dials <= 156, `${dials} dials in ten minutes (reset-on-any-ready would make ~2400)`)
   assert.equal(r.t.status().stats.readys, dials)
 })
 
