@@ -65,7 +65,7 @@ func startLocalServer(t *testing.T, dbURL string) *harness {
 	}
 	h.pool = pool
 	h.store = store.New(pool, store.DefaultLimits(), h.cfg.logger())
-	if err := h.startServer(context.Background()); err != nil {
+	if err := h.startServer(context.Background(), false); err != nil {
 		t.Fatalf("start the local server: %v", err)
 	}
 	t.Cleanup(h.cleanup)

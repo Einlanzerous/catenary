@@ -125,7 +125,7 @@ func runSoak(ctx context.Context, cfg Config) Result {
 	h.pool = pool
 	h.store = store.New(pool, store.DefaultLimits(), h.cfg.logger())
 
-	if err := h.startServer(ctx); err != nil {
+	if err := h.startServer(ctx, false); err != nil {
 		h.harnessError("start the server: %v", err)
 		return h.finish(&rep)
 	}

@@ -245,7 +245,7 @@ func (h *harness) killAndRestart(ctx context.Context, clients []*soakClient, roo
 
 	missing := h.snapshotLostCount(ctx, clients)
 
-	if err := h.startServer(ctx); err != nil {
+	if err := h.startServer(ctx, true); err != nil {
 		h.harnessError("restart the server after kill -9: %v", err)
 	}
 	if d := h.cfg.debugSendAfterRestart; d > 0 {
