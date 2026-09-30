@@ -251,6 +251,19 @@ func (c *Client) refreshHold() RefreshHold { return c.holdNow(true) }
 func (c *Client) refreshHoldQuiet() RefreshHold { return c.holdNow(false) }
 
 func (c *Client) holdNow(note bool) RefreshHold {
+	// ONE DECISION AT A TIME WHEN IT IS LOGGED (CANT-179). The state is read,
+	// the rule applied and the transition noted in three steps, and two
+	// goroutines deciding at once — Run's pre-dial check and markAnswered on the
+	// catch-up's 401 — could otherwise note in the other order: the decision
+	// that read the gate closed, from before the answer, logged after the one
+	// that read it open, a "closed" line for a gate nothing closed and then a
+	// second "open". Serialized, each noted state is read after the last one
+	// was, so the lines follow the gate. An observer takes no lock: it logs
+	// nothing, so there is nothing for it to put out of order.
+	if note {
+		c.gateMu.Lock()
+		defer c.gateMu.Unlock()
+	}
 	links := c.j.chainLen()
 	if links == 0 {
 		// SETTLED: there is no possibly-delivered request outstanding, so there

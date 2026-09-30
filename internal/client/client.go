@@ -441,6 +441,11 @@ type Client struct {
 	sleep   func(ctx context.Context, d time.Duration) bool
 	readyAt time.Time
 
+	// gateMu makes a gate decision and its log line one step (CANT-179): see
+	// holdNow. Taken before j.credMu and c.mu, never while holding either; the
+	// refresh's single-flight lock may already be held, and is never taken under it.
+	gateMu sync.Mutex
+
 	// killed is written under j.mu (Kill), so a journal write either lands
 	// before the death or not at all.
 	killed atomic.Bool

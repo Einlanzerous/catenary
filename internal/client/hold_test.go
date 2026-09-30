@@ -301,12 +301,26 @@ func newDrive(clk *fakeClock, j *Journal, span time.Duration, heal bool, dead ..
 }
 
 func (d *drive) RoundTrip(r *http.Request) (*http.Response, error) {
-	if r.URL.Path == "/refresh" {
-		d.record(r)
-	}
 	// DECIDED BEFORE THE ADVANCE, so a dial's fate belongs to the moment it was
 	// made: span/simPerDial dials fail and the next one is let through.
-	down := d.down()
+	at, stamped := d.clk.now(), false
+	if r.URL.Path == "/refresh" {
+		d.record(r)
+		// AND A /refresh's BELONGS TO ITS STAMP (CANT-179), the same rule for the
+		// same reason. Its link and `last_sent_at` are written before it leaves,
+		// and two goroutines charge simulated time — Run's withheld dial and the
+		// catch-up's wait each add simPerDial a poll — so the clock this transport
+		// reads can be polls later than the moment the client decided to send. A
+		// real attempt leaves the instant its link is written, so it meets the
+		// network its stamp saw. A walk-back re-presents an older token and moves
+		// no stamp, so every step of one attempt meets the network its first did.
+		if d.j != nil {
+			if sent, ok := d.j.LastSent(); ok {
+				at, stamped = sent, true
+			}
+		}
+	}
+	down := d.downAt(at, stamped)
 	if r.URL.Path == "/ws" {
 		d.mu.Lock()
 		d.dials++
@@ -319,8 +333,11 @@ func (d *drive) RoundTrip(r *http.Request) (*http.Response, error) {
 	return d.base.RoundTrip(r)
 }
 
-func (d *drive) down() bool {
-	if d.clk.now().Sub(d.start) < d.span {
+// downAt is whether the outage is still on at `at`, the moment a request was
+// made rather than the moment it reached this transport. stamped says the
+// request is a /refresh whose link was written at `at` and already recorded.
+func (d *drive) downAt(at time.Time, stamped bool) bool {
+	if at.Sub(d.start) < d.span {
 		return true
 	}
 	if !d.heal {
@@ -336,6 +353,17 @@ func (d *drive) down() bool {
 		d.returned, d.sentAtReturn, d.dialsAtReturn = true, len(d.sent), d.dials
 		if d.j != nil {
 			d.chainAtReturn = len(d.j.Chain())
+		}
+		// READ LATE, SO LESS WHAT CAME AFTER (CANT-179). The moment is noticed by
+		// the first request made after it, and when that is the recovering
+		// attempt's own /refresh — the /sync that drove it went out a poll before
+		// the return, and the clock crossed while it was answered — the link and
+		// the send are already written and recorded, stamped after the return.
+		// Neither is the outage's: counted, the chain it left reads one link longer
+		// than the walk that attempt makes back through it.
+		if stamped {
+			d.sentAtReturn--
+			d.chainAtReturn--
 		}
 	}
 	d.mu.Unlock()
