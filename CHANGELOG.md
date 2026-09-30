@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.12.0](https://github.com/Einlanzerous/catenary/compare/v0.11.1...v0.12.0) (2026-09-30)
+
+
+### Features
+
+* CANT-141a — Conversation.other_member_id, wire and store ([#94](https://github.com/Einlanzerous/catenary/issues/94)) ([db9ab64](https://github.com/Einlanzerous/catenary/commit/db9ab64baf202a06d0cce573ce899fe4339bfb93))
+* CANT-141b — web reads other_member_id, retires the guess ([#96](https://github.com/Einlanzerous/catenary/issues/96)) ([5c85efd](https://github.com/Einlanzerous/catenary/commit/5c85efd3b9e163f3e72d6c512a4bf2c15543cc6e))
+* CANT-151 — the TypeScript transport core (CANT-35a) ([#102](https://github.com/Einlanzerous/catenary/issues/102)) ([0c9159d](https://github.com/Einlanzerous/catenary/commit/0c9159d91a074bdffb05f771fdabc16be2bfdcdf))
+* CANT-152 — the TypeScript credential layer (CANT-35b) ([#105](https://github.com/Einlanzerous/catenary/issues/105)) ([08875e3](https://github.com/Einlanzerous/catenary/commit/08875e390e38d08654e8b7b37315f4c6e1b4518e))
+* CANT-153 — soakrig TypeScript cohort, TS kill-test and restore-test lanes (CANT-35c) ([#106](https://github.com/Einlanzerous/catenary/issues/106)) ([a467896](https://github.com/Einlanzerous/catenary/commit/a4678962eec42996dac4929317d17cbc0212aff7))
+* CANT-156 — shared decision vectors for CANT-31's client rules ([#115](https://github.com/Einlanzerous/catenary/issues/115)) ([ec7242b](https://github.com/Einlanzerous/catenary/commit/ec7242b449d5401bbb703c855f2af053e1d5a456))
+* CANT-161 — the outbox core: catenary-outbox store, state machine, rail merge, NullTransport ([#103](https://github.com/Einlanzerous/catenary/issues/103)) ([7a57cf8](https://github.com/Einlanzerous/catenary/commit/7a57cf824fe4cd81988b49b05594aa4e3cb4e384))
+* CANT-163 — the outbox's OutboxTransport adapter over CANT-35's transport ([#107](https://github.com/Einlanzerous/catenary/issues/107)) ([63ac9a2](https://github.com/Einlanzerous/catenary/commit/63ac9a23c253925e5b68cac794fc7bced9155254))
+* CANT-165 — soakrig restoreprobe, drives a client and one send against a served, restored instance ([#101](https://github.com/Einlanzerous/catenary/issues/101)) ([c9e3dda](https://github.com/Einlanzerous/catenary/commit/c9e3dda3ed808c5774da7a4594dd9ff9c07ac7ac))
+* CANT-169 — durable IndexedDB journal for the web transport, and the TS clientDies kill-test lane ([#110](https://github.com/Einlanzerous/catenary/issues/110)) ([3f7bf22](https://github.com/Einlanzerous/catenary/commit/3f7bf2262d310a35b8d48f292b5f4444a81db827))
+* CANT-170 — CANT-35 ruling 3B's backoff in the Go reference client ([#116](https://github.com/Einlanzerous/catenary/issues/116)) ([b59081b](https://github.com/Einlanzerous/catenary/commit/b59081bda4030ef3ddd33d5fb39820fe7ef243fb))
+* CANT-171 — CANT-103 rules 1–4 in the reference client ([#117](https://github.com/Einlanzerous/catenary/issues/117)) ([00b9c9e](https://github.com/Einlanzerous/catenary/commit/00b9c9ef353ca45dcd7b433ec97ca653c45ce87e))
+* CANT-175 — a live journal write refused as stale pulls a catch-up ([#113](https://github.com/Einlanzerous/catenary/issues/113)) ([12cc297](https://github.com/Einlanzerous/catenary/commit/12cc29701122032204da5f8164ff23084e001295))
+* CANT-34 — migrate components off types.ts onto the generated types ([#97](https://github.com/Einlanzerous/catenary/issues/97)) ([9d3764e](https://github.com/Einlanzerous/catenary/commit/9d3764e88b5b69ee22dda2509ba8c024c1ff6e4d))
+* CANT-37 — resync UI with numeric progress toward head_seq ([#104](https://github.com/Einlanzerous/catenary/issues/104)) ([765a1db](https://github.com/Einlanzerous/catenary/commit/765a1db30973700511193d31cf8c27adf774640c))
+* CANT-38 — auth UI: login, device naming, session list, revoke ([#109](https://github.com/Einlanzerous/catenary/issues/109)) ([405c15b](https://github.com/Einlanzerous/catenary/commit/405c15b9498fb91a72589b6b20d951bb431e5418))
+* CANT-39 — delete the mock store; the smoke renders against a live server ([#114](https://github.com/Einlanzerous/catenary/issues/114)) ([80d2546](https://github.com/Einlanzerous/catenary/commit/80d2546dfd8e27b2af45c39e078416d2c88ecab0))
+
+
+### Bug Fixes
+
+* CANT-172 — the soak compares only once every client holds what the server has ([#111](https://github.com/Einlanzerous/catenary/issues/111)) ([8f35cb6](https://github.com/Einlanzerous/catenary/commit/8f35cb6df096599f0acee0f7a2a543c2761681db))
+* CANT-174 — soakrig's first start moves off a stolen port, the restart never does ([#118](https://github.com/Einlanzerous/catenary/issues/118)) ([94379d8](https://github.com/Einlanzerous/catenary/commit/94379d837e708fdcfa098f4bcd4226882f51234c))
+* CANT-179 — three internal/client tests deterministic under -race load ([#120](https://github.com/Einlanzerous/catenary/issues/120)) ([c3a2ce0](https://github.com/Einlanzerous/catenary/commit/c3a2ce0e697539b48d64f1e1ef25a500ba4fbde3))
+* readstate.ts's stale @/types import, missed by CANT-34 ([#98](https://github.com/Einlanzerous/catenary/issues/98)) ([99f4f8d](https://github.com/Einlanzerous/catenary/commit/99f4f8de5ed2b9dbd88d46dbe732d9151811539e))
+
 ## [0.11.1](https://github.com/Einlanzerous/catenary/compare/v0.11.0...v0.11.1) (2026-09-25)
 
 
