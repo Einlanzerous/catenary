@@ -508,7 +508,7 @@ func (c *Client) postRefresh(ctx context.Context, held Credential, token, propos
 		return Credential{}, fmt.Errorf("client: refresh: decode: %w", err)
 	}
 	next, err := CredentialFromEnroll(wire.EnrollResponse{
-		DeviceID:    held.DeviceID,
+		DeviceID: held.DeviceID, UserID: held.UserID,
 		AccessToken: out.AccessToken, AccessExpiresAt: out.AccessExpiresAt,
 		RefreshToken: out.RefreshToken, RefreshExpiresAt: out.RefreshExpiresAt,
 	})

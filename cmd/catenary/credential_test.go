@@ -54,7 +54,7 @@ func (k *killRig) refreshOverHTTP(refreshToken string) wire.RefreshResponse {
 func rotatedFrom(t *testing.T, held client.Credential, r wire.RefreshResponse) client.Credential {
 	t.Helper()
 	next, err := client.CredentialFromEnroll(wire.EnrollResponse{
-		DeviceID:    held.DeviceID,
+		DeviceID: held.DeviceID, UserID: held.UserID,
 		AccessToken: r.AccessToken, AccessExpiresAt: r.AccessExpiresAt,
 		RefreshToken: r.RefreshToken, RefreshExpiresAt: r.RefreshExpiresAt,
 	})

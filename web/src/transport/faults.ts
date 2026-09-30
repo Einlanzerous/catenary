@@ -26,7 +26,7 @@ export interface Faults {
   /** Obligation 4: on `ready.log_seq` below the cursor, re-sync from 0 and keep
    *  the store and the (monotonic) cursor. */
   skipWipe: boolean
-  /** CANT-103 rule 3, and the one switch Go does not have yet: a trigger that
+  /** CANT-103 rule 3, Go's `IgnoreRetrigger` (CANT-171): a trigger that
    *  arrives while a catch-up is running is dropped instead of re-arming the
    *  end condition, so a catch-up that ends on an in-flight page bounded below
    *  the triggering message never returns it. */

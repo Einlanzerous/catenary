@@ -19,6 +19,11 @@ type Credential struct {
 	// DeviceID is the device the pair was minted for; the hello must name it.
 	// A rotation never changes it.
 	DeviceID wire.Uuid
+	// UserID is who this device speaks as, from the enrollment response. A
+	// rotation never changes it either. The one reader is a live `receipt`
+	// (Client.onReceipt): CANT-35 ruling 4 → B makes one naming this user a
+	// catch-up trigger. Empty for a pair built by hand, which then knows no self.
+	UserID wire.Uuid
 	// AccessToken rides on the upgrade as `catenary.token.<token>` and on
 	// /sync as a bearer.
 	AccessToken     string
@@ -69,7 +74,7 @@ func CredentialFromEnroll(e wire.EnrollResponse) (Credential, error) {
 		return Credential{}, fmt.Errorf("client: refresh_expires_at %q: %w", e.RefreshExpiresAt, err)
 	}
 	return Credential{
-		DeviceID:    e.DeviceID,
+		DeviceID: e.DeviceID, UserID: e.UserID,
 		AccessToken: string(e.AccessToken), AccessExpiresAt: accessExp,
 		RefreshToken: string(e.RefreshToken), RefreshExpiresAt: refreshExp,
 	}, nil
@@ -90,8 +95,9 @@ var (
 	ErrNoCredential = errors.New("client: the journal holds no credential")
 	// ErrCredentialHeld is Enroll over a journal that already holds one.
 	ErrCredentialHeld = errors.New("client: the journal already holds a credential")
-	// ErrCredentialDevice is a rotation naming a different device.
-	ErrCredentialDevice = errors.New("client: a rotation cannot change the device")
+	// ErrCredentialDevice is a rotation naming a different device, or a
+	// different user.
+	ErrCredentialDevice = errors.New("client: a rotation cannot change the device or its user")
 
 	errCredentialIncomplete = errors.New("client: a credential needs a DeviceID, an AccessToken and a RefreshToken")
 )
@@ -269,6 +275,10 @@ func (j *Journal) Rotate(next Credential) error {
 		return ErrNoCredential
 	case next.DeviceID != j.credential.DeviceID:
 		return ErrCredentialDevice
+	case next.UserID != "" && next.UserID != j.credential.UserID:
+		// Nor who it speaks as. A refresh response carries no user, so an empty
+		// one keeps the held user rather than forgetting it.
+		return ErrCredentialDevice
 	case next.AccessToken == "" || next.RefreshToken == "":
 		// BOTH HALVES. A pair persisted without its refresh token connects
 		// until the access token expires and then cannot refresh at all —
@@ -279,6 +289,7 @@ func (j *Journal) Rotate(next Credential) error {
 	// device's now, so every link — the ones below it, which are spent, and
 	// any above it, which never came to exist — is history. The stamp goes with
 	// it (CANT-127): a settled credential is not held by anything.
+	next.UserID = j.credential.UserID
 	j.credential, j.chain, j.lastSent = next, nil, time.Time{}
 	return nil
 }
