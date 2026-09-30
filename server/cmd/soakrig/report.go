@@ -64,6 +64,13 @@ type Report struct {
 	// a WebSocket close code, or -1 for no close frame at all.
 	CloseStatuses map[int]int
 
+	// IntroductionDiscards is client.Stats.IntroductionDiscards summed per
+	// cohort over the whole run: live `message` frames discarded under CANT-103
+	// rule 1 for naming a conversation or an author the client did not hold,
+	// each one a catch-up trigger. Both cohorts count them the same way since
+	// CANT-171. Keyed by cohort, go or ts.
+	IntroductionDiscards map[string]int
+
 	Hello HelloHistogram
 
 	// HarnessErrors is every harness-side problem this run hit: a client that
@@ -287,6 +294,7 @@ func printReport(w io.Writer, rep Report) {
 		a.ServerMessages, a.ClientMessages, a.Counted, a.Lost, a.Duplicated, a.Phantom, a.Mismatched, a.SeqConflicts, a.OutOfOrder)
 
 	fmt.Fprintf(w, "\nclose statuses seen (cumulative over the whole run): %s\n", formatIntCounts(rep.CloseStatuses))
+	fmt.Fprintf(w, "introduction discards (CANT-103 rule 1, by cohort): %s\n", formatStringCounts(rep.IntroductionDiscards))
 
 	fmt.Fprintf(w, "\nhello outcomes: %s\n", formatStringCounts(rep.Hello.Outcomes))
 	fmt.Fprintf(w, "hello delta histogram (docs/decisions/cant-24-resume.md — the only evidence that could reopen ruling 0):\n")

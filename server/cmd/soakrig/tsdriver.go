@@ -509,6 +509,7 @@ func tsFaults(f client.Faults) (map[string]bool, error) {
 		"cursorOnLiveFrames":       f.CursorOnLiveFrames,
 		"dedupeByLogSeq":           f.DedupeByLogSeq,
 		"endCatchUpEarly":          f.EndCatchUpEarly,
+		"ignoreRetrigger":          f.IgnoreRetrigger,
 		"skipWipe":                 f.SkipWipe,
 		"refreshUnlocked":          f.RefreshUnlocked,
 		"noChain":                  f.NoChain,
@@ -549,6 +550,7 @@ type tsStats struct {
 	Resyncs                  int         `json:"resyncs"`
 	Discards                 int         `json:"discards"`
 	LiveFrames               int         `json:"liveFrames"`
+	IntroductionDiscards     int         `json:"introductionDiscards"`
 	Pages                    int         `json:"pages"`
 	SyncErrors               int         `json:"syncErrors"`
 	SyncsBeforeReady         int         `json:"syncsBeforeReady"`
@@ -578,7 +580,8 @@ func (t tsStatus) client(journalWipes int) client.Status {
 		Stats: client.Stats{
 			Dials: t.Stats.Dials, DialErrors: t.Stats.DialErrors, Readys: t.Stats.Readys,
 			Resyncs: t.Stats.Resyncs, Discards: t.Stats.Discards, LiveFrames: t.Stats.LiveFrames,
-			Pages: t.Stats.Pages, SyncErrors: t.Stats.SyncErrors, SyncsBeforeReady: t.Stats.SyncsBeforeReady,
+			IntroductionDiscards: t.Stats.IntroductionDiscards, Pages: t.Stats.Pages,
+			SyncErrors: t.Stats.SyncErrors, SyncsBeforeReady: t.Stats.SyncsBeforeReady,
 			PingsSent: t.Stats.PingsSent, PongsReceived: t.Stats.PongsReceived, HeartbeatSevers: t.Stats.HeartbeatSevers,
 			Refreshes: t.Stats.Refreshes, RefreshesSkipped: t.Stats.RefreshesSkipped, RefreshErrors: t.Stats.RefreshErrors,
 			RefreshWalkBacks: t.Stats.RefreshWalkBacks, ChainLength: t.Stats.ChainLength,

@@ -183,10 +183,13 @@ func runSoak(ctx context.Context, cfg Config) Result {
 	h.compareAll(ctx, clients, &rep)
 
 	rep.CloseStatuses = map[int]int{}
+	rep.IntroductionDiscards = map[string]int{}
 	for _, sc := range clients {
-		for code, n := range sc.c.Status().CloseStatuses {
+		s := sc.c.Status()
+		for code, n := range s.CloseStatuses {
 			rep.CloseStatuses[code] += n
 		}
+		rep.IntroductionDiscards[sc.cohort] += s.IntroductionDiscards
 	}
 
 	return h.finish(&rep)

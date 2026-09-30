@@ -26,12 +26,32 @@
 //     one, and every cursor move is monotonic — applyPage, applyLive.
 //  3. Catch-up is re-entrant, and ends on a has_more:false page whose request
 //     was issued after the most recent trigger. Triggers are a reconnect,
-//     `ready`, `resync_required`, and CatchUp — catchUp.
+//     `ready`, `resync_required`, CatchUp, CANT-103's introduction discard and
+//     an own-user `receipt` — catchUp.
 //  4. `ready.log_seq` below the cursor means wipe and bootstrap from 0, and a
 //     page requested before the wipe is dropped rather than applied over it —
 //     onReady.
-//  5. Conversations and users arrive on catch-up and never live. CatchUp is
-//     the hook for a client's own policy of catching up sooner.
+//  5. Renames, membership changes and `muted` arrive on catch-up and never
+//     live. CatchUp is the hook for a client's own policy of catching up
+//     sooner.
+//
+// CANT-103'S RULES 1–4 (docs/decisions/cant-103-conversation-introduction.md;
+// numbered as CANT-35's record and the TypeScript client number them), which
+// amend obligation 5 for a conversation's FIRST message (CANT-171):
+//
+//  1. A `message` naming a conversation or an author the journal does not hold
+//     is discarded, never buffered and never a placeholder, and pulls a
+//     catch-up — applyLive. Stats.IntroductionDiscards counts them.
+//  2. That catch-up runs to has_more:false — obligation 3 already.
+//  3. A trigger during a running catch-up re-arms its end condition — also
+//     obligation 3, and Faults.IgnoreRetrigger is its negative control.
+//  4. A `conversation` or `user` frame is applied idempotently by id, and moves
+//     no cursor — session's two arms, applyIntroduction.
+//
+// A LIVE `receipt` IS CANT-35 RULING 4 → B, as the TypeScript client does it:
+// one naming this device's own user pulls a catch-up, and `first_unread_seq`
+// moves only when a page lands; one naming anybody else is a no-op for the
+// store. Nothing is inferred from the ABSENCE of a receipt.
 //
 // And the two the record states outside the list: nothing is derived from
 // `ready.log_seq` about streaming (every `ready` is treated as resumed: false,
@@ -125,6 +145,11 @@ type Faults struct {
 	// EndCatchUpEarly breaks obligation 3: catch-up ends on the first
 	// has_more:false page, even one requested before the latest trigger.
 	EndCatchUpEarly bool
+	// IgnoreRetrigger breaks CANT-103 rule 3: a trigger pulled while a
+	// catch-up is running is dropped instead of re-arming its end condition, so
+	// a catch-up that ends on an in-flight page bounded below the discarded
+	// message never returns it. The TypeScript client's `ignoreRetrigger`.
+	IgnoreRetrigger bool
 
 	// SkipWipe breaks obligation 4: on `ready.log_seq` below the cursor the
 	// client re-syncs from 0 and keeps its store and its (monotonic) cursor.
@@ -287,8 +312,13 @@ type Stats struct {
 	Resyncs    int // `resync_required` frames received
 	Discards   int // `ready.log_seq` below the cursor (obligation 4)
 	LiveFrames int // `message` frames applied
-	Pages      int // /sync pages applied or dropped
-	SyncErrors int
+	// IntroductionDiscards counts the live `message` frames CANT-103 rule 1
+	// discarded because the journal held neither their conversation nor their
+	// author — each one a catch-up trigger. The TypeScript client's
+	// `introductionDiscards`, so a soak reports it the same for both cohorts.
+	IntroductionDiscards int
+	Pages                int // /sync pages applied or dropped
+	SyncErrors           int
 	// SyncsBeforeReady counts /sync requests issued while a connection
 	// attempt had not yet received `ready`.
 	SyncsBeforeReady int
@@ -422,7 +452,9 @@ type Client struct {
 	// catch-up satisfied. Caught up is gen == doneGen.
 	gen, doneGen uint64
 	// from0 is SkipWipe's re-sync: the next catch-up starts at 0.
-	from0       bool
+	from0 bool
+	// inPass is true while catchUp is paging; IgnoreRetrigger reads it.
+	inPass      bool
 	running     bool
 	cancel      context.CancelFunc
 	connecting  bool
@@ -623,7 +655,7 @@ func (c *Client) Run(ctx context.Context) error {
 		c.mu.Lock()
 		c.stats.Dials++
 		c.connecting = true
-		c.gen++
+		c.triggerLocked()
 		c.mu.Unlock()
 		c.wakeCatchUp()
 		c.notify()
@@ -785,12 +817,25 @@ func (c *Client) Close() {
 
 // CatchUp is a trigger (obligation 5's "own policy"): catch-up runs from the
 // cursor, and CaughtUp is false until it ends on a page requested after this.
-func (c *Client) CatchUp() {
+func (c *Client) CatchUp() { c.trigger() }
+
+// trigger is obligation 3's trigger, pulled on its own.
+func (c *Client) trigger() {
 	c.mu.Lock()
-	c.gen++
+	c.triggerLocked()
 	c.mu.Unlock()
 	c.wakeCatchUp()
 	c.notify()
+}
+
+// triggerLocked is every trigger: a running catch-up will not end on a page
+// requested before it (CANT-103 rule 3), and an idle one starts. The caller
+// holds c.mu, then wakes the catch-up goroutine and notifies.
+func (c *Client) triggerLocked() {
+	if c.cfg.Faults.IgnoreRetrigger && c.inPass {
+		return
+	}
+	c.gen++
 }
 
 // Send writes a `send` frame on the open socket and waits for its `ack`, or
@@ -1047,13 +1092,19 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, preceding *
 			c.mu.Unlock()
 		case wire.ServerMessageFrame:
 			c.applyLive(v.Message)
+		case wire.ServerConversationFrame:
+			c.applyIntroduction(&v.Conversation, nil)
+		case wire.ServerUserFrame:
+			c.applyIntroduction(nil, &v.User)
+		case wire.ServerReceipt:
+			c.onReceipt(v)
 		case wire.ServerResyncRequired:
 			// A trigger (obligation 3). Nothing else: the cursor is the last
 			// page's high water, so a catch-up from it covers the gap by
 			// construction.
 			c.mu.Lock()
 			c.stats.Resyncs++
-			c.gen++
+			c.triggerLocked()
 			c.mu.Unlock()
 			c.wakeCatchUp()
 			c.notify()
@@ -1126,7 +1177,7 @@ func (c *Client) onReady(r wire.ServerReady) {
 	// `ready` is one: `resumed: true` is treated as false, which is always
 	// correct. Counted and triggered under one lock, so no observer sees a
 	// `ready` without its trigger.
-	c.gen++
+	c.triggerLocked()
 	c.mu.Unlock()
 	c.wakeCatchUp()
 	c.notify()
@@ -1191,11 +1242,28 @@ func (c *Client) write(ctx context.Context, conn *websocket.Conn, f any) error {
 // --- the journal writes ------------------------------------------------------
 
 // applyLive is a `message` frame: applied and rendered by id (obligation 2),
-// and the cursor does not move.
+// and the cursor does not move — unless it names a conversation or an author
+// the journal does not hold (CANT-103 rule 1). That one is DISCARDED, never
+// buffered and never a placeholder, and pulls a catch-up: the page that
+// catch-up lands carries the message together with its conversation and its
+// users, so nothing is lost by dropping it here, and nothing is ever held
+// that cannot be rendered.
 func (c *Client) applyLive(m wire.Message) {
 	c.j.mu.Lock()
 	if c.killed.Load() {
 		c.j.mu.Unlock()
+		return
+	}
+	_, conv := c.j.conversations[m.ConversationID]
+	_, author := c.j.users[m.AuthorID]
+	if !conv || !author {
+		c.j.mu.Unlock()
+		c.mu.Lock()
+		c.stats.IntroductionDiscards++
+		c.triggerLocked()
+		c.mu.Unlock()
+		c.wakeCatchUp()
+		c.notify()
 		return
 	}
 	c.recordLocked(m)
@@ -1207,6 +1275,39 @@ func (c *Client) applyLive(m wire.Message) {
 	c.stats.LiveFrames++
 	c.mu.Unlock()
 	c.notify()
+}
+
+// applyIntroduction is a `conversation` or `user` frame (CANT-103 rule 4):
+// applied idempotently by id — a later record replaces an earlier one — and the
+// cursor does not move. A session that already holds the conversation receives
+// the introduction anyway, and this is why that is harmless.
+func (c *Client) applyIntroduction(cv *wire.Conversation, u *wire.User) {
+	c.j.mu.Lock()
+	if c.killed.Load() {
+		c.j.mu.Unlock()
+		return
+	}
+	if cv != nil {
+		c.j.conversations[cv.ID] = *cv
+	}
+	if u != nil {
+		c.j.users[u.ID] = *u
+	}
+	c.j.mu.Unlock()
+	c.notify()
+}
+
+// onReceipt is a live `receipt`, under CANT-35 ruling 4 → B. One naming this
+// device's own user is a trigger, and `first_unread_seq` changes only when the
+// page it pulls lands, so there is one derivation of the marker — the
+// server's. One naming anybody else is a no-op for the store: this client holds
+// no per-member mark to move, and `read_by` arrives on the re-emitted `message`
+// frames (CANT-92). A credential with no UserID — a test's hand-built pair —
+// knows no self, and every receipt is then a no-op.
+func (c *Client) onReceipt(r wire.ServerReceipt) {
+	if self := c.credential().UserID; self != "" && r.UserID == self {
+		c.trigger()
+	}
 }
 
 // applyPage lands one page atomically: messages, conversations and users,
@@ -1316,6 +1417,14 @@ func (c *Client) catchUpLoop(ctx context.Context) {
 // catchUp pages until obligation 3 says it is done: a has_more:false page
 // whose request was issued after the most recent trigger.
 func (c *Client) catchUp(ctx context.Context) error {
+	c.mu.Lock()
+	c.inPass = true
+	c.mu.Unlock()
+	defer func() {
+		c.mu.Lock()
+		c.inPass = false
+		c.mu.Unlock()
+	}()
 	next := int64(-1) // -1: start from the cursor
 	for {
 		c.mu.Lock()

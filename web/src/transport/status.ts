@@ -4,9 +4,9 @@
  *
  * STATS USE GO'S FIELD NAMES, camelCased, so a soak report reads the same for
  * both cohorts and soakrig decodes one into `client.Status` field by field. The
- * one rename is `LastRTT`, a Go duration, which is `lastRttMs` here. The one
- * addition is `introductionDiscards` (CANT-103 rule 1), which has no Go
- * counterpart until the Go client gets those rules.
+ * one rename is `LastRTT`, a Go duration, which is `lastRttMs` here.
+ * `introductionDiscards` (CANT-103 rule 1) was a TypeScript addition until
+ * CANT-171 gave Go the same rules and `IntroductionDiscards` with them.
  *
  * NO TOKEN APPEARS IN ANY FIELD, and a test scans for one.
  */

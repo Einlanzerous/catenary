@@ -227,7 +227,7 @@ test('criterion 16 · stats carry Go\'s client.Stats names, camelCased', () => {
   const renamed: Record<string, string> = { LastRTT: 'lastRttMs' }
   const want = goNames.map((n) => renamed[n] ?? n[0].toLowerCase() + n.slice(1)).sort()
   const r = rig()
-  const have = Object.keys(r.t.status().stats).filter((k) => k !== 'introductionDiscards').sort()
+  const have = Object.keys(r.t.status().stats).sort()
   assert.deepEqual(have, want)
 })
 
