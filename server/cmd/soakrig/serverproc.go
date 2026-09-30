@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 )
@@ -94,7 +95,9 @@ func repoRoot(override string) (string, error) {
 
 // freePort hands back a port nothing is listening on right now. There is a
 // small window between closing this probe and the subprocess binding the same
-// number — see startServer's retry.
+// number — CHECK-THEN-USE, not atomic — and on a busy box something else can
+// take it in that gap (CANT-174: 1 run in 40 on imperial-construct). See
+// startServer's retry, which is where that race is actually handled.
 func freePort() (int, error) {
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -102,6 +105,17 @@ func freePort() (int, error) {
 	}
 	defer l.Close()
 	return l.Addr().(*net.TCPAddr).Port, nil
+}
+
+// bindConflict reports whether err — startServerOnce's own failure — was the
+// subprocess's net.Listen losing freePort's race, as opposed to any other
+// reason /readyz never answered (a bad DSN, a real crash, a slow box blowing
+// the 15s bound). There is no error TYPE to check across the process
+// boundary, only what the child printed: main.go's top-level handler writes
+// "catenary: serve: listen tcp :PORT: bind: address already in use" to
+// stderr, and waitReady folds that stderr into err's own text.
+func bindConflict(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "address already in use")
 }
 
 // helloHistogram is CANT-24's decision record made evidence: every structured
@@ -149,11 +163,22 @@ func (h *helloHistogram) tail(r io.Reader) {
 }
 
 // startServer starts a fresh `catenary serve` and waits for /readyz. Called
-// once at the top of a run and again after killServer for the restart — both
-// times against the SAME port, because every client already has this
-// process's base URL baked into its Config and cannot be told to redial
-// somewhere else.
-func (h *harness) startServer(ctx context.Context) error {
+// once at the top of a run (isRestart false) and again after killServer for
+// the restart (isRestart true) — the two calls settle freePort's race
+// (CANT-174) in opposite directions.
+//
+// ON THE FIRST START, no client has been built yet, so h.baseURL can still
+// change out from under nobody: a bind conflict there — something else on the
+// box won freePort's check-then-use race — is answered by picking a fresh
+// port and retrying on it, rather than hammering the same stolen number three
+// times and giving up.
+//
+// THE RESTART NEVER DOES. Every already-running client has this run's
+// baseURL baked into its Config and cannot be told to redial somewhere else,
+// so a restart retries the SAME port exactly as before CANT-174 — losing
+// that race here is reported as a harness error after three attempts, never
+// papered over by moving the server out from under connected clients.
+func (h *harness) startServer(ctx context.Context, isRestart bool) error {
 	h.instance++
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
@@ -165,11 +190,23 @@ func (h *harness) startServer(ctx context.Context) error {
 				return ctx.Err()
 			}
 		}
-		if err := h.startServerOnce(ctx); err != nil {
-			lastErr = err
-			continue
+		err := h.startServerOnce(ctx)
+		if err == nil {
+			return nil
 		}
-		return nil
+		lastErr = err
+		// attempt < 2 because a reassignment here only matters if another
+		// attempt follows to use it — on the last attempt it would just
+		// leave h.port pointing at a port nothing ever actually tried.
+		if !isRestart && attempt < 2 && bindConflict(err) {
+			newPort, perr := freePort()
+			if perr != nil {
+				return fmt.Errorf("start catenary serve: %w — and pick a replacement port after that bind conflict: %v", err, perr)
+			}
+			h.logf("bind conflict on the first start; moving to a fresh port", "old_port", h.port, "new_port", newPort)
+			h.port = newPort
+			h.baseURL = fmt.Sprintf("http://127.0.0.1:%d", newPort)
+		}
 	}
 	return fmt.Errorf("start catenary serve after 3 attempts: %w", lastErr)
 }

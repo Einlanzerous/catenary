@@ -19,6 +19,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -249,5 +251,99 @@ func TestUnwritableReportPathCountsAsHarnessFailure(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no harness error mentions writing the report: %v", res.Report.HarnessErrors)
+	}
+}
+
+// occupyPort binds port itself, standing in for whatever else on a busy box
+// wins freePort's own check-then-use race, and hands back the listener so the
+// caller controls exactly how long it stays occupied.
+func occupyPort(t *testing.T, port int) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("occupy port %d for the test: %v", port, err)
+	}
+	return l
+}
+
+// newBareHarness builds a harness with a real binary and a real pool, exactly
+// what startLocalServer builds before its own startServer call — but stops
+// short of that call, so the two tests below can occupy the chosen port
+// FIRST and force startServer to actually meet the collision it retries on.
+func newBareHarness(t *testing.T, dbURL string) *harness {
+	t.Helper()
+	h := &harness{cfg: Config{DBURL: dbURL}, hello: newHelloHistogram()}
+	h.bin = testCatenaryBin(t)
+	port, err := freePort()
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.port = port
+	h.baseURL = fmt.Sprintf("http://127.0.0.1:%d", port)
+	pool, err := store.ConnectWithRetry(context.Background(), dbURL, 30*time.Second)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	h.pool = pool
+	h.store = store.New(pool, store.DefaultLimits(), h.cfg.logger())
+	t.Cleanup(h.cleanup)
+	return h
+}
+
+// COUNTER-PROOF — CANT-174. Occupying the EXACT port freePort chose, before
+// startServer ever tries it, forces a real "address already in use" out of
+// the real subprocess at the real race window, rather than simulating one.
+// On the FIRST start no client has been built yet, so the harness must move
+// to a fresh port and carry on rather than hammering the stolen one three
+// times — the failure this ticket exists to fix.
+func TestFirstStartRecoversFromAPortCollision(t *testing.T) {
+	dbURL := soakDBFixture(t)
+	h := newBareHarness(t, dbURL)
+	stolen := h.port
+
+	occupied := occupyPort(t, stolen)
+	t.Cleanup(func() { occupied.Close() })
+
+	if err := h.startServer(context.Background(), false); err != nil {
+		t.Fatalf("first start did not recover from the occupied port: %v", err)
+	}
+	if h.port == stolen {
+		t.Fatalf("h.port is still %d — the first start never moved off the occupied port", stolen)
+	}
+	if h.baseURL != fmt.Sprintf("http://127.0.0.1:%d", h.port) {
+		t.Errorf("baseURL %q does not name the new port %d", h.baseURL, h.port)
+	}
+}
+
+// COUNTER-PROOF — CANT-174's other half. Every already-running client has
+// this run's baseURL baked into its Config and cannot be told to redial
+// elsewhere, so the restart after kill -9 must keep retrying the SAME port a
+// real collision occupies — exhausting all three attempts and surfacing a
+// harness error — rather than quietly moving to a fresh one that would
+// strand every connected client.
+func TestRestartInsistsOnTheSamePort(t *testing.T) {
+	dbURL := soakDBFixture(t)
+	h := newBareHarness(t, dbURL)
+
+	// A clean first start, exactly like a real run's, so there is a real
+	// server and a real port in place before the kill.
+	if err := h.startServer(context.Background(), false); err != nil {
+		t.Fatalf("clean first start: %v", err)
+	}
+	port := h.port
+	h.killServer()
+
+	occupied := occupyPort(t, port)
+	t.Cleanup(func() { occupied.Close() })
+
+	err := h.startServer(context.Background(), true)
+	if err == nil {
+		t.Fatal("restart succeeded despite the ORIGINAL port being occupied — a restart must never move to a fresh one")
+	}
+	if !strings.Contains(err.Error(), "address already in use") {
+		t.Errorf("restart error does not name a bind conflict: %v", err)
+	}
+	if h.port != port {
+		t.Errorf("h.port changed to %d — a restart must keep the SAME port (%d) every connected client already has", h.port, port)
 	}
 }
