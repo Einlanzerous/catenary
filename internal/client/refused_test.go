@@ -98,6 +98,10 @@ type hop struct {
 	dropFirst map[string]int
 	sent      []request
 	frozen    bool
+	// stamped, when set, times a /refresh by the `last_sent_at` its link was
+	// written with rather than by when it reached the transport. Set before Run
+	// and never after. See TestItRecoversFromAClosedGateWithNoInput for why.
+	stamped func() time.Time
 }
 
 func newHop(clk *fakeClock, dead []string, dropFirst map[string]int) *hop {
@@ -116,6 +120,9 @@ func (h *hop) RoundTrip(r *http.Request) (*http.Response, error) {
 	switch r.URL.Path {
 	case "/refresh":
 		rq.token, rq.proposal = refreshBody(r)
+		if h.stamped != nil {
+			rq.at = h.stamped()
+		}
 	case "/sync":
 		rq.token = strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	case "/ws":
@@ -805,6 +812,14 @@ func TestItRecoversFromAClosedGateWithNoInput(t *testing.T) {
 		mu.Unlock()
 	}()
 
+	// EACH ATTEMPT IS TIMED BY ITS STAMP, NOT BY ITS ARRIVAL (CANT-178). The link
+	// and its stamp are written before the request leaves, and two goroutines
+	// charge simulated time — the catch-up's wait and Run's withheld dial — so the
+	// transport's clock can read one poll later than the moment the client decided
+	// to send. Timed on arrival, an attempt that left exactly when the curve
+	// allowed could then read as one poll early against the next. The stamp is the
+	// time the backoff itself counts from, on the same fake clock.
+	r.net.stamped = func() time.Time { at, _ := r.j.LastSent(); return at }
 	stop := r.run()
 	defer stop()
 	r.await("the client to rotate, dial with the new pair and catch up", func() bool {
