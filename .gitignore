@@ -3,6 +3,7 @@ node_modules/
 dist/
 dist-smoke/
 dist-conformance/
+dist-decisions/
 dist-validate/
 dist-readstate/
 dist-transport-test/

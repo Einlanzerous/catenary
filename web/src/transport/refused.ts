@@ -31,8 +31,8 @@ export interface RefusedInput {
 }
 
 /**
- * The wait that bounds the one `/sync` (Go's `Client.refusedHold`, without its
- * two faults, which the caller applies): hold while the pair's access token is
+ * The wait that bounds the one `/sync` (Go's `refusedHoldAt`; `Client.refusedHold`
+ * applies the two faults, as the caller does here): hold while the pair's access token is
  * the refused one and `last_sent_at + min(15 min, 5 s × 2^(n−1))` has not
  * arrived. It ends on any of four things, every one read off state: the pair
  * changes, the chain collapses, the stamp goes absent, or the clock passes the

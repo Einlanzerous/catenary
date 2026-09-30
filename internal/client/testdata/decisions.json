@@ -1,0 +1,1498 @@
+{
+  "note": "Shared decision vectors for CANT-31's client rules (CANT-35 ruling 6 → A, built by CANT-156).\n\nThe rules are implemented three times: internal/client (the Go reference), web/src/transport (TypeScript) and CANT-42's Dart. If two of them disagree, a device stops when it should reconnect, or keeps minting refresh links on a dead network, and neither is a type error. So every language's tests read THIS file and must reach the same answer for every case. Runners: internal/client/decisions_test.go (TestTheDecisionVectors) and web/decisions.ts (npm run decisions).\n\nEach case is {name, kind, why, in, want}. `why` names the rule and the Go test the case restates. Each kind dispatches to exactly ONE function per language; no runner composes two, and no runner implements a rule of its own.\n\n  close         in {status, preceding} -> want {verdict}. Go classifyClose; TS classifyClose(...).verdict. `status` null is \"no close frame\" (Go -1). `preceding` is a wire `error` frame decoded by the runner's GENERATED decoder, and one carrying a client_id is a malformed vector. verdict is reconnect | reconnect_at_maximum | terminal_protocol.\n  threshold     in {access_issued_at, access_expires_at} -> want {threshold_ms}. refreshThreshold.\n  due           in {access_issued_at, access_expires_at, clock_offset_ms, device_now} -> want {due}. refreshDue.\n  delay         in {links} -> want {delay_ms}. refreshDelay.\n  stamp         in {last_sent, now} -> want {stamp}. readStamp: missing or future is null.\n  gate          in {answered_at, stamp} -> want {open}. gateOpen, over a stamp ALREADY read through readStamp.\n  hold          in {links, answered_at, last_sent, now} -> want {hold}. refreshHoldAt, over a RAW last_sent. hold is none | unreachable | backoff.\n  refused_hold  in {refused, links, last_sent, now} -> want {hold}. refusedHoldAt, over a RAW last_sent.\n  chain         in {now, start, calls} -> want {refresh_token, chain, stamped, terminal}. The client's own refresh (Go Client.RefreshIfDue; TS RefreshingCredential.refreshIfDue), once per call, against a scripted /refresh.\n\nCONVENTIONS. Instants are wire timestamps (\"2026-09-19T12:00:00.000Z\") or null for absent: the zero time.Time in Go, null in TS. Durations are integer milliseconds in fields named *_ms. A null access_expires_at means NO EXPIRY: the zero time in Go and NaN in TS, because StoredCredential.accessExpiresAt is a number and refreshDue reads a non-finite one as never due. That is the one translation a runner makes besides parsing instants; every other null passes through as the language's absent.\n\nCHAIN TRANSCRIPTS. The credential starts from `start` (refresh_token, chain, last_sent) with its access token expired an hour before `now`, so a refresh is due, and the clock is fixed at `now`. Each call is one refresh; each step is one POST /refresh, in order. At every request the runner asserts: the presented (token, proposal); that the store ALREADY holds that link and a last_sent stamp (persisted before the request leaves); that every proposal is a valid wire Token (the request decodes through the generated decoder); and, after each call, that exactly its steps were consumed, no more and no fewer. `respond` is verbatim HTTP and no runner interprets it: {status, json} or {status, text}, optionally with headers (only \"Retry-After\": \"0\"), or {drop: true}, which closes the connection with no response (TS: the fetch rejects with a TypeError). After the last call the runner asserts `want` from STATE: the held refresh token, the chain, whether last_sent is present, and whether the client entered the CREDENTIAL terminal. Tokens are self-describing, low-entropy fixtures, as schema/vectors/vectors.json explains. $P1, $P2, ... name the proposals the client mints: a symbol BINDS ON FIRST APPEARANCE to what was presented, and every later appearance, in an expectation, a response or `want`, must equal it. `$` is outside base64url, so a symbol never collides with a fixture.\n\nNO WANT NAMES A COUNTER. Stats, CredentialStatus counts, walk-backs and refused pages are not decisions, and Go and TS count differently under a fake clock (the /sync beside the first dial lands on the same instant as the pre-dial stamp). Transcripts pin what was presented and the end state only.\n\nRUNNER CONTRACT, for CANT-42's Dart runner as for these two: an unknown kind FAILS, and so does a listed kind with no cases; symbols bind on first appearance; `respond` is written verbatim; a null expiry maps to the language's \"no expiry\"; `preceding` goes through the generated decoder; no counter is asserted. The Go runner also proves the file has teeth: a one-boundary mutant of each pure function, and the chain transcripts under Faults{NoChain} and Faults{ProposeAfresh}, must each fail at least one case.\n\nNOT HERE. There is no backoff kind: CANT-170 ports CANT-35 ruling 3B to Go and adds it. The close case \"1008 after error{<a code this wire version does not define>}\" is left out until the Go client decodes it as the TS client does (CANT-177, which adds it). nextRefreshAt is not a kind: stamp and delay already pin it.",
+  "cases": [
+    {
+      "name": "close_4001",
+      "kind": "close",
+      "why": "The credential behind the session was revoked. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 4001,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "terminal_protocol"
+      }
+    },
+    {
+      "name": "close_4001_whatever_preceded_it",
+      "kind": "close",
+      "why": "4001 is terminal whatever frame came before it. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 4001,
+        "preceding": {
+          "type": "error",
+          "code": "internal",
+          "message": "x",
+          "retryable": true
+        }
+      },
+      "want": {
+        "verdict": "terminal_protocol"
+      }
+    },
+    {
+      "name": "close_1008_bare",
+      "kind": "close",
+      "why": "A bare 1008 is a client bug: replaying the same bytes walks into the same close. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1008,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "terminal_protocol"
+      }
+    },
+    {
+      "name": "close_1008_after_unauthorized",
+      "kind": "close",
+      "why": "The session was refused for its credential. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1008,
+        "preceding": {
+          "type": "error",
+          "code": "unauthorized",
+          "message": "x",
+          "retryable": false
+        }
+      },
+      "want": {
+        "verdict": "terminal_protocol"
+      }
+    },
+    {
+      "name": "close_1008_after_wire_version_unsupported",
+      "kind": "close",
+      "why": "The server does not speak this wire version: update the app. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1008,
+        "preceding": {
+          "type": "error",
+          "code": "wire_version_unsupported",
+          "message": "x",
+          "retryable": false
+        }
+      },
+      "want": {
+        "verdict": "terminal_protocol"
+      }
+    },
+    {
+      "name": "close_1008_after_internal_retryable",
+      "kind": "close",
+      "why": "error{internal} is never terminal and never eager. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1008,
+        "preceding": {
+          "type": "error",
+          "code": "internal",
+          "message": "x",
+          "retryable": true
+        }
+      },
+      "want": {
+        "verdict": "reconnect_at_maximum"
+      }
+    },
+    {
+      "name": "close_1008_after_internal_not_retryable",
+      "kind": "close",
+      "why": "`retryable` is not consulted: a permanent server fault must not stop every client and keep them stopped after the fix. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1008,
+        "preceding": {
+          "type": "error",
+          "code": "internal",
+          "message": "x",
+          "retryable": false
+        }
+      },
+      "want": {
+        "verdict": "reconnect_at_maximum"
+      }
+    },
+    {
+      "name": "close_1008_after_rate_limited",
+      "kind": "close",
+      "why": "1008 preceded by an error carrying any other code reconnects with backoff. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1008,
+        "preceding": {
+          "type": "error",
+          "code": "rate_limited",
+          "message": "x",
+          "retryable": true
+        }
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_1001_drain",
+      "kind": "close",
+      "why": "A drain reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1001,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_1012_head_unreadable",
+      "kind": "close",
+      "why": "The server could not read its head; reconnect. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1012,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_4000_heartbeat_timeout",
+      "kind": "close",
+      "why": "A heartbeat timeout reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 4000,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_4002_hello_timeout",
+      "kind": "close",
+      "why": "The hello timeout has closed 4002 since CANT-122 so that a bare 1008 could mean a client bug. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 4002,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_no_status_abnormal_closure",
+      "kind": "close",
+      "why": "No close frame at all (Go -1, TS null): everything not listed reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": null,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_1005_no_status_received",
+      "kind": "close",
+      "why": "A close frame with no status is \"no status\" (closeStatusKey counts it as -1) and reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1005,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_1006_abnormal",
+      "kind": "close",
+      "why": "A browser reports an abnormal closure as 1006; \"no status\", and it reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1006,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_1000_unlisted",
+      "kind": "close",
+      "why": "Unlisted: reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1000,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_1009_unlisted",
+      "kind": "close",
+      "why": "Unlisted: reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1009,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_1011_unlisted",
+      "kind": "close",
+      "why": "Unlisted: reconnects. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 1011,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "close_private_code_a_later_server_adds",
+      "kind": "close",
+      "why": "A code a later server adds reconnects: the default is the safe direction. Record §4; restates a row of TestTheCloseTableIsTheRecords (terminal_test.go).",
+      "in": {
+        "status": 4999,
+        "preceding": null
+      },
+      "want": {
+        "verdict": "reconnect"
+      }
+    },
+    {
+      "name": "threshold_fifteen_minutes",
+      "kind": "threshold",
+      "why": "A person's fifteen minutes: a third is five. Record §1, max(60 s, a third of the served lifetime); restates TestTheThresholdIsAThirdOfTheServedLifetimeWithAFloor (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z"
+      },
+      "want": {
+        "threshold_ms": 300000
+      }
+    },
+    {
+      "name": "threshold_exactly_at_the_floor",
+      "kind": "threshold",
+      "why": "Three minutes: a third is exactly the floor. Record §1, max(60 s, a third of the served lifetime); restates TestTheThresholdIsAThirdOfTheServedLifetimeWithAFloor (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:03:00.000Z"
+      },
+      "want": {
+        "threshold_ms": 60000
+      }
+    },
+    {
+      "name": "threshold_a_short_lifetime_is_held_up_by_the_floor",
+      "kind": "threshold",
+      "why": "Ninety seconds: a third is 30 s, and the floor holds it at 60 s. Record §1, max(60 s, a third of the served lifetime); restates TestTheThresholdIsAThirdOfTheServedLifetimeWithAFloor (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:01:30.000Z"
+      },
+      "want": {
+        "threshold_ms": 60000
+      }
+    },
+    {
+      "name": "threshold_an_hour",
+      "kind": "threshold",
+      "why": "An hour: a third is twenty minutes. Record §1, max(60 s, a third of the served lifetime); restates TestTheThresholdIsAThirdOfTheServedLifetimeWithAFloor (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T13:00:00.000Z"
+      },
+      "want": {
+        "threshold_ms": 1200000
+      }
+    },
+    {
+      "name": "threshold_no_issue_time_gets_the_floor",
+      "kind": "threshold",
+      "why": "No issue time was ever learned: the lifetime is unknown, and the floor is the only number that does not guess it. Record §1, max(60 s, a third of the served lifetime); restates TestTheThresholdIsAThirdOfTheServedLifetimeWithAFloor (refresh_test.go).",
+      "in": {
+        "access_issued_at": null,
+        "access_expires_at": "2026-09-19T12:15:00.000Z"
+      },
+      "want": {
+        "threshold_ms": 60000
+      }
+    },
+    {
+      "name": "due_a_correct_clock_fresh",
+      "kind": "due",
+      "why": "A correct clock, a minute in. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": 0,
+        "device_now": "2026-09-19T12:01:00.000Z"
+      },
+      "want": {
+        "due": false
+      }
+    },
+    {
+      "name": "due_a_correct_clock_inside_the_last_third",
+      "kind": "due",
+      "why": "A correct clock, inside the last third. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": 0,
+        "device_now": "2026-09-19T12:10:01.000Z"
+      },
+      "want": {
+        "due": true
+      }
+    },
+    {
+      "name": "due_an_hour_fast_fresh",
+      "kind": "due",
+      "why": "An hour fast, fresh: not due, though the raw wall clock says long expired. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": -3600000,
+        "device_now": "2026-09-19T13:01:00.000Z"
+      },
+      "want": {
+        "due": false
+      }
+    },
+    {
+      "name": "due_an_hour_fast_inside_the_last_third",
+      "kind": "due",
+      "why": "An hour fast, inside the last third. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": -3600000,
+        "device_now": "2026-09-19T13:11:00.000Z"
+      },
+      "want": {
+        "due": true
+      }
+    },
+    {
+      "name": "due_an_hour_slow_inside_the_last_third",
+      "kind": "due",
+      "why": "An hour slow, inside the last third: due, though the raw wall clock says an hour left. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": 3600000,
+        "device_now": "2026-09-19T11:11:00.000Z"
+      },
+      "want": {
+        "due": true
+      }
+    },
+    {
+      "name": "due_an_hour_slow_fresh",
+      "kind": "due",
+      "why": "An hour slow, fresh. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": 3600000,
+        "device_now": "2026-09-19T11:01:00.000Z"
+      },
+      "want": {
+        "due": false
+      }
+    },
+    {
+      "name": "due_no_expiry_is_never_due",
+      "kind": "due",
+      "why": "No expiry was ever learned: there is nothing to measure against, and the reactive path is the net. The TS runner passes a null expiry as NaN. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": null,
+        "access_expires_at": null,
+        "clock_offset_ms": 0,
+        "device_now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "due": false
+      }
+    },
+    {
+      "name": "due_remaining_equal_to_the_threshold_is_not_due",
+      "kind": "due",
+      "why": "Five minutes left of fifteen is exactly the threshold, and due is LESS than it: an implementation comparing with <= refreshes early. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": 0,
+        "device_now": "2026-09-19T12:10:00.000Z"
+      },
+      "want": {
+        "due": false
+      }
+    },
+    {
+      "name": "due_a_third_that_is_not_a_whole_millisecond",
+      "kind": "due",
+      "why": "Issued T, expiring T + 900,001 ms: the threshold is 300,000.333… ms (Go: 900001000000 ns / 3), and at T + 600,001 ms exactly 300,000 ms remain, which is less, so due. An implementation that floors the third to whole milliseconds compares 300,000 < 300,000 and says not due. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": "2026-09-19T12:00:00.000Z",
+        "access_expires_at": "2026-09-19T12:15:00.001Z",
+        "clock_offset_ms": 0,
+        "device_now": "2026-09-19T12:10:00.001Z"
+      },
+      "want": {
+        "due": true
+      }
+    },
+    {
+      "name": "due_no_issue_time_uses_the_floor",
+      "kind": "due",
+      "why": "No issue time: the floor is the threshold, and 59.999 s left is inside it. Record §1: less than the threshold remains, on the server's clock (device time plus the persisted offset); restates TestDueIsDecidedOnTheServersClock (refresh_test.go).",
+      "in": {
+        "access_issued_at": null,
+        "access_expires_at": "2026-09-19T12:15:00.000Z",
+        "clock_offset_ms": 0,
+        "device_now": "2026-09-19T12:14:00.001Z"
+      },
+      "want": {
+        "due": true
+      }
+    },
+    {
+      "name": "delay_a_settled_credential_waits_nothing",
+      "kind": "delay",
+      "why": "Zero links: nothing is outstanding. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 0
+      },
+      "want": {
+        "delay_ms": 0
+      }
+    },
+    {
+      "name": "delay_1_link",
+      "kind": "delay",
+      "why": "1 link: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 1
+      },
+      "want": {
+        "delay_ms": 5000
+      }
+    },
+    {
+      "name": "delay_2_links",
+      "kind": "delay",
+      "why": "2 links: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 2
+      },
+      "want": {
+        "delay_ms": 10000
+      }
+    },
+    {
+      "name": "delay_3_links",
+      "kind": "delay",
+      "why": "3 links: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 3
+      },
+      "want": {
+        "delay_ms": 20000
+      }
+    },
+    {
+      "name": "delay_4_links",
+      "kind": "delay",
+      "why": "4 links: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 4
+      },
+      "want": {
+        "delay_ms": 40000
+      }
+    },
+    {
+      "name": "delay_5_links",
+      "kind": "delay",
+      "why": "5 links: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 5
+      },
+      "want": {
+        "delay_ms": 80000
+      }
+    },
+    {
+      "name": "delay_6_links",
+      "kind": "delay",
+      "why": "6 links: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 6
+      },
+      "want": {
+        "delay_ms": 160000
+      }
+    },
+    {
+      "name": "delay_7_links",
+      "kind": "delay",
+      "why": "7 links: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 7
+      },
+      "want": {
+        "delay_ms": 320000
+      }
+    },
+    {
+      "name": "delay_8_links",
+      "kind": "delay",
+      "why": "8 links: doubling from 5 s. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 8
+      },
+      "want": {
+        "delay_ms": 640000
+      }
+    },
+    {
+      "name": "delay_9_links_is_the_cap",
+      "kind": "delay",
+      "why": "9 links: the cap, reached without overflowing on the way. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 9
+      },
+      "want": {
+        "delay_ms": 900000
+      }
+    },
+    {
+      "name": "delay_64_links_is_the_cap",
+      "kind": "delay",
+      "why": "64 links: the cap, reached without overflowing on the way. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 64
+      },
+      "want": {
+        "delay_ms": 900000
+      }
+    },
+    {
+      "name": "delay_1000_links_is_the_cap",
+      "kind": "delay",
+      "why": "1,000 links: the cap, reached without overflowing on the way. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 1000
+      },
+      "want": {
+        "delay_ms": 900000
+      }
+    },
+    {
+      "name": "delay_1000000_links_is_the_cap",
+      "kind": "delay",
+      "why": "1,000,000 links: the cap, reached without overflowing on the way. CANT-127: min(15 min, 5 s × 2^(n−1)) for a chain of n links; restates TestTheDelayDoublesToTheCap (hold_test.go).",
+      "in": {
+        "links": 1000000
+      },
+      "want": {
+        "delay_ms": 900000
+      }
+    },
+    {
+      "name": "stamp_missing_is_absent",
+      "kind": "stamp",
+      "why": "A journal written before CANT-127 has no stamp. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "in": {
+        "last_sent": null,
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "stamp": null
+      }
+    },
+    {
+      "name": "stamp_in_the_future_is_absent",
+      "kind": "stamp",
+      "why": "A clock set backwards after the send: the stamp is later than now, and reads as absent. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "in": {
+        "last_sent": "2026-09-19T12:05:00.000Z",
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "stamp": null
+      }
+    },
+    {
+      "name": "stamp_equal_to_now_is_kept",
+      "kind": "stamp",
+      "why": "A stamp written this instant is not in the future. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "in": {
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "stamp": "2026-09-19T12:00:00.000Z"
+      }
+    },
+    {
+      "name": "stamp_in_the_past_is_kept",
+      "kind": "stamp",
+      "why": "The ordinary case. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "in": {
+        "last_sent": "2026-09-19T11:59:00.000Z",
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "stamp": "2026-09-19T11:59:00.000Z"
+      }
+    },
+    {
+      "name": "gate_no_answer_with_a_stamp_is_closed",
+      "kind": "gate",
+      "why": "A context that has heard nothing is closed. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "in": {
+        "answered_at": null,
+        "stamp": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "open": false
+      }
+    },
+    {
+      "name": "gate_no_answer_without_a_stamp_is_closed",
+      "kind": "gate",
+      "why": "Closed either way: relaunch, a fresh push worker and a second tab are one property. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "in": {
+        "answered_at": null,
+        "stamp": null
+      },
+      "want": {
+        "open": false
+      }
+    },
+    {
+      "name": "gate_an_answer_and_no_stamp_is_open",
+      "kind": "gate",
+      "why": "An absent stamp is opened by any Catenary answer: there is no send to be later than. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "in": {
+        "answered_at": "2026-09-19T12:00:00.000Z",
+        "stamp": null
+      },
+      "want": {
+        "open": true
+      }
+    },
+    {
+      "name": "gate_an_answer_equal_to_the_stamp_is_closed",
+      "kind": "gate",
+      "why": "LATER THAN IS STRICT: an answer at the same instant as the send is closed, and the safe direction is one held attempt. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "in": {
+        "answered_at": "2026-09-19T12:00:00.000Z",
+        "stamp": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "open": false
+      }
+    },
+    {
+      "name": "gate_an_answer_later_than_the_stamp_is_open",
+      "kind": "gate",
+      "why": "The gate opens on an answer after the send. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "in": {
+        "answered_at": "2026-09-19T12:00:00.001Z",
+        "stamp": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "open": true
+      }
+    },
+    {
+      "name": "gate_an_answer_before_the_stamp_is_closed",
+      "kind": "gate",
+      "why": "Another attempt moved the stamp past the last answer, and the gate closes with it. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "in": {
+        "answered_at": "2026-09-19T11:59:00.000Z",
+        "stamp": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "open": false
+      }
+    },
+    {
+      "name": "hold_a_settled_credential_is_not_held",
+      "kind": "hold",
+      "why": "Zero links: nothing to bound, whatever the gate says. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 0,
+        "answered_at": null,
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:01.000Z"
+      },
+      "want": {
+        "hold": "none"
+      }
+    },
+    {
+      "name": "hold_a_closed_gate_inside_the_delay_is_unreachable",
+      "kind": "hold",
+      "why": "The gate is checked first: no answer since the send reads as unreachable, even while the delay is also running. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 1,
+        "answered_at": null,
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:01.000Z"
+      },
+      "want": {
+        "hold": "unreachable"
+      }
+    },
+    {
+      "name": "hold_a_closed_gate_after_the_delay_is_unreachable",
+      "kind": "hold",
+      "why": "The gate has no time: it opens on an answer, not on the clock. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 1,
+        "answered_at": null,
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:10:00.000Z"
+      },
+      "want": {
+        "hold": "unreachable"
+      }
+    },
+    {
+      "name": "hold_an_answer_equal_to_the_stamp_is_unreachable",
+      "kind": "hold",
+      "why": "An answer at the same instant as the send does not open the gate. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 1,
+        "answered_at": "2026-09-19T12:00:00.000Z",
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:10:00.000Z"
+      },
+      "want": {
+        "hold": "unreachable"
+      }
+    },
+    {
+      "name": "hold_one_millisecond_before_the_delay_is_backoff",
+      "kind": "hold",
+      "why": "The gate is open and 5 s have not quite passed since the send of a one-link chain. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 1,
+        "answered_at": "2026-09-19T12:00:00.500Z",
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:04.999Z"
+      },
+      "want": {
+        "hold": "backoff"
+      }
+    },
+    {
+      "name": "hold_now_equal_to_stamp_plus_delay_has_elapsed",
+      "kind": "hold",
+      "why": "now = stamp + delay: the wait is over. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 1,
+        "answered_at": "2026-09-19T12:00:00.500Z",
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:05.000Z"
+      },
+      "want": {
+        "hold": "none"
+      }
+    },
+    {
+      "name": "hold_three_links_one_millisecond_before_20s_is_backoff",
+      "kind": "hold",
+      "why": "Three links wait 20 s. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 3,
+        "answered_at": "2026-09-19T12:00:01.000Z",
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:19.999Z"
+      },
+      "want": {
+        "hold": "backoff"
+      }
+    },
+    {
+      "name": "hold_three_links_at_20s_has_elapsed",
+      "kind": "hold",
+      "why": "Three links wait 20 s, and at 20 s they have. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 3,
+        "answered_at": "2026-09-19T12:00:01.000Z",
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:20.000Z"
+      },
+      "want": {
+        "hold": "none"
+      }
+    },
+    {
+      "name": "hold_a_future_raw_stamp_is_not_held_by_the_backoff",
+      "kind": "hold",
+      "why": "A stamp in the future reads as absent: any answer opens the gate and the delay has elapsed. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 1,
+        "answered_at": "2026-09-19T11:59:00.000Z",
+        "last_sent": "2026-09-19T12:05:00.000Z",
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "hold": "none"
+      }
+    },
+    {
+      "name": "hold_a_missing_stamp_with_an_answer_is_not_held",
+      "kind": "hold",
+      "why": "A chain written before CANT-127: any answer opens the gate, and absent reads as elapsed. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "in": {
+        "links": 2,
+        "answered_at": "2026-09-19T11:59:00.000Z",
+        "last_sent": null,
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "hold": "none"
+      }
+    },
+    {
+      "name": "refused_hold_a_token_not_refused_is_not_held",
+      "kind": "refused_hold",
+      "why": "Nothing refused, nothing withheld. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "in": {
+        "refused": false,
+        "links": 1,
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:01.000Z"
+      },
+      "want": {
+        "hold": false
+      }
+    },
+    {
+      "name": "refused_hold_a_settled_credential_is_not_held",
+      "kind": "refused_hold",
+      "why": "Zero links: the chain collapsed because somebody got an answer. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "in": {
+        "refused": true,
+        "links": 0,
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:01.000Z"
+      },
+      "want": {
+        "hold": false
+      }
+    },
+    {
+      "name": "refused_hold_one_millisecond_before_the_delay_is_held",
+      "kind": "refused_hold",
+      "why": "Refused, one link, 5 s not quite passed. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "in": {
+        "refused": true,
+        "links": 1,
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:04.999Z"
+      },
+      "want": {
+        "hold": true
+      }
+    },
+    {
+      "name": "refused_hold_now_equal_to_stamp_plus_delay_has_elapsed",
+      "kind": "refused_hold",
+      "why": "now = stamp + delay: the one /sync goes out. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "in": {
+        "refused": true,
+        "links": 1,
+        "last_sent": "2026-09-19T12:00:00.000Z",
+        "now": "2026-09-19T12:00:05.000Z"
+      },
+      "want": {
+        "hold": false
+      }
+    },
+    {
+      "name": "refused_hold_a_future_raw_stamp_is_not_held",
+      "kind": "refused_hold",
+      "why": "ABSENT READS AS ELAPSED: a stamp in the future from a clock set backwards leaves the probe free to go. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "in": {
+        "refused": true,
+        "links": 1,
+        "last_sent": "2026-09-19T12:05:00.000Z",
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "hold": false
+      }
+    },
+    {
+      "name": "refused_hold_a_missing_stamp_is_not_held",
+      "kind": "refused_hold",
+      "why": "A chain written before CANT-127 has no stamp, which reads as elapsed. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "in": {
+        "refused": true,
+        "links": 2,
+        "last_sent": null,
+        "now": "2026-09-19T12:00:00.000Z"
+      },
+      "want": {
+        "hold": false
+      }
+    },
+    {
+      "name": "chain_a_newest_first_then_one_step_back_reusing_the_original_proposal",
+      "kind": "chain",
+      "why": "Record §3: newest first, then ONE STEP BACK PER CATENARY 401, re-presenting the older token with the proposal it was FIRST sent with. The first request is lost; the next presents its proposal, which never existed, and the 401 steps back to the start token with $P1 again, which is answered. Restates TestAnUnknownOutcomeIsRecoveredByWalkingTheChain (\"the first REQUEST never arrived\") (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [],
+          "last_sent": null
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "drop": true
+                }
+              }
+            ]
+          },
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "$P1",
+                  "proposal": "$P2"
+                },
+                "respond": {
+                  "status": 401,
+                  "json": {
+                    "code": "unauthorized"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 200,
+                  "json": {
+                    "access_token": "access_token_FIXTURE_after_rotation________",
+                    "access_expires_at": "2026-09-19T12:15:00.000Z",
+                    "refresh_token": "$P1",
+                    "refresh_expires_at": "2026-10-19T12:00:00.000Z"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "$P1",
+        "chain": [],
+        "stamped": false,
+        "terminal": false
+      }
+    },
+    {
+      "name": "chain_b_a_hops_401_does_not_step_the_walk_back",
+      "kind": "chain",
+      "why": "Record §5: a 401 that is not Catenary's (no {\"code\":\"unauthorized\"} body) says nothing about any token. It ends the attempt as an unknown outcome and never steps back to the start token, which may be spent. Restates TestAProxys401DoesNotStepTheWalkBack (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [],
+          "last_sent": null
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "drop": true
+                }
+              }
+            ]
+          },
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "$P1",
+                  "proposal": "$P2"
+                },
+                "respond": {
+                  "status": 401,
+                  "text": "access: session expired\n"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+        "chain": [
+          {
+            "token": "refresh_token_FIXTURE_decision_vectors_____",
+            "proposal": "$P1"
+          },
+          {
+            "token": "$P1",
+            "proposal": "$P2"
+          }
+        ],
+        "stamped": true,
+        "terminal": false
+      }
+    },
+    {
+      "name": "chain_c_a_200s_refresh_token_is_believed_over_the_proposal",
+      "kind": "chain",
+      "why": "Record §3: THE RESPONSE'S refresh_token, NEVER THE PROPOSAL ON FAITH. A server that predates the field ignores the proposal and mints its own, and the client holds what it was given. Restates TestAServerThatIgnoresTheProposalIsBelieved (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [],
+          "last_sent": null
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 200,
+                  "json": {
+                    "access_token": "access_token_FIXTURE_after_rotation________",
+                    "access_expires_at": "2026-09-19T12:15:00.000Z",
+                    "refresh_token": "refresh_token_FIXTURE_minted_by_the_server_",
+                    "refresh_expires_at": "2026-10-19T12:00:00.000Z"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "refresh_token_FIXTURE_minted_by_the_server_",
+        "chain": [],
+        "stamped": false,
+        "terminal": false
+      }
+    },
+    {
+      "name": "chain_d_present_proposal_moves_the_walk_forward",
+      "kind": "chain",
+      "why": "Record §5: 503 present_proposal says the rotation already committed. The client stops presenting that token and presents its proposal, with a new link of its own. Restates TestPresentProposalMovesTheWalkForward (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [],
+          "last_sent": null
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 503,
+                  "json": {
+                    "retry": "present_proposal"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "$P1",
+                  "proposal": "$P2"
+                },
+                "respond": {
+                  "status": 200,
+                  "json": {
+                    "access_token": "access_token_FIXTURE_after_rotation________",
+                    "access_expires_at": "2026-09-19T12:15:00.000Z",
+                    "refresh_token": "$P2",
+                    "refresh_expires_at": "2026-10-19T12:00:00.000Z"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "$P2",
+        "chain": [],
+        "stamped": false,
+        "terminal": false
+      }
+    },
+    {
+      "name": "chain_e_fresh_proposal_rewrites_the_link_and_is_bounded_at_three",
+      "kind": "chain",
+      "why": "Record §5: 503 fresh_proposal keeps the token and replaces its proposal, rewriting the link rather than extending the chain. Three times and no more: the fourth answer ends the attempt as an unknown outcome, not a terminal. Restates TestFreshProposalMintsAgainForTheSameToken (\"a server that says it to everything\") (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [],
+          "last_sent": null
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 503,
+                  "headers": {
+                    "Retry-After": "0"
+                  },
+                  "json": {
+                    "retry": "fresh_proposal"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P2"
+                },
+                "respond": {
+                  "status": 503,
+                  "headers": {
+                    "Retry-After": "0"
+                  },
+                  "json": {
+                    "retry": "fresh_proposal"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P3"
+                },
+                "respond": {
+                  "status": 503,
+                  "headers": {
+                    "Retry-After": "0"
+                  },
+                  "json": {
+                    "retry": "fresh_proposal"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P4"
+                },
+                "respond": {
+                  "status": 503,
+                  "headers": {
+                    "Retry-After": "0"
+                  },
+                  "json": {
+                    "retry": "fresh_proposal"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+        "chain": [
+          {
+            "token": "refresh_token_FIXTURE_decision_vectors_____",
+            "proposal": "$P4"
+          }
+        ],
+        "stamped": true,
+        "terminal": false
+      }
+    },
+    {
+      "name": "chain_f_catenarys_401_on_the_oldest_token_is_the_credential_terminal",
+      "kind": "chain",
+      "why": "Record §5: only the OLDEST token's 401 is terminal. Two lost requests leave three links; a revoked device is refused at each, the walk steps back one per 401, and Catenary's refusal of the stored refresh token stops the client. Nothing is deleted: the credential and every link are kept. Restates TestARevokedDeviceWalksToTheOldestTokenAndStops (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [],
+          "last_sent": null
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "drop": true
+                }
+              }
+            ]
+          },
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "$P1",
+                  "proposal": "$P2"
+                },
+                "respond": {
+                  "drop": true
+                }
+              }
+            ]
+          },
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "$P2",
+                  "proposal": "$P3"
+                },
+                "respond": {
+                  "status": 401,
+                  "json": {
+                    "code": "unauthorized"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "$P1",
+                  "proposal": "$P2"
+                },
+                "respond": {
+                  "status": 401,
+                  "json": {
+                    "code": "unauthorized"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 401,
+                  "json": {
+                    "code": "unauthorized"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+        "chain": [
+          {
+            "token": "refresh_token_FIXTURE_decision_vectors_____",
+            "proposal": "$P1"
+          },
+          {
+            "token": "$P1",
+            "proposal": "$P2"
+          },
+          {
+            "token": "$P2",
+            "proposal": "$P3"
+          }
+        ],
+        "stamped": true,
+        "terminal": true
+      }
+    },
+    {
+      "name": "chain_g_a_bare_503_is_an_unknown_outcome",
+      "kind": "chain",
+      "why": "Record §5: a 503 that names no retry the client recognises is an unknown outcome, not an answer. The link stays, stamped. Restates TestAnUnknownOutcomeIsRecoveredByWalkingTheChain (\"a 503 that names no `retry`\") (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [],
+          "last_sent": null
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 503,
+                  "json": {
+                    "error": "upstream unavailable"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+        "chain": [
+          {
+            "token": "refresh_token_FIXTURE_decision_vectors_____",
+            "proposal": "$P1"
+          }
+        ],
+        "stamped": true,
+        "terminal": false
+      }
+    },
+    {
+      "name": "chain_h_a_relaunch_walks_the_persisted_chain_from_its_newest_proposal",
+      "kind": "chain",
+      "why": "Record §3 across a kill: the chain is persisted before the request leaves, so a new process over the same store presents the persisted proposal first. Here the killed rotation committed, and it is answered. Restates TestAClientKilledMidRefreshRecoversOnRestart (\"the rotation committed\") (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [
+            {
+              "token": "refresh_token_FIXTURE_decision_vectors_____",
+              "proposal": "proposed_refresh_FIXTURE_persisted_link____"
+            }
+          ],
+          "last_sent": "2026-09-19T11:59:00.000Z"
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "proposed_refresh_FIXTURE_persisted_link____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 200,
+                  "json": {
+                    "access_token": "access_token_FIXTURE_after_rotation________",
+                    "access_expires_at": "2026-09-19T12:15:00.000Z",
+                    "refresh_token": "$P1",
+                    "refresh_expires_at": "2026-10-19T12:00:00.000Z"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "$P1",
+        "chain": [],
+        "stamped": false,
+        "terminal": false
+      }
+    },
+    {
+      "name": "chain_h_a_relaunch_steps_back_to_the_persisted_link",
+      "kind": "chain",
+      "why": "Record §3 across a kill: the killed request never arrived, so its proposal does not exist. The 401 steps back to the start token, re-presented with the PERSISTED proposal, not a new one. Restates TestAClientKilledMidRefreshRecoversOnRestart (\"the request never arrived\") (chain_test.go).",
+      "in": {
+        "now": "2026-09-19T12:00:00.000Z",
+        "start": {
+          "refresh_token": "refresh_token_FIXTURE_decision_vectors_____",
+          "chain": [
+            {
+              "token": "refresh_token_FIXTURE_decision_vectors_____",
+              "proposal": "proposed_refresh_FIXTURE_persisted_link____"
+            }
+          ],
+          "last_sent": "2026-09-19T11:59:00.000Z"
+        },
+        "calls": [
+          {
+            "steps": [
+              {
+                "expect": {
+                  "token": "proposed_refresh_FIXTURE_persisted_link____",
+                  "proposal": "$P1"
+                },
+                "respond": {
+                  "status": 401,
+                  "json": {
+                    "code": "unauthorized"
+                  }
+                }
+              },
+              {
+                "expect": {
+                  "token": "refresh_token_FIXTURE_decision_vectors_____",
+                  "proposal": "proposed_refresh_FIXTURE_persisted_link____"
+                },
+                "respond": {
+                  "status": 200,
+                  "json": {
+                    "access_token": "access_token_FIXTURE_after_rotation________",
+                    "access_expires_at": "2026-09-19T12:15:00.000Z",
+                    "refresh_token": "proposed_refresh_FIXTURE_persisted_link____",
+                    "refresh_expires_at": "2026-10-19T12:00:00.000Z"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "want": {
+        "refresh_token": "proposed_refresh_FIXTURE_persisted_link____",
+        "chain": [],
+        "stamped": false,
+        "terminal": false
+      }
+    }
+  ]
+}
