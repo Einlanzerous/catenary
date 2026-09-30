@@ -435,6 +435,40 @@ func (r *refusedRig) run() (stop func()) {
 	return sync.OnceFunc(func() { r.c.Kill(); <-done })
 }
 
+// runTaughtInsideTheHold is run with the one ordering this rig cannot otherwise
+// promise pinned to the one a real client meets (CANT-178). The first dial and the
+// /sync beside it go out together, from two goroutines, and the transport charges
+// the dial's simPerDial the moment the upgrade leaves — which is exactly the first
+// hold's five seconds. So whether the page that teaches the client lands INSIDE
+// that hold or just AFTER it was decided by the scheduler, and the two orderings
+// cost a different number of pages: inside, its reactive refresh is held and the
+// page drives nothing; after, it drives an attempt. Both obey the rule, and under
+// `-race` over the whole package the rig chose each about as often as the other.
+//
+// A REAL CLIENT MEETS THE FIRST. Its dial costs a round trip, not five seconds, so
+// the page beside it reaches Catenary inside the hold the pre-dial attempt (or the
+// link the arrangement built) began. Simulated time is frozen until that page's
+// reactive refresh has been counted as held, which is the evidence it landed
+// inside, and then released — nothing else about the run changes.
+//
+// HELD BY EITHER SUPPRESSOR, because freezing makes the page's answer and the
+// last send the same instant, and the gate opens only on an answer strictly LATER
+// than the send (gateOpen). A real answer is a round trip later, so a real client
+// credits this hold to the backoff rather than the gate; which counter it lands in
+// changes no request, and the requests are what these tests count.
+func (r *refusedRig) runTaughtInsideTheHold() (stop func()) {
+	r.t.Helper()
+	r.net.freeze(true)
+	stop = r.run()
+	r.t.Cleanup(stop)
+	r.await("the teaching page's refresh to be held", func() bool { return heldRefreshes(r.c.Status()) >= 1 })
+	r.net.freeze(false)
+	return stop
+}
+
+// heldRefreshes is every automatic refresh a suppressor stood down, whichever one.
+func heldRefreshes(s Status) int { return s.RefreshesHeldBackoff + s.RefreshesHeldUnreachable }
+
 func (r *refusedRig) elapsed() time.Duration { return r.clk.now().Sub(r.start) }
 
 // awaitSim waits for d of SIMULATED time, which is how a test here waits for an
@@ -511,8 +545,7 @@ func carried(reqs []request) []string {
 // like a very quiet success.
 func TestARefusedTokenIsPresentedOncePerRefreshHold(t *testing.T) {
 	r := newRefusedRig(t, refusedOpts{dead: []string{"/refresh"}})
-	stop := r.run()
-	defer stop()
+	stop := r.runTaughtInsideTheHold()
 	r.awaitSim(time.Hour)
 	stop()
 
@@ -535,9 +568,10 @@ func TestARefusedTokenIsPresentedOncePerRefreshHold(t *testing.T) {
 		t.Errorf("the server refused %d upgrades, want the 1 that taught the client; a second means "+
 			"the rig let a dial outrun the /sync it is meant to learn from", got)
 	}
-	if got := r.d.count("/sync"); got != attempts-1 {
-		t.Errorf("the server refused %d pages for %d attempts, want one per attempt after the first — "+
-			"the first is Run's own pre-dial attempt, and every later one is driven by a hold's one /sync",
+	if got := r.d.count("/sync"); got != attempts {
+		t.Errorf("the server refused %d pages for %d attempts, want one per attempt — the page beside the "+
+			"dial, which taught the client inside the first attempt's hold, and then one per later attempt, "+
+			"each driven by a hold's one /sync; the first attempt is Run's own pre-dial one",
 			got, attempts)
 	}
 	if s.Dials != 1 {
@@ -1173,8 +1207,7 @@ func TestARefusedTokenReachesItsRefreshWhateverTheClockSays(t *testing.T) {
 		r.e.f.revoked = true
 		r.e.f.mu.Unlock()
 
-		stop := r.run()
-		defer stop()
+		stop := r.runTaughtInsideTheHold()
 		r.await("the client to stop", func() bool { return r.c.Status().Terminal.Kind != NotTerminal })
 		stop()
 
@@ -1186,8 +1219,15 @@ func TestARefusedTokenReachesItsRefreshWhateverTheClockSays(t *testing.T) {
 			t.Errorf("the clock came to call the pair due after %s; this must not be what drove the refresh",
 				r.elapsed())
 		}
-		if got := r.d.count("/sync"); got != 1 {
-			t.Errorf("the server refused %d pages before the client stopped, want the 1 hold's worth", got)
+		// TWO, AND THE SECOND IS THE ONE THAT MATTERS: the page that taught the
+		// client, whose refresh the link's hold stood down, and then the hold's
+		// one /sync, which reached the refresh the clock never called due.
+		if got := r.d.count("/sync"); got != 2 {
+			t.Errorf("the server refused %d pages before the client stopped, want 2 — the page that taught "+
+				"the client inside the link's hold, and the 1 that hold's end allows", got)
+		}
+		if got := heldRefreshes(r.c.Status()); got != 1 {
+			t.Errorf("%d refreshes were held, want the 1 the teaching page asked for inside the hold", got)
 		}
 		if cr, held := r.j.Credential(); !held || cr.RefreshToken != firstRefresh {
 			t.Errorf("terminal changed the stored credential: %+v", cr)
