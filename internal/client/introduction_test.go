@@ -120,7 +120,7 @@ func (r *introRig) ws(w http.ResponseWriter, req *http.Request) {
 	if _, _, err := conn.Read(ctx); err != nil { // the hello
 		return
 	}
-	if err := conn.Write(ctx, websocket.MessageText, readyFrame(r.t)); err != nil {
+	if err := conn.Write(ctx, websocket.MessageText, r.ready()); err != nil {
 		return
 	}
 	go func() {
@@ -140,6 +140,29 @@ func (r *introRig) ws(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 	}
+}
+
+// ready announces the head every test here bootstraps to (CANT-179). The shared
+// readyFrame announces 0, and a head behind the cursor is obligation 4's wipe: if
+// the `ready` lands after the bootstrap page, the client wipes that page and
+// catches up again from 0. The clean client pays one more page for that, but
+// under IgnoreRetrigger the wipe's trigger falls in the tail of the pass that
+// fetched the page and is dropped, so the control is left wiped at cursor 0 and
+// never gets as far as the resync it exists to fail on. A server at head 3 does
+// not claim to be behind a client it has just served log_seq 3, and which of
+// the page and the `ready` lands first then changes nothing.
+func (r *introRig) ready() []byte {
+	r.t.Helper()
+	var f wire.ServerReady
+	if err := json.Unmarshal(readyFrame(r.t), &f); err != nil {
+		r.t.Fatal(err)
+	}
+	f.LogSeq = bootstrap().LogSeq
+	b, err := json.Marshal(f)
+	if err != nil {
+		r.t.Fatal(err)
+	}
+	return b
 }
 
 // frame sends one server frame, after checking the generated decoder accepts
@@ -178,6 +201,26 @@ func (r *introRig) await(what string, pred func(Status) bool) {
 	defer cancel()
 	if err := r.c.Await(ctx, func() bool { return pred(r.c.Status()) }); err != nil {
 		r.t.Fatalf("waiting for %s: %v; status %+v", what, err, r.c.Status())
+	}
+}
+
+// awaitIdle waits for the catch-up to be between passes: no trigger outstanding,
+// and the pass that answered the last one returned. Both are read under the one
+// lock that writes them, so no pass can be half-way through its epilogue here.
+// Polled, because a pass returning changes nothing Await watches.
+func (r *introRig) awaitIdle() {
+	r.t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		r.c.mu.Lock()
+		idle := !r.c.inPass && r.c.gen == r.c.doneGen
+		r.c.mu.Unlock()
+		if idle {
+			return
+		}
+		if time.Now().After(deadline) {
+			r.t.Fatalf("the catch-up never went idle; status %+v", r.c.Status())
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -280,6 +323,14 @@ func rearm(t *testing.T, faults Faults) rearmResult {
 		}
 	})
 	r.await("ready and caught up", func(s Status) bool { return s.Ready && s.CaughtUp && s.Cursor == 3 })
+	// AND THE PASS THAT CAUGHT UP HAS RETURNED (CANT-179). CaughtUp is set on the
+	// last page, inside the pass, and the pass runs on until catchUp returns. A
+	// resync landing in that tail is a trigger pulled while a pass is running,
+	// which IgnoreRetrigger drops outright, so under load the control could fail
+	// before the scenario began and never ask for the held page below. What is
+	// under test is a trigger arriving while a page it did not issue is in
+	// flight, and that page is the one this rig holds.
+	r.awaitIdle()
 
 	// The next request from the cursor is held, and answered with message 4
 	// only — a page bounded below the new room's message.
