@@ -97,7 +97,7 @@ var (
 	ErrCredentialHeld = errors.New("client: the journal already holds a credential")
 	// ErrCredentialDevice is a rotation naming a different device, or a
 	// different user.
-	ErrCredentialDevice = errors.New("client: a rotation cannot change the device")
+	ErrCredentialDevice = errors.New("client: a rotation cannot change the device or its user")
 
 	errCredentialIncomplete = errors.New("client: a credential needs a DeviceID, an AccessToken and a RefreshToken")
 )
