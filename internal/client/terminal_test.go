@@ -243,7 +243,8 @@ func TestWhatTheClientDoesAfterEachClose(t *testing.T) {
 
 // error{internal} RECONNECTS AT MAXIMUM BACKOFF, whatever `retryable` says —
 // even straight after a session that reached `ready`, which would otherwise
-// reset the backoff to its minimum.
+// reset the backoff to its minimum. The maximum is jittered like every wait
+// (CANT-170), so at the minimum draw it is 0.8 of BackoffMax, and no less.
 func TestInternalReconnectsAtTheMaximumBackoff(t *testing.T) {
 	const bmin, bmax = 5 * time.Millisecond, 600 * time.Millisecond
 	for _, tc := range []struct {
@@ -256,7 +257,7 @@ func TestInternalReconnectsAtTheMaximumBackoff(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cl := newCloser(t, tc.end, ending{})
-			c, err := New(Config{BaseURL: cl.srv.URL, Journal: enrolledJournal(t, "token"), BackoffMin: bmin, BackoffMax: bmax})
+			c, err := New(Config{BaseURL: cl.srv.URL, Journal: enrolledJournal(t, "token"), BackoffMin: bmin, BackoffMax: bmax, Jitter: minimumDraw})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -270,8 +271,8 @@ func TestInternalReconnectsAtTheMaximumBackoff(t *testing.T) {
 			}
 			d := cl.dials()
 			gap := d[1].Sub(d[0])
-			if tc.slow && gap < bmax {
-				t.Errorf("redialed after %s, want at least the maximum backoff %s", gap, bmax)
+			if floor := jitteredWait(bmax, 0); tc.slow && gap < floor {
+				t.Errorf("redialed after %s, want at least the maximum backoff %s at the minimum draw, %s", gap, bmax, floor)
 			}
 			if !tc.slow && gap >= bmax {
 				t.Errorf("redialed after %s; an ordinary close should come back near the minimum, not the maximum", gap)

@@ -6,14 +6,15 @@
  * and to CANT-129 (the refused wait's cadence IS the dial ceiling), so it is
  * not this file's to change.
  *
- * RULING 3 → B adds two rules Go does not have yet (the Go port is a follow-up
- * ticket, so the three clients stay equal):
+ * RULING 3 → B adds two rules, which CANT-170 ported to Go
+ * (internal/client/backoff.go), so the three clients stay equal; the backoff_*
+ * kinds in internal/client/testdata/decisions.json hold both to one answer:
  *
  *   1. THE STABILITY RULE. The ramp resets to its floor only after a session
- *      stayed `ready` for at least one `heartbeat_interval_sec`. Go resets after
- *      ANY session that reached `ready`, so a path that answers `ready` and drops
- *      at once is redialed about four times a second, each dial with a `/sync`
- *      beside it.
+ *      stayed `ready` for at least one `heartbeat_interval_sec`. Resetting after
+ *      ANY session that reached `ready`, as Go did before, redials a path that
+ *      answers `ready` and drops at once about four times a second, each dial
+ *      with a `/sync` beside it.
  *   2. CEILING-SAFE JITTER. Each wait is uniform in `[0.8d, d]`, drawn through
  *      the `random` seam, so a cohort severed together does not redial in step.
  *      Never above `d`, so the ceiling stays a ceiling.

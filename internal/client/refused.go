@@ -223,12 +223,7 @@ func (c *Client) pause(ctx context.Context, d time.Duration) bool {
 	if c.cfg.Pause != nil {
 		return c.cfg.Pause(ctx, d)
 	}
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(d):
-		return true
-	}
+	return sleepFor(ctx, d)
 }
 
 // nextRefreshAt is Status.NextRefreshAt: `last_sent_at + min(15 min, 5 s ×

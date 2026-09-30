@@ -25,10 +25,12 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { decodeRefreshRequest, decodeServerFrame, setOnUnknownWireValue, type ServerError } from '@/wire/generated'
 import {
+  advance,
   classifyClose,
   createRefreshingCredential,
   gateOpen,
   inProcessLock,
+  jitteredWait,
   MemoryCredentialStore,
   readStamp,
   refreshDelay,
@@ -36,7 +38,9 @@ import {
   refreshHoldAt,
   refreshThreshold,
   refusedHoldAt,
+  resetsRamp,
   silentLogger,
+  unitFromBytes,
   type ChainLink,
   type Faults,
   type StoredCredential,
@@ -48,7 +52,10 @@ import {
  * package root. */
 const VECTORS = resolve(process.cwd(), '..', 'internal', 'client', 'testdata', 'decisions.json')
 
-const KINDS = ['close', 'threshold', 'due', 'delay', 'stamp', 'gate', 'hold', 'refused_hold', 'chain'] as const
+const KINDS = [
+  'close', 'threshold', 'due', 'delay', 'stamp', 'gate', 'hold', 'refused_hold', 'chain',
+  'backoff_reset', 'backoff_draw', 'backoff_jitter', 'backoff_advance',
+] as const
 
 interface Case {
   name: string
@@ -176,6 +183,30 @@ function pure(c: Case): string | null {
         }),
         required(w, 'hold'),
       )
+    // The dial backoff's pure pieces (CANT-170).
+    case 'backoff_reset':
+      only(i, 'in', ['readied_for_ms', 'heartbeat_interval_sec'])
+      only(w, 'want', ['resets'])
+      return same(
+        'resets',
+        resetsRamp(required(i, 'readied_for_ms') as number | null, required(i, 'heartbeat_interval_sec') as number | null),
+        required(w, 'resets'),
+      )
+    case 'backoff_draw': {
+      only(i, 'in', ['bytes'])
+      only(w, 'want', ['unit'])
+      const hex = String(required(i, 'bytes'))
+      if (!/^[0-9a-f]{8}$/.test(hex)) throw new Error(`in.bytes ${JSON.stringify(hex)} is not four bytes of hex`)
+      return same('unit', unitFromBytes(Uint8Array.from(Buffer.from(hex, 'hex'))), required(w, 'unit'))
+    }
+    case 'backoff_jitter':
+      only(i, 'in', ['nominal_ms', 'unit'])
+      only(w, 'want', ['wait_ms'])
+      return same('wait_ms', jitteredWait(required(i, 'nominal_ms') as number, required(i, 'unit') as number), required(w, 'wait_ms'))
+    case 'backoff_advance':
+      only(i, 'in', ['nominal_ms', 'max_ms'])
+      only(w, 'want', ['next_ms'])
+      return same('next_ms', advance(required(i, 'nominal_ms') as number, required(i, 'max_ms') as number), required(w, 'next_ms'))
   }
   return `unknown kind ${c.kind}`
 }

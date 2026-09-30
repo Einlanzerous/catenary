@@ -1,5 +1,5 @@
 {
-  "note": "Shared decision vectors for CANT-31's client rules (CANT-35 ruling 6 → A, built by CANT-156).\n\nThe rules are implemented three times: internal/client (the Go reference), web/src/transport (TypeScript) and CANT-42's Dart. If two of them disagree, a device stops when it should reconnect, or keeps minting refresh links on a dead network, and neither is a type error. So every language's tests read THIS file and must reach the same answer for every case. Runners: internal/client/decisions_test.go (TestTheDecisionVectors) and web/decisions.ts (npm run decisions).\n\nEach case is {name, kind, why, in, want}. `why` names the rule and the Go test the case restates. Each kind dispatches to exactly ONE function per language; no runner composes two, and no runner implements a rule of its own.\n\n  close         in {status, preceding} -> want {verdict}. Go classifyClose; TS classifyClose(...).verdict. `status` null is \"no close frame\" (Go -1). `preceding` is a wire `error` frame decoded by the runner's GENERATED decoder, and one carrying a client_id is a malformed vector. verdict is reconnect | reconnect_at_maximum | terminal_protocol.\n  threshold     in {access_issued_at, access_expires_at} -> want {threshold_ms}. refreshThreshold.\n  due           in {access_issued_at, access_expires_at, clock_offset_ms, device_now} -> want {due}. refreshDue.\n  delay         in {links} -> want {delay_ms}. refreshDelay.\n  stamp         in {last_sent, now} -> want {stamp}. readStamp: missing or future is null.\n  gate          in {answered_at, stamp} -> want {open}. gateOpen, over a stamp ALREADY read through readStamp.\n  hold          in {links, answered_at, last_sent, now} -> want {hold}. refreshHoldAt, over a RAW last_sent. hold is none | unreachable | backoff.\n  refused_hold  in {refused, links, last_sent, now} -> want {hold}. refusedHoldAt, over a RAW last_sent.\n  chain         in {now, start, calls} -> want {refresh_token, chain, stamped, terminal}. The client's own refresh (Go Client.RefreshIfDue; TS RefreshingCredential.refreshIfDue), once per call, against a scripted /refresh.\n\nCONVENTIONS. Instants are wire timestamps (\"2026-09-19T12:00:00.000Z\") or null for absent: the zero time.Time in Go, null in TS. Durations are integer milliseconds in fields named *_ms. A null access_expires_at means NO EXPIRY: the zero time in Go and NaN in TS, because StoredCredential.accessExpiresAt is a number and refreshDue reads a non-finite one as never due. That is the one translation a runner makes besides parsing instants; every other null passes through as the language's absent.\n\nCHAIN TRANSCRIPTS. The credential starts from `start` (refresh_token, chain, last_sent) with its access token expired an hour before `now`, so a refresh is due, and the clock is fixed at `now`. Each call is one refresh; each step is one POST /refresh, in order. At every request the runner asserts: the presented (token, proposal); that the store ALREADY holds that link and a last_sent stamp (persisted before the request leaves); that every proposal is a valid wire Token (the request decodes through the generated decoder); and, after each call, that exactly its steps were consumed, no more and no fewer. `respond` is verbatim HTTP and no runner interprets it: {status, json} or {status, text}, optionally with headers (only \"Retry-After\": \"0\"), or {drop: true}, which closes the connection with no response (TS: the fetch rejects with a TypeError). After the last call the runner asserts `want` from STATE: the held refresh token, the chain, whether last_sent is present, and whether the client entered the CREDENTIAL terminal. Tokens are self-describing, low-entropy fixtures, as schema/vectors/vectors.json explains. $P1, $P2, ... name the proposals the client mints: a symbol BINDS ON FIRST APPEARANCE to what was presented, and every later appearance, in an expectation, a response or `want`, must equal it. `$` is outside base64url, so a symbol never collides with a fixture.\n\nNO WANT NAMES A COUNTER. Stats, CredentialStatus counts, walk-backs and refused pages are not decisions, and Go and TS count differently under a fake clock (the /sync beside the first dial lands on the same instant as the pre-dial stamp). Transcripts pin what was presented and the end state only.\n\nRUNNER CONTRACT, for CANT-42's Dart runner as for these two: an unknown kind FAILS, and so does a listed kind with no cases; symbols bind on first appearance; `respond` is written verbatim; a null expiry maps to the language's \"no expiry\"; `preceding` goes through the generated decoder; no counter is asserted. The Go runner also proves the file has teeth: a one-boundary mutant of each pure function, and the chain transcripts under Faults{NoChain} and Faults{ProposeAfresh}, must each fail at least one case.\n\nNOT HERE. There is no backoff kind: CANT-170 ports CANT-35 ruling 3B to Go and adds it. The close case \"1008 after error{<a code this wire version does not define>}\" is left out until the Go client decodes it as the TS client does (CANT-177, which adds it). nextRefreshAt is not a kind: stamp and delay already pin it.",
+  "note": "Shared decision vectors for CANT-31's client rules (CANT-35 ruling 6 → A, built by CANT-156).\n\nThe rules are implemented three times: internal/client (the Go reference), web/src/transport (TypeScript) and CANT-42's Dart. If two of them disagree, a device stops when it should reconnect, or keeps minting refresh links on a dead network, and neither is a type error. So every language's tests read THIS file and must reach the same answer for every case. Runners: internal/client/decisions_test.go (TestTheDecisionVectors) and web/decisions.ts (npm run decisions).\n\nEach case is {name, kind, why, in, want}. `why` names the rule and the Go test the case restates. Each kind dispatches to exactly ONE function per language; no runner composes two, and no runner implements a rule of its own.\n\n  close         in {status, preceding} -> want {verdict}. Go classifyClose; TS classifyClose(...).verdict. `status` null is \"no close frame\" (Go -1). `preceding` is a wire `error` frame decoded by the runner's GENERATED decoder, and one carrying a client_id is a malformed vector. verdict is reconnect | reconnect_at_maximum | terminal_protocol.\n  threshold     in {access_issued_at, access_expires_at} -> want {threshold_ms}. refreshThreshold.\n  due           in {access_issued_at, access_expires_at, clock_offset_ms, device_now} -> want {due}. refreshDue.\n  delay         in {links} -> want {delay_ms}. refreshDelay.\n  stamp         in {last_sent, now} -> want {stamp}. readStamp: missing or future is null.\n  gate          in {answered_at, stamp} -> want {open}. gateOpen, over a stamp ALREADY read through readStamp.\n  hold          in {links, answered_at, last_sent, now} -> want {hold}. refreshHoldAt, over a RAW last_sent. hold is none | unreachable | backoff.\n  refused_hold  in {refused, links, last_sent, now} -> want {hold}. refusedHoldAt, over a RAW last_sent.\n  chain         in {now, start, calls} -> want {refresh_token, chain, stamped, terminal}. The client's own refresh (Go Client.RefreshIfDue; TS RefreshingCredential.refreshIfDue), once per call, against a scripted /refresh.\n  backoff_reset    in {readied_for_ms, heartbeat_interval_sec} -> want {resets}. resetsRamp: CANT-35 ruling 3 → B's stability rule. `readied_for_ms` null is a session that never reached `ready` (Go readied=false).\n  backoff_draw     in {bytes} -> want {unit}. unitFromBytes, over four bytes written as eight hex digits. `unit` is compared exactly: both languages divide one float64 by 2^32 − 1.\n  backoff_jitter   in {nominal_ms, unit} -> want {wait_ms}. jitteredWait: uniform in [0.8d, d], a draw outside [0, 1] clamped, never above d. Go returns a time.Duration rounded to the nanosecond, and wait_ms is compared as that many nanoseconds; every case here is exact in both.\n  backoff_advance  in {nominal_ms, max_ms} -> want {next_ms}. advance: doubled, to the ceiling.\n\nCONVENTIONS. Instants are wire timestamps (\"2026-09-19T12:00:00.000Z\") or null for absent: the zero time.Time in Go, null in TS. Durations are integer milliseconds in fields named *_ms. A null access_expires_at means NO EXPIRY: the zero time in Go and NaN in TS, because StoredCredential.accessExpiresAt is a number and refreshDue reads a non-finite one as never due. That is the one translation a runner makes besides parsing instants; every other null passes through as the language's absent.\n\nCHAIN TRANSCRIPTS. The credential starts from `start` (refresh_token, chain, last_sent) with its access token expired an hour before `now`, so a refresh is due, and the clock is fixed at `now`. Each call is one refresh; each step is one POST /refresh, in order. At every request the runner asserts: the presented (token, proposal); that the store ALREADY holds that link and a last_sent stamp (persisted before the request leaves); that every proposal is a valid wire Token (the request decodes through the generated decoder); and, after each call, that exactly its steps were consumed, no more and no fewer. `respond` is verbatim HTTP and no runner interprets it: {status, json} or {status, text}, optionally with headers (only \"Retry-After\": \"0\"), or {drop: true}, which closes the connection with no response (TS: the fetch rejects with a TypeError). After the last call the runner asserts `want` from STATE: the held refresh token, the chain, whether last_sent is present, and whether the client entered the CREDENTIAL terminal. Tokens are self-describing, low-entropy fixtures, as schema/vectors/vectors.json explains. $P1, $P2, ... name the proposals the client mints: a symbol BINDS ON FIRST APPEARANCE to what was presented, and every later appearance, in an expectation, a response or `want`, must equal it. `$` is outside base64url, so a symbol never collides with a fixture.\n\nNO WANT NAMES A COUNTER. Stats, CredentialStatus counts, walk-backs and refused pages are not decisions, and Go and TS count differently under a fake clock (the /sync beside the first dial lands on the same instant as the pre-dial stamp). Transcripts pin what was presented and the end state only.\n\nRUNNER CONTRACT, for CANT-42's Dart runner as for these two: an unknown kind FAILS, and so does a listed kind with no cases; symbols bind on first appearance; `respond` is written verbatim; a null expiry maps to the language's \"no expiry\"; `preceding` goes through the generated decoder; no counter is asserted. The Go runner also proves the file has teeth: a one-boundary mutant of each pure function, and the chain transcripts under Faults{NoChain} and Faults{ProposeAfresh}, must each fail at least one case; so must a one-boundary mutant of each backoff function.\n\nNOT HERE. Backoff's composition — which session resets the ramp, what `error{internal}` does to it, how an early dial advances it — is not a pure function and is not a kind; Go's backoff_test.go and TS's backoff.test.ts pin it under a fake clock (CANT-35 criterion 9). The backoff_* kinds were added by CANT-170, which ported ruling 3 → B to Go. The close case \"1008 after error{<a code this wire version does not define>}\" is left out until the Go client decodes it as the TS client does (CANT-177, which adds it). nextRefreshAt is not a kind: stamp and delay already pin it.",
   "cases": [
     {
       "name": "close_4001",
@@ -1492,6 +1492,254 @@
         "chain": [],
         "stamped": false,
         "terminal": false
+      }
+    },
+    {
+      "name": "backoff_reset_never_ready",
+      "kind": "backoff_reset",
+      "why": "A dial that never reached `ready` is a failed dial and never resets. CANT-35 ruling 3 → B, the stability rule: the ramp resets only after a session stayed ready for one heartbeat_interval_sec; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "readied_for_ms": null,
+        "heartbeat_interval_sec": 30
+      },
+      "want": {
+        "resets": false
+      }
+    },
+    {
+      "name": "backoff_reset_ready_then_drop_does_not_reset",
+      "kind": "backoff_reset",
+      "why": "A path that answers `ready` and drops at once: reset-on-any-ready redials it about four times a second. CANT-35 ruling 3 → B, the stability rule: the ramp resets only after a session stayed ready for one heartbeat_interval_sec; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "readied_for_ms": 0,
+        "heartbeat_interval_sec": 30
+      },
+      "want": {
+        "resets": false
+      }
+    },
+    {
+      "name": "backoff_reset_one_millisecond_short",
+      "kind": "backoff_reset",
+      "why": "Ready for one millisecond less than the interval its `ready` announced. CANT-35 ruling 3 → B, the stability rule: the ramp resets only after a session stayed ready for one heartbeat_interval_sec; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "readied_for_ms": 29999,
+        "heartbeat_interval_sec": 30
+      },
+      "want": {
+        "resets": false
+      }
+    },
+    {
+      "name": "backoff_reset_exactly_one_interval_resets",
+      "kind": "backoff_reset",
+      "why": "Ready for exactly one interval: at least one interval, so it resets. CANT-35 ruling 3 → B, the stability rule: the ramp resets only after a session stayed ready for one heartbeat_interval_sec; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "readied_for_ms": 30000,
+        "heartbeat_interval_sec": 30
+      },
+      "want": {
+        "resets": true
+      }
+    },
+    {
+      "name": "backoff_reset_the_interval_is_the_sessions_own",
+      "kind": "backoff_reset",
+      "why": "34.999 s would reset under a 30 s interval and does not under the 35 s this `ready` announced. CANT-35 ruling 3 → B, the stability rule: the ramp resets only after a session stayed ready for one heartbeat_interval_sec; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "readied_for_ms": 34999,
+        "heartbeat_interval_sec": 35
+      },
+      "want": {
+        "resets": false
+      }
+    },
+    {
+      "name": "backoff_reset_a_long_session",
+      "kind": "backoff_reset",
+      "why": "An hour ready. CANT-35 ruling 3 → B, the stability rule: the ramp resets only after a session stayed ready for one heartbeat_interval_sec; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "readied_for_ms": 3600000,
+        "heartbeat_interval_sec": 35
+      },
+      "want": {
+        "resets": true
+      }
+    },
+    {
+      "name": "backoff_draw_all_zero_is_the_minimum",
+      "kind": "backoff_draw",
+      "why": "All-zero bytes are exactly 0, the minimum draw. The jitter draw: four bytes, big endian, over 2^32 − 1; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "bytes": "00000000"
+      },
+      "want": {
+        "unit": 0
+      }
+    },
+    {
+      "name": "backoff_draw_all_ones_is_the_maximum",
+      "kind": "backoff_draw",
+      "why": "All-0xff bytes are exactly 1 — over 2^32 it would fall short. The jitter draw: four bytes, big endian, over 2^32 − 1; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "bytes": "ffffffff"
+      },
+      "want": {
+        "unit": 1
+      }
+    },
+    {
+      "name": "backoff_draw_the_high_byte_is_first",
+      "kind": "backoff_draw",
+      "why": "0x80000000 is just over a half: big endian, so the first byte is the most significant. The jitter draw: four bytes, big endian, over 2^32 − 1; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "bytes": "80000000"
+      },
+      "want": {
+        "unit": 0.5000000001164153
+      }
+    },
+    {
+      "name": "backoff_draw_the_low_byte_is_last",
+      "kind": "backoff_draw",
+      "why": "0x00000001 is the smallest non-zero draw. The jitter draw: four bytes, big endian, over 2^32 − 1; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "bytes": "00000001"
+      },
+      "want": {
+        "unit": 2.3283064370807974e-10
+      }
+    },
+    {
+      "name": "backoff_jitter_minimum_draw_is_0_8d",
+      "kind": "backoff_jitter",
+      "why": "The minimum draw at the ceiling is 4 s, not rev 1's 2.5 s. CANT-35 ruling 3 → B, ceiling-safe jitter: each wait uniform in [0.8d, d]; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 5000,
+        "unit": 0
+      },
+      "want": {
+        "wait_ms": 4000
+      }
+    },
+    {
+      "name": "backoff_jitter_maximum_draw_is_d",
+      "kind": "backoff_jitter",
+      "why": "The maximum draw is the nominal wait itself: the ceiling stays a ceiling. CANT-35 ruling 3 → B, ceiling-safe jitter: each wait uniform in [0.8d, d]; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 5000,
+        "unit": 1
+      },
+      "want": {
+        "wait_ms": 5000
+      }
+    },
+    {
+      "name": "backoff_jitter_at_the_floor",
+      "kind": "backoff_jitter",
+      "why": "The first wait at the minimum draw. CANT-35 ruling 3 → B, ceiling-safe jitter: each wait uniform in [0.8d, d]; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 250,
+        "unit": 0
+      },
+      "want": {
+        "wait_ms": 200
+      }
+    },
+    {
+      "name": "backoff_jitter_a_middle_draw",
+      "kind": "backoff_jitter",
+      "why": "Half-way through the band. CANT-35 ruling 3 → B, ceiling-safe jitter: each wait uniform in [0.8d, d]; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 5000,
+        "unit": 0.5
+      },
+      "want": {
+        "wait_ms": 4500
+      }
+    },
+    {
+      "name": "backoff_jitter_three_quarters",
+      "kind": "backoff_jitter",
+      "why": "Three quarters through the band. CANT-35 ruling 3 → B, ceiling-safe jitter: each wait uniform in [0.8d, d]; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 4000,
+        "unit": 0.75
+      },
+      "want": {
+        "wait_ms": 3800
+      }
+    },
+    {
+      "name": "backoff_jitter_a_draw_above_one_is_clamped",
+      "kind": "backoff_jitter",
+      "why": "A draw above 1 is clamped, never a wait above d. CANT-35 ruling 3 → B, ceiling-safe jitter: each wait uniform in [0.8d, d]; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 5000,
+        "unit": 1.5
+      },
+      "want": {
+        "wait_ms": 5000
+      }
+    },
+    {
+      "name": "backoff_jitter_a_draw_below_zero_is_clamped",
+      "kind": "backoff_jitter",
+      "why": "A draw below 0 is clamped to the band's floor. CANT-35 ruling 3 → B, ceiling-safe jitter: each wait uniform in [0.8d, d]; restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 5000,
+        "unit": -0.5
+      },
+      "want": {
+        "wait_ms": 4000
+      }
+    },
+    {
+      "name": "backoff_advance_doubles",
+      "kind": "backoff_advance",
+      "why": "From the floor. The dial ramp: 250 ms floor, doubling, 5 s ceiling (coupled to CANT-127 and CANT-129); restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 250,
+        "max_ms": 5000
+      },
+      "want": {
+        "next_ms": 500
+      }
+    },
+    {
+      "name": "backoff_advance_is_capped_at_the_ceiling",
+      "kind": "backoff_advance",
+      "why": "4 s doubles to 8 s and is held at the 5 s ceiling. The dial ramp: 250 ms floor, doubling, 5 s ceiling (coupled to CANT-127 and CANT-129); restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 4000,
+        "max_ms": 5000
+      },
+      "want": {
+        "next_ms": 5000
+      }
+    },
+    {
+      "name": "backoff_advance_stays_at_the_ceiling",
+      "kind": "backoff_advance",
+      "why": "At the ceiling it stays there. The dial ramp: 250 ms floor, doubling, 5 s ceiling (coupled to CANT-127 and CANT-129); restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 5000,
+        "max_ms": 5000
+      },
+      "want": {
+        "next_ms": 5000
+      }
+    },
+    {
+      "name": "backoff_advance_the_soak_ramp",
+      "kind": "backoff_advance",
+      "why": "soakrig's ramp, 100 ms to 2 s: the ceiling is a parameter, not a constant. The dial ramp: 250 ms floor, doubling, 5 s ceiling (coupled to CANT-127 and CANT-129); restates TestBackoff* (backoff_test.go) and backoff.test.ts.",
+      "in": {
+        "nominal_ms": 1600,
+        "max_ms": 2000
+      },
+      "want": {
+        "next_ms": 2000
       }
     }
   ]
