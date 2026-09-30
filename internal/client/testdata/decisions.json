@@ -605,7 +605,7 @@
     {
       "name": "stamp_missing_is_absent",
       "kind": "stamp",
-      "why": "A journal written before CANT-127 has no stamp. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "why": "A journal written before CANT-127 has no stamp. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates TestTheGateIsDerivedFromTheStamp (hold_test.go), where absent and future stamps read as elapsed.",
       "in": {
         "last_sent": null,
         "now": "2026-09-19T12:00:00.000Z"
@@ -617,7 +617,7 @@
     {
       "name": "stamp_in_the_future_is_absent",
       "kind": "stamp",
-      "why": "A clock set backwards after the send: the stamp is later than now, and reads as absent. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "why": "A clock set backwards after the send: the stamp is later than now, and reads as absent. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates TestTheGateIsDerivedFromTheStamp (hold_test.go), where absent and future stamps read as elapsed.",
       "in": {
         "last_sent": "2026-09-19T12:05:00.000Z",
         "now": "2026-09-19T12:00:00.000Z"
@@ -629,7 +629,7 @@
     {
       "name": "stamp_equal_to_now_is_kept",
       "kind": "stamp",
-      "why": "A stamp written this instant is not in the future. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "why": "A stamp written this instant is not in the future. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates TestTheGateIsDerivedFromTheStamp (hold_test.go), where absent and future stamps read as elapsed.",
       "in": {
         "last_sent": "2026-09-19T12:00:00.000Z",
         "now": "2026-09-19T12:00:00.000Z"
@@ -641,7 +641,7 @@
     {
       "name": "stamp_in_the_past_is_kept",
       "kind": "stamp",
-      "why": "The ordinary case. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates the future-stamp cases of hold_test.go.",
+      "why": "The ordinary case. CANT-127's one rule for absent (readStamp; Go's Client.stamp delegates to it): missing and future are both absent. Restates TestTheGateIsDerivedFromTheStamp (hold_test.go), where absent and future stamps read as elapsed.",
       "in": {
         "last_sent": "2026-09-19T11:59:00.000Z",
         "now": "2026-09-19T12:00:00.000Z"
@@ -653,7 +653,7 @@
     {
       "name": "gate_no_answer_with_a_stamp_is_closed",
       "kind": "gate",
-      "why": "A context that has heard nothing is closed. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "why": "A context that has heard nothing is closed. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates TestAnAnswerNoLaterThanTheSendLeavesTheGateClosed and TestTheGateIsDerivedFromTheStamp (hold_test.go).",
       "in": {
         "answered_at": null,
         "stamp": "2026-09-19T12:00:00.000Z"
@@ -665,7 +665,7 @@
     {
       "name": "gate_no_answer_without_a_stamp_is_closed",
       "kind": "gate",
-      "why": "Closed either way: relaunch, a fresh push worker and a second tab are one property. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "why": "Closed either way: relaunch, a fresh push worker and a second tab are one property. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates TestAnAnswerNoLaterThanTheSendLeavesTheGateClosed and TestTheGateIsDerivedFromTheStamp (hold_test.go).",
       "in": {
         "answered_at": null,
         "stamp": null
@@ -677,7 +677,7 @@
     {
       "name": "gate_an_answer_and_no_stamp_is_open",
       "kind": "gate",
-      "why": "An absent stamp is opened by any Catenary answer: there is no send to be later than. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "why": "An absent stamp is opened by any Catenary answer: there is no send to be later than. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates TestAnAnswerNoLaterThanTheSendLeavesTheGateClosed and TestTheGateIsDerivedFromTheStamp (hold_test.go).",
       "in": {
         "answered_at": "2026-09-19T12:00:00.000Z",
         "stamp": null
@@ -689,7 +689,7 @@
     {
       "name": "gate_an_answer_equal_to_the_stamp_is_closed",
       "kind": "gate",
-      "why": "LATER THAN IS STRICT: an answer at the same instant as the send is closed, and the safe direction is one held attempt. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "why": "LATER THAN IS STRICT: an answer at the same instant as the send is closed, and the safe direction is one held attempt. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates TestAnAnswerNoLaterThanTheSendLeavesTheGateClosed and TestTheGateIsDerivedFromTheStamp (hold_test.go).",
       "in": {
         "answered_at": "2026-09-19T12:00:00.000Z",
         "stamp": "2026-09-19T12:00:00.000Z"
@@ -701,7 +701,7 @@
     {
       "name": "gate_an_answer_later_than_the_stamp_is_open",
       "kind": "gate",
-      "why": "The gate opens on an answer after the send. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "why": "The gate opens on an answer after the send. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates TestAnAnswerNoLaterThanTheSendLeavesTheGateClosed and TestTheGateIsDerivedFromTheStamp (hold_test.go).",
       "in": {
         "answered_at": "2026-09-19T12:00:00.001Z",
         "stamp": "2026-09-19T12:00:00.000Z"
@@ -713,7 +713,7 @@
     {
       "name": "gate_an_answer_before_the_stamp_is_closed",
       "kind": "gate",
-      "why": "Another attempt moved the stamp past the last answer, and the gate closes with it. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates hold_test.go's gate criteria.",
+      "why": "Another attempt moved the stamp past the last answer, and the gate closes with it. Record §3's gate (gateOpen): Catenary must have answered THIS context strictly later than the stamp. Restates TestAnAnswerNoLaterThanTheSendLeavesTheGateClosed and TestTheGateIsDerivedFromTheStamp (hold_test.go).",
       "in": {
         "answered_at": "2026-09-19T11:59:00.000Z",
         "stamp": "2026-09-19T12:00:00.000Z"
@@ -725,7 +725,7 @@
     {
       "name": "hold_a_settled_credential_is_not_held",
       "kind": "hold",
-      "why": "Zero links: nothing to bound, whatever the gate says. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "Zero links: nothing to bound, whatever the gate says. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 0,
         "answered_at": null,
@@ -739,7 +739,7 @@
     {
       "name": "hold_a_closed_gate_inside_the_delay_is_unreachable",
       "kind": "hold",
-      "why": "The gate is checked first: no answer since the send reads as unreachable, even while the delay is also running. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "The gate is checked first: no answer since the send reads as unreachable, even while the delay is also running. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 1,
         "answered_at": null,
@@ -753,7 +753,7 @@
     {
       "name": "hold_a_closed_gate_after_the_delay_is_unreachable",
       "kind": "hold",
-      "why": "The gate has no time: it opens on an answer, not on the clock. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "The gate has no time: it opens on an answer, not on the clock. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 1,
         "answered_at": null,
@@ -767,7 +767,7 @@
     {
       "name": "hold_an_answer_equal_to_the_stamp_is_unreachable",
       "kind": "hold",
-      "why": "An answer at the same instant as the send does not open the gate. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "An answer at the same instant as the send does not open the gate. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 1,
         "answered_at": "2026-09-19T12:00:00.000Z",
@@ -781,7 +781,7 @@
     {
       "name": "hold_one_millisecond_before_the_delay_is_backoff",
       "kind": "hold",
-      "why": "The gate is open and 5 s have not quite passed since the send of a one-link chain. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "The gate is open and 5 s have not quite passed since the send of a one-link chain. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 1,
         "answered_at": "2026-09-19T12:00:00.500Z",
@@ -795,7 +795,7 @@
     {
       "name": "hold_now_equal_to_stamp_plus_delay_has_elapsed",
       "kind": "hold",
-      "why": "now = stamp + delay: the wait is over. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "now = stamp + delay: the wait is over. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 1,
         "answered_at": "2026-09-19T12:00:00.500Z",
@@ -809,7 +809,7 @@
     {
       "name": "hold_three_links_one_millisecond_before_20s_is_backoff",
       "kind": "hold",
-      "why": "Three links wait 20 s. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "Three links wait 20 s. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 3,
         "answered_at": "2026-09-19T12:00:01.000Z",
@@ -823,7 +823,7 @@
     {
       "name": "hold_three_links_at_20s_has_elapsed",
       "kind": "hold",
-      "why": "Three links wait 20 s, and at 20 s they have. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "Three links wait 20 s, and at 20 s they have. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 3,
         "answered_at": "2026-09-19T12:00:01.000Z",
@@ -837,7 +837,7 @@
     {
       "name": "hold_a_future_raw_stamp_is_not_held_by_the_backoff",
       "kind": "hold",
-      "why": "A stamp in the future reads as absent: any answer opens the gate and the delay has elapsed. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "A stamp in the future reads as absent: any answer opens the gate and the delay has elapsed. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 1,
         "answered_at": "2026-09-19T11:59:00.000Z",
@@ -851,7 +851,7 @@
     {
       "name": "hold_a_missing_stamp_with_an_answer_is_not_held",
       "kind": "hold",
-      "why": "A chain written before CANT-127: any answer opens the gate, and absent reads as elapsed. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates hold_test.go.",
+      "why": "A chain written before CANT-127: any answer opens the gate, and absent reads as elapsed. CANT-127's two suppressors in order, the gate before the backoff (refreshHoldAt; Client.holdNow delegates to it). Restates TestTheGateIsDerivedFromTheStamp, TestABlackHoledRefreshIsBoundedByTheBackoff and TestAPersonCanSeeTheHold (hold_test.go).",
       "in": {
         "links": 2,
         "answered_at": "2026-09-19T11:59:00.000Z",
@@ -865,7 +865,7 @@
     {
       "name": "refused_hold_a_token_not_refused_is_not_held",
       "kind": "refused_hold",
-      "why": "Nothing refused, nothing withheld. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "why": "Nothing refused, nothing withheld. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates TestARefusedTokenIsPresentedOncePerRefreshHold (refused_test.go).",
       "in": {
         "refused": false,
         "links": 1,
@@ -879,7 +879,7 @@
     {
       "name": "refused_hold_a_settled_credential_is_not_held",
       "kind": "refused_hold",
-      "why": "Zero links: the chain collapsed because somebody got an answer. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "why": "Zero links: the chain collapsed because somebody got an answer. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates TestARefusedTokenIsPresentedOncePerRefreshHold (refused_test.go).",
       "in": {
         "refused": true,
         "links": 0,
@@ -893,7 +893,7 @@
     {
       "name": "refused_hold_one_millisecond_before_the_delay_is_held",
       "kind": "refused_hold",
-      "why": "Refused, one link, 5 s not quite passed. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "why": "Refused, one link, 5 s not quite passed. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates TestARefusedTokenIsPresentedOncePerRefreshHold (refused_test.go).",
       "in": {
         "refused": true,
         "links": 1,
@@ -907,7 +907,7 @@
     {
       "name": "refused_hold_now_equal_to_stamp_plus_delay_has_elapsed",
       "kind": "refused_hold",
-      "why": "now = stamp + delay: the one /sync goes out. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "why": "now = stamp + delay: the one /sync goes out. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates TestARefusedTokenIsPresentedOncePerRefreshHold (refused_test.go).",
       "in": {
         "refused": true,
         "links": 1,
@@ -921,7 +921,7 @@
     {
       "name": "refused_hold_a_future_raw_stamp_is_not_held",
       "kind": "refused_hold",
-      "why": "ABSENT READS AS ELAPSED: a stamp in the future from a clock set backwards leaves the probe free to go. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "why": "ABSENT READS AS ELAPSED: a stamp in the future from a clock set backwards leaves the probe free to go. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates TestARefusedTokenIsPresentedOncePerRefreshHold (refused_test.go).",
       "in": {
         "refused": true,
         "links": 1,
@@ -935,7 +935,7 @@
     {
       "name": "refused_hold_a_missing_stamp_is_not_held",
       "kind": "refused_hold",
-      "why": "A chain written before CANT-127 has no stamp, which reads as elapsed. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates refused_test.go.",
+      "why": "A chain written before CANT-127 has no stamp, which reads as elapsed. CANT-129: a refused token is presented once per refresh hold (refusedHoldAt; Client.refusedHold delegates to it). Restates TestARefusedTokenIsPresentedOncePerRefreshHold (refused_test.go).",
       "in": {
         "refused": true,
         "links": 2,
