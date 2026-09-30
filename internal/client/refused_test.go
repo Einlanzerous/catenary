@@ -449,7 +449,9 @@ func (r *refusedRig) run() (stop func()) {
 // the page beside it reaches Catenary inside the hold the pre-dial attempt (or the
 // link the arrangement built) began. Simulated time is frozen until that page's
 // reactive refresh has been counted as held, which is the evidence it landed
-// inside, and then released — nothing else about the run changes.
+// inside, and IT IS LEFT FROZEN: the caller releases it with r.net.freeze(false)
+// once whatever it measures from has been read, so the first hold cannot end
+// between the teaching and the snapshot. Nothing else about the run changes.
 //
 // HELD BY EITHER SUPPRESSOR, because freezing makes the page's answer and the
 // last send the same instant, and the gate opens only on an answer strictly LATER
@@ -462,7 +464,6 @@ func (r *refusedRig) runTaughtInsideTheHold() (stop func()) {
 	stop = r.run()
 	r.t.Cleanup(stop)
 	r.await("the teaching page's refresh to be held", func() bool { return heldRefreshes(r.c.Status()) >= 1 })
-	r.net.freeze(false)
 	return stop
 }
 
@@ -546,6 +547,7 @@ func carried(reqs []request) []string {
 func TestARefusedTokenIsPresentedOncePerRefreshHold(t *testing.T) {
 	r := newRefusedRig(t, refusedOpts{dead: []string{"/refresh"}})
 	stop := r.runTaughtInsideTheHold()
+	r.net.freeze(false)
 	r.awaitSim(time.Hour)
 	stop()
 
@@ -652,23 +654,24 @@ func TestWithoutTheRuleARefusedTokenIsPresentedOnEveryDial(t *testing.T) {
 }
 
 // AND WITH THE ONE /sync PER HOLD FAULTED OFF — the withdrawn "never again" — the
-// client is watched STALLING. Its attempts stop at two: the pre-dial one, and the
-// one the teaching 401 drove. Nothing then reopens CANT-127's gate, so a /refresh
-// that heals is never noticed, and criterion 1(a)'s lower bound is what catches it.
+// client is watched STALLING. Its attempts stop at one: the pre-dial one. The
+// teaching 401 arrives inside that attempt's hold, so it drives nothing, and no
+// page after it is ever presented to reopen CANT-127's gate — a /refresh that heals
+// is never noticed, and criterion 1(a)'s lower bound is what catches it.
 func TestWithoutTheOneSyncPerHoldTheClientStalls(t *testing.T) {
 	r := newRefusedRig(t, refusedOpts{
 		dead:   []string{"/refresh"},
 		faults: Faults{NeverPresentRefusedToken: true},
 	})
-	stop := r.run()
-	defer stop()
+	stop := r.runTaughtInsideTheHold()
+	r.net.freeze(false)
 	r.awaitSim(time.Hour)
 	stop()
 
 	elapsed, attempts := r.elapsed(), r.net.count("/refresh")
-	if attempts != 2 {
-		t.Errorf("the stalled client made %d attempts in %s, want the 2 it can: its own pre-dial one, "+
-			"and the one the teaching 401 drove", attempts, elapsed)
+	if attempts != 1 {
+		t.Errorf("the stalled client made %d attempts in %s, want the 1 it can: its own pre-dial one, "+
+			"inside whose hold the teaching 401 arrived and drove nothing", attempts, elapsed)
 	}
 	// THE LOWER BOUND CRITERION 1(a) ASSERTS IS WHAT FAILS HERE, and that is the
 	// point of running this at all: an upper bound alone passes against a stall.
@@ -701,9 +704,11 @@ func TestASocketThatStaysUpHasItsHoldEndedByTheCatchUp(t *testing.T) {
 	r.d.set(func(d *door) {
 		d.refuseSync = func(*http.Request) bool { return mintedSoFar(r.e.f) == 0 }
 	})
-	stop := r.run()
-	defer stop()
-
+	// TAUGHT INSIDE THE PRE-DIAL ATTEMPT'S HOLD, AND FROZEN THERE (CANT-178). Left
+	// to the scheduler, the dial's simulated cost could land after the teaching
+	// page and end that hold before the window below opened, and the probe it then
+	// allows would be counted as a trigger's.
+	r.runTaughtInsideTheHold()
 	r.await("the socket to come up and the catch-up to be refused", func() bool {
 		s := r.c.Status()
 		return s.Ready && s.TokenRefused && s.ChainLength >= 1
@@ -868,9 +873,14 @@ func TestAnotherContextsRotationEndsTheWait(t *testing.T) {
 		r := newRefusedRig(t, refusedOpts{dead: []string{"/refresh"}})
 		stop := r.run()
 		defer stop()
+		// AND THE ATTEMPT THAT WROTE THE SECOND LINK HAS LEFT. The link is stamped
+		// before its request goes out, so a chain of two alone can be read while
+		// that /refresh is still on its way to the transport, and it would then
+		// land after the snapshot below and be counted as this client's own
+		// (CANT-178).
 		r.await("the token to be refused and a hold to be in force", func() bool {
 			s := r.c.Status()
-			return s.TokenRefused && s.ChainLength >= 2
+			return s.TokenRefused && s.ChainLength >= 2 && r.net.count("/refresh") >= s.ChainLength
 		})
 
 		// SIMULATED TIME STANDS STILL FROM HERE, so nothing this client does next
@@ -1121,15 +1131,16 @@ func TestOnlyCatenarysOwn401OnSyncMarksATokenRefused(t *testing.T) {
 func TestTheHoldsOneSyncIsRetriedUntilCatenaryAnswers(t *testing.T) {
 	t.Run("nothing reached Catenary: retried on the ordinary backoff, and one refusal in the end", func(t *testing.T) {
 		r := newRefusedRig(t, refusedOpts{dead: []string{"/refresh"}})
-		stop := r.run()
-		defer stop()
-		r.await("the token to be refused and a hold to be in force", func() bool {
-			s := r.c.Status()
-			return s.TokenRefused && s.ChainLength >= 1
-		})
+		// THE HOLD IN FORCE, AND NOTHING IN FLIGHT: the teaching page's refresh was
+		// held, so no attempt it drove can land after the snapshot (CANT-178).
+		r.runTaughtInsideTheHold() // stopped by its own t.Cleanup
+		if s := r.c.Status(); !s.TokenRefused || s.ChainLength < 1 {
+			t.Fatalf("the arrangement is wrong: refused=%v with a chain of %d", s.TokenRefused, s.ChainLength)
+		}
 
 		r.net.setDead("/sync", true)
 		refusals, syncs, links := r.d.count("/sync"), r.net.count("/sync"), r.chainLen()
+		r.net.freeze(false)
 		r.await("the probe to be retried on the catch-up backoff", func() bool {
 			return r.net.count("/sync") >= syncs+3
 		})
@@ -1157,14 +1168,13 @@ func TestTheHoldsOneSyncIsRetriedUntilCatenaryAnswers(t *testing.T) {
 
 	t.Run("delivered and refused, and the answer lost: the server counts a second, the client sees one", func(t *testing.T) {
 		r := newRefusedRig(t, refusedOpts{dead: []string{"/refresh"}})
-		stop := r.run()
-		defer stop()
-		r.await("the token to be refused and a hold to be in force", func() bool {
-			s := r.c.Status()
-			return s.TokenRefused && s.ChainLength >= 1
-		})
+		r.runTaughtInsideTheHold() // stopped by its own t.Cleanup
+		if s := r.c.Status(); !s.TokenRefused || s.ChainLength < 1 {
+			t.Fatalf("the arrangement is wrong: refused=%v with a chain of %d", s.TokenRefused, s.ChainLength)
+		}
 		refusals, links := r.d.count("/sync"), r.chainLen()
 		r.d.set(func(d *door) { d.loseAnswers = 1 })
+		r.net.freeze(false)
 
 		r.await("the lost answer, then the one the client sees, then its attempt", func() bool {
 			return r.chainLen() > links
@@ -1208,6 +1218,7 @@ func TestARefusedTokenReachesItsRefreshWhateverTheClockSays(t *testing.T) {
 		r.e.f.mu.Unlock()
 
 		stop := r.runTaughtInsideTheHold()
+		r.net.freeze(false)
 		r.await("the client to stop", func() bool { return r.c.Status().Terminal.Kind != NotTerminal })
 		stop()
 
