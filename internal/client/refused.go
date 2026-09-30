@@ -153,25 +153,37 @@ func (c *Client) refusedDial() bool {
 // not: it lengthens the chain and moves the stamp, so the wait EXTENDS to the new
 // deadline, and the count of refused requests does not rise.
 //
-// ABSENT READS AS ELAPSED, exactly as hold.go's backoff reads it (Client.stamp):
+// ABSENT READS AS ELAPSED, exactly as hold.go's backoff reads it (readStamp):
 // a chain written before CANT-127 and a stamp in the future from a clock set
 // backwards both leave the probe free to go.
 func (c *Client) refusedHold() bool {
-	if c.cfg.Faults.PresentRefusedToken || !c.refusedNow(true) {
+	if c.cfg.Faults.PresentRefusedToken {
 		return false
 	}
-	if c.cfg.Faults.NeverPresentRefusedToken {
+	refused := c.refusedNow(true)
+	if refused && c.cfg.Faults.NeverPresentRefusedToken {
 		// THE WITHDRAWN RULE: never again, and so never at all. The client stalls
 		// here, which is what the control exists to be watched doing.
 		return true
 	}
 	links := c.j.chainLen()
-	if links == 0 {
+	now := c.wallNow()
+	sent, _ := c.j.LastSent()
+	return refusedHoldAt(refused, links, sent, now)
+}
+
+// refusedHoldAt is refusedHold's rule, pure, over a RAW `last_sent_at` and
+// without the two faults, which the method applies: hold while the pair's access
+// token is the refused one, the chain is unsettled, and the delay counted from
+// the stamp has not elapsed. It is hold.go's backoffPending over the same read of
+// the stamp, so this wait and CANT-127's backoff cannot disagree about when a
+// hold ends. Its TS twin is refused.ts's refusedHoldAt, and CANT-156's shared
+// vectors hold the two to the same answers.
+func refusedHoldAt(refused bool, links int, lastSent, now time.Time) bool {
+	if !refused || links <= 0 {
 		return false
 	}
-	now := c.wallNow()
-	sent, stamped := c.stamp(now)
-	return stamped && now.Before(sent.Add(refreshDelay(links)))
+	return backoffPending(links, readStamp(lastSent, now), now)
 }
 
 // waitWhileRefused polls one of the two predicates at the DIAL CADENCE and

@@ -419,11 +419,11 @@ type Client struct {
 	// not this one's. What crosses processes is the persisted stamp it is
 	// compared against.
 	answeredAt time.Time
-	// gateKnown and gateOpen are the last gate state this context LOGGED, so
+	// gateKnown and gateWasOpen are the last gate state this context LOGGED, so
 	// the two INFO lines are one per transition rather than one per attempt.
 	// warnedLongChain is the same for the one WARN a chain past 64 links gets.
 	gateKnown       bool
-	gateOpen        bool
+	gateWasOpen     bool
 	warnedLongChain bool
 	// refused is the access token CATENARY ITSELF refused on /sync (CANT-129),
 	// and "" for none. Per-Client and in memory on purpose, like answeredAt: it

@@ -42,7 +42,7 @@ export function refreshDelay(links: number): number {
 }
 
 /**
- * `last_sent_at` as the suppressors must read it (Go's `Client.stamp`): ONE RULE
+ * `last_sent_at` as the suppressors must read it (Go's `readStamp`): ONE RULE
  * FOR ABSENT. A missing stamp — a chain written before CANT-127 — and one in the
  * future — a clock set backwards — are both null, and null reads the same way
  * everywhere: the delay has elapsed, and any Catenary answer opens the gate.
@@ -52,7 +52,7 @@ export function readStamp(lastSentAt: number | null, now: number): number | null
 }
 
 /**
- * Record §3's gate (Go's `Client.answeredSince`), as a comparison rather than a
+ * Record §3's gate (Go's `gateOpen`), as a comparison rather than a
  * signal. `stamp` is already read through `readStamp`. A context with no answer
  * yet is CLOSED either way; an absent stamp is opened by any answer; otherwise
  * LATER THAN IS STRICT, and an answer at the same instant as the send is closed.
@@ -75,8 +75,8 @@ export interface HoldInput {
 }
 
 /**
- * The two suppressors, in order (Go's `Client.holdNow`, without the logging and
- * without `Faults.Unbounded`, which the caller applies): a settled credential
+ * The two suppressors, in order (Go's `refreshHoldAt`; `Client.holdNow` adds
+ * the logging and `Faults.Unbounded`, as the caller does here): a settled credential
  * is never held; the gate holds an unsettled one Catenary has not answered
  * since the last send; the delay holds one whose `last_sent_at + delay` has not
  * arrived.

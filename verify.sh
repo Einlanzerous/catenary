@@ -193,6 +193,15 @@ result $? "vue-tsc --noEmit"
 (cd "$ROOT/web" && npm run --silent conformance) >"$LOGDIR/v-ts.log" 2>&1
 result $? "$(grep -oE 'all green — [0-9]+ vectors|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-ts.log" | tail -1)"
 
+# CANT-156: CANT-31's decisions, against the same file the Go reference is held
+# to by TestTheDecisionVectors (which the root `go test ./...` below runs, so it
+# needs no step of its own). ITS OWN RESULT PATTERN: the conformance line above
+# says "vectors" and this one "decision vectors", and a shared grep would print
+# an empty PASS on the one it does not match.
+step "CANT-156 · decision vectors (TypeScript)"
+(cd "$ROOT/web" && npm run --silent decisions) >"$LOGDIR/v-ts-decisions.log" 2>&1
+result $? "$(grep -oE 'all green — [0-9]+ decision vectors|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-ts-decisions.log" | tail -1)"
+
 step "R4 · Dart"
 if command -v dart >/dev/null; then
   (cd "$ROOT/dart" && dart analyze) >"$LOGDIR/v-dart-analyze.log" 2>&1

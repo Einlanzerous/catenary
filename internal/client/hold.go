@@ -129,21 +129,38 @@ func refreshDelay(links int) time.Duration {
 	return min(d, refreshBackoffCap)
 }
 
-// stamp reads `last_sent_at` as the suppressors must read it: ONE RULE FOR
+// readStamp is `last_sent_at` as the suppressors must read it: ONE RULE FOR
 // ABSENT. A stamp that is missing — a journal written before CANT-127 — and one
-// in the future — a device whose clock was set backwards — are both absent, and
-// absent means the same thing in both places it is read: for the backoff the
-// wait has elapsed, and for the gate any Catenary-authored response opens it.
-// The worst a wrong clock can do in either direction is allow one attempt early.
-func (c *Client) stamp(now time.Time) (sent time.Time, ok bool) {
-	sent, ok = c.j.LastSent()
-	if ok && sent.After(now) {
-		return time.Time{}, false
+// in the future — a device whose clock was set backwards — are both absent, the
+// zero time, and absent means the same thing in both places it is read: for the
+// backoff the wait has elapsed, and for the gate any Catenary-authored response
+// opens it. The worst a wrong clock can do in either direction is allow one
+// attempt early.
+//
+// THIS AND THE THREE BELOW ARE THE RULES, AND ONLY THE RULES: package-level and
+// pure, over values the caller has already read, with no clock, no lock, no log
+// line and no Faults. The methods read the state, apply the faults, count and
+// log; these decide. That split is what lets CANT-156's shared vectors
+// (testdata/decisions.json) hold this file, web/src/transport/hold.ts and
+// CANT-42's Dart to the same answers, and each takes the name of its TS twin.
+func readStamp(lastSent, now time.Time) time.Time {
+	if lastSent.After(now) {
+		return time.Time{}
 	}
-	return sent, ok
+	return lastSent
 }
 
-// answeredSince is record §3's gate, as a comparison rather than a signal.
+// stamp is readStamp over the Journal's `last_sent_at`, and whether what it read
+// is present.
+func (c *Client) stamp(now time.Time) (sent time.Time, ok bool) {
+	sent, _ = c.j.LastSent()
+	s := readStamp(sent, now)
+	return s, !s.IsZero()
+}
+
+// gateOpen is record §3's gate, as a comparison rather than a signal. stamp has
+// already been read through readStamp, and answeredAt is when Catenary last
+// answered this context, the zero time for never.
 //
 // DERIVED, NOT TRACKED, and that is what makes it work across processes. A
 // second tab, or an app beside its push worker, shares storage and not memory,
@@ -158,17 +175,42 @@ func (c *Client) stamp(now time.Time) (sent time.Time, ok bool) {
 // worker and a second tab are one property, not three — and an ABSENT stamp is
 // opened by any Catenary-authored response, because there is no send to be later
 // than.
-func (c *Client) answeredSince(sent time.Time, stamped bool) bool {
-	c.mu.Lock()
-	at := c.answeredAt
-	c.mu.Unlock()
+func gateOpen(answeredAt, stamp time.Time) bool {
 	switch {
-	case at.IsZero():
+	case answeredAt.IsZero():
 		return false
-	case !stamped:
+	case stamp.IsZero():
 		return true
 	}
-	return at.After(sent)
+	return answeredAt.After(stamp)
+}
+
+// backoffPending is the delay: a stamp that is present, and a now before
+// `stamp + min(15 min, 5 s × 2^(n−1))`. stamp has already been read through
+// readStamp, so an absent one — missing or in the future — has elapsed. It is
+// the one place CANT-127's backoff and CANT-129's refused wait compare against
+// the delay, which is what keeps the two waits the same wait.
+func backoffPending(links int, stamp, now time.Time) bool {
+	return !stamp.IsZero() && now.Before(stamp.Add(refreshDelay(links)))
+}
+
+// refreshHoldAt is the two suppressors, in order, over a RAW `last_sent_at`: a
+// settled credential is never held; the gate holds an unsettled one Catenary has
+// not answered since the last send; the delay holds one whose deadline has not
+// arrived. THE GATE COMES FIRST, so a context that has heard nothing reads as
+// unreachable rather than as backing off, whatever the clock says.
+func refreshHoldAt(links int, answeredAt, lastSent, now time.Time) RefreshHold {
+	if links <= 0 {
+		return RefreshNotHeld
+	}
+	stamp := readStamp(lastSent, now)
+	if !gateOpen(answeredAt, stamp) {
+		return RefreshHeldUnreachable
+	}
+	if backoffPending(links, stamp, now) {
+		return RefreshHeldBackoff
+	}
+	return RefreshNotHeld
 }
 
 // markAnswered records that CATENARY ITSELF answered this context, now. It is
@@ -226,18 +268,15 @@ func (c *Client) holdNow(note bool) RefreshHold {
 		return RefreshNotHeld
 	}
 	now := c.wallNow()
-	sent, stamped := c.stamp(now)
-	open := c.answeredSince(sent, stamped)
+	sent, _ := c.j.LastSent()
+	c.mu.Lock()
+	answered := c.answeredAt
+	c.mu.Unlock()
+	h := refreshHoldAt(links, answered, sent, now)
 	if note {
-		c.noteGate(open, links)
+		c.noteGate(h != RefreshHeldUnreachable, links)
 	}
-	if !open {
-		return RefreshHeldUnreachable
-	}
-	if stamped && now.Before(sent.Add(refreshDelay(links))) {
-		return RefreshHeldBackoff
-	}
-	return RefreshNotHeld
+	return h
 }
 
 // noteGate logs one INFO when this context's gate closes and one when it opens,
@@ -245,8 +284,8 @@ func (c *Client) holdNow(note bool) RefreshHold {
 // whole reason errRefreshHeld is a distinct error.
 func (c *Client) noteGate(open bool, links int) {
 	c.mu.Lock()
-	known, was := c.gateKnown, c.gateOpen
-	c.gateKnown, c.gateOpen = true, open
+	known, was := c.gateKnown, c.gateWasOpen
+	c.gateKnown, c.gateWasOpen = true, open
 	c.mu.Unlock()
 	if known && was == open {
 		return
@@ -262,7 +301,7 @@ func (c *Client) noteGate(open bool, links int) {
 // unsettled stretch is a new one and says so once.
 func (c *Client) forgetGate() {
 	c.mu.Lock()
-	c.gateKnown, c.gateOpen = false, false
+	c.gateKnown, c.gateWasOpen = false, false
 	c.mu.Unlock()
 }
 
