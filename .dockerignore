@@ -20,6 +20,11 @@ dart
 spike
 server
 
+# Test files. The binary compiles none of them, and some are symlinks into
+# trees excluded above: cmd/catenary/tsdriver_test.go points into server/
+# (CANT-153), and a dangling link in the context fails `go build` (CANT-184).
+**/*_test.go
+
 # Docs and board artefacts.
 docs
 *.md
