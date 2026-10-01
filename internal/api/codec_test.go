@@ -137,7 +137,7 @@ func TestTheSocketCodecHoldsEveryVector(t *testing.T) {
 			default:
 				var v any
 				if k == "ServerFrame" {
-					// Decoded with the generated decoder a CLIENT would use,
+					// Decoded with the strict decoder, which is the server's,
 					// then sent through THE DOOR'S OUTBOUND PATH.
 					var sf wire.ServerFrame
 					if sf, err = wire.DecodeServerFrame(raw); err == nil && sf != nil {

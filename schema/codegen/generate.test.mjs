@@ -255,3 +255,33 @@ test('Go enum blocks and inline oneOf guards are byte-identical to origin/main, 
   assert.equal(hg.size, 1)
   assert.match([...hg][0], /"voice", "image"/)
 })
+
+/* ------------------------------------------------------------------ *
+ * CANT-177: the Go client side, ruling 1 → B.
+ * ------------------------------------------------------------------ */
+
+test('each client-open enum has IsUnknown() after its checkX, no closed one does, and no …Unknown constant exists', () => {
+  const go = readFileSync(join(ROOT, GO), 'utf8')
+  const c = classify()
+  for (const name of c.clientOpen) {
+    const check = go.indexOf(`\nfunc check${name}(`)
+    const is = go.indexOf(`\nfunc (v ${name}) IsUnknown() bool {`)
+    assert.ok(check > 0, `no check${name}`)
+    assert.ok(is > check, `${name}.IsUnknown is missing or is emitted before check${name}, inside the pinned enum block`)
+    assert.doesNotMatch(go, new RegExp(`\\b${name}Unknown\\b`), `${name}Unknown is exported; ruling 1 → B says no constant`)
+  }
+  for (const name of c.closedEverywhere) {
+    assert.doesNotMatch(go, new RegExp(`func \\(v ${name}\\) IsUnknown\\(`), `${name} is closed everywhere and has IsUnknown`)
+  }
+  // The entrypoints the client side is reached through, and only those.
+  assert.deepEqual([...go.matchAll(/^func (\w+AsClient)\(/gm)].map((m) => m[1]).sort(),
+    ['DecodeNamedAsClient', 'DecodeServerFrameAsClient'])
+})
+
+test('a client-open enum inside a list fails the build, naming the field', () => {
+  const s = loadSchema()
+  s.$defs.ServerAck.properties.states = { type: 'array', items: { $ref: '#/$defs/DeliveryState' } }
+  const r = runOn(s, '--dry-run')
+  assert.notEqual(r.status, 0)
+  assert.match(r.out, /ServerAck\.states\[\]: a client-open enum \(DeliveryState\) inside a list/)
+})

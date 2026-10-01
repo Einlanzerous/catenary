@@ -85,7 +85,8 @@ const byName = new Map(model.map((d) => [d.name, d]))
  * roots is something a client AUTHORS and never has to decode ahead of itself,
  * so it stays closed on every side — which is also what stops a client from
  * typing `unknown` into an outbound frame and having it typecheck. Go is
- * closed on everything: the server is the trust boundary.
+ * closed on everything the server decodes: the server is the trust boundary.
+ * Its client side (CANT-177) is open exactly as TypeScript and Dart are.
  *
  * Two rules keep the root lists honest. A `$defs` entry referenced by nothing
  * must be in exactly one of them, so a new REST body is classified by the
@@ -1058,6 +1059,16 @@ function goCheck(ref, expr, path, depth = 0) {
       const d = byName.get(ref.name)
       if (d.kind === 'alias' && !hasConstraints(d.node)) return []
       if (d.kind === 'object' || d.kind === 'union') return [] // its own UnmarshalJSON ran
+      /* CANT-177. A client-open enum is checked per decode side, and the object
+       * emitter writes that branch itself because the client side REPLACES the
+       * value rather than only checking it. Inside a list the loop variable is
+       * a copy, so a replacement would be lost in silence: no schema has one
+       * there today, and the first one fails here rather than decoding wrong. */
+      if (d.kind === 'enum' && clientOpen.has(d.name)) {
+        fail(`${path}: a client-open enum (${d.name}) inside a list. The Go client-side decode replaces an ` +
+          'unknown value in place, and a list element needs an indexed assignment the emitter does not ' +
+          'write yet; add it to the generator before adding such a field (CANT-177)')
+      }
       return [`\tif err := check${d.name}(${expr}, ${JSON.stringify(path)}); err != nil {`,
         '\t\treturn err', '\t}']
     }
@@ -1161,10 +1172,83 @@ function emitGo() {
   const L = []
   L.push(BANNER, '')
   L.push('package wire', '')
-  L.push('import (', '\t"encoding/json"', '\t"errors"', '\t"fmt"', '\t"regexp"',
-    ...(usesStringLength() ? ['\t"unicode/utf8"'] : []), ')', '')
+  L.push('import (', '\t"bytes"', '\t"encoding/json"', '\t"errors"', '\t"fmt"', '\t"log/slog"', '\t"regexp"',
+    '\t"strings"', '\t"sync"', ...(usesStringLength() ? ['\t"unicode/utf8"'] : []), ')', '')
   L.push(`// WireVersion is the schema version this package was generated from.`)
   L.push(`const WireVersion = ${WIRE_VERSION}`, '')
+
+  /* CANT-177. Go has two sides. The server decodes strictly and refuses any
+   * enum value this schema version does not define — that is CANT-74 ruling 2
+   * and it is unchanged: every exported strict entrypoint and every
+   * UnmarshalJSON passes sideServer. Go code acting as a CLIENT (the reference
+   * client in internal/client) decodes what the server emits, and must answer
+   * the `tolerate` vectors exactly as TypeScript and Dart do, or a value a later
+   * server adds costs it the frame — or, on /sync, the whole page, for ever.
+   *
+   * So one side argument is threaded through every decode, and it changes
+   * exactly one thing: how a CLIENT-OPEN enum is checked. Every other
+   * constraint is enforced identically on both sides. The sentinel is the
+   * value "unknown" with no exported constant (ruling 1 → B): server code has
+   * nothing to reach for, and `IsUnknown()` is how a client asks. */
+  L.push('// decodeSide is which side of the wire a decode runs on (CANT-177). It changes')
+  L.push('// only how a client-open enum is checked: the server refuses a value this')
+  L.push('// schema version does not define, and a client decodes it to the sentinel')
+  L.push('// "unknown" and reports it once. Every other constraint is the same on both.')
+  L.push('type decodeSide uint8', '')
+  L.push('const (')
+  L.push('\t// sideServer is the strict decode: every exported entrypoint without')
+  L.push('\t// AsClient in its name, and every UnmarshalJSON.')
+  L.push('\tsideServer decodeSide = iota')
+  L.push('\t// sideClient is the decode behind DecodeServerFrameAsClient and')
+  L.push('\t// DecodeNamedAsClient.')
+  L.push('\tsideClient')
+  L.push(')', '')
+  L.push('// The client-side report, once per (enum, raw) per process, as TypeScript and')
+  L.push('// Dart do it — a busy thread would otherwise print the same line hundreds of')
+  L.push('// times. The hook is read and written under the same mutex as the seen-set,')
+  L.push('// because the server links this package too and tests swap the hook.')
+  L.push('var (')
+  L.push('\tunknownMu   sync.Mutex')
+  L.push('\tunknownSeen = map[[2]string]bool{}')
+  L.push('\tonUnknown   = defaultOnUnknown')
+  L.push(')', '')
+  L.push('func defaultOnUnknown(message string) { slog.Default().Warn(message) }', '')
+  L.push('// SetOnUnknownWireValue sets where a client-side decode reports a value this')
+  L.push('// schema version does not define. The default is slog.Default().Warn; nil')
+  L.push('// restores it. Each (enum, value) pair is reported once per process.')
+  L.push('func SetOnUnknownWireValue(fn func(message string)) {')
+  L.push('\tif fn == nil {')
+  L.push('\t\tfn = defaultOnUnknown')
+  L.push('\t}')
+  L.push('\tunknownMu.Lock()')
+  L.push('\tonUnknown = fn')
+  L.push('\tunknownMu.Unlock()')
+  L.push('}', '')
+  L.push('// reportUnknown reports one undefined value, the first time it is seen. The')
+  L.push('// hook is read under the mutex and called outside it, so a hook that decodes')
+  L.push('// cannot deadlock. The text is TypeScript\'s, with no server-version suffix:')
+  L.push('// this package has no SetServerWireVersion.')
+  L.push('func reportUnknown(enumName, raw string) {')
+  L.push('\tunknownMu.Lock()')
+  L.push('\tkey := [2]string{enumName, raw}')
+  L.push('\tif unknownSeen[key] {')
+  L.push('\t\tunknownMu.Unlock()')
+  L.push('\t\treturn')
+  L.push('\t}')
+  L.push('\tunknownSeen[key] = true')
+  L.push('\tfn := onUnknown')
+  L.push('\tunknownMu.Unlock()')
+  L.push('\tfn(fmt.Sprintf("wire: %s: unknown value %s decoded as unknown (client wire_version %d)", enumName, jsonQuote(raw), WireVersion))')
+  L.push('}', '')
+  L.push('// jsonQuote is JSON.stringify on a string, so the report reads as TypeScript\'s')
+  L.push('// does: no HTML escaping, which encoding/json does by default.')
+  L.push('func jsonQuote(s string) string {')
+  L.push('\tvar b bytes.Buffer')
+  L.push('\tenc := json.NewEncoder(&b)')
+  L.push('\tenc.SetEscapeHTML(false)')
+  L.push('\t_ = enc.Encode(s)')
+  L.push('\treturn strings.TrimSuffix(b.String(), "\\n")')
+  L.push('}', '')
 
   /* CANT-25. The server is the trust boundary and was the only one of the three
    * implementations that would not refuse bad input: TypeScript and Dart
@@ -1263,6 +1347,23 @@ function emitGo() {
       L.push('\t}')
       L.push('\treturn nil')
       L.push('}', '')
+      /* CANT-177, ruling 1 → B. Emitted AFTER checkX, so the enum block the
+       * generator test pins — `type X string` through checkX's closing brace —
+       * is byte-identical to what the server has always had. */
+      if (clientOpen.has(d.name)) {
+        L.push(`// IsUnknown reports whether v is the sentinel a client-side decode writes for`)
+        L.push(`// a value this schema version does not define (CANT-177). Valid is false for it.`)
+        L.push(`func (v ${d.name}) IsUnknown() bool { return v == "unknown" }`, '')
+        L.push(`// client${d.name} is check${d.name} on the client side: a value this schema`)
+        L.push('// version does not define is reported once and becomes the sentinel.')
+        L.push(`func client${d.name}(v ${d.name}) ${d.name} {`)
+        L.push('\tif v.Valid() {')
+        L.push('\t\treturn v')
+        L.push('\t}')
+        L.push(`\treportUnknown(${JSON.stringify(d.name)}, string(v))`)
+        L.push('\treturn "unknown"')
+        L.push('}', '')
+      }
     }
   }
 
@@ -1295,17 +1396,17 @@ function emitGo() {
     L.push('// element and not the whole message.')
     L.push(`type ${u.name}List []${u.name}`, '')
     L.push(`func (l *${u.name}List) UnmarshalJSON(b []byte) error {`)
-    L.push(`\treturn l.decode(b, ${JSON.stringify(u.name + 'List')})`)
+    L.push(`\treturn l.decode(b, ${JSON.stringify(u.name + 'List')}, sideServer)`)
     L.push('}', '')
-    L.push(`// decode is UnmarshalJSON with the caller's JSON path.`)
-    L.push(`func (l *${u.name}List) decode(b []byte, p string) error {`)
+    L.push(`// decode is UnmarshalJSON with the caller's JSON path and decode side.`)
+    L.push(`func (l *${u.name}List) decode(b []byte, p string, side decodeSide) error {`)
     L.push('\tvar raw []json.RawMessage')
     L.push('\tif err := json.Unmarshal(b, &raw); err != nil {')
     L.push('\t\treturn decodeErr(p, err)')
     L.push('\t}')
     L.push(`\tout := make(${u.name}List, 0, len(raw))`)
     L.push('\tfor i, r := range raw {')
-    L.push(`\t\tv, err := decode${u.name}(r, fmt.Sprintf("%s[%d]", p, i))`)
+    L.push(`\t\tv, err := decode${u.name}(r, fmt.Sprintf("%s[%d]", p, i), side)`)
     L.push('\t\tif err != nil {')
     L.push('\t\t\treturn err // already carries its element path')
     L.push('\t\t}')
@@ -1346,11 +1447,11 @@ function emitGo() {
     L.push(`// UnmarshalJSON decodes and VALIDATES a ${d.name}: required fields must be`)
     L.push('// present, and every constrained value is checked against the schema.')
     L.push(`func (v *${d.name}) UnmarshalJSON(b []byte) error {`)
-    L.push(`\treturn v.decode(b, ${JSON.stringify(d.name)})`)
+    L.push(`\treturn v.decode(b, ${JSON.stringify(d.name)}, sideServer)`)
     L.push('}', '')
     L.push('// decode carries the JSON path, so a nested failure names the field it came')
-    L.push('// from rather than the outermost type.')
-    L.push(`func (v *${d.name}) decode(b []byte, p string) error {`)
+    L.push('// from rather than the outermost type, and the decode side (CANT-177).')
+    L.push(`func (v *${d.name}) decode(b []byte, p string, side decodeSide) error {`)
     /* A field whose value has its own decode() is taken as RawMessage and
      * decoded EXPLICITLY, so it is handed this frame's path. Letting
      * json.Unmarshal reach it instead calls its UnmarshalJSON with the child's
@@ -1396,18 +1497,18 @@ function emitGo() {
       const ind = f.required ? '\t' : '\t\t'
       if (n === 'object') {
         if (!f.required) L.push(`${ind}out.${name} = new(${goType(f.ref, false, '')})`)
-        L.push(`${ind}if err := out.${name}.decode(*s.${name}, ${fp}); err != nil {`)
+        L.push(`${ind}if err := out.${name}.decode(*s.${name}, ${fp}, side); err != nil {`)
         L.push(`${ind}\treturn err`)
         L.push(`${ind}}`)
       } else if (n === 'unionList') {
-        L.push(`${ind}if err := out.${name}.decode(*s.${name}, ${fp}); err != nil {`)
+        L.push(`${ind}if err := out.${name}.decode(*s.${name}, ${fp}, side); err != nil {`)
         L.push(`${ind}\treturn err`)
         L.push(`${ind}}`)
       } else if (n === 'objectList') {
         const et = goType(f.ref.item, false, '')
         L.push(`${ind}out.${name} = make([]${et}, len(*s.${name}))`)
         L.push(`${ind}for i, raw := range *s.${name} {`)
-        L.push(`${ind}\tif err := out.${name}[i].decode(raw, fmt.Sprintf("%s[%d]", ${fp}, i)); err != nil {`)
+        L.push(`${ind}\tif err := out.${name}[i].decode(raw, fmt.Sprintf("%s[%d]", ${fp}, i), side); err != nil {`)
         L.push(`${ind}\t\treturn err`)
         L.push(`${ind}\t}`)
         L.push(`${ind}}`)
@@ -1423,9 +1524,23 @@ function emitGo() {
       const realOptionalPtr = goType(f.ref, true, '').startsWith('*')
       const expr = !f.required && realOptionalPtr ? `*out.${name}` : `out.${name}`
       if (nested(f.ref)) continue
+      const pathExpr = `p+${JSON.stringify('.' + f.wire)}`
+      /* CANT-177. A client-open enum: the server side runs today's check
+       * unchanged, and the client side replaces an undefined value with the
+       * sentinel. Written here rather than in goCheck because it assigns. */
+      if (f.ref.kind === 'named' && clientOpen.has(f.ref.name)) {
+        const ind = f.required ? '' : '\t'
+        if (!f.required) L.push(`\tif out.${name} != nil {`)
+        L.push(`${ind}\tif side == sideClient {`)
+        L.push(`${ind}\t\t${expr} = client${f.ref.name}(${expr})`)
+        L.push(`${ind}\t} else if err := check${f.ref.name}(${expr}, ${pathExpr}); err != nil {`)
+        L.push(`${ind}\t\treturn err`)
+        L.push(`${ind}\t}`)
+        if (!f.required) L.push('\t}')
+        continue
+      }
       const lines = goCheck(f.ref, expr, `${d.name}.${f.wire}`)
       if (!lines.length) continue
-      const pathExpr = `p+${JSON.stringify('.' + f.wire)}`
       const body = lines.map((l) => l
         .replace(JSON.stringify(`${d.name}.${f.wire}`), pathExpr)
         .replaceAll('PATH_EXPR', pathExpr))
@@ -1467,11 +1582,25 @@ function emitGo() {
     L.push(`// Decode${u.name} dispatches on ${JSON.stringify(disc)}. A nil result with a nil error`)
     L.push('// means an unrecognised tag, which callers MUST treat as "ignore and carry on".')
     L.push(`func Decode${u.name}(b []byte) (${u.name}, error) {`)
-    L.push(`\treturn decode${u.name}(b, ${JSON.stringify(u.name)})`)
+    L.push(`\treturn decode${u.name}(b, ${JSON.stringify(u.name)}, sideServer)`)
     L.push('}', '')
+    /* CANT-177. Only a union the server EMITS gets a client entrypoint: a
+     * client never decodes a ClientFrame, and offering it one would be an
+     * entrypoint no side has a use for. */
+    if (SERVER_ROOTS.includes(u.name)) {
+      L.push(`// Decode${u.name}AsClient is Decode${u.name} for Go code acting as a CLIENT`)
+      L.push('// (CANT-177): a client-open enum value this schema version does not define')
+      L.push('// decodes to the sentinel "unknown" and is reported once, exactly as in')
+      L.push('// TypeScript and Dart. Every other constraint is enforced as on the server.')
+      L.push('// Server code must not call it; a guard in internal/wire holds that.')
+      L.push(`func Decode${u.name}AsClient(b []byte) (${u.name}, error) {`)
+      L.push(`\treturn decode${u.name}(b, ${JSON.stringify(u.name)}, sideClient)`)
+      L.push('}', '')
+    }
     L.push(`// decode${u.name} is Decode${u.name} with the caller's JSON path, so a failure`)
-    L.push('// names the field the frame arrived in rather than the union type.')
-    L.push(`func decode${u.name}(b []byte, p string) (${u.name}, error) {`)
+    L.push('// names the field the frame arrived in rather than the union type, and with')
+    L.push('// the decode side (CANT-177).')
+    L.push(`func decode${u.name}(b []byte, p string, side decodeSide) (${u.name}, error) {`)
     L.push('\tvar probe struct {')
     L.push(`\t\tT string \`json:"${disc}"\``)
     L.push('\t}')
@@ -1487,7 +1616,7 @@ function emitGo() {
        * path that names the union and the tag it dispatched on. Wrapping the
        * error instead produced "wire: ready: wire: ServerReady.server_time: …",
        * which says "wire" twice and buries the field. */
-      L.push(`\t\tif err := v.decode(b, p+${JSON.stringify('[' + md.value + ']')}); err != nil {`)
+      L.push(`\t\tif err := v.decode(b, p+${JSON.stringify('[' + md.value + ']')}, side); err != nil {`)
       L.push('\t\t\treturn nil, err')
       L.push('\t\t}')
       L.push('\t\treturn v, nil')
@@ -1508,18 +1637,29 @@ function emitGo() {
   L.push('// DecodeNamed decodes a named wire type. Unions return a nil value with a nil')
   L.push('// error for an unrecognised tag.')
   L.push('func DecodeNamed(name string, b []byte) (any, error) {')
+  L.push('\treturn decodeNamed(name, b, sideServer)')
+  L.push('}', '')
+  L.push('// DecodeNamedAsClient is DecodeNamed for Go code acting as a CLIENT (CANT-177):')
+  L.push('// a client-open enum value this schema version does not define decodes to the')
+  L.push('// sentinel "unknown" and is reported once, exactly as in TypeScript and Dart.')
+  L.push('// Every other constraint is enforced as on the server. Server code must not')
+  L.push('// call it; a guard in internal/wire holds that.')
+  L.push('func DecodeNamedAsClient(name string, b []byte) (any, error) {')
+  L.push('\treturn decodeNamed(name, b, sideClient)')
+  L.push('}', '')
+  L.push('func decodeNamed(name string, b []byte, side decodeSide) (any, error) {')
   L.push('\tswitch name {')
   for (const d of model) {
     if (d.kind === 'object') {
       L.push(`\tcase ${JSON.stringify(d.name)}:`)
       L.push(`\t\tvar v ${d.name}`)
-      L.push(`\t\tif err := v.decode(b, ${JSON.stringify(d.name)}); err != nil {`)
+      L.push(`\t\tif err := v.decode(b, ${JSON.stringify(d.name)}, side); err != nil {`)
       L.push('\t\t\treturn nil, err')
       L.push('\t\t}')
       L.push('\t\treturn v, nil')
     } else if (d.kind === 'union') {
       L.push(`\tcase ${JSON.stringify(d.name)}:`)
-      L.push(`\t\tv, err := Decode${d.name}(b)`)
+      L.push(`\t\tv, err := decode${d.name}(b, ${JSON.stringify(d.name)}, side)`)
       L.push('\t\tif err != nil {')
       L.push('\t\t\treturn nil, err')
       L.push('\t\t}')
