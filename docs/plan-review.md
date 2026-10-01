@@ -12,13 +12,14 @@ nothing else. Where a check needs a command, the command is given.
 ## Who reads this and what they hold
 
 The pass is CI for a plan revision. It runs on a read-only checkout of `main`
-with Bash, Read, Grep and Glob, and two files on disk:
+with Bash, Read, Grep and Glob, and three files on disk:
 
 - `plan.json` — the revision: `sections[]` (each with an `anchor`), `criteria[]`
   (each with a `method`), `rulings[]` (0-based `position`, `options[]`,
   `recommended_position`, `chosen_option_id`, `required`, `liveness`,
-  `gated_by_position`), `work_breakdown[]` (each row with a `review_mode` and
-  `depends_on`), and the prior `reviews[]` and `threads[]`.
+  `gated_by_position`, `gated_on_option`), `work_breakdown[]` (each row with a
+  `review_mode` and `depends_on`), and the prior `reviews[]` and `threads[]`.
+- `ticket.json` — the ticket's `key`, `title`, `type` and `review_mode`.
 - `plan-context.json` — the ticket's `review_mode` and whether the revision
   carries a `live_required_ruling`.
 
@@ -45,9 +46,9 @@ checked, not that checking happened.
 
 ## Checks
 
-Each is stated with what makes it blocking and how to perform it here. The
-first five are this repository's invariants restated for a plan; a plan that
-violates one is bounced, not advised.
+Each is stated with what makes it blocking and how to perform it here. Checks
+2–6 are this repository's invariants restated for a plan; a plan that violates
+one is bounced, not advised.
 
 ### 1. Every cited path, symbol, line and count exists in this checkout
 
@@ -74,7 +75,7 @@ plan lean on it: `Glob` the path, `Grep` the symbol, `Read` the cited line.
   checkout" in the finding and move on; do not bounce on it.
 - **Counts are looked up, not copied.** The vector count is
   `jq '.cases | length' schema/vectors/vectors.json`; `CLAUDE.md` states it in
-  three places and `README.md`'s R4 row still says `41` from the day the gate
+  three places and `README.md`'s R4 row records the `41` of the day the gate
   cleared. A plan that quotes a count must quote today's, and a plan that adds
   a case must say the count moves and where (CANT-140 rev 1 carried both a
   stale `85` and the correct `89` in different sections).
@@ -159,9 +160,10 @@ neighbours in `internal/wire/generated.go`.
   for sketching two descriptions a criterion said were "written now"; rev 4
   carried the literal text and the row's `Done when` became text-against-text.
 - **Close codes are not the wire.** A new private-range WebSocket close code
-  (the `4000`/`4001` precedent) is a server change and a recorded table, not a
-  schema change; a plan that calls it one, or omits it from the recorded
-  table, has the category wrong.
+  (the `4000`/`4001`/`4002` precedent) is a server change and a row in the
+  reconnect table in `docs/decisions/cant-31-refresh-and-terminal-reconnect.md`,
+  not a schema change; a plan that calls it one, or omits it from that table,
+  has the category wrong.
 
 ### 4. Derived rather than stored — blocking where the two could disagree
 
@@ -205,7 +207,8 @@ the resident-model throughput number.
 - **The next free number is looked up:**
   `ls migrations/*.up.sql | sort | tail -1`. The plan's number is that plus
   one, zero-padded to four. A plan claiming a number that is taken, or
-  skipping one, is blocking.
+  skipping one, is blocking. The number is as of `main`: two plans in flight
+  can both hold it honestly, and the later one renumbers at build time.
 - **`.up.sql` and `.down.sql` both.** `loadMigrations` in
   `internal/store/migrate.go` refuses an up with no down, and
   `migrate_test.go` proves the refusal; a plan that says "no down needed" is
@@ -235,7 +238,8 @@ the resident-model throughput number.
 
 `README.md` § *The decisions that are closed*: **D1** no E2EE, **D2** Catenary
 owns its tokens with Cloudflare Access on `/admin` and metrics only, **D3**
-Vue web plus Flutter, **D4** everything is a conversation, and transcription as
+Vue web plus Flutter, **D4** everything is a conversation (the column is
+`kind`, CANT-13 ruling 0, though that row says `type`), and transcription as
 client two of the estate ASR. Not in that table but equally closed: no
 federation, and no public signup — accounts arrive through Purser or a host
 command, "never by any signup path" (`internal/store/bots.go`,
@@ -246,14 +250,14 @@ decision away in prose. A plan that quietly builds on the other side of one —
 a new entity that is not a conversation, an encryption claim, a self-serve
 enrollment route, a room reached from another instance — is blocking.
 
-### 9. Numbers copied from another service carry that service's constraints
+### 9. A quoted number is re-derived from where it lives
 
 A plan that quotes a number cites where it lives, and you re-derive it. The
 ones plans reach for: `AccessTokenLifetime = 15 * time.Minute` and
 `RefreshTokenLifetime` (`internal/store/tokens.go`), `ReuseGraceWindow = 10 * time.Second`
 (`internal/store/refresh.go`), `readNotifyCap = 64` (`internal/hub/hub.go`),
-the 60-second ASR model-switch bound (`CLAUDE.md`), the 89 vectors
-(`vectors.json`). Grep the constant; redo the arithmetic (CANT-127 rev 1's
+the 60-second ASR model-switch bound (`CLAUDE.md`), the vector count
+(check 1's `jq`). Grep the constant; redo the arithmetic (CANT-127 rev 1's
 ~720 links an hour was re-derived from the 5-second dial ceiling before it was
 accepted). A rate claimed from code that does not produce it — CANT-129's "once
 per device per fifteen minutes, forever", which the catch-up triggers do not
@@ -305,7 +309,8 @@ transaction — the send path's draw, `internal/store/messages.go`), `CANT-22`
 (WebSocket upgrade and hello — `internal/api/socket.go`, `awaitHello`),
 `CANT-29` (refresh rotation with reuse detection — `RotateRefresh` and
 `RotateRefreshProposing`, `internal/store/refresh.go`), `CANT-63` (edits and
-deletes), `CANT-67` (retention sweep — `internal/store/sweep.go`), and
+deletes — no home on `main` yet, so its test is the act: any row that rewrites
+a message body or deletes from `messages`), `CANT-67` (retention sweep — `internal/store/sweep.go`), and
 `CANT-130`, `CANT-134`, `CANT-131` (the door through which a device is
 enrolled as an existing person — `EnsurePerson` in `internal/store/persons.go`,
 `RedeemEnrollment` in `tokens.go`, `DeactivateUser` in `offboard.go`). A new
@@ -333,8 +338,8 @@ project default, `evidence`, never its parent's mode. So:
   bounce.** Style, wording and a better shape are advisory. A wrong invariant,
   a criterion nobody can run, an unmarked either/or, a citation the argument
   rests on — blocking. You spend your own credibility, never the human's
-  revision budget: five revisions is the cap (`plan_stuck`), and a bounce for
-  a nit costs one of them.
+  revision budget: the cap is five by default (`plan_revision_cap`; crossing
+  it is `plan_stuck`), and a bounce for a nit costs one of them.
 - **The approval half never applies to a plan with human-only rulings.** When
   `plan-context.json` says `live_required_ruling: true`, or `review_mode` is
   `full` or unset, a clean pass means a person is now owed the rulings — not
@@ -396,13 +401,14 @@ checkout plus `plan.json`:
    an assertion a test can fail, a `manual` with an actor, a `review` with a
    text to compare against — and every criterion that presupposes a pick is
    labelled `[ruling N → option M]`, with a row for every pickable option.
-4. **The ordinal, wire, migration and locked-decision statements are present
-   when relevant:** a plan touching the send path says where both ordinals
-   are drawn; a plan changing a frame or payload names the vectors that move
-   and the `wire-fields.json` entries and applies the schema header's
-   compatibility rule; a plan with a migration names the next free number and
-   both files; a plan touching D1–D4, signup or federation says so and carries
-   a ruling.
+4. **The statements each check asks for are present when relevant:** a plan
+   touching the send path says where both ordinals are drawn; a plan changing
+   a frame or payload names the vectors that move and the `wire-fields.json`
+   entries and applies the schema header's compatibility rule; a plan adding a
+   stored column says why it is not derived; a plan touching transcription
+   says it generates the ASR client and plans against the 60-second bound; a
+   plan with a migration names the next free number and both files; a plan
+   touching D1–D4, signup or federation says so and carries a ruling.
 5. **The work breakdown exists on a `decision` ticket**, every approved
    criterion is in some row's `Done when`, rows editing a Mode C home say
    `review_mode: full` with the generating rule as the reason, and
