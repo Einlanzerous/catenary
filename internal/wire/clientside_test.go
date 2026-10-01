@@ -16,9 +16,9 @@ package wire_test
 //     server runs" true rather than hoped for: a handler that reached for the
 //     client side would silently stop refusing an undefined client-open value.
 //
-// The report state is per process and this package's tests are the only ones
-// in it, so the once-per-pair assertion below sees a fresh seen-set. The race
-// test uses values no other test here decodes, so the two cannot interfere.
+// The report state is per process, so the once-per-pair assertion resets it
+// first through export_test.go — otherwise `go test -count=2` would see the
+// pair already reported and get no report at all.
 
 import (
 	"encoding/json"
@@ -74,6 +74,7 @@ func TestAClientSideDecodeReportsAnUndefinedValueOncePerProcess(t *testing.T) {
 		mu.Unlock()
 	})
 	t.Cleanup(func() { wire.SetOnUnknownWireValue(nil) })
+	wire.ResetUnknownWireValues()
 
 	b := vector(t, "tolerate_unknown_error_code_keeps_retryable")
 
