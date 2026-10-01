@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.13.0](https://github.com/Einlanzerous/catenary/compare/v0.12.0...v0.13.0) (2026-10-01)
+
+
+### Features
+
+* CANT-180 — generated client-side decode for Go (CANT-177a) ([#124](https://github.com/Einlanzerous/catenary/issues/124)) ([f31abea](https://github.com/Einlanzerous/catenary/commit/f31abea972c0fff62e34a6e2b7323126ee57af3f))
+* CANT-181 — internal/client decodes as a client (CANT-177b) ([#125](https://github.com/Einlanzerous/catenary/issues/125)) ([d70cc87](https://github.com/Einlanzerous/catenary/commit/d70cc8742ad14772669670e8c88692734edc9d36))
+
+
+### Bug Fixes
+
+* CANT-184 — keep test files out of the image build context ([#121](https://github.com/Einlanzerous/catenary/issues/121)) ([3c95c96](https://github.com/Einlanzerous/catenary/commit/3c95c960d85895ce06b96043dad73625c41cd022))
+
 ## [0.12.0](https://github.com/Einlanzerous/catenary/compare/v0.11.1...v0.12.0) (2026-09-30)
 
 
