@@ -216,6 +216,15 @@ type Faults struct {
 	// cohort severed together redials in step.
 	ResetOnAnyReady bool
 	NoJitter        bool
+
+	// StrictDecode breaks CANT-177: everything Catenary sends — each socket
+	// frame, each /sync page, the /enroll and /refresh bodies — is decoded by
+	// the SERVER's strict decoder, as every receive site was before that
+	// ticket. A client-open enum value this wire version does not define then
+	// fails the whole decode: an `error` frame with a new code is dropped
+	// unanswered, so the 1008 after it reads as bare and stops the client, and
+	// a /sync page carrying a new conversation kind is refused for ever.
+	StrictDecode bool
 }
 
 // Config is everything a Client needs that is not durable. BaseURL and an
@@ -1058,7 +1067,11 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, preceding *
 		// again below: record §4's *preceded by* is the LAST frame before
 		// the close, carrying no client_id.
 		preceding = nil
-		f, err := wire.DecodeServerFrame(data)
+		// AS A CLIENT (CANT-177): an error code, a resync reason or a kind a
+		// later server adds decodes to "unknown" and the frame is handled, as
+		// in every other client. Refusing it would drop the frame unanswered —
+		// and an `error` dropped here never precedes the close that follows it.
+		decoded, err := c.cfg.Faults.decodeFromServer("ServerFrame", data)
 		if err != nil {
 			c.mu.Lock()
 			c.stats.Undecodable++
@@ -1066,6 +1079,7 @@ func (c *Client) session(ctx context.Context) (opened, readied bool, preceding *
 			c.log.Warn("server frame the generated decoder refuses", "error", err)
 			continue
 		}
+		f, _ := decoded.(wire.ServerFrame)
 		// CATENARY ANSWERED THIS CONTEXT (CANT-127's gate). A frame the generated
 		// decoder ACCEPTS is Catenary's — a proxy, a captive portal or a hop in
 		// front cannot produce one — and that is true of a tag this wire version
@@ -1509,7 +1523,7 @@ func (c *Client) fetch(ctx context.Context, after int64) (wire.SyncResponse, err
 }
 
 // fetchWith is one GET /sync carrying cred, decoded by the generated
-// validating decoder.
+// validating decoder's client side.
 func (c *Client) fetchWith(ctx context.Context, after int64, cred Credential) (wire.SyncResponse, error) {
 	c.mu.Lock()
 	if c.connecting {
@@ -1565,8 +1579,10 @@ func (c *Client) fetchWith(ctx context.Context, after int64, cred Credential) (w
 		}
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: %s: %s", resp.Status, body)
 	}
-	var page wire.SyncResponse
-	if err := json.Unmarshal(body, &page); err != nil {
+	// AS A CLIENT (CANT-177). A page the strict decoder refuses for a value a
+	// later server adds is refused on every retry, and catch-up never passes it.
+	page, err := decodeResponse[wire.SyncResponse](c.cfg.Faults, "SyncResponse", body)
+	if err != nil {
 		return wire.SyncResponse{}, fmt.Errorf("client: sync: decode: %w", err)
 	}
 	// A PAGE THE GENERATED DECODER ACCEPTED, and not merely a 200: a captive

@@ -977,6 +977,53 @@ func TestAServerFrameOpensTheGateAndNothingElseOnTheSocketDoes(t *testing.T) {
 	assertNoReplays(t, r.e.f)
 }
 
+// AN `error` WITH A CODE A LATER SERVER ADDS IS AN ANSWER (CANT-177). The
+// client decoder accepts it — the code decodes to "unknown" — so it is a frame
+// Catenary sent, and it opens the gate on a socket that was already up. The
+// control decodes it strictly, as every Go client did before that ticket: the
+// frame is refused, counted undecodable, and the gate stays closed.
+func TestAnErrorWithACodeALaterServerAddsOpensTheGate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		faults Faults
+		opens  bool
+	}{
+		{"the client decoder: an answer", Faults{}, true},
+		{"control — strict decode: refused, and no answer", Faults{StrictDecode: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t, rigOpts{span: 365 * 24 * time.Hour, accessLive: true, dead: []string{"/refresh"}, faults: tc.faults})
+			stop := r.run()
+			defer stop()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			if err := r.c.Await(ctx, func() bool { s := r.c.Status(); return s.Ready && s.CaughtUp }); err != nil {
+				t.Fatalf("the client never got a socket up: %v; status %+v", err, r.c.Status())
+			}
+			r.clk.add(time.Second)
+			r.buildLink(t)
+			r.clk.add(time.Minute) // past the backoff; only the gate is left
+			if got := r.c.refreshHold(); got != RefreshHeldUnreachable {
+				t.Fatalf("with the last send after the last frame the hold is %v, want %v", got, RefreshHeldUnreachable)
+			}
+
+			undecodable := r.c.Status().Undecodable
+			r.e.frames <- []byte(`{"type":"error","code":"quota_exceeded","message":"x","retryable":false}`)
+			if tc.opens {
+				awaitFor(t, "the error frame to open the gate", func() bool { return r.c.refreshHold() == RefreshNotHeld })
+				if got := r.c.Status().Undecodable; got != undecodable {
+					t.Errorf("undecodable %d → %d; the client decoder accepts this frame", undecodable, got)
+				}
+				return
+			}
+			awaitFor(t, "the strict decoder to refuse the frame", func() bool { return r.c.Status().Undecodable == undecodable+1 })
+			if got := r.c.refreshHold(); got != RefreshHeldUnreachable {
+				t.Errorf("a frame the strict decoder refused opened the gate: hold %v", got)
+			}
+		})
+	}
+}
+
 // --- criterion 5 · the explicit entry point stays unconditional --------------
 
 // AN EXPLICIT REFRESH IS NEVER HELD, which is what RefreshIfDue's doc comment

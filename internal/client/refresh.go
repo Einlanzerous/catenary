@@ -503,8 +503,8 @@ func (c *Client) postRefresh(ctx context.Context, held Credential, token, propos
 		}
 		return Credential{}, fmt.Errorf("client: refresh: %s: %s", resp.Status, raw)
 	}
-	var out wire.RefreshResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
+	out, err := decodeResponse[wire.RefreshResponse](c.cfg.Faults, "RefreshResponse", raw)
+	if err != nil {
 		return Credential{}, fmt.Errorf("client: refresh: decode: %w", err)
 	}
 	next, err := CredentialFromEnroll(wire.EnrollResponse{
