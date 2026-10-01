@@ -8,15 +8,85 @@
 package wire
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
+	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
 // WireVersion is the schema version this package was generated from.
 const WireVersion = 1
+
+// decodeSide is which side of the wire a decode runs on (CANT-177). It changes
+// only how a client-open enum is checked: the server refuses a value this
+// schema version does not define, and a client decodes it to the sentinel
+// "unknown" and reports it once. Every other constraint is the same on both.
+type decodeSide uint8
+
+const (
+	// sideServer is the strict decode: every exported entrypoint without
+	// AsClient in its name, and every UnmarshalJSON.
+	sideServer decodeSide = iota
+	// sideClient is the decode behind DecodeServerFrameAsClient and
+	// DecodeNamedAsClient.
+	sideClient
+)
+
+// The client-side report, once per (enum, raw) per process, as TypeScript and
+// Dart do it — a busy thread would otherwise print the same line hundreds of
+// times. The hook is read and written under the same mutex as the seen-set,
+// because the server links this package too and tests swap the hook.
+var (
+	unknownMu   sync.Mutex
+	unknownSeen = map[[2]string]bool{}
+	onUnknown   = defaultOnUnknown
+)
+
+func defaultOnUnknown(message string) { slog.Default().Warn(message) }
+
+// SetOnUnknownWireValue sets where a client-side decode reports a value this
+// schema version does not define. The default is slog.Default().Warn; nil
+// restores it. Each (enum, value) pair is reported once per process.
+func SetOnUnknownWireValue(fn func(message string)) {
+	if fn == nil {
+		fn = defaultOnUnknown
+	}
+	unknownMu.Lock()
+	onUnknown = fn
+	unknownMu.Unlock()
+}
+
+// reportUnknown reports one undefined value, the first time it is seen. The
+// hook is read under the mutex and called outside it, so a hook that decodes
+// cannot deadlock. The text is TypeScript's, with no server-version suffix:
+// this package has no SetServerWireVersion.
+func reportUnknown(enumName, raw string) {
+	unknownMu.Lock()
+	key := [2]string{enumName, raw}
+	if unknownSeen[key] {
+		unknownMu.Unlock()
+		return
+	}
+	unknownSeen[key] = true
+	fn := onUnknown
+	unknownMu.Unlock()
+	fn(fmt.Sprintf("wire: %s: unknown value %s decoded as unknown (client wire_version %d)", enumName, jsonQuote(raw), WireVersion))
+}
+
+// jsonQuote is JSON.stringify on a string, so the report reads as TypeScript's
+// does: no HTML escaping, which encoding/json does by default.
+func jsonQuote(s string) string {
+	var b bytes.Buffer
+	enc := json.NewEncoder(&b)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(s)
+	return strings.TrimSuffix(b.String(), "\n")
+}
 
 // DecodeError is a frame that does not match the schema. It carries the JSON
 // path, so a failure names the field rather than the frame.
@@ -229,6 +299,20 @@ func checkConversationKind(v ConversationKind, p string) error {
 	return nil
 }
 
+// IsUnknown reports whether v is the sentinel a client-side decode writes for
+// a value this schema version does not define (CANT-177). Valid is false for it.
+func (v ConversationKind) IsUnknown() bool { return v == "unknown" }
+
+// clientConversationKind is checkConversationKind on the client side: a value this schema
+// version does not define is reported once and becomes the sentinel.
+func clientConversationKind(v ConversationKind) ConversationKind {
+	if v.Valid() {
+		return v
+	}
+	reportUnknown("ConversationKind", string(v))
+	return "unknown"
+}
+
 // The server-authoritative half of the message lifecycle from IDEA-23, and the ONLY
 // states that ever cross the wire.
 //
@@ -321,6 +405,20 @@ func checkDeliveryState(v DeliveryState, p string) error {
 	return nil
 }
 
+// IsUnknown reports whether v is the sentinel a client-side decode writes for
+// a value this schema version does not define (CANT-177). Valid is false for it.
+func (v DeliveryState) IsUnknown() bool { return v == "unknown" }
+
+// clientDeliveryState is checkDeliveryState on the client side: a value this schema
+// version does not define is reported once and becomes the sentinel.
+func clientDeliveryState(v DeliveryState) DeliveryState {
+	if v.Valid() {
+		return v
+	}
+	reportUnknown("DeliveryState", string(v))
+	return "unknown"
+}
+
 // Lifecycle of the async Whisper job (R3/IDEA-26) that writes the finished transcript
 // back onto the ATTACHMENT it belongs to.
 //
@@ -357,6 +455,20 @@ func checkTranscriptState(v TranscriptState, p string) error {
 		return badf(p, "expected one of %s, got %q", "pending|ready|failed", string(v))
 	}
 	return nil
+}
+
+// IsUnknown reports whether v is the sentinel a client-side decode writes for
+// a value this schema version does not define (CANT-177). Valid is false for it.
+func (v TranscriptState) IsUnknown() bool { return v == "unknown" }
+
+// clientTranscriptState is checkTranscriptState on the client side: a value this schema
+// version does not define is reported once and becomes the sentinel.
+func clientTranscriptState(v TranscriptState) TranscriptState {
+	if v.Valid() {
+		return v
+	}
+	reportUnknown("TranscriptState", string(v))
+	return "unknown"
 }
 
 // A duration or offset in whole milliseconds.
@@ -410,6 +522,20 @@ func checkReplyRefKind(v ReplyRefKind, p string) error {
 		return badf(p, "expected one of %s, got %q", "text|voice|image|link", string(v))
 	}
 	return nil
+}
+
+// IsUnknown reports whether v is the sentinel a client-side decode writes for
+// a value this schema version does not define (CANT-177). Valid is false for it.
+func (v ReplyRefKind) IsUnknown() bool { return v == "unknown" }
+
+// clientReplyRefKind is checkReplyRefKind on the client side: a value this schema
+// version does not define is reported once and becomes the sentinel.
+func clientReplyRefKind(v ReplyRefKind) ReplyRefKind {
+	if v.Valid() {
+		return v
+	}
+	reportUnknown("ReplyRefKind", string(v))
+	return "unknown"
 }
 
 type TypingState string
@@ -466,6 +592,20 @@ func checkErrorCode(v ErrorCode, p string) error {
 	return nil
 }
 
+// IsUnknown reports whether v is the sentinel a client-side decode writes for
+// a value this schema version does not define (CANT-177). Valid is false for it.
+func (v ErrorCode) IsUnknown() bool { return v == "unknown" }
+
+// clientErrorCode is checkErrorCode on the client side: a value this schema
+// version does not define is reported once and becomes the sentinel.
+func clientErrorCode(v ErrorCode) ErrorCode {
+	if v.Valid() {
+		return v
+	}
+	reportUnknown("ErrorCode", string(v))
+	return "unknown"
+}
+
 // Why a session must catch up over `/sync`. `cursor_too_old`: this session missed
 // deliveries — an instance's NOTIFY listener reconnected and Postgres queues nothing
 // for a disconnected listener, so the instance cannot say how many.
@@ -501,6 +641,20 @@ func checkResyncReason(v ResyncReason, p string) error {
 	return nil
 }
 
+// IsUnknown reports whether v is the sentinel a client-side decode writes for
+// a value this schema version does not define (CANT-177). Valid is false for it.
+func (v ResyncReason) IsUnknown() bool { return v == "unknown" }
+
+// clientResyncReason is checkResyncReason on the client side: a value this schema
+// version does not define is reported once and becomes the sentinel.
+func clientResyncReason(v ResyncReason) ResyncReason {
+	if v.Valid() {
+		return v
+	}
+	reportUnknown("ResyncReason", string(v))
+	return "unknown"
+}
+
 // Tagged union on `kind`. Decoders MUST ignore an attachment whose `kind` they do not
 // know rather than failing the whole message — a client that hard-errors on an unknown
 // attachment type cannot be shipped ahead of a server that adds one.
@@ -518,18 +672,18 @@ type Attachment interface {
 type AttachmentList []Attachment
 
 func (l *AttachmentList) UnmarshalJSON(b []byte) error {
-	return l.decode(b, "AttachmentList")
+	return l.decode(b, "AttachmentList", sideServer)
 }
 
-// decode is UnmarshalJSON with the caller's JSON path.
-func (l *AttachmentList) decode(b []byte, p string) error {
+// decode is UnmarshalJSON with the caller's JSON path and decode side.
+func (l *AttachmentList) decode(b []byte, p string, side decodeSide) error {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return decodeErr(p, err)
 	}
 	out := make(AttachmentList, 0, len(raw))
 	for i, r := range raw {
-		v, err := decodeAttachment(r, fmt.Sprintf("%s[%d]", p, i))
+		v, err := decodeAttachment(r, fmt.Sprintf("%s[%d]", p, i), side)
 		if err != nil {
 			return err // already carries its element path
 		}
@@ -558,18 +712,18 @@ type ClientFrame interface {
 type ClientFrameList []ClientFrame
 
 func (l *ClientFrameList) UnmarshalJSON(b []byte) error {
-	return l.decode(b, "ClientFrameList")
+	return l.decode(b, "ClientFrameList", sideServer)
 }
 
-// decode is UnmarshalJSON with the caller's JSON path.
-func (l *ClientFrameList) decode(b []byte, p string) error {
+// decode is UnmarshalJSON with the caller's JSON path and decode side.
+func (l *ClientFrameList) decode(b []byte, p string, side decodeSide) error {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return decodeErr(p, err)
 	}
 	out := make(ClientFrameList, 0, len(raw))
 	for i, r := range raw {
-		v, err := decodeClientFrame(r, fmt.Sprintf("%s[%d]", p, i))
+		v, err := decodeClientFrame(r, fmt.Sprintf("%s[%d]", p, i), side)
 		if err != nil {
 			return err // already carries its element path
 		}
@@ -608,18 +762,18 @@ type ServerFrame interface {
 type ServerFrameList []ServerFrame
 
 func (l *ServerFrameList) UnmarshalJSON(b []byte) error {
-	return l.decode(b, "ServerFrameList")
+	return l.decode(b, "ServerFrameList", sideServer)
 }
 
-// decode is UnmarshalJSON with the caller's JSON path.
-func (l *ServerFrameList) decode(b []byte, p string) error {
+// decode is UnmarshalJSON with the caller's JSON path and decode side.
+func (l *ServerFrameList) decode(b []byte, p string, side decodeSide) error {
 	var raw []json.RawMessage
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return decodeErr(p, err)
 	}
 	out := make(ServerFrameList, 0, len(raw))
 	for i, r := range raw {
-		v, err := decodeServerFrame(r, fmt.Sprintf("%s[%d]", p, i))
+		v, err := decodeServerFrame(r, fmt.Sprintf("%s[%d]", p, i), side)
 		if err != nil {
 			return err // already carries its element path
 		}
@@ -669,12 +823,12 @@ type User struct {
 // UnmarshalJSON decodes and VALIDATES a User: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *User) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "User")
+	return v.decode(b, "User", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *User) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *User) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ID          *Uuid   `json:"id"`
 		Name        *string `json:"name"`
@@ -727,12 +881,12 @@ type TranscriptSegment struct {
 // UnmarshalJSON decodes and VALIDATES a TranscriptSegment: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *TranscriptSegment) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "TranscriptSegment")
+	return v.decode(b, "TranscriptSegment", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *TranscriptSegment) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *TranscriptSegment) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		AtMs *DurationMs `json:"at_ms"`
 		Text *string     `json:"text"`
@@ -779,12 +933,12 @@ type Transcript struct {
 // UnmarshalJSON decodes and VALIDATES a Transcript: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *Transcript) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "Transcript")
+	return v.decode(b, "Transcript", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *Transcript) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *Transcript) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		State     *TranscriptState   `json:"state"`
 		Text      *string            `json:"text"`
@@ -811,7 +965,7 @@ func (v *Transcript) decode(b []byte, p string) error {
 	if s.Segments != nil {
 		out.Segments = make([]TranscriptSegment, len(*s.Segments))
 		for i, raw := range *s.Segments {
-			if err := out.Segments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".segments", i)); err != nil {
+			if err := out.Segments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".segments", i), side); err != nil {
 				return err
 			}
 		}
@@ -825,7 +979,9 @@ func (v *Transcript) decode(b []byte, p string) error {
 	if s.ETASec != nil {
 		out.ETASec = s.ETASec
 	}
-	if err := checkTranscriptState(out.State, p+".state"); err != nil {
+	if side == sideClient {
+		out.State = clientTranscriptState(out.State)
+	} else if err := checkTranscriptState(out.State, p+".state"); err != nil {
 		return err
 	}
 	if out.WordCount != nil {
@@ -862,12 +1018,12 @@ type VoiceAttachment struct {
 // UnmarshalJSON decodes and VALIDATES a VoiceAttachment: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *VoiceAttachment) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "VoiceAttachment")
+	return v.decode(b, "VoiceAttachment", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *VoiceAttachment) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *VoiceAttachment) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		URL        *string          `json:"url"`
 		DurationMs *DurationMs      `json:"duration_ms"`
@@ -893,7 +1049,7 @@ func (v *VoiceAttachment) decode(b []byte, p string) error {
 	if s.Transcript == nil {
 		return badf(p+".transcript", "required field is missing")
 	}
-	if err := out.Transcript.decode(*s.Transcript, p+".transcript"); err != nil {
+	if err := out.Transcript.decode(*s.Transcript, p+".transcript", side); err != nil {
 		return err
 	}
 	if err := checkDurationMs(out.DurationMs, p+".duration_ms"); err != nil {
@@ -943,12 +1099,12 @@ type ImageAttachment struct {
 // UnmarshalJSON decodes and VALIDATES a ImageAttachment: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ImageAttachment) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ImageAttachment")
+	return v.decode(b, "ImageAttachment", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ImageAttachment) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ImageAttachment) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		URL         *string `json:"url"`
 		Filename    *string `json:"filename"`
@@ -1027,12 +1183,12 @@ type ReplyRef struct {
 // UnmarshalJSON decodes and VALIDATES a ReplyRef: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ReplyRef) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ReplyRef")
+	return v.decode(b, "ReplyRef", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ReplyRef) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ReplyRef) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		MessageID  *Uuid         `json:"message_id"`
 		AuthorID   *Uuid         `json:"author_id"`
@@ -1073,7 +1229,9 @@ func (v *ReplyRef) decode(b []byte, p string) error {
 	if err := checkUuid(out.AuthorID, p+".author_id"); err != nil {
 		return err
 	}
-	if err := checkReplyRefKind(out.Kind, p+".kind"); err != nil {
+	if side == sideClient {
+		out.Kind = clientReplyRefKind(out.Kind)
+	} else if err := checkReplyRefKind(out.Kind, p+".kind"); err != nil {
 		return err
 	}
 	if out.DurationMs != nil {
@@ -1160,12 +1318,12 @@ type Message struct {
 // UnmarshalJSON decodes and VALIDATES a Message: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *Message) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "Message")
+	return v.decode(b, "Message", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *Message) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *Message) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ID             *Uuid            `json:"id"`
 		Seq            *Seq             `json:"seq"`
@@ -1214,13 +1372,13 @@ func (v *Message) decode(b []byte, p string) error {
 		out.Text = s.Text
 	}
 	if s.Attachments != nil {
-		if err := out.Attachments.decode(*s.Attachments, p+".attachments"); err != nil {
+		if err := out.Attachments.decode(*s.Attachments, p+".attachments", side); err != nil {
 			return err
 		}
 	}
 	if s.ReplyTo != nil {
 		out.ReplyTo = new(ReplyRef)
-		if err := out.ReplyTo.decode(*s.ReplyTo, p+".reply_to"); err != nil {
+		if err := out.ReplyTo.decode(*s.ReplyTo, p+".reply_to", side); err != nil {
 			return err
 		}
 	}
@@ -1258,7 +1416,9 @@ func (v *Message) decode(b []byte, p string) error {
 	if err := checkTimestamp(out.At, p+".at"); err != nil {
 		return err
 	}
-	if err := checkDeliveryState(out.State, p+".state"); err != nil {
+	if side == sideClient {
+		out.State = clientDeliveryState(out.State)
+	} else if err := checkDeliveryState(out.State, p+".state"); err != nil {
 		return err
 	}
 	if out.ReadBy != nil {
@@ -1360,12 +1520,12 @@ type Conversation struct {
 // UnmarshalJSON decodes and VALIDATES a Conversation: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *Conversation) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "Conversation")
+	return v.decode(b, "Conversation", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *Conversation) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *Conversation) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ID             *Uuid             `json:"id"`
 		Kind           *ConversationKind `json:"kind"`
@@ -1416,7 +1576,9 @@ func (v *Conversation) decode(b []byte, p string) error {
 	if err := checkUuid(out.ID, p+".id"); err != nil {
 		return err
 	}
-	if err := checkConversationKind(out.Kind, p+".kind"); err != nil {
+	if side == sideClient {
+		out.Kind = clientConversationKind(out.Kind)
+	} else if err := checkConversationKind(out.Kind, p+".kind"); err != nil {
 		return err
 	}
 	if out.OtherMemberID != nil {
@@ -1476,12 +1638,12 @@ type ClientHello struct {
 // UnmarshalJSON decodes and VALIDATES a ClientHello: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ClientHello) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ClientHello")
+	return v.decode(b, "ClientHello", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ClientHello) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ClientHello) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		WireVersion      *int64  `json:"wire_version"`
 		DeviceID         *Uuid   `json:"device_id"`
@@ -1574,12 +1736,12 @@ type ServerReady struct {
 // UnmarshalJSON decodes and VALIDATES a ServerReady: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerReady) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerReady")
+	return v.decode(b, "ServerReady", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerReady) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerReady) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		SessionID            *Uuid      `json:"session_id"`
 		WireVersion          *int64     `json:"wire_version"`
@@ -1678,12 +1840,12 @@ type Ping struct {
 // UnmarshalJSON decodes and VALIDATES a Ping: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *Ping) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "Ping")
+	return v.decode(b, "Ping", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *Ping) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *Ping) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ID *string    `json:"id"`
 		At *Timestamp `json:"at"`
@@ -1737,12 +1899,12 @@ type Pong struct {
 // UnmarshalJSON decodes and VALIDATES a Pong: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *Pong) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "Pong")
+	return v.decode(b, "Pong", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *Pong) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *Pong) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ID *string    `json:"id"`
 		At *Timestamp `json:"at"`
@@ -1798,12 +1960,12 @@ type OutboundAttachment struct {
 // UnmarshalJSON decodes and VALIDATES a OutboundAttachment: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *OutboundAttachment) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "OutboundAttachment")
+	return v.decode(b, "OutboundAttachment", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *OutboundAttachment) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *OutboundAttachment) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		Kind     *string `json:"kind"`
 		UploadID *Uuid   `json:"upload_id"`
@@ -1850,12 +2012,12 @@ type ClientSend struct {
 // UnmarshalJSON decodes and VALIDATES a ClientSend: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ClientSend) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ClientSend")
+	return v.decode(b, "ClientSend", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ClientSend) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ClientSend) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ClientID         *Uuid              `json:"client_id"`
 		ConversationID   *Uuid              `json:"conversation_id"`
@@ -1881,7 +2043,7 @@ func (v *ClientSend) decode(b []byte, p string) error {
 	if s.Attachments != nil {
 		out.Attachments = make([]OutboundAttachment, len(*s.Attachments))
 		for i, raw := range *s.Attachments {
-			if err := out.Attachments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".attachments", i)); err != nil {
+			if err := out.Attachments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".attachments", i), side); err != nil {
 				return err
 			}
 		}
@@ -1941,12 +2103,12 @@ type ServerAck struct {
 // UnmarshalJSON decodes and VALIDATES a ServerAck: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerAck) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerAck")
+	return v.decode(b, "ServerAck", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerAck) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerAck) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ClientID       *Uuid      `json:"client_id"`
 		MessageID      *Uuid      `json:"message_id"`
@@ -2039,12 +2201,12 @@ type ServerConversationFrame struct {
 // UnmarshalJSON decodes and VALIDATES a ServerConversationFrame: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerConversationFrame) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerConversationFrame")
+	return v.decode(b, "ServerConversationFrame", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerConversationFrame) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerConversationFrame) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		Conversation *json.RawMessage `json:"conversation"`
 	}
@@ -2055,7 +2217,7 @@ func (v *ServerConversationFrame) decode(b []byte, p string) error {
 	if s.Conversation == nil {
 		return badf(p+".conversation", "required field is missing")
 	}
-	if err := out.Conversation.decode(*s.Conversation, p+".conversation"); err != nil {
+	if err := out.Conversation.decode(*s.Conversation, p+".conversation", side); err != nil {
 		return err
 	}
 	*v = out
@@ -2093,12 +2255,12 @@ type ServerUserFrame struct {
 // UnmarshalJSON decodes and VALIDATES a ServerUserFrame: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerUserFrame) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerUserFrame")
+	return v.decode(b, "ServerUserFrame", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerUserFrame) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerUserFrame) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		User *json.RawMessage `json:"user"`
 	}
@@ -2109,7 +2271,7 @@ func (v *ServerUserFrame) decode(b []byte, p string) error {
 	if s.User == nil {
 		return badf(p+".user", "required field is missing")
 	}
-	if err := out.User.decode(*s.User, p+".user"); err != nil {
+	if err := out.User.decode(*s.User, p+".user", side); err != nil {
 		return err
 	}
 	*v = out
@@ -2149,12 +2311,12 @@ type ServerMessageFrame struct {
 // UnmarshalJSON decodes and VALIDATES a ServerMessageFrame: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerMessageFrame) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerMessageFrame")
+	return v.decode(b, "ServerMessageFrame", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerMessageFrame) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerMessageFrame) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		Message *json.RawMessage `json:"message"`
 	}
@@ -2165,7 +2327,7 @@ func (v *ServerMessageFrame) decode(b []byte, p string) error {
 	if s.Message == nil {
 		return badf(p+".message", "required field is missing")
 	}
-	if err := out.Message.decode(*s.Message, p+".message"); err != nil {
+	if err := out.Message.decode(*s.Message, p+".message", side); err != nil {
 		return err
 	}
 	*v = out
@@ -2199,12 +2361,12 @@ type ServerReceipt struct {
 // UnmarshalJSON decodes and VALIDATES a ServerReceipt: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerReceipt) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerReceipt")
+	return v.decode(b, "ServerReceipt", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerReceipt) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerReceipt) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ConversationID *Uuid `json:"conversation_id"`
 		UserID         *Uuid `json:"user_id"`
@@ -2262,12 +2424,12 @@ type ClientRead struct {
 // UnmarshalJSON decodes and VALIDATES a ClientRead: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ClientRead) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ClientRead")
+	return v.decode(b, "ClientRead", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ClientRead) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ClientRead) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ConversationID *Uuid `json:"conversation_id"`
 		UpToSeq        *Seq  `json:"up_to_seq"`
@@ -2317,12 +2479,12 @@ type ClientTyping struct {
 // UnmarshalJSON decodes and VALIDATES a ClientTyping: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ClientTyping) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ClientTyping")
+	return v.decode(b, "ClientTyping", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ClientTyping) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ClientTyping) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ConversationID *Uuid        `json:"conversation_id"`
 		State          *TypingState `json:"state"`
@@ -2378,12 +2540,12 @@ type ServerTyping struct {
 // UnmarshalJSON decodes and VALIDATES a ServerTyping: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerTyping) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerTyping")
+	return v.decode(b, "ServerTyping", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerTyping) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerTyping) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ConversationID *Uuid   `json:"conversation_id"`
 		UserIds        *[]Uuid `json:"user_ids"`
@@ -2447,12 +2609,12 @@ type ServerError struct {
 // UnmarshalJSON decodes and VALIDATES a ServerError: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerError) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerError")
+	return v.decode(b, "ServerError", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerError) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerError) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		Code          *ErrorCode `json:"code"`
 		Message       *string    `json:"message"`
@@ -2482,7 +2644,9 @@ func (v *ServerError) decode(b []byte, p string) error {
 	if s.RetryAfterSec != nil {
 		out.RetryAfterSec = s.RetryAfterSec
 	}
-	if err := checkErrorCode(out.Code, p+".code"); err != nil {
+	if side == sideClient {
+		out.Code = clientErrorCode(out.Code)
+	} else if err := checkErrorCode(out.Code, p+".code"); err != nil {
 		return err
 	}
 	if out.ClientID != nil {
@@ -2532,12 +2696,12 @@ type ServerResyncRequired struct {
 // UnmarshalJSON decodes and VALIDATES a ServerResyncRequired: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *ServerResyncRequired) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "ServerResyncRequired")
+	return v.decode(b, "ServerResyncRequired", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *ServerResyncRequired) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *ServerResyncRequired) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		Reason *ResyncReason `json:"reason"`
 		LogSeq *LogSeq       `json:"log_seq"`
@@ -2554,7 +2718,9 @@ func (v *ServerResyncRequired) decode(b []byte, p string) error {
 		return badf(p+".log_seq", "required field is missing")
 	}
 	out.LogSeq = *s.LogSeq
-	if err := checkResyncReason(out.Reason, p+".reason"); err != nil {
+	if side == sideClient {
+		out.Reason = clientResyncReason(out.Reason)
+	} else if err := checkResyncReason(out.Reason, p+".reason"); err != nil {
 		return err
 	}
 	if err := checkLogSeq(out.LogSeq, p+".log_seq"); err != nil {
@@ -2637,12 +2803,12 @@ type SyncResponse struct {
 // UnmarshalJSON decodes and VALIDATES a SyncResponse: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *SyncResponse) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "SyncResponse")
+	return v.decode(b, "SyncResponse", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *SyncResponse) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *SyncResponse) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		LogSeq        *LogSeq            `json:"log_seq"`
 		Messages      *[]json.RawMessage `json:"messages"`
@@ -2664,7 +2830,7 @@ func (v *SyncResponse) decode(b []byte, p string) error {
 	}
 	out.Messages = make([]Message, len(*s.Messages))
 	for i, raw := range *s.Messages {
-		if err := out.Messages[i].decode(raw, fmt.Sprintf("%s[%d]", p+".messages", i)); err != nil {
+		if err := out.Messages[i].decode(raw, fmt.Sprintf("%s[%d]", p+".messages", i), side); err != nil {
 			return err
 		}
 	}
@@ -2673,7 +2839,7 @@ func (v *SyncResponse) decode(b []byte, p string) error {
 	}
 	out.Conversations = make([]Conversation, len(*s.Conversations))
 	for i, raw := range *s.Conversations {
-		if err := out.Conversations[i].decode(raw, fmt.Sprintf("%s[%d]", p+".conversations", i)); err != nil {
+		if err := out.Conversations[i].decode(raw, fmt.Sprintf("%s[%d]", p+".conversations", i), side); err != nil {
 			return err
 		}
 	}
@@ -2682,7 +2848,7 @@ func (v *SyncResponse) decode(b []byte, p string) error {
 	}
 	out.Users = make([]User, len(*s.Users))
 	for i, raw := range *s.Users {
-		if err := out.Users[i].decode(raw, fmt.Sprintf("%s[%d]", p+".users", i)); err != nil {
+		if err := out.Users[i].decode(raw, fmt.Sprintf("%s[%d]", p+".users", i), side); err != nil {
 			return err
 		}
 	}
@@ -2736,12 +2902,12 @@ type EnrollRequest struct {
 // UnmarshalJSON decodes and VALIDATES a EnrollRequest: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *EnrollRequest) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "EnrollRequest")
+	return v.decode(b, "EnrollRequest", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *EnrollRequest) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *EnrollRequest) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		EnrollmentToken *Token  `json:"enrollment_token"`
 		DeviceName      *string `json:"device_name"`
@@ -2805,12 +2971,12 @@ type EnrollResponse struct {
 // UnmarshalJSON decodes and VALIDATES a EnrollResponse: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *EnrollResponse) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "EnrollResponse")
+	return v.decode(b, "EnrollResponse", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *EnrollResponse) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *EnrollResponse) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		UserID           *Uuid      `json:"user_id"`
 		DeviceID         *Uuid      `json:"device_id"`
@@ -2924,12 +3090,12 @@ type RefreshRequest struct {
 // UnmarshalJSON decodes and VALIDATES a RefreshRequest: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *RefreshRequest) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "RefreshRequest")
+	return v.decode(b, "RefreshRequest", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *RefreshRequest) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *RefreshRequest) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		RefreshToken         *Token `json:"refresh_token"`
 		ProposedRefreshToken *Token `json:"proposed_refresh_token"`
@@ -2990,12 +3156,12 @@ type RefreshResponse struct {
 // UnmarshalJSON decodes and VALIDATES a RefreshResponse: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *RefreshResponse) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "RefreshResponse")
+	return v.decode(b, "RefreshResponse", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *RefreshResponse) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *RefreshResponse) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		AccessToken      *Token     `json:"access_token"`
 		AccessExpiresAt  *Timestamp `json:"access_expires_at"`
@@ -3077,12 +3243,12 @@ type Device struct {
 // UnmarshalJSON decodes and VALIDATES a Device: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *Device) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "Device")
+	return v.decode(b, "Device", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *Device) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *Device) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ID        *Uuid      `json:"id"`
 		Name      *string    `json:"name"`
@@ -3138,12 +3304,12 @@ type DeviceListResponse struct {
 // UnmarshalJSON decodes and VALIDATES a DeviceListResponse: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *DeviceListResponse) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "DeviceListResponse")
+	return v.decode(b, "DeviceListResponse", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *DeviceListResponse) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *DeviceListResponse) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		Devices *[]json.RawMessage `json:"devices"`
 	}
@@ -3156,7 +3322,7 @@ func (v *DeviceListResponse) decode(b []byte, p string) error {
 	}
 	out.Devices = make([]Device, len(*s.Devices))
 	for i, raw := range *s.Devices {
-		if err := out.Devices[i].decode(raw, fmt.Sprintf("%s[%d]", p+".devices", i)); err != nil {
+		if err := out.Devices[i].decode(raw, fmt.Sprintf("%s[%d]", p+".devices", i), side); err != nil {
 			return err
 		}
 	}
@@ -3192,12 +3358,12 @@ type MessageSendRequest struct {
 // UnmarshalJSON decodes and VALIDATES a MessageSendRequest: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *MessageSendRequest) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "MessageSendRequest")
+	return v.decode(b, "MessageSendRequest", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *MessageSendRequest) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *MessageSendRequest) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		ClientID         *Uuid              `json:"client_id"`
 		Text             *string            `json:"text"`
@@ -3218,7 +3384,7 @@ func (v *MessageSendRequest) decode(b []byte, p string) error {
 	if s.Attachments != nil {
 		out.Attachments = make([]OutboundAttachment, len(*s.Attachments))
 		for i, raw := range *s.Attachments {
-			if err := out.Attachments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".attachments", i)); err != nil {
+			if err := out.Attachments[i].decode(raw, fmt.Sprintf("%s[%d]", p+".attachments", i), side); err != nil {
 				return err
 			}
 		}
@@ -3253,12 +3419,12 @@ type DirectConversationRequest struct {
 // UnmarshalJSON decodes and VALIDATES a DirectConversationRequest: required fields must be
 // present, and every constrained value is checked against the schema.
 func (v *DirectConversationRequest) UnmarshalJSON(b []byte) error {
-	return v.decode(b, "DirectConversationRequest")
+	return v.decode(b, "DirectConversationRequest", sideServer)
 }
 
 // decode carries the JSON path, so a nested failure names the field it came
-// from rather than the outermost type.
-func (v *DirectConversationRequest) decode(b []byte, p string) error {
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *DirectConversationRequest) decode(b []byte, p string, side decodeSide) error {
 	var s struct {
 		Handle *string `json:"handle"`
 	}
@@ -3280,12 +3446,13 @@ func (v *DirectConversationRequest) decode(b []byte, p string) error {
 // DecodeAttachment dispatches on "kind". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeAttachment(b []byte) (Attachment, error) {
-	return decodeAttachment(b, "Attachment")
+	return decodeAttachment(b, "Attachment", sideServer)
 }
 
 // decodeAttachment is DecodeAttachment with the caller's JSON path, so a failure
-// names the field the frame arrived in rather than the union type.
-func decodeAttachment(b []byte, p string) (Attachment, error) {
+// names the field the frame arrived in rather than the union type, and with
+// the decode side (CANT-177).
+func decodeAttachment(b []byte, p string, side decodeSide) (Attachment, error) {
 	var probe struct {
 		T string `json:"kind"`
 	}
@@ -3295,13 +3462,13 @@ func decodeAttachment(b []byte, p string) (Attachment, error) {
 	switch probe.T {
 	case "voice":
 		var v VoiceAttachment
-		if err := v.decode(b, p+"[voice]"); err != nil {
+		if err := v.decode(b, p+"[voice]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "image":
 		var v ImageAttachment
-		if err := v.decode(b, p+"[image]"); err != nil {
+		if err := v.decode(b, p+"[image]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -3312,12 +3479,13 @@ func decodeAttachment(b []byte, p string) (Attachment, error) {
 // DecodeClientFrame dispatches on "type". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeClientFrame(b []byte) (ClientFrame, error) {
-	return decodeClientFrame(b, "ClientFrame")
+	return decodeClientFrame(b, "ClientFrame", sideServer)
 }
 
 // decodeClientFrame is DecodeClientFrame with the caller's JSON path, so a failure
-// names the field the frame arrived in rather than the union type.
-func decodeClientFrame(b []byte, p string) (ClientFrame, error) {
+// names the field the frame arrived in rather than the union type, and with
+// the decode side (CANT-177).
+func decodeClientFrame(b []byte, p string, side decodeSide) (ClientFrame, error) {
 	var probe struct {
 		T string `json:"type"`
 	}
@@ -3327,37 +3495,37 @@ func decodeClientFrame(b []byte, p string) (ClientFrame, error) {
 	switch probe.T {
 	case "hello":
 		var v ClientHello
-		if err := v.decode(b, p+"[hello]"); err != nil {
+		if err := v.decode(b, p+"[hello]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ping":
 		var v Ping
-		if err := v.decode(b, p+"[ping]"); err != nil {
+		if err := v.decode(b, p+"[ping]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "pong":
 		var v Pong
-		if err := v.decode(b, p+"[pong]"); err != nil {
+		if err := v.decode(b, p+"[pong]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "send":
 		var v ClientSend
-		if err := v.decode(b, p+"[send]"); err != nil {
+		if err := v.decode(b, p+"[send]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "read":
 		var v ClientRead
-		if err := v.decode(b, p+"[read]"); err != nil {
+		if err := v.decode(b, p+"[read]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "typing":
 		var v ClientTyping
-		if err := v.decode(b, p+"[typing]"); err != nil {
+		if err := v.decode(b, p+"[typing]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -3368,12 +3536,22 @@ func decodeClientFrame(b []byte, p string) (ClientFrame, error) {
 // DecodeServerFrame dispatches on "type". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeServerFrame(b []byte) (ServerFrame, error) {
-	return decodeServerFrame(b, "ServerFrame")
+	return decodeServerFrame(b, "ServerFrame", sideServer)
+}
+
+// DecodeServerFrameAsClient is DecodeServerFrame for Go code acting as a CLIENT
+// (CANT-177): a client-open enum value this schema version does not define
+// decodes to the sentinel "unknown" and is reported once, exactly as in
+// TypeScript and Dart. Every other constraint is enforced as on the server.
+// Server code must not call it; a guard in internal/wire holds that.
+func DecodeServerFrameAsClient(b []byte) (ServerFrame, error) {
+	return decodeServerFrame(b, "ServerFrame", sideClient)
 }
 
 // decodeServerFrame is DecodeServerFrame with the caller's JSON path, so a failure
-// names the field the frame arrived in rather than the union type.
-func decodeServerFrame(b []byte, p string) (ServerFrame, error) {
+// names the field the frame arrived in rather than the union type, and with
+// the decode side (CANT-177).
+func decodeServerFrame(b []byte, p string, side decodeSide) (ServerFrame, error) {
 	var probe struct {
 		T string `json:"type"`
 	}
@@ -3383,67 +3561,67 @@ func decodeServerFrame(b []byte, p string) (ServerFrame, error) {
 	switch probe.T {
 	case "ready":
 		var v ServerReady
-		if err := v.decode(b, p+"[ready]"); err != nil {
+		if err := v.decode(b, p+"[ready]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ping":
 		var v Ping
-		if err := v.decode(b, p+"[ping]"); err != nil {
+		if err := v.decode(b, p+"[ping]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "pong":
 		var v Pong
-		if err := v.decode(b, p+"[pong]"); err != nil {
+		if err := v.decode(b, p+"[pong]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ack":
 		var v ServerAck
-		if err := v.decode(b, p+"[ack]"); err != nil {
+		if err := v.decode(b, p+"[ack]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "conversation":
 		var v ServerConversationFrame
-		if err := v.decode(b, p+"[conversation]"); err != nil {
+		if err := v.decode(b, p+"[conversation]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "user":
 		var v ServerUserFrame
-		if err := v.decode(b, p+"[user]"); err != nil {
+		if err := v.decode(b, p+"[user]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "message":
 		var v ServerMessageFrame
-		if err := v.decode(b, p+"[message]"); err != nil {
+		if err := v.decode(b, p+"[message]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "receipt":
 		var v ServerReceipt
-		if err := v.decode(b, p+"[receipt]"); err != nil {
+		if err := v.decode(b, p+"[receipt]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "typing":
 		var v ServerTyping
-		if err := v.decode(b, p+"[typing]"); err != nil {
+		if err := v.decode(b, p+"[typing]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "error":
 		var v ServerError
-		if err := v.decode(b, p+"[error]"); err != nil {
+		if err := v.decode(b, p+"[error]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "resync_required":
 		var v ServerResyncRequired
-		if err := v.decode(b, p+"[resync_required]"); err != nil {
+		if err := v.decode(b, p+"[resync_required]", side); err != nil {
 			return nil, err
 		}
 		return v, nil
@@ -3454,39 +3632,52 @@ func decodeServerFrame(b []byte, p string) (ServerFrame, error) {
 // DecodeNamed decodes a named wire type. Unions return a nil value with a nil
 // error for an unrecognised tag.
 func DecodeNamed(name string, b []byte) (any, error) {
+	return decodeNamed(name, b, sideServer)
+}
+
+// DecodeNamedAsClient is DecodeNamed for Go code acting as a CLIENT (CANT-177):
+// a client-open enum value this schema version does not define decodes to the
+// sentinel "unknown" and is reported once, exactly as in TypeScript and Dart.
+// Every other constraint is enforced as on the server. Server code must not
+// call it; a guard in internal/wire holds that.
+func DecodeNamedAsClient(name string, b []byte) (any, error) {
+	return decodeNamed(name, b, sideClient)
+}
+
+func decodeNamed(name string, b []byte, side decodeSide) (any, error) {
 	switch name {
 	case "User":
 		var v User
-		if err := v.decode(b, "User"); err != nil {
+		if err := v.decode(b, "User", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "TranscriptSegment":
 		var v TranscriptSegment
-		if err := v.decode(b, "TranscriptSegment"); err != nil {
+		if err := v.decode(b, "TranscriptSegment", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "Transcript":
 		var v Transcript
-		if err := v.decode(b, "Transcript"); err != nil {
+		if err := v.decode(b, "Transcript", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "VoiceAttachment":
 		var v VoiceAttachment
-		if err := v.decode(b, "VoiceAttachment"); err != nil {
+		if err := v.decode(b, "VoiceAttachment", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ImageAttachment":
 		var v ImageAttachment
-		if err := v.decode(b, "ImageAttachment"); err != nil {
+		if err := v.decode(b, "ImageAttachment", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "Attachment":
-		v, err := DecodeAttachment(b)
+		v, err := decodeAttachment(b, "Attachment", side)
 		if err != nil {
 			return nil, err
 		}
@@ -3496,120 +3687,120 @@ func DecodeNamed(name string, b []byte) (any, error) {
 		return v, nil
 	case "ReplyRef":
 		var v ReplyRef
-		if err := v.decode(b, "ReplyRef"); err != nil {
+		if err := v.decode(b, "ReplyRef", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "Message":
 		var v Message
-		if err := v.decode(b, "Message"); err != nil {
+		if err := v.decode(b, "Message", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "Conversation":
 		var v Conversation
-		if err := v.decode(b, "Conversation"); err != nil {
+		if err := v.decode(b, "Conversation", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ClientHello":
 		var v ClientHello
-		if err := v.decode(b, "ClientHello"); err != nil {
+		if err := v.decode(b, "ClientHello", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerReady":
 		var v ServerReady
-		if err := v.decode(b, "ServerReady"); err != nil {
+		if err := v.decode(b, "ServerReady", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "Ping":
 		var v Ping
-		if err := v.decode(b, "Ping"); err != nil {
+		if err := v.decode(b, "Ping", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "Pong":
 		var v Pong
-		if err := v.decode(b, "Pong"); err != nil {
+		if err := v.decode(b, "Pong", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "OutboundAttachment":
 		var v OutboundAttachment
-		if err := v.decode(b, "OutboundAttachment"); err != nil {
+		if err := v.decode(b, "OutboundAttachment", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ClientSend":
 		var v ClientSend
-		if err := v.decode(b, "ClientSend"); err != nil {
+		if err := v.decode(b, "ClientSend", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerAck":
 		var v ServerAck
-		if err := v.decode(b, "ServerAck"); err != nil {
+		if err := v.decode(b, "ServerAck", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerConversationFrame":
 		var v ServerConversationFrame
-		if err := v.decode(b, "ServerConversationFrame"); err != nil {
+		if err := v.decode(b, "ServerConversationFrame", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerUserFrame":
 		var v ServerUserFrame
-		if err := v.decode(b, "ServerUserFrame"); err != nil {
+		if err := v.decode(b, "ServerUserFrame", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerMessageFrame":
 		var v ServerMessageFrame
-		if err := v.decode(b, "ServerMessageFrame"); err != nil {
+		if err := v.decode(b, "ServerMessageFrame", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerReceipt":
 		var v ServerReceipt
-		if err := v.decode(b, "ServerReceipt"); err != nil {
+		if err := v.decode(b, "ServerReceipt", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ClientRead":
 		var v ClientRead
-		if err := v.decode(b, "ClientRead"); err != nil {
+		if err := v.decode(b, "ClientRead", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ClientTyping":
 		var v ClientTyping
-		if err := v.decode(b, "ClientTyping"); err != nil {
+		if err := v.decode(b, "ClientTyping", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerTyping":
 		var v ServerTyping
-		if err := v.decode(b, "ServerTyping"); err != nil {
+		if err := v.decode(b, "ServerTyping", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerError":
 		var v ServerError
-		if err := v.decode(b, "ServerError"); err != nil {
+		if err := v.decode(b, "ServerError", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ServerResyncRequired":
 		var v ServerResyncRequired
-		if err := v.decode(b, "ServerResyncRequired"); err != nil {
+		if err := v.decode(b, "ServerResyncRequired", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "ClientFrame":
-		v, err := DecodeClientFrame(b)
+		v, err := decodeClientFrame(b, "ClientFrame", side)
 		if err != nil {
 			return nil, err
 		}
@@ -3618,7 +3809,7 @@ func DecodeNamed(name string, b []byte) (any, error) {
 		}
 		return v, nil
 	case "ServerFrame":
-		v, err := DecodeServerFrame(b)
+		v, err := decodeServerFrame(b, "ServerFrame", side)
 		if err != nil {
 			return nil, err
 		}
@@ -3628,55 +3819,55 @@ func DecodeNamed(name string, b []byte) (any, error) {
 		return v, nil
 	case "SyncResponse":
 		var v SyncResponse
-		if err := v.decode(b, "SyncResponse"); err != nil {
+		if err := v.decode(b, "SyncResponse", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "EnrollRequest":
 		var v EnrollRequest
-		if err := v.decode(b, "EnrollRequest"); err != nil {
+		if err := v.decode(b, "EnrollRequest", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "EnrollResponse":
 		var v EnrollResponse
-		if err := v.decode(b, "EnrollResponse"); err != nil {
+		if err := v.decode(b, "EnrollResponse", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "RefreshRequest":
 		var v RefreshRequest
-		if err := v.decode(b, "RefreshRequest"); err != nil {
+		if err := v.decode(b, "RefreshRequest", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "RefreshResponse":
 		var v RefreshResponse
-		if err := v.decode(b, "RefreshResponse"); err != nil {
+		if err := v.decode(b, "RefreshResponse", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "Device":
 		var v Device
-		if err := v.decode(b, "Device"); err != nil {
+		if err := v.decode(b, "Device", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "DeviceListResponse":
 		var v DeviceListResponse
-		if err := v.decode(b, "DeviceListResponse"); err != nil {
+		if err := v.decode(b, "DeviceListResponse", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "MessageSendRequest":
 		var v MessageSendRequest
-		if err := v.decode(b, "MessageSendRequest"); err != nil {
+		if err := v.decode(b, "MessageSendRequest", side); err != nil {
 			return nil, err
 		}
 		return v, nil
 	case "DirectConversationRequest":
 		var v DirectConversationRequest
-		if err := v.decode(b, "DirectConversationRequest"); err != nil {
+		if err := v.decode(b, "DirectConversationRequest", side); err != nil {
 			return nil, err
 		}
 		return v, nil
