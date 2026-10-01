@@ -70,8 +70,8 @@ func Enroll(ctx context.Context, cfg Config, enrollmentToken, deviceName string)
 		}
 		return Credential{}, fmt.Errorf("client: enroll: %s: %s", resp.Status, raw)
 	}
-	var out wire.EnrollResponse
-	if err := json.Unmarshal(raw, &out); err != nil {
+	out, err := decodeResponse[wire.EnrollResponse](cfg.Faults, "EnrollResponse", raw)
+	if err != nil {
 		return Credential{}, fmt.Errorf("client: enroll: decode: %w", err)
 	}
 	cred, err := CredentialFromEnroll(out)

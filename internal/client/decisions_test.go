@@ -117,6 +117,9 @@ type decisions struct {
 	advance func(nominal, ceiling time.Duration) time.Duration
 	// faults is what the chain transcripts' client runs with.
 	faults Faults
+	// decode is what a close case's `preceding` goes through: the decoder the
+	// session loop uses (CANT-177), never a hand-built frame.
+	decode func([]byte) (wire.ServerFrame, error)
 }
 
 var reference = decisions{
@@ -135,6 +138,7 @@ var reference = decisions{
 	draw:      unitFromBytes,
 	jitter:    jitteredWait,
 	advance:   advance,
+	decode:    wire.DecodeServerFrameAsClient,
 }
 
 // The file spells answers as the TypeScript that shipped does; this is the one
@@ -162,7 +166,7 @@ func (d decisions) run(c decisionCase) error {
 		if in.Status != nil {
 			status = websocket.StatusCode(*in.Status)
 		}
-		preceding, err := decodePreceding(in.Preceding)
+		preceding, err := decodePreceding(d.decode, in.Preceding)
 		if err != nil {
 			return err
 		}
@@ -504,6 +508,21 @@ func TestTheDecisionVectorsHaveTeeth(t *testing.T) {
 				if v == reconnectAtMaximum && !p.Retryable {
 					return stopProtocolFailure
 				}
+				return v
+			}
+		})},
+		// CANT-177's two halves, each failing the case it added: the session
+		// loop's decoder made strict again, which refuses the frame, and a
+		// classifyClose that stops on a code it does not know.
+		{"preceding decoded by the server's strict decoder", "close", "close_1008_after_an_error_code_a_later_server_adds", with(func(d *decisions) {
+			d.decode = wire.DecodeServerFrame
+		})},
+		{"classifyClose stops on a code it does not know", "close", "close_1008_after_an_error_code_a_later_server_adds", with(func(d *decisions) {
+			d.close = func(s websocket.StatusCode, p *wire.ServerError) closeVerdict {
+				if s == 1008 && p != nil && !p.Code.Valid() {
+					return stopProtocolFailure
+				}
+				v, _ := classifyClose(s, p)
 				return v
 			}
 		})},
@@ -912,14 +931,14 @@ func showInstant(t time.Time) string {
 	return t.UTC().Format(wireTimestampLayout)
 }
 
-// decodePreceding is `preceding` through the GENERATED decoder, never built by
-// hand: a close verdict over a frame the session loop could not produce would
-// pin nothing (CANT-177 is the case this rule keeps out for now).
-func decodePreceding(raw json.RawMessage) (*wire.ServerError, error) {
+// decodePreceding is `preceding` through the GENERATED decoder the session loop
+// uses, never built by hand: a close verdict over a frame the session loop
+// could not produce would pin nothing.
+func decodePreceding(decode func([]byte) (wire.ServerFrame, error), raw json.RawMessage) (*wire.ServerError, error) {
 	if len(raw) == 0 || string(raw) == "null" {
 		return nil, nil
 	}
-	f, err := wire.DecodeServerFrame(raw)
+	f, err := decode(raw)
 	if err != nil {
 		return nil, fmt.Errorf("preceding: the generated decoder refuses it: %w", err)
 	}

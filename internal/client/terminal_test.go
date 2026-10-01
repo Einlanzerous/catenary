@@ -41,7 +41,10 @@ func TestTheCloseTableIsTheRecords(t *testing.T) {
 		{"1008 after error{internal}, retryable", 1008, sessionErr(wire.ErrorCodeInternal, true), reconnectAtMaximum},
 		{"1008 after error{internal}, NOT retryable — the flag is not consulted", 1008, sessionErr(wire.ErrorCodeInternal, false), reconnectAtMaximum},
 		{"1008 after error{rate_limited}", 1008, sessionErr(wire.ErrorCodeRateLimited, true), reconnect},
-		{"1008 after a code a later server adds", 1008, sessionErr("quota_exceeded", false), reconnect},
+		// THROUGH THE DECODER THE SESSION LOOP USES (CANT-177), not built by
+		// hand: a hand-built frame here once pinned a verdict over a frame the
+		// loop could not produce.
+		{"1008 after a code a later server adds", 1008, asClient(t, `{"type":"error","code":"quota_exceeded","message":"x","retryable":false}`), reconnect},
 		{"1001 drain", 1001, nil, reconnect},
 		{"1012 head unreadable", 1012, nil, reconnect},
 		{"4000 heartbeat timeout", 4000, nil, reconnect},
@@ -56,6 +59,20 @@ func TestTheCloseTableIsTheRecords(t *testing.T) {
 			t.Errorf("%s: verdict %d, want %d", tc.name, got, tc.want)
 		}
 	}
+}
+
+// asClient is a session-level `error` frame through the session loop's decoder.
+func asClient(t *testing.T, raw string) *wire.ServerError {
+	t.Helper()
+	f, err := wire.DecodeServerFrameAsClient([]byte(raw))
+	if err != nil {
+		t.Fatalf("the client decoder refuses %s: %v", raw, err)
+	}
+	e, ok := f.(wire.ServerError)
+	if !ok || e.ClientID != nil {
+		t.Fatalf("%s decodes to %#v, want a session-level error frame", raw, f)
+	}
+	return &e
 }
 
 // --- a stub that ends sessions as scripted -------------------------------------
@@ -162,6 +179,10 @@ func terminalOf(err error) Terminal {
 	return Terminal{}
 }
 
+// laterCode is an `error` frame with a code this wire version does not define,
+// and no client_id: the frame CANT-177 is about.
+var laterCode = map[string]any{"type": "error", "code": "quota_exceeded", "message": "x", "retryable": false}
+
 // EVERY ROW OF RECORD §4, end to end: what the client does after a session
 // ends that way. "Stops" is Run returning a TerminalError having dialed once;
 // "reconnects" is a second dial.
@@ -179,6 +200,12 @@ func TestWhatTheClientDoesAfterEachClose(t *testing.T) {
 		{"1008 after error{wire_version_unsupported} stops", ending{[]any{errorFrame(wire.ErrorCodeWireVersionUnsupported, false, nil)}, 1008}, Faults{}, true},
 		{"1008 after error{internal} reconnects", ending{[]any{errorFrame(wire.ErrorCodeInternal, false, nil)}, 1008}, Faults{}, false},
 		{"1008 after error{rate_limited} reconnects", ending{[]any{errorFrame(wire.ErrorCodeRateLimited, true, nil)}, 1008}, Faults{}, false},
+		// CANT-177: A CODE A LATER SERVER ADDS decodes to "unknown", precedes the
+		// close, and is "any other code". The control is every Go client before
+		// that ticket: the frame is refused, the 1008 reads as bare, and the
+		// person is told to update an app that is not out of date.
+		{"1008 after an error code a later server adds reconnects", ending{[]any{laterCode}, 1008}, Faults{}, false},
+		{"control — strict decode: 1008 after an error code a later server adds stops", ending{[]any{laterCode}, 1008}, Faults{StrictDecode: true}, true},
 
 		// PRECEDED BY means the last frame, carrying no client_id.
 		{"an earlier error naming a SEND does not make a bare 1008 transient",
@@ -236,6 +263,11 @@ func TestWhatTheClientDoesAfterEachClose(t *testing.T) {
 			}
 			if got := c.Status().Terminal; got.Kind != NotTerminal {
 				t.Errorf("a client that reconnected reports terminal %+v", got)
+			}
+			select {
+			case err := <-done:
+				t.Errorf("Run returned %v from a client that reconnected", err)
+			default:
 			}
 		})
 	}

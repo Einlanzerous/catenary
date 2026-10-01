@@ -18,12 +18,14 @@
  *
  * The chain transcripts run three times: clean, where every case must pass, and
  * under `faults.noChain` and `faults.proposeAfresh`, where at least one case
- * must FAIL. A runner that cannot fail proves nothing.
+ * must FAIL. A runner that cannot fail proves nothing. So, for CANT-177's close
+ * case, must a `preceding` decoded strictly and a classifyClose that stops on a
+ * code it does not know.
  */
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { decodeRefreshRequest, decodeServerFrame, setOnUnknownWireValue, type ServerError } from '@/wire/generated'
+import { decodeRefreshRequest, decodeServerFrame, ErrorCodeValues, setOnUnknownWireValue, type ServerError } from '@/wire/generated'
 import {
   advance,
   classifyClose,
@@ -105,8 +107,16 @@ function preceding(v: unknown): ServerError | null {
   return f
 }
 
+/** The close kind's two functions, which a teeth check replaces one at a time. */
+interface CloseFns {
+  preceding: typeof preceding
+  classify: typeof classifyClose
+}
+
+const shippedClose: CloseFns = { preceding, classify: classifyClose }
+
 /** One pure case: null when it agrees, else what disagreed. */
-function pure(c: Case): string | null {
+function pure(c: Case, fns: CloseFns = shippedClose): string | null {
   const i = c.in
   const w = c.want
   switch (c.kind) {
@@ -115,7 +125,7 @@ function pure(c: Case): string | null {
       only(w, 'want', ['verdict'])
       return same(
         'verdict',
-        classifyClose(required(i, 'status') as number | null, preceding(required(i, 'preceding'))).verdict,
+        fns.classify(required(i, 'status') as number | null, fns.preceding(required(i, 'preceding'))).verdict,
         required(w, 'verdict'),
       )
     case 'threshold':
@@ -398,8 +408,9 @@ async function run(c: Case, faults: Partial<Faults> = {}): Promise<string | null
 
 // --- the run ------------------------------------------------------------------------
 
-// A tolerated unknown enum value is a warning the generated decoder prints; no
-// vector here should produce one, and one that did must not be lost in the noise.
+// A tolerated unknown enum value is a warning the generated decoder prints. One
+// vector produces one on purpose — close_1008_after_an_error_code_a_later_server_adds
+// (CANT-177) — and any other that did must not be lost in the noise.
 setOnUnknownWireValue((m) => console.log(`warn  ${m}`))
 
 const fail: string[] = []
@@ -422,7 +433,7 @@ async function main(): Promise<number> {
   }
 
   // Every listed kind has cases: a kind nobody wrote a vector for pins nothing.
-  const RUNNER_CHECKS = KINDS.length + 2
+  const RUNNER_CHECKS = KINDS.length + 4
   for (const k of KINDS) {
     const n = cases.filter((c) => c.kind === k).length
     check(`kind ${k} has cases`, n > 0, `${n}`)
@@ -438,6 +449,40 @@ async function main(): Promise<number> {
     let caught = 0
     for (const c of chains) if ((await run(c, faults)) !== null) caught++
     check(`${name} fails at least one chain transcript`, caught > 0, `${caught} of ${chains.length}`)
+  }
+
+  // TEETH for CANT-177's case, the Go runner's two mutants: `preceding` decoded as
+  // the server decodes it, which refuses an error code this wire version does not
+  // define, and a classifyClose that stops on such a code. Each must fail that
+  // case by name.
+  const strictPreceding: typeof preceding = (v) => {
+    const f = preceding(v)
+    if (f !== null && !(ErrorCodeValues as readonly string[]).includes(f.code)) {
+      throw new Error('preceding: the strict decoder refuses an error code this wire version does not define')
+    }
+    return f
+  }
+  const stopsOnUnknown: typeof classifyClose = (code, p) =>
+    code === 1008 && p !== null && !(ErrorCodeValues as readonly string[]).includes(p.code)
+      ? { verdict: 'terminal_protocol', reason: 'close 1008 after a code this client does not know' }
+      : classifyClose(code, p)
+  const laterCode = 'close_1008_after_an_error_code_a_later_server_adds'
+  for (const [name, fns] of [
+    ['preceding decoded by the server\'s strict decoder', { ...shippedClose, preceding: strictPreceding }],
+    ['classifyClose stops on a code it does not know', { ...shippedClose, classify: stopsOnUnknown }],
+  ] as const) {
+    const c = cases.find((c) => c.name === laterCode)
+    if (!c) {
+      check(`${name} fails ${laterCode}`, false, 'no case has that name')
+      continue
+    }
+    let err: string | null
+    try {
+      err = pure(c, fns)
+    } catch (e) {
+      err = `threw: ${e instanceof Error ? e.message : String(e)}`
+    }
+    check(`${name} fails ${laterCode}`, err !== null, err ?? 'it passed')
   }
 
   console.log(
