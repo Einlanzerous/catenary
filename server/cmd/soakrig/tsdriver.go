@@ -3,7 +3,7 @@ package main
 // CANT-153 (CANT-35 ruling 0 → A) — the Go half of the TypeScript cohort:
 // cohortClient, the interface every rig drives a client through, and tsDriver,
 // which satisfies it by running web/src/transport/driver/driver.ts as a child
-// process (`node web/dist-transport-driver/driver.js`) and speaking its nine
+// process (`node web/dist-transport-driver/driver.js`) and speaking its eleven
 // line-delimited JSON commands over stdio. The protocol is written down once,
 // at the top of driver.ts; this file is its caller.
 //
@@ -400,6 +400,35 @@ func (d *tsDriver) Read(ctx context.Context, f wire.ClientRead) error {
 		return client.ErrNotConnected
 	}
 	return err
+}
+
+// outboxEntry is one unsettled entry of a driver's outbox: its idempotency
+// key and the outbox's own derived state, which is not on the wire.
+type outboxEntry struct {
+	ClientID wire.Uuid `json:"clientId"`
+	State    string    `json:"state"`
+}
+
+// Compose hands a text to the driver's real outbox, which persists an entry
+// and answers with its client_id WITHOUT waiting for an ack: with no ready
+// session the entry is queued and drains when there is one (CANT-46 ruling
+// 1 → option 0). The Go reference client has no outbox, so this is not on
+// cohortClient.
+func (d *tsDriver) Compose(ctx context.Context, conversationID wire.Uuid, text string) (wire.Uuid, error) {
+	var out struct {
+		ClientID wire.Uuid `json:"clientId"`
+	}
+	err := d.call(ctx, "compose", map[string]any{"conversationId": conversationID, "text": text}, &out)
+	return out.ClientID, err
+}
+
+// Outbox lists the driver's unsettled outbox entries, in drain order.
+func (d *tsDriver) Outbox(ctx context.Context) ([]outboxEntry, error) {
+	var out struct {
+		Entries []outboxEntry `json:"entries"`
+	}
+	err := d.call(ctx, "outbox", nil, &out)
+	return out.Entries, err
 }
 
 // Sever drops the socket through the driver's proxy: no close frame, the same

@@ -15,7 +15,7 @@
  * else is ever written to stdout; the transport's own log, when asked for,
  * goes to stderr.
  *
- * NINE COMMANDS, and no more:
+ * ELEVEN COMMANDS, and no more:
  *
  *   start      {baseUrl, credential: {userId, deviceId, accessToken}, faults,
  *              backoffMinMs, backoffMaxMs, clientVersion, log} — builds a
@@ -33,6 +33,15 @@
  *              silently when there is no connection, and a frame written
  *              between the upgrade and `ready` is not one the server has
  *              agreed to take (CANT-46).
+ *   compose    {conversationId, text} → {clientId}; the real outbox
+ *              (`@/outbox`) persists an entry and the call returns WITHOUT
+ *              WAITING FOR AN ACK. With no ready session the entry is queued
+ *              and drains when one is; that is the difference from `send`,
+ *              which is refused (CANT-46 ruling 1 → option 0).
+ *   outbox     → {entries: [{clientId, state}]}: the unsettled entries, in
+ *              drain order. `state` is the outbox's own derived
+ *              queued / sending / sent / failed, which is not on the wire.
+ *              An entry leaves when the record carrying its clientId lands.
  *   sever      drops the socket through the proxy (proxy.ts): no close frame.
  *   blackhole  silences the socket through the proxy, and leaves it open.
  *   catchup    `Transport.catchUp()`: a trigger.
@@ -53,6 +62,13 @@
  * file — after a SIGKILL — resumes from what the dead one had committed. That
  * is the TypeScript `clientDies` lane's relaunch.
  *
+ * THE OUTBOX is the real `Outbox` over `TransportOutbox`
+ * (outbox/transport-adapter.ts), opened by `start` and closed by `stop`, with
+ * an `InProcessLockHub` as its drain lock — one process is one context. Its
+ * store is `IdbOutboxStore` over fake-indexeddb, kept across a `stop` and a
+ * second `start`, and persisted at `<file>.outbox` under `--journal=<file>`
+ * (persist.ts).
+ *
  * THE CREDENTIAL IS HELD (`heldCredential`, Go's `Refresh: false`), which is
  * what the rigs run (CANT-31 criterion 39). CANT-152's credential layer is not
  * needed by any lane here: no run outlives the access token it enrolled with.
@@ -71,11 +87,15 @@ import {
 import { heldCredential, type Credential } from '../credential'
 import { type Faults, NO_FAULTS } from '../faults'
 import { MemoryJournal, type StagedJournal } from '../journal'
-import { openFileJournal } from './persist'
+import { openFileJournal, openOutboxStore } from './persist'
 import { type Logger, type WebSocketCtor, manualLifecycle, silentLogger } from '../seams'
 import type { TransportStatus } from '../status'
 import { type Transport, SendRefused, createTransport } from '../transport'
 import { type TcpProxy, startProxy } from './proxy'
+import { InProcessLockHub } from '@/outbox/coordination'
+import { Outbox } from '@/outbox/outbox'
+import { TransportOutbox } from '@/outbox/transport-adapter'
+import type { OutboxStore } from '@/outbox/types'
 
 interface Request {
   id: number
@@ -141,6 +161,16 @@ export function serve(io: DriverIO, opts: ServeOptions = {}): void {
   const opened: Promise<StagedJournal> = opts.journalFile ? openFileJournal(opts.journalFile) : Promise.resolve(new MemoryJournal())
   let journal: StagedJournal = new MemoryJournal()
   let transport: Transport | null = null
+  // The outbox's store outlives a transport, as the journal does; the outbox
+  // itself and its adapter belong to one.
+  const outboxStore: Promise<OutboxStore> = openOutboxStore(opts.journalFile ? `${opts.journalFile}.outbox` : undefined)
+  const locks = new InProcessLockHub()
+  let box: { outbox: Outbox; adapter: TransportOutbox } | null = null
+  const closeBox = () => {
+    box?.outbox.close()
+    box?.adapter.close()
+    box = null
+  }
   let proxy: TcpProxy | null = null
   let proxyTarget = ''
 
@@ -189,8 +219,32 @@ export function serve(io: DriverIO, opts: ServeOptions = {}): void {
         faults: { ...NO_FAULTS, ...args.faults },
       })
       transport = t
+      // Attached before the first dial, so the outbox sees this transport's
+      // first `ready` rather than reading it late.
+      const adapter = new TransportOutbox(t, args.log ? stderrLogger : silentLogger)
+      const outbox = await Outbox.open({
+        store: await outboxStore, transport: adapter, accountId: args.credential.userId, lock: locks.lock(),
+      })
+      box = { outbox, adapter }
       t.start()
       return {}
+    },
+
+    async compose(args) {
+      need()
+      if (box === null) throw new DriverError('NotStarted', 'driver: no outbox is open; send start first')
+      const { conversationId, text } = args as { conversationId: string; text: string }
+      if (typeof conversationId !== 'string' || typeof text !== 'string') {
+        throw new DriverError('BadArgs', 'driver: compose takes {conversationId, text}')
+      }
+      const entry = await box.outbox.compose({ conversationId, text })
+      return { clientId: entry.clientId }
+    },
+
+    async outbox() {
+      need()
+      if (box === null) throw new DriverError('NotStarted', 'driver: no outbox is open; send start first')
+      return { entries: box.outbox.view().items.map((i) => ({ clientId: i.entry.clientId, state: i.state })) }
     },
 
     async send(args) {
@@ -252,6 +306,7 @@ export function serve(io: DriverIO, opts: ServeOptions = {}): void {
     },
 
     async stop() {
+      closeBox()
       transport?.stop()
       transport = null
       return {}
@@ -290,6 +345,7 @@ export function serve(io: DriverIO, opts: ServeOptions = {}): void {
     )
   })
   rl.on('close', () => {
+    closeBox()
     transport?.stop()
     proxy?.close()
     io.exit()
