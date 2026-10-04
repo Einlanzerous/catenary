@@ -187,13 +187,17 @@ final class AddressAccepted<T> extends AddressResult<T> {
 ///
 /// The file is written before the token is spent so that an enrollment that
 /// lands and is then lost to a crash leaves an app that knows where it
-/// enrolled. A re-enrollment passes the stored address, which is rewritten
-/// unchanged.
+/// enrolled. IF THE ENROLLMENT THEN FAILS, the address that was there before
+/// is put back (or the file removed, if there was none): a held credential
+/// must never be paired with an address it was not issued by, and a failed
+/// attempt at another host is not a move. [enroll] fails by throwing, or by
+/// returning a value [enrolled] calls false.
 Future<AddressResult<T>> acceptAddress<T>(
   String directory,
   String typed, {
   required bool release,
   required Future<T> Function(String origin) enroll,
+  bool Function(T value)? enrolled,
   HttpFetch? fetch,
 }) async {
   final check = normalizeAddress(typed, release: release);
@@ -202,7 +206,22 @@ Future<AddressResult<T>> acceptAddress<T>(
       return AddressRejected(refusal);
     case AddressOk(:final origin):
       if (!await probeServer(origin, fetch ?? ioHttpFetch)) return CouldNotReach(origin);
+      final before = readAddress(directory);
       writeAddress(directory, origin);
-      return AddressAccepted(origin, await enroll(origin));
+      var ok = false;
+      try {
+        final value = await enroll(origin);
+        ok = enrolled?.call(value) ?? true;
+        return AddressAccepted(origin, value);
+      } finally {
+        if (!ok) {
+          if (before == null) {
+            final f = _file(directory);
+            if (f.existsSync()) f.deleteSync();
+          } else {
+            writeAddress(directory, before);
+          }
+        }
+      }
   }
 }

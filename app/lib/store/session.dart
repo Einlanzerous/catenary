@@ -133,30 +133,46 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing}) asyn
   }
 
   final logger = seams.logger ?? const SilentLogger();
-  final locks = SqliteLocks(dir);
-  final journal = SqliteJournal.open('$dir/$journalFileName');
-  final outboxStore = SqliteOutboxStore.open('$dir/$outboxFileName');
-  final transport = seams.transportFactory(TransportConfig(
-    baseUrl: address,
-    credential: RefreshingCredential(
-      baseUrl: address,
-      store: credentials,
-      lock: locks.call,
-      logger: logger,
-      fetch: seams.fetch,
-    ),
-    journal: journal,
-    clientVersion: 'catenary-app',
-    connect: seams.connect,
-    fetch: seams.fetch,
-    lifecycle: seams.lifecycle,
-    logger: logger,
-  ));
-  // Attached before the first dial, so the outbox sees the first `ready`
-  // rather than reading it late.
-  final adapter = TransportOutbox(transport, logger);
+  // Whatever opens first is closed again if anything after it throws, so a
+  // retry does not find lock files and handles still held.
+  final cleanup = <void Function()>[credentials.close];
+  void closeAll() {
+    for (final c in cleanup.reversed) {
+      c();
+    }
+  }
+
+  final Transport transport;
+  final TransportOutbox adapter;
   final Outbox outbox;
+  final SqliteJournal journal;
   try {
+    final locks = SqliteLocks(dir);
+    cleanup.add(locks.close);
+    journal = SqliteJournal.open('$dir/$journalFileName');
+    cleanup.add(journal.close);
+    final outboxStore = SqliteOutboxStore.open('$dir/$outboxFileName');
+    cleanup.add(outboxStore.close);
+    transport = seams.transportFactory(TransportConfig(
+      baseUrl: address,
+      credential: RefreshingCredential(
+        baseUrl: address,
+        store: credentials,
+        lock: locks.call,
+        logger: logger,
+        fetch: seams.fetch,
+      ),
+      journal: journal,
+      clientVersion: 'catenary-app',
+      connect: seams.connect,
+      fetch: seams.fetch,
+      lifecycle: seams.lifecycle,
+      logger: logger,
+    ));
+    // Attached before the first dial, so the outbox sees the first `ready`
+    // rather than reading it late.
+    adapter = TransportOutbox(transport, logger);
+    cleanup.add(adapter.close);
     outbox = await Outbox.open(
       store: outboxStore,
       transport: adapter,
@@ -164,11 +180,7 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing}) asyn
       lock: SqliteDrainLock(locks),
     );
   } on Object {
-    adapter.close();
-    outboxStore.close();
-    journal.close();
-    locks.close();
-    credentials.close();
+    closeAll();
     rethrow;
   }
   transport.start();
@@ -182,11 +194,7 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing}) asyn
     close: () {
       transport.stop();
       outbox.close();
-      adapter.close();
-      outboxStore.close();
-      journal.close();
-      locks.close();
-      credentials.close();
+      closeAll();
     },
   ));
 }

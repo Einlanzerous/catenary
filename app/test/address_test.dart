@@ -136,6 +136,30 @@ void main() {
       }
     });
 
+    test('a failed enrollment puts back the address that was there, or leaves none', () async {
+      final fetch = Scripted();
+      // A first enrollment that throws leaves no file.
+      await expectLater(
+        acceptAddress<void>(dir.path, 'https://new.example.com', release: true, fetch: fetch.call, enroll: (_) async => throw StateError('refused')),
+        throwsStateError,
+      );
+      expect(readAddress(dir.path), isNull);
+
+      // A re-enrollment at another host that throws, or reports failure, leaves the held pair's address.
+      writeAddress(dir.path, 'https://old.example.com');
+      await expectLater(
+        acceptAddress<void>(dir.path, 'https://new.example.com', release: true, fetch: fetch.call, enroll: (_) async => throw StateError('refused')),
+        throwsStateError,
+      );
+      expect(readAddress(dir.path), 'https://old.example.com');
+      await acceptAddress<bool>(dir.path, 'https://new.example.com', release: true, fetch: fetch.call, enroll: (_) async => false, enrolled: (ok) => ok);
+      expect(readAddress(dir.path), 'https://old.example.com');
+
+      // And one that succeeds keeps the new one.
+      await acceptAddress<bool>(dir.path, 'https://new.example.com', release: true, fetch: fetch.call, enroll: (_) async => true, enrolled: (ok) => ok);
+      expect(readAddress(dir.path), 'https://new.example.com');
+    });
+
     test('a refused address makes no request at all', () async {
       final fetch = Scripted();
       final r = await acceptAddress<void>(dir.path, 'http://chat.example.com', release: true, fetch: fetch.call, enroll: (_) async {});

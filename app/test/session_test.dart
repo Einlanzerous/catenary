@@ -115,6 +115,24 @@ void main() {
     expect(File('${dir.path}/$outboxFileName').existsSync(), isTrue, reason: 'the outbox is its own file');
   });
 
+  test('a failure while building closes what was opened, so a retry starts clean', () async {
+    await storeCredential();
+    writeAddress(dir.path, 'https://chat.example.com');
+    var fail = true;
+    final s = SessionSeams(
+      directory: dir.path,
+      lifecycle: ManualLifecycle(),
+      connect: (url, protocols) => _DeadSocket(),
+      fetch: (_) async => const HttpAnswer(503, ''),
+      transportFactory: (cfg) => fail ? throw StateError('no transport today') : createTransport(cfg),
+    );
+    await expectLater(startSession(s), throwsStateError);
+    fail = false;
+    final r = await startSession(s);
+    expect(r, isA<SessionRunning>());
+    (r as SessionRunning).session.end();
+  });
+
   test('a session started to replace another ends it first', () async {
     await storeCredential();
     writeAddress(dir.path, 'https://chat.example.com');
