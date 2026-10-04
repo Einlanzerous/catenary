@@ -12,6 +12,7 @@ dist-outbox/
 server/bin/
 dart/.dart_tool/
 dart-client/.dart_tool/
+dart-client/build/
 
 # R1 rig state. The tokens are ephemeral shared secrets for a rig that gets a
 # public hostname, and the URLs are the quick tunnels it was reached through —

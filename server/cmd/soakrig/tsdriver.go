@@ -7,6 +7,12 @@ package main
 // line-delimited JSON commands over stdio. The protocol is written down once,
 // at the top of driver.ts; this file is its caller.
 //
+// ONE ADAPTER, TWO DRIVERS (CANT-42 row d). The Dart client's driver,
+// dart-client/bin/driver.dart, speaks the same protocol, so it is run through
+// this same tsDriver with a different command line — tsDriverConfig.Native —
+// and not through a copy. The type keeps its name: it is the adapter for "a
+// client in a child process, driven over stdio", and TypeScript was the first.
+//
 // ONE FILE, TWO PACKAGES. cmd/catenary/tsdriver_test.go is a symlink to this
 // file, so the kill-test and restore-test rigs drive the TypeScript client
 // through the SAME adapter the soak does, not a second copy grown beside it.
@@ -71,6 +77,10 @@ type tsDriverConfig struct {
 	// Node is the node binary; empty is "node" on PATH. Script is the built
 	// driver bundle, driver.js.
 	Node, Script string
+	// Native says Script is an executable to run directly, not a bundle to run
+	// under node: the Dart driver, built by `dart build cli` (CANT-42 row d).
+	// Everything after the command line is the same adapter.
+	Native bool
 
 	BaseURL     string
 	UserID      wire.Uuid
@@ -149,14 +159,21 @@ func newTSDriver(cfg tsDriverConfig) (*tsDriver, error) {
 		return nil, errors.New("ts driver: no driver script")
 	}
 	if _, err := os.Stat(cfg.Script); err != nil {
+		if cfg.Native {
+			return nil, fmt.Errorf("dart driver: the built driver: %w — build it with `dart build cli -t bin/driver.dart -o build/driver` in dart-client/", err)
+		}
 		return nil, fmt.Errorf("ts driver: the driver bundle: %w — build it with `npm run build:driver` in web/", err)
 	}
-	node := cfg.Node
+	// THE TWO COMMAND LINES: `node driver.js [--journal=…]`, or the built Dart
+	// driver itself.
+	node, args := cfg.Node, []string{cfg.Script}
 	if node == "" {
 		node = "node"
 	}
+	if cfg.Native {
+		node, args = cfg.Script, nil
+	}
 	d := &tsDriver{cfg: cfg, tail: &tsTail{max: 16 << 10}, pending: map[int64]chan tsResponse{}, exited: make(chan struct{})}
-	args := []string{cfg.Script}
 	if cfg.JournalFile != "" {
 		args = append(args, "--journal="+cfg.JournalFile)
 	}

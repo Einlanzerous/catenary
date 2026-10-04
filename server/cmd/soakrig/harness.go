@@ -52,7 +52,8 @@ type harness struct {
 	store *store.Store
 
 	bin     string
-	driver  string
+	driver  string // the TypeScript driver bundle
+	dart    string // the built Dart driver
 	port    int
 	baseURL string
 
@@ -108,6 +109,14 @@ func runSoak(ctx context.Context, cfg Config) Result {
 		}
 		h.driver = script
 	}
+	if h.cfg.needsDart() {
+		exe, err := resolveDartDriver(h.cfg)
+		if err != nil {
+			h.harnessError("resolve the Dart driver: %v", err)
+			return h.finish(&rep)
+		}
+		h.dart = exe
+	}
 
 	port, err := freePort()
 	if err != nil {
@@ -159,7 +168,7 @@ func runSoak(ctx context.Context, cfg Config) Result {
 			case errors.As(err, &term):
 				h.harnessError("client %d (%s) went terminal and will not reconnect: %v", sc.index, sc.name, err)
 			case errors.Is(err, errTSDriverGone):
-				h.harnessError("client %d (%s): the TypeScript driver process died: %v", sc.index, sc.name, err)
+				h.harnessError("client %d (%s): the %s driver process died: %v", sc.index, sc.name, sc.cohort, err)
 			}
 		}(sc)
 	}
@@ -219,8 +228,8 @@ func (h *harness) buildClients(provisioned []provisionedClient, rep *Report) []*
 			continue
 		}
 		var c cohortClient
-		if cohort == cohortTS {
-			c, err = h.newTSClient(p)
+		if cohort != cohortGo {
+			c, err = h.newDriverClient(p, cohort)
 			j = nil
 		} else {
 			c, err = client.New(client.Config{
@@ -254,14 +263,18 @@ const (
 	soakBackoffMax = 2 * time.Second
 )
 
-// newTSClient starts one TypeScript client's driver process over an
-// enrollment. The credential rides the start command inline: `soak` enrolls
-// in memory and writes no credential file.
-func (h *harness) newTSClient(p provisionedClient) (*tsDriver, error) {
+// newDriverClient starts one out-of-process client's driver over an
+// enrollment: the TypeScript transport under node, or the built Dart driver.
+// One adapter, two command lines. The credential rides the start command
+// inline: `soak` enrolls in memory and writes no credential file.
+func (h *harness) newDriverClient(p provisionedClient, cohort string) (*tsDriver, error) {
 	cfg := tsDriverConfig{
 		Node: h.cfg.Node, Script: h.driver, BaseURL: h.baseURL,
 		Faults:     h.cfg.debugFaults[p.index],
 		BackoffMin: soakBackoffMin, BackoffMax: soakBackoffMax,
+	}
+	if cohort == cohortDart {
+		cfg.Script, cfg.Native = h.dart, true
 	}
 	cfg.enrolled(p.enroll)
 	if h.cfg.ServerLogDir != "" {

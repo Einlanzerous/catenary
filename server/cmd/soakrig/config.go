@@ -31,14 +31,19 @@ type Config struct {
 	// Cohort is which client runs each account (CANT-153): "go", the
 	// internal/client reference; "ts", the TypeScript transport through its
 	// Node driver; or "mixed", the two alternating by index, so N splits
-	// evenly and both halves share the same room and one Compare. Empty is
-	// "go".
+	// evenly and both halves share the same room and one Compare. "dart" and
+	// "mixed-dart" are the same two shapes with the Dart client through its
+	// own driver (CANT-42 row d). Empty is "go".
 	Cohort string
 	// TSDriver is the built driver bundle, driver.js. Empty builds it from the
 	// repo root on demand (`npm run build:driver` in web/), the way an empty
 	// CatenaryBin builds the server. Node is the node binary; empty is "node".
 	TSDriver string
 	Node     string
+	// DartDriver is the built Dart driver, dart-client's
+	// build/driver/bundle/bin/driver. Empty builds it on demand (`dart build
+	// cli` in dart-client/), as an empty TSDriver builds the bundle.
+	DartDriver string
 
 	// Logger receives the harness's OWN progress narration. Nil discards it.
 	// Never handed to a client — see harness.go's newClient, which always
@@ -117,18 +122,21 @@ func (c *Config) validate() error {
 	switch c.Cohort {
 	case "":
 		c.Cohort = cohortGo
-	case cohortGo, cohortTS, cohortMixed:
+	case cohortGo, cohortTS, cohortMixed, cohortDart, cohortMixedDart:
 	default:
-		return fmt.Errorf("cohort %q: want go, ts or mixed", c.Cohort)
+		return fmt.Errorf("cohort %q: want go, ts, mixed, dart or mixed-dart", c.Cohort)
 	}
 	return nil
 }
 
-// The three cohorts -cohort names.
+// The cohorts -cohort names. go, ts and dart are also what one account's
+// client is; the two mixed ones are only ever a run's.
 const (
-	cohortGo    = "go"
-	cohortTS    = "ts"
-	cohortMixed = "mixed"
+	cohortGo        = "go"
+	cohortTS        = "ts"
+	cohortMixed     = "mixed"
+	cohortDart      = "dart"
+	cohortMixedDart = "mixed-dart"
 )
 
 // cohortOf is which client runs account i. Mixed alternates, so any N splits
@@ -142,12 +150,20 @@ func (c *Config) cohortOf(i int) string {
 		if i%2 == 1 {
 			return cohortTS
 		}
+	case cohortDart:
+		return cohortDart
+	case cohortMixedDart:
+		if i%2 == 1 {
+			return cohortDart
+		}
 	}
 	return cohortGo
 }
 
-// needsTS is whether any account runs the TypeScript driver.
-func (c *Config) needsTS() bool { return c.Cohort == cohortTS || c.Cohort == cohortMixed }
+// needsTS is whether any account runs the TypeScript driver, and needsDart
+// whether any runs the Dart one.
+func (c *Config) needsTS() bool   { return c.Cohort == cohortTS || c.Cohort == cohortMixed }
+func (c *Config) needsDart() bool { return c.Cohort == cohortDart || c.Cohort == cohortMixedDart }
 
 func (c *Config) logger() *slog.Logger {
 	if c.Logger == nil {

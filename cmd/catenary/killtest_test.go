@@ -200,8 +200,8 @@ type killResult struct {
 }
 
 // theoFactory builds the client under test over an enrolled device: the Go
-// reference (goTheo), or the TypeScript transport through its driver (tsTheo
-// and tsDurableTheo, in tslanes_test.go). j is the Go client's journal, which a
+// reference (goTheo), or an out-of-process client through its driver
+// (driverLane's theo and durableTheo, in tslanes_test.go). j is the Go client's journal, which a
 // restart reuses; a TypeScript client's journal lives in its driver process, or
 // in the file a durable driver persists it to, and j is unused.
 type theoFactory func(k *killRig, dev wire.EnrollResponse, j *client.Journal, faults client.Faults) cohortClient
