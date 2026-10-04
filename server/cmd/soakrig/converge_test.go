@@ -449,7 +449,7 @@ func TestConvergenceCatchesAHeldConversationOnTheDartDevice(t *testing.T) {
 }
 
 // The partition reaches a Dart driver the way it reaches the others: by being
-// its base URL.
+// its base URL. Held, it gets no session and no page; healed, it gets both.
 func TestThePartitionProxyHoldsAndHealsADartClient(t *testing.T) {
 	h, cfg := dartConvergeLane(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -465,19 +465,20 @@ func TestThePartitionProxyHoldsAndHealsADartClient(t *testing.T) {
 	if err := r.await(ctx, d.c, func() bool { return !d.c.Status().Ready }); err != nil {
 		t.Fatalf("after hold() the Dart client's socket is still there: %v", err)
 	}
-	// Its catch-up goes through the same address: a held proxy refuses the
-	// /sync as well as the socket, which is what makes it a partition.
-	pages := d.c.Status().Pages
+	// Its catch-up goes through the same address, so a held proxy refuses the
+	// /sync as well as the socket — which is what makes it a partition. A
+	// refused dial does not say which of the two it was, so this does not
+	// claim to have seen the /sync refused: it asks for a catch-up, waits a
+	// full backoff ceiling for anything asked for to have been tried, and
+	// requires that no page landed and that dials kept being refused.
+	before, pages := d.proxy.refusedDials(), d.c.Status().Pages
 	d.c.CatchUp()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) && d.proxy.refusedDials() < 2 {
-		time.Sleep(20 * time.Millisecond)
-	}
+	time.Sleep(soakBackoffMax)
 	if s := d.c.Status(); s.Pages != pages || s.Ready {
 		t.Errorf("behind a held proxy the Dart client pulled a page or became ready: pages %d → %d, ready %v", pages, s.Pages, s.Ready)
 	}
-	if d.proxy.refusedDials() == 0 {
-		t.Error("the held proxy refused nothing: the Dart client is not dialing through it")
+	if after := d.proxy.refusedDials(); after <= before {
+		t.Errorf("refused dials %d → %d across a backoff ceiling: the Dart client is not dialing through the held proxy", before, after)
 	}
 	d.proxy.heal()
 	if err := r.await(ctx, d.c, func() bool { s := d.c.Status(); return s.Ready && s.CaughtUp }); err != nil {
