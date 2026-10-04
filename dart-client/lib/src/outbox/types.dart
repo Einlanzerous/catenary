@@ -12,7 +12,11 @@
 /// another's writes at its next read of the store (`Outbox.refresh`).
 library;
 
+import 'dart:typed_data';
+
 import 'package:catenary_wire/catenary_wire.dart';
+
+import 'media.dart';
 
 enum OutboxStatus { pending, failed }
 
@@ -64,10 +68,16 @@ final class UploadFailure extends OutboxError {
 enum UploadState { pending, uploaded }
 
 /// An attachment as composed. There is no upload queue here: the default
-/// `Uploader` refuses (§10), and the queue that would move one to `uploaded`,
-/// with the media it uploads, is a follow-up.
+/// `Uploader` refuses (§10), and the queue that would move one to `uploaded`
+/// is CANT-212's.
+///
+/// THE MEDIA IS NOT ON THIS OBJECT ONCE IT IS STORED. A draft names a `source`;
+/// `compose` reads it once and the store holds the bytes beside the entry, in
+/// the same transaction (CANT-201 ruling 0), under the entry's `clientId` and
+/// the attachment's index. A stored attachment has no `source`, and its media
+/// is read with `OutboxStore.media`, never with a listing.
 final class OutboundAttachmentDraft {
-  const OutboundAttachmentDraft({required this.kind, this.filename, this.durationMs, this.uploadId, this.upload = UploadState.pending});
+  const OutboundAttachmentDraft({required this.kind, this.source, this.filename, this.durationMs, this.uploadId, this.upload = UploadState.pending});
 
   factory OutboundAttachmentDraft.fromJson(Map<String, dynamic> o) => OutboundAttachmentDraft(
         kind: o['kind'] as String,
@@ -79,6 +89,11 @@ final class OutboundAttachmentDraft {
 
   /// `voice` or `image`.
   final String kind;
+
+  /// Where the media is copied from at compose: what the platform's recorder
+  /// or picker produced, which may be a temporary file. Never stored, and
+  /// absent on everything read back from the store.
+  final MediaSource? source;
   final String? filename;
 
   /// Voice: local render only; the server measures its own.
@@ -91,6 +106,9 @@ final class OutboundAttachmentDraft {
   /// This attachment, uploaded under `handle`.
   OutboundAttachmentDraft uploadedAs(Uuid handle) =>
       OutboundAttachmentDraft(kind: kind, filename: filename, durationMs: durationMs, uploadId: handle, upload: UploadState.uploaded);
+
+  /// This attachment as an entry holds it: without its `source`.
+  OutboundAttachmentDraft held() => OutboundAttachmentDraft(kind: kind, filename: filename, durationMs: durationMs, uploadId: uploadId, upload: upload);
 
   Map<String, Object?> toJson() => {
         'kind': kind,
@@ -260,23 +278,37 @@ final class OutboxDraft {
 /// Every write completes only after its transaction has committed. `add`
 /// allocates `order` inside the same transaction as the insert, so two contexts
 /// composing at once cannot draw the same value.
+///
+/// AN ENTRY AND ITS MEDIA ARE NEVER STORED APART (CANT-201 ruling 0). `media`
+/// is one item per attachment, by index, null where the attachment has none to
+/// hold; it is written in the entry's own transaction, and `delete` removes it
+/// in the transaction that removes the entry.
 abstract interface class OutboxStore {
-  /// Allocate `order` (highest for the account, plus one) and insert, in one
-  /// transaction. `entry.order` is ignored.
-  Future<OutboxEntry> add(OutboxEntry entry);
+  /// Allocate `order` (highest for the account, plus one) and insert, with the
+  /// entry's media, in one transaction. `entry.order` is ignored.
+  Future<OutboxEntry> add(OutboxEntry entry, [List<Uint8List?> media = const []]);
 
   /// Put as given. Nothing in the outbox calls this for a new entry — the
-  /// `orderOutsideTxn` fault does, and seeding does.
-  Future<void> put(OutboxEntry entry);
+  /// `orderOutsideTxn` fault does, and seeding does. Media given replaces what
+  /// is held at its index; media not given is left as it is.
+  Future<void> put(OutboxEntry entry, [List<Uint8List?> media = const []]);
 
   /// Read-modify-write in one transaction. Does nothing, and completes with
   /// null, when the entry is gone — so a late counter update can never
   /// resurrect an entry a record has already settled.
   Future<OutboxEntry?> update(Uuid clientId, void Function(OutboxEntry e) mutate);
+
+  /// Removes the entry and every item of its media, in one transaction.
   Future<void> delete(Uuid clientId);
 
-  /// Every entry, every account, in `order`.
+  /// Every entry, every account, in `order`. READS NO MEDIA: the lock's holder
+  /// lists on a timer, and a listing that carried the bytes would read every
+  /// unsent recording each time it fired.
   Future<List<OutboxEntry>> list();
+
+  /// The media held for attachment `index` of the entry, as it was composed,
+  /// or null when none is held — the entry is gone, or never had any there.
+  Future<Uint8List?> media(Uuid clientId, int index);
   void close();
 }
 
@@ -350,6 +382,26 @@ abstract interface class DrainLock {
 }
 
 // ── attachments (§10) ───────────────────────────────────────────────────────
+
+/// `compose` would not take the draft, and wrote nothing. The message is for
+/// the person who composed it.
+final class ComposeRefused implements Exception {
+  const ComposeRefused(this.message);
+
+  /// CANT-201 ruling 1: a picked file is not composed without a ready session.
+  static const pickedFileOffline = "A file can't be attached while offline";
+
+  /// A terminal client drains nothing, so it takes no new attachment to hold.
+  static const terminal = 'This device cannot send';
+
+  /// An entry is reported composed only with its media held (ruling 0).
+  static const noMedia = 'An attachment needs its media';
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
 
 /// Uploads one attachment and completes with its handle.
 abstract interface class Uploader {
