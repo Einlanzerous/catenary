@@ -146,7 +146,7 @@ class _EnrollScreenState extends State<EnrollScreen> {
                   const SizedBox(height: CatenaryMetrics.s2),
                   Text(
                     _locked
-                        ? 'This device is no longer signed in. Enter a fresh enrollment token for the server below. Messages waiting to send stay on this device.'
+                        ? 'This device is no longer signed in. Enter a fresh enrollment token for the server below. Messages waiting to send stay on this device, and send only from the account that wrote them.'
                         : 'Enter the server address and the enrollment token you were given, or paste the invitation link into either field. Name this device — a revocation list only helps if you can tell its entries apart.',
                     style: CatenaryType.secondary.style.copyWith(color: t.textSecondary),
                   ),

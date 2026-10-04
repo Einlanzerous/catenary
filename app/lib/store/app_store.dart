@@ -433,7 +433,15 @@ final class AppStore extends ChangeNotifier {
       fetch: _seams.fetch,
     );
     if (outcome is Enrolled) {
-      await session.journal.wipe();
+      // The old session ends first, so no late frame under the old credential
+      // can land after the wipe; `start` ends it again, which is a no-op.
+      session.end();
+      final journal = SqliteJournal.open('${_seams.directory}/$journalFileName');
+      try {
+        await journal.wipe();
+      } finally {
+        journal.close();
+      }
       await start();
     }
     return outcome;
