@@ -36,6 +36,7 @@ class RailScreen extends StatelessWidget {
     this.openId,
     this.onOpen,
     this.onRetry,
+    this.onReenroll,
     this.onYou,
   });
 
@@ -47,7 +48,10 @@ class RailScreen extends StatelessWidget {
   /// The conversation last opened, which carries the accent bar.
   final String? openId;
   final ValueChanged<ConversationView>? onOpen;
+
+  /// The banner's two actions, passed through to it.
   final VoidCallback? onRetry;
+  final VoidCallback? onReenroll;
   final VoidCallback? onYou;
 
   @override
@@ -78,7 +82,7 @@ class RailScreen extends StatelessWidget {
                 ],
               ),
             ),
-            ConnectionBanner(connection: connection, onRetry: onRetry),
+            ConnectionBanner(connection: connection, onRetry: onRetry, onReenroll: onReenroll),
             Expanded(
               child: ListView(
                 padding: EdgeInsets.zero,

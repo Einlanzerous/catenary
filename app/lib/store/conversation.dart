@@ -9,8 +9,9 @@
 // transcript's word count is derived from the text on screen. A stamp is
 // derived from `now`.
 //
-// These are view models, fed today by fixtures (fixtures.dart). Feeding them
-// from `catenary_client`'s journal is CANT-200.
+// These are view models. An enrolled device's are built from the journal and
+// the outbox by store/app_store.dart; the specimen screen's and the widget
+// tests' are fixtures (fixtures.dart).
 
 import 'package:flutter/foundation.dart';
 
@@ -87,6 +88,7 @@ class ConversationView {
     this.firstUnreadSeq,
     this.muted = false,
     this.typing = const [],
+    this.secure = true,
   });
 
   final String id;
@@ -102,6 +104,11 @@ class ConversationView {
   /// The display names of the people typing, in the order each started.
   final List<String> typing;
 
+  /// Whether the address these messages travel to is `https`. The store sets
+  /// it from the stored address's scheme (store/address.dart); a fixture is
+  /// the canvas, which is drawn over TLS.
+  final bool secure;
+
   ThreadMessage? get last => messages.isEmpty ? null : messages.last;
 
   /// What is new here: messages at or past `firstUnreadSeq` that somebody
@@ -114,8 +121,12 @@ class ConversationView {
 
   /// The thread header's second line. TLS, not E2E: the server can read
   /// these messages, and a badge asserting otherwise is the one claim this
-  /// surface must not make (D1).
-  String get subtitle => kind == ConversationKind.group ? '$memberCount MEMBERS · TLS' : 'DIRECT · TLS';
+  /// surface must not make (D1). And TLS only where it is: over an `http`
+  /// address the last word is CLEARTEXT, because that is what the link is.
+  String get subtitle {
+    final transport = secure ? 'TLS' : 'CLEARTEXT';
+    return kind == ConversationKind.group ? '$memberCount MEMBERS · $transport' : 'DIRECT · $transport';
+  }
 }
 
 /// Two letters for an avatar tile: first and last initial, or the first two

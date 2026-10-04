@@ -13,7 +13,7 @@
 //
 // THE HEADER READS `7 MEMBERS · TLS`, NOT E2E. The server can read these
 // messages, and a badge asserting otherwise is the one claim this surface
-// must not make.
+// must not make. Over an `http` address its last word is CLEARTEXT.
 
 import 'package:flutter/material.dart';
 
@@ -31,12 +31,15 @@ import 'widgets/typing_row.dart';
 import 'widgets/waveform.dart';
 
 class ThreadScreen extends StatelessWidget {
-  const ThreadScreen({super.key, required this.conversation, required this.connection, this.onBack, this.onRetry});
+  const ThreadScreen({super.key, required this.conversation, required this.connection, this.onBack, this.onRetry, this.onReenroll});
 
   final ConversationView conversation;
   final ConnectionView connection;
   final VoidCallback? onBack;
+
+  /// The banner's two actions, passed through to it.
   final VoidCallback? onRetry;
+  final VoidCallback? onReenroll;
 
   @override
   Widget build(BuildContext context) {
@@ -103,7 +106,7 @@ class ThreadScreen extends StatelessWidget {
                 ],
               ),
             ),
-            ConnectionBanner(connection: connection, onRetry: onRetry),
+            ConnectionBanner(connection: connection, onRetry: onRetry, onReenroll: onReenroll),
             Expanded(
               // The newest message is what a thread is opened for, so the list
               // grows from the bottom; a thread shorter than the screen still

@@ -15,11 +15,11 @@ name: app
 # app/test/pins_test.dart derives that list from what app/test opens and fails
 # when either list here misses one (CANT-203 ruling 2).
 #
-# dart/ and dart-client/ are in because the app WILL BE built on them: the
-# generated wire package and the protocol half (CANT-42). The skeleton imports
-# neither yet, so today a change there triggers a build that cannot see it;
-# once app/pubspec.yaml takes the dependency, what runs here is that the app
-# still analyzes and builds against them. Their own tests run in ci.yml.
+# dart/ and dart-client/ are in because the app is built on them: the generated
+# wire package and the protocol half (CANT-42), path dependencies of
+# app/pubspec.yaml since CANT-206. What runs here on a change there is that the
+# app still analyzes, tests and builds against them. Their own tests run in
+# ci.yml.
 on:
   pull_request:
     paths:
