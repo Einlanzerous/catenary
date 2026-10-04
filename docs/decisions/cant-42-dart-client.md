@@ -79,7 +79,7 @@ The two real outboxes are also run against each other across a partition: `CANT-
 
 `dart-client/bin/driver.dart` is the twin of `web/src/transport/driver/driver.ts` and speaks that file's protocol, all eleven commands. The Go rigs run it through the same adapter as the TypeScript driver, with a different command line.
 
-**It is built, not run by `dart`.** `dart run` writes build-hook output to stdout ahead of the first answer, and the protocol allows nothing on stdout but answers. `dart build cli` produces an executable bundled with its SQLite library; `--probe` opens an in-memory database and exits 0, which is how a lane finds out the bundle can load that library before it hands the driver a client. The plan's wording, that a lane fails when "`dart` cannot be executed", is therefore met as "the driver cannot be executed, or cannot open SQLite".
+**It is built, not run by `dart`.** `dart run` writes build-hook output to stdout ahead of the first answer, and the protocol allows nothing on stdout but answers. `dart build cli` produces an executable bundled with its SQLite library; `--probe` opens an in-memory database and exits 0, which is how a lane finds out the bundle can load that library before it hands the driver a client. **Decided, `CANT-202` ruling 2: the Go rigs run the driver as a native executable, and `dart run` is not used.** A lane that the plan says fails when "`dart` cannot be executed" therefore fails when the driver cannot be executed or cannot open SQLite. Both copies of `dartDriverExe`, in `server/cmd/soakrig/dartcohort_test.go` and `cmd/catenary/dartlanes_test.go`, fail and do not skip when `CATENARY_DART_DRIVER` names a path that does not exist or a binary whose `--probe` exits non-zero.
 
 ## The holder's re-read timer
 
