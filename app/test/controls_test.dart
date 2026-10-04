@@ -22,6 +22,7 @@ import 'package:catenary/thread.dart';
 import 'package:catenary/tokens.dart';
 import 'package:catenary/widgets/connection_banner.dart';
 import 'package:catenary/widgets/glyph.dart';
+import 'package:catenary/widgets/status_mark.dart';
 import 'package:catenary_client/catenary_client.dart';
 import 'package:catenary_wire/catenary_wire.dart' as wire;
 import 'package:flutter/material.dart';
@@ -187,6 +188,17 @@ void main() {
       expect(ids, contains(waiting));
     });
 
+    test('with no session, retry and discard fail as Futures, as send does', () async {
+      final empty = Directory.systemTemp.createTempSync('catenary-controls-empty-');
+      addTearDown(() => empty.deleteSync(recursive: true));
+      final bare = AppStore(SessionSeams(directory: empty.path, lifecycle: ManualLifecycle()));
+      addTearDown(bare.dispose);
+      await bare.start();
+      await expectLater(bare.retry('c-1'), throwsStateError);
+      await expectLater(bare.discard('c-1'), throwsStateError);
+      await expectLater(bare.retryNow(), throwsStateError);
+    });
+
     test('retryNow is Transport.retryNow', () async {
       await enroll();
       final store = AppStore(seams());
@@ -263,6 +275,26 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('failed-delete')));
       expect(retried, ['c-failed']);
       expect(discarded, ['c-failed']);
+    });
+
+    testWidgets('a failed message that a later one overtook still has RETRY and DELETE, and the group is marked failed', (tester) async {
+      final retried = <String>[];
+      final outbox = [
+        item('c-failed', OutboxState.failed, order: 1, text: 'refused', error: const ServerRefusal('message_too_large', 'message too large', false)),
+        item('c-after', OutboxState.queued, order: 2, text: 'went through'),
+      ];
+      final thread = conversationViews(projection: projection(), outbox: outbox, me: me, secure: true).firstWhere((c) => c.id == room);
+      await pump(tester, ThreadScreen(conversation: thread, connection: live, onRetryMessage: (id) async => retried.add(id)));
+      expect(find.byKey(const ValueKey('failed-retry')), findsOneWidget, reason: 'one failed message, one RETRY');
+      expect(find.text('went through'), findsOneWidget);
+      expect(tester
+          .widget<StatusMark>(find.descendant(
+            of: find.ancestor(of: find.text('went through'), matching: find.byType(MessageGroup)),
+            matching: find.byKey(const ValueKey('group-status')),
+          ))
+          .status, MessageStatus.failed);
+      await tester.tap(find.byKey(const ValueKey('failed-retry')));
+      expect(retried, ['c-failed'], reason: "the failed one's id, not the newest's");
     });
 
     testWidgets('the app: the banner\'s RETRY is Transport.retryNow, and a thread\'s send is an outbox entry', (tester) async {

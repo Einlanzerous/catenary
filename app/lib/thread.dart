@@ -170,7 +170,6 @@ class ThreadScreen extends StatelessWidget {
   }
 }
 
-/// A labelled hairline: the date separator, and the "N NEW" rule.
 /// The composer with a draft of its own: send hands the text over and clears
 /// the field once the call completes, and keeps it when the call throws.
 class _ThreadComposer extends StatefulWidget {
@@ -212,6 +211,7 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   Widget build(BuildContext context) => Composer(connection: widget.connection, controller: _draft, onSend: _send);
 }
 
+/// A labelled hairline: the date separator, and the "N NEW" rule.
 class _Rule extends StatelessWidget {
   const _Rule({super.key, required this.label, required this.color, required this.line, required this.top, required this.bottom});
 
@@ -246,7 +246,7 @@ class MessageGroup extends StatelessWidget {
   final GroupRow group;
   final int memberCount;
 
-  /// RETRY and DELETE on the group's failed message, given its `client_id`.
+  /// RETRY and DELETE on a failed message of the group, given its `client_id`.
   final Future<void> Function(String clientId)? onRetry;
   final Future<void> Function(String clientId)? onDiscard;
 
@@ -255,9 +255,12 @@ class MessageGroup extends StatelessWidget {
     final t = CatenaryTokens.of(context);
     final first = group.first;
     final mine = first.mine;
-    // The mark is the group's newest message's: it is the one still moving.
+    // The mark is the group's newest message's: it is the one still moving. A
+    // failed send in the group outranks it, though: the outbox does not stop
+    // at a failed entry, so a later message in the same run can go through,
+    // and the failure must not be hidden behind it.
     final newest = group.messages.last;
-    final failed = mine && newest.status == MessageStatus.failed;
+    final failed = mine && group.messages.any((m) => m.status == MessageStatus.failed);
     return Container(
       key: ValueKey('group-${first.id}'),
       margin: EdgeInsets.only(top: mine ? 8 : 0, bottom: mine ? 6 : 0),
@@ -315,16 +318,19 @@ class MessageGroup extends StatelessWidget {
                   ],
                 ),
               ),
-              if (mine) StatusMark(key: const ValueKey('group-status'), status: newest.status),
+              if (mine) StatusMark(key: const ValueKey('group-status'), status: failed ? MessageStatus.failed : newest.status),
             ],
           ),
-          for (final m in group.messages) ..._body(t, m),
-          if (failed)
-            _FailedActions(
-              reason: newest.failure,
-              onRetry: onRetry == null ? null : () => onRetry!(newest.id),
-              onDiscard: onDiscard == null ? null : () => onDiscard!(newest.id),
-            ),
+          for (final m in group.messages) ...[
+            ..._body(t, m),
+            // RETRY and DELETE sit under the message they act on.
+            if (mine && m.status == MessageStatus.failed)
+              _FailedActions(
+                reason: m.failure,
+                onRetry: onRetry == null ? null : () => onRetry!(m.id),
+                onDiscard: onDiscard == null ? null : () => onDiscard!(m.id),
+              ),
+          ],
         ],
       ),
     );

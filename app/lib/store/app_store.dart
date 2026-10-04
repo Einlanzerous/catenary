@@ -369,11 +369,11 @@ final class AppStore extends ChangeNotifier {
 
   /// RETRY on a failed message: `Outbox.retry`, under the same `client_id`.
   /// The message's `ThreadMessage.id` is that id for an outbox row.
-  Future<void> retry(String clientId) => _running.outbox.retry(clientId);
+  Future<void> retry(String clientId) async => _running.outbox.retry(clientId);
 
   /// DELETE on a failed message: `Outbox.discard`, which removes this device's
   /// copy and nothing the server holds. True when an entry was removed.
-  Future<bool> discard(String clientId) => _running.outbox.discard(clientId);
+  Future<bool> discard(String clientId) async => _running.outbox.discard(clientId);
 
   /// The banner's RETRY: `Transport.retryNow`, which dials now instead of
   /// waiting out the backoff. The banner follows the transport's own status.
