@@ -37,6 +37,12 @@ export interface Faults {
    *  record sits above the stored cursor, unseen, until some other trigger
    *  happens to come along. */
   skipStaleCatchUp: boolean
+  /** CANT-199, and like `skipStaleCatchUp` not a Go switch: a journal write
+   *  refused with `JournalStale` leaves the epoch where it was, so a `/sync`
+   *  page requested before another tab's wipe still lands when it arrives —
+   *  on the reloaded, empty store — and moves the cursor above messages the
+   *  store no longer holds. */
+  staleKeepsEpoch: boolean
 
   /* CANT-31 §2, §3 and §5, and CANT-127/129. Declared here so the switch list
    * is Go's whole list; the credential layer (CANT-152) is what reads them. */
@@ -67,6 +73,7 @@ export const NO_FAULTS: Readonly<Faults> = Object.freeze({
   skipWipe: false,
   ignoreRetrigger: false,
   skipStaleCatchUp: false,
+  staleKeepsEpoch: false,
   refreshUnlocked: false,
   noChain: false,
   proposeAfresh: false,

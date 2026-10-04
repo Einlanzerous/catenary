@@ -358,7 +358,9 @@ final class _SocketTransport implements Transport, HeartbeatHost, CatchUpHost, C
   /// The last journal write's failure, until a write succeeds.
   JournalError? _journalError;
 
-  /// Bumped when a wipe is decided: a page requested in an earlier epoch is
+  /// Bumped when a wipe is decided — by this transport (obligation 4), or by
+  /// another context, which this one learns as a `JournalStale` refusal
+  /// (CANT-199): a page requested in an earlier epoch is
   /// dropped, not applied over the empty store (obligation 4).
   var _epoch = 0;
   var _wipes = 0;
@@ -894,11 +896,21 @@ final class _SocketTransport implements Transport, HeartbeatHost, CatchUpHost, C
   /// `journalError` and leave it for whatever trigger happens along next.
   /// `MemoryJournal` never throws this, so every other caller is unaffected.
   /// `skipStaleCatchUp` is the negative control: the write is left to fail.
+  ///
+  /// CANT-199. The refusal also MOVES THE EPOCH, before the trigger: it is a
+  /// wipe this transport did not decide, and a `/sync` page already in flight
+  /// was asked from the cursor the wipe destroyed. Without the move that page
+  /// passes `applyPage`'s epoch check, lands on the reloaded, empty store —
+  /// whose generation now matches what is stored, so nothing refuses it — and
+  /// leaves the cursor above messages the store no longer holds. With it the
+  /// page is dropped as "a wipe intervened" and the pass starts again from the
+  /// stored cursor. `staleKeepsEpoch` is the negative control.
   Future<Applied?> _applyLiveWrite(LiveWrite write) async {
     if (faults.skipStaleCatchUp) return _journal.applyLive(write, faults);
     try {
       return await _journal.applyLive(write, faults);
     } on JournalStale {
+      if (!faults.staleKeepsEpoch) _epoch++;
       _catchup.trigger();
       return null;
     }
@@ -1017,6 +1029,13 @@ final class _SocketTransport implements Transport, HeartbeatHost, CatchUpHost, C
       try {
         _emitApply(await _journal.applyPage(page, faults));
       } catch (e, st) {
+        // NOT LOAD-BEARING, and kept so the rule is one rule (CANT-199): every
+        // branch that sees `JournalStale` moves the epoch, which is what
+        // source_test.dart checks. Nothing can observe this one. The rethrow
+        // below fails the pass, only one pass runs at a time so no other page
+        // is in flight to drop, and the retry reads the epoch again from
+        // `settled()`.
+        if (e is JournalStale && !faults.staleKeepsEpoch) _epoch++;
         failure = e;
         trace = st;
         rethrow;

@@ -282,8 +282,10 @@ class SocketTransport implements Transport {
   private pendingWrites = 0
   /** The last journal write's failure, until a write succeeds (CANT-169). */
   private journalError: JournalError | null = null
-  /** Bumped when a wipe is decided: a page requested in an earlier epoch is
-   *  dropped, not applied over the empty store (obligation 4). */
+  /** Bumped when a wipe is decided — by this transport (obligation 4), or by
+   *  another tab, which this one learns as a `JournalStale` refusal
+   *  (CANT-199): a page requested in an earlier epoch is dropped, not applied
+   *  over the empty store. */
   private epoch = 0
   private wipes = 0
 
@@ -894,6 +896,15 @@ class SocketTransport implements Transport {
    * `MemoryJournal` never throws this, so every other caller is unaffected.
    * `skipStaleCatchUp` is the negative control: the write is left to reject
    * as it did before this ticket.
+   *
+   * CANT-199. The refusal also MOVES THE EPOCH, before the trigger: it is a
+   * wipe this transport did not decide, and a `/sync` page already in flight
+   * was asked from the cursor the wipe destroyed. Without the move that page
+   * passes `applyPage`'s epoch check, lands on the reloaded, empty store —
+   * whose generation now matches what is stored, so nothing refuses it — and
+   * leaves the cursor above messages the store no longer holds. With it the
+   * page is dropped as "a wipe intervened" and the pass starts again from the
+   * stored cursor. `staleKeepsEpoch` is the negative control.
    */
   private async applyLiveWrite(write: LiveWrite): Promise<Applied | null> {
     if (this.faults.skipStaleCatchUp) return this.journal.applyLive(write, this.faults)
@@ -901,6 +912,7 @@ class SocketTransport implements Transport {
       return await this.journal.applyLive(write, this.faults)
     } catch (e) {
       if (!(e instanceof JournalStale)) throw e
+      if (!this.faults.staleKeepsEpoch) this.epoch++
       this.catchup.trigger()
       return null
     }
@@ -1023,6 +1035,12 @@ class SocketTransport implements Transport {
       try {
         this.emitApply(await this.journal.applyPage(page, this.faults))
       } catch (e) {
+        // NOT LOAD-BEARING, and kept so the rule is one rule (CANT-199): every
+        // branch that sees `JournalStale` moves the epoch, which is what
+        // source.test.ts checks. Nothing can observe this one. The throw below
+        // fails the pass, only one pass runs at a time so no other page is in
+        // flight to drop, and the retry reads the epoch again from `settled()`.
+        if (e instanceof JournalStale && !this.faults.staleKeepsEpoch) this.epoch++
         out.failed = true
         out.error = e
         throw e
@@ -1030,7 +1048,9 @@ class SocketTransport implements Transport {
       out.applied = true
     })
     // A page that did not land is a failed catch-up, retried on its backoff —
-    // never "a wipe intervened", which would ask again at once, forever.
+    // never "a wipe intervened", which would ask again at once, forever. A
+    // page refused as stale is that too: the mirror has reloaded, and the
+    // retry asks from the stored cursor.
     if (out.failed) throw out.error
     return out.applied
   }

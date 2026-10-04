@@ -38,6 +38,7 @@ final class Faults implements JournalFaults {
     this.skipWipe = false,
     this.ignoreRetrigger = false,
     this.skipStaleCatchUp = false,
+    this.staleKeepsEpoch = false,
     this.keepHeldConversation = false,
     this.refreshUnlocked = false,
     this.noChain = false,
@@ -63,6 +64,7 @@ final class Faults implements JournalFaults {
       skipWipe: on.contains('skipWipe'),
       ignoreRetrigger: on.contains('ignoreRetrigger'),
       skipStaleCatchUp: on.contains('skipStaleCatchUp'),
+      staleKeepsEpoch: on.contains('staleKeepsEpoch'),
       keepHeldConversation: on.contains('keepHeldConversation'),
       refreshUnlocked: on.contains('refreshUnlocked'),
       noChain: on.contains('noChain'),
@@ -86,6 +88,7 @@ final class Faults implements JournalFaults {
     'skipWipe',
     'ignoreRetrigger',
     'skipStaleCatchUp',
+    'staleKeepsEpoch',
     'refreshUnlocked',
     'noChain',
     'proposeAfresh',
@@ -105,6 +108,7 @@ final class Faults implements JournalFaults {
         'skipWipe': skipWipe,
         'ignoreRetrigger': ignoreRetrigger,
         'skipStaleCatchUp': skipStaleCatchUp,
+        'staleKeepsEpoch': staleKeepsEpoch,
         'refreshUnlocked': refreshUnlocked,
         'noChain': noChain,
         'proposeAfresh': proposeAfresh,
@@ -142,6 +146,13 @@ final class Faults implements JournalFaults {
   /// catch-up, so the refused record sits above the stored cursor, unseen,
   /// until some other trigger happens to come along.
   final bool skipStaleCatchUp;
+
+  /// CANT-199, and like `skipStaleCatchUp` not a Go switch: a journal write
+  /// refused with `JournalStale` leaves the epoch where it was, so a `/sync`
+  /// page requested before another context's wipe still lands when it arrives
+  /// — on the reloaded, empty store — and moves the cursor above messages the
+  /// store no longer holds.
+  final bool staleKeepsEpoch;
 
   @override
   final bool keepHeldConversation;

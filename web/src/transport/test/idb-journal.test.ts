@@ -17,7 +17,9 @@ import { IdbJournal, JournalStale, type IdbJournalOptions } from '../idb-journal
 import type { Applied } from '../journal'
 import { browserLock } from '../seams'
 import { enrolled } from './credential-harness'
-import { bootstrapPage, conversation, flush, message, messageFrame, page, rig, user, uuid } from './harness'
+import type { Faults } from '../faults'
+import { bootstrapPage, conversation, deferred, flush, message, messageFrame, page, rig, user, uuid } from './harness'
+import type { SyncResponse } from '@/wire/generated'
 
 /** IndexedDB completes on setImmediate turns of its own; give it enough. */
 const settle = () => flush(40)
@@ -380,6 +382,113 @@ test('two tabs · negative control skipStaleCatchUp: the refused message sits un
   assert.equal(r.sync.requests.length, before, 'the current behavior: no catch-up follows the refusal')
   assert.equal(r.t.status().journalError?.name, 'JournalStale', 'the refusal surfaces as a journal error instead')
   assert.ok(!r.t.snapshot().messages.some((m) => m.id === live.id), 'and the refused message is not held')
+
+  r.t.stop()
+  a.close()
+})
+
+/**
+ * CANT-199. The same two tabs, with a `/sync` page IN FLIGHT across the wipe.
+ * Tab A holds 1–3 and has asked from 3; tab B wipes; a live message is refused
+ * as stale in A, whose mirror reloads to the empty store; and only then does
+ * the page A asked for from 3 arrive, carrying 4 and 5. The scripted server
+ * holds 1–5 at `log_seq` 5 throughout.
+ */
+async function pageInFlightAcrossAWipe(faults: Partial<Faults>) {
+  const factory = new IDBFactory()
+  const a = await IdbJournal.open({ factory })
+  const r = rig({ journal: a, faults })
+  const all = [1, 2, 3, 4, 5].map((n) => message(n))
+  r.sync.answer = () => bootstrapPage(3, all.slice(0, 3))
+  r.t.start()
+  const s = await r.connect()
+  await settle()
+  assert.equal(r.t.status().cursor, 3, 'tab A holds the bootstrap page')
+
+  const inFlight = deferred<SyncResponse>()
+  r.sync.answer = (req) =>
+    req.after === 0 ? bootstrapPage(5, all) : req.after === 3 ? inFlight.promise : page({ logSeq: 5 })
+  const before = r.sync.requests.length
+  r.t.catchUp()
+  await settle()
+  assert.deepEqual(r.sync.requests.slice(before).map((q) => q.after), [3], 'one page is in flight, asked from 3')
+
+  const b = await IdbJournal.open({ factory })
+  await b.wipe()
+  b.close()
+
+  s.frame(messageFrame(all[4]))
+  await settle()
+  assert.equal(r.t.status().cursor, null, 'the live write was refused as stale, and A reloaded the wiped store')
+  const refusedAt = r.sync.requests.length
+  assert.equal(refusedAt, before + 1, 'and nothing is asked while the page is still in flight: one catch-up at a time')
+
+  inFlight.resolve(page({ logSeq: 5, messages: all.slice(3) }))
+  await settle()
+  const out = {
+    cursor: r.t.status().cursor,
+    held: r.t.snapshot().messages.map((m) => m.logSeq).sort((x, y) => x - y),
+    askedAfterRefusal: r.sync.requests.slice(refusedAt).map((q) => q.after),
+    journalError: r.t.status().journalError,
+  }
+  r.t.stop()
+  a.close()
+  return out
+}
+
+test('two tabs · a page in flight across another tab’s wipe is dropped, and the pass starts again from the stored cursor', async () => {
+  const clean = await pageInFlightAcrossAWipe({})
+  assert.equal(clean.cursor, 5, 'the cursor is the server’s log_seq')
+  assert.deepEqual(clean.held, [1, 2, 3, 4, 5], 'and every message the server has is held')
+  assert.equal(clean.askedAfterRefusal[0], 0, 'the first request after the refusal asks from 0')
+  assert.equal(clean.journalError, null)
+})
+
+test('two tabs · negative control staleKeepsEpoch: the page lands on the wiped store, and the cursor sits above messages never asked for', async () => {
+  const broken = await pageInFlightAcrossAWipe({ staleKeepsEpoch: true })
+  assert.equal(broken.cursor, 5)
+  assert.deepEqual(broken.held, [4, 5], 'messages 1 to 3 are below the cursor and not held')
+  assert.ok(!broken.askedAfterRefusal.includes(0), 'and nothing ever asks from 0')
+})
+
+/**
+ * CANT-199 criterion 4, the twin of Dart's `two contexts · a page refused as
+ * stale is retried by its catch-up, from the stored cursor`: here it is the
+ * PAGE's own write that meets the wipe. That is a failed catch-up, held on its
+ * backoff — never "a wipe intervened", which asks again at once.
+ */
+test('two tabs · a page refused as stale is a failed catch-up, held on its backoff, and retried from the stored cursor', async () => {
+  const factory = new IDBFactory()
+  const a = await IdbJournal.open({ factory })
+  const r = rig({ journal: a })
+  r.sync.answer = () => bootstrapPage(3, [message(1), message(2), message(3)])
+  r.t.start()
+  await r.connect()
+  await settle()
+  assert.equal(r.t.status().cursor, 3)
+
+  const b = await IdbJournal.open({ factory })
+  await b.wipe()
+  b.close()
+
+  r.sync.answer = (req) =>
+    req.after === 0 ? bootstrapPage(4, [1, 2, 3, 4].map((n) => message(n))) : page({ logSeq: 4, messages: [message(4)] })
+  const before = r.sync.requests.length
+  const errors = r.t.status().stats.syncErrors
+  r.t.catchUp()
+  await settle()
+  assert.equal(r.sync.requests[before].after, 3, 'asked from A’s mirror, which the wipe had made stale')
+  assert.equal(r.t.status().stats.syncErrors, errors + 1, 'applyPage reported the refused page as failed: a failed catch-up')
+  assert.equal(r.t.status().cursor, null, 'and A reloaded what is stored')
+  assert.equal(r.sync.requests.length, before + 1, 'no /sync request is made before the backoff timer fires')
+
+  // With a ready session the catch-up retries on its own backoff.
+  await r.clock.advance(250)
+  await settle()
+  assert.deepEqual(r.sync.requests.slice(before + 1).map((q) => q.after), [0], 'the request made when it fires asks from the stored cursor')
+  assert.equal(r.t.status().cursor, 4)
+  assert.equal(r.t.status().messages, 4)
+  assert.equal(r.t.status().journalError, null)
 
   r.t.stop()
   a.close()

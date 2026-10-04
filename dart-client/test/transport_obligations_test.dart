@@ -266,6 +266,51 @@ Future<({int syncsPulled, int? askedFrom, String? journalError, int? cursor, boo
   );
 }
 
+// --- a page in flight across another context's wipe (CANT-199) -----------------------
+
+/// The same two contexts, with a `/sync` page IN FLIGHT across the wipe. A
+/// holds 1–3 and has asked from 3; B wipes; a live message is refused as stale
+/// in A, whose mirror reloads to the empty store; and only then does the page
+/// A asked for from 3 arrive, carrying 4 and 5. The scripted server holds 1–5
+/// at `log_seq` 5 throughout.
+Future<({int? cursor, List<int> held, List<int> askedAfterRefusal, String? journalError})> pageInFlightAcrossAWipe(Faults faults) async {
+  final path = catenaryDbPath(tempDir());
+  final a = SqliteJournal.open(path);
+  addTearDown(a.close);
+  final r = Rig(journal: a, faults: faults);
+  final all = [for (var n = 1; n <= 5; n++) message(n)];
+  r.sync.answer = (_) => bootstrapPage(3, all.sublist(0, 3));
+  r.t.start();
+  final s = await r.connect();
+  expect(r.t.status().cursor, 3, reason: 'context A holds the bootstrap page');
+
+  final inFlight = Completer<SyncResponse>();
+  r.sync.answer = (req) => req.after == 0 ? bootstrapPage(5, all) : (req.after == 3 ? inFlight.future : page(5));
+  final before = r.sync.requests.length;
+  r.t.catchUp();
+  await flush();
+  expect([for (final q in r.sync.requests.skip(before)) q.after], [3], reason: 'one page is in flight, asked from 3');
+
+  final b = SqliteJournal.open(path);
+  await b.wipe();
+  b.close();
+
+  s.frame(messageFrame(all[4]));
+  await flush();
+  expect(r.t.status().cursor, isNull, reason: 'the live write was refused as stale, and A reloaded the wiped store');
+  final refusedAt = r.sync.requests.length;
+  expect(refusedAt, before + 1, reason: 'and nothing is asked while the page is still in flight: one catch-up at a time');
+
+  inFlight.complete(page(5, messages: all.sublist(3)));
+  await flush();
+  return (
+    cursor: r.t.status().cursor,
+    held: [for (final m in r.t.snapshot().messages) m.logSeq]..sort(),
+    askedAfterRefusal: [for (final q in r.sync.requests.skip(refusedAt)) q.after],
+    journalError: r.t.status().journalError?.name,
+  );
+}
+
 void main() {
   test('obligation 1 · persist before render: nothing a page carries is observable before its cursor is written', obligation1);
 
@@ -551,5 +596,46 @@ void main() {
     expect(r.t.status().cursor, 4);
     expect(r.t.status().messages, 4);
     expect(r.t.status().journalError, isNull);
+  });
+
+  // The existing test above is left as CANT-192 wrote it (CANT-199 criterion
+  // 4), so the one thing its TypeScript twin asserts and it does not is here.
+  test('two contexts · a page refused as stale makes no request before its backoff timer fires', () async {
+    final path = catenaryDbPath(tempDir());
+    final a = SqliteJournal.open(path);
+    addTearDown(a.close);
+    final r = Rig(journal: a);
+    r.sync.answer = (_) => bootstrapPage(3, [message(1), message(2), message(3)]);
+    r.t.start();
+    await r.connect();
+
+    final b = SqliteJournal.open(path);
+    await b.wipe();
+    b.close();
+
+    r.sync.answer = (req) => req.after == 0 ? bootstrapPage(4, [for (var n = 1; n <= 4; n++) message(n)]) : page(4, messages: [message(4)]);
+    final before = r.sync.requests.length;
+    r.t.catchUp();
+    await flush();
+    await flush();
+    expect(r.t.status().stats.syncErrors, 1, reason: 'applyPage reported the refused page as failed');
+    expect(r.sync.requests.length, before + 1, reason: 'no /sync request is made before the backoff timer fires');
+    await r.clock.advance(250);
+    expect([for (final q in r.sync.requests.skip(before + 1)) q.after], [0], reason: 'the request made when it fires asks from the stored cursor');
+  });
+
+  test('two contexts · a page in flight across another context\'s wipe is dropped, and the pass starts again from the stored cursor', () async {
+    final clean = await pageInFlightAcrossAWipe(Faults.none);
+    expect(clean.cursor, 5, reason: 'the cursor is the server\'s log_seq');
+    expect(clean.held, [1, 2, 3, 4, 5], reason: 'and every message the server has is held');
+    expect(clean.askedAfterRefusal.first, 0, reason: 'the first request after the refusal asks from 0');
+    expect(clean.journalError, isNull);
+  });
+
+  test('two contexts · negative control staleKeepsEpoch: the page lands on the wiped store, and the cursor sits above messages never asked for', () async {
+    final broken = await pageInFlightAcrossAWipe(const Faults(staleKeepsEpoch: true));
+    expect(broken.cursor, 5);
+    expect(broken.held, [4, 5], reason: 'messages 1 to 3 are below the cursor and not held');
+    expect(broken.askedAfterRefusal, isNot(contains(0)), reason: 'and nothing ever asks from 0');
   });
 }
