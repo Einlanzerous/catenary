@@ -353,7 +353,7 @@ fi
 # is not there fails rather than skips. The controls run in the same lane —
 # the fault, the partition that held nothing, the skipped comparison and the
 # opening that left a device without the room — each watched failing.
-step "CANT-46 · cross-client convergence — TypeScript against the Go reference, S1–S4 in both role assignments, and the controls"
+step "CANT-46 · cross-client convergence — TypeScript against the Go reference, S1–S4 in both role assignments, the controls, and S5 (the outbox)"
 if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   ts_lane "$LOGDIR/v-converge.log" 2 "$ROOT/server" ./cmd/soakrig/ '^(TestConvergenceTSAgainstGo|TestThePartitionProxyHoldsAndHeals)$'
   result $? "S1–S4 converge, both ways round: $(grep -oE 'schedule=S[0-9] verdict=[a-z_]+' "$LOGDIR/v-converge.log" | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2" "$3, $1; sep=", "}'); the partition proxy holds and heals for both clients"

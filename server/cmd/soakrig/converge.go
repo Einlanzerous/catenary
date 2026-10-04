@@ -56,11 +56,12 @@ package main
 // S5 PUTS THE OUTBOX INSIDE THE TEST (ruling 1 → option 0). A partition is
 // exactly when an outbox matters: both devices are held, each composes three
 // texts through its driver's real outbox, and both are healed. Beyond the
-// three comparisons it owes a fourth: every composed client_id committed
-// exactly once, both devices holding all six at the server's seq, and both
-// outboxes empty. The Go reference client has no outbox, so until the Dart
-// driver exists S5 runs with two TypeScript devices, which proves the
-// schedule and the commands and nothing about agreement.
+// three kinds of comparison it owes a fourth kind, the sixth comparison a run
+// makes: every composed client_id committed exactly once, both devices
+// holding all six at the server's seq, and both outboxes empty. The Go
+// reference client has no outbox, so until the Dart driver exists S5 runs
+// with two TypeScript devices, which proves the schedule and the commands and
+// nothing about agreement.
 //
 // THREE COMPARISONS, all required to have run: A against B (SameState); each
 // device against the server (the unchanged client.Compare); and each device's
@@ -720,10 +721,10 @@ func (r *convergeRun) committed(ctx context.Context, ids []wire.Uuid) (int, erro
 	return n, err
 }
 
-// judgeOutbox is S5's fourth comparison: every composed client_id committed
-// exactly once, both devices holding each at the server's seq, and both
-// outboxes empty — waited for, bounded, since an entry leaves only when the
-// record carrying its client_id lands.
+// judgeOutbox is S5's fourth kind of comparison, and the sixth a run makes:
+// every composed client_id committed exactly once, both devices holding each
+// at the server's seq, and both outboxes empty — waited for, bounded, since an
+// entry leaves only when the record carrying its client_id lands.
 func (r *convergeRun) judgeOutbox(ctx context.Context, snaps [2]client.Snapshot) {
 	rows, err := r.h.pool.Query(ctx, `SELECT client_id::text, id::text, seq FROM messages WHERE author_id = $1 AND client_id::text = ANY($2)`, r.p, r.composed)
 	if err != nil {
