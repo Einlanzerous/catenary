@@ -29,7 +29,7 @@ type partitionProxy struct {
 	mu      sync.Mutex
 	conns   map[net.Conn]struct{}
 	held    bool
-	refused int64 // connections closed unforwarded since the last hold()
+	refused int64 // connections closed unforwarded since the last hold() or resetRefused()
 
 	// debugHoldIsNoOp plants a partition that is not one, for the control
 	// that proves the rig's partition-bit check can fail. Test only.
@@ -145,6 +145,17 @@ func (p *partitionProxy) refusedDials() int64 {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.refused
+}
+
+// resetRefused returns that count and starts it again from zero, without
+// touching the hold: for a rig that relaunches a client behind a held proxy
+// and wants the new client's refused dial, not the old one's.
+func (p *partitionProxy) resetRefused() int64 {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	n := p.refused
+	p.refused = 0
+	return n
 }
 
 // carrying is how many connections are being forwarded right now, both ends

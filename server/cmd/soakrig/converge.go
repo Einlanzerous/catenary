@@ -507,8 +507,11 @@ func (r *convergeRun) schedule(ctx context.Context) bool {
 func (r *convergeRun) s1(ctx context.Context) bool {
 	r.hold(r.b)
 	acks, ok := r.sendN(ctx, r.room, 2)
+	if !ok {
+		return false
+	}
 	next := acks[0].Seq + 1
-	if !ok || !r.read(ctx, r.a, acks[0], func(m *wire.Seq) bool { return m != nil && *m == next }) {
+	if !r.read(ctx, r.a, acks[0], func(m *wire.Seq) bool { return m != nil && *m == next }) {
 		return false
 	}
 	if _, ok := r.sendN(ctx, r.room, 2); !ok {
@@ -585,12 +588,18 @@ func (r *convergeRun) s4(ctx context.Context) bool {
 		return r.fail("S4: read device B before the kill: %v", err)
 	}
 	r.b.kill()
+	// From zero, so the partition bit below is proven by the RELAUNCHED
+	// client's own refused dial and not by one the dead client made.
+	r.rep.RefusedDials += r.b.proxy.resetRefused()
 	if err := r.b.launch(); err != nil {
 		return r.fail("S4: relaunch device B: %v", err)
 	}
 	acks, ok := r.sendN(ctx, r.room, 2)
+	if !ok {
+		return false
+	}
 	last := acks[1].Seq
-	if !ok || !r.read(ctx, r.a, acks[1], func(m *wire.Seq) bool { return m == nil || *m > last }) {
+	if !r.read(ctx, r.a, acks[1], func(m *wire.Seq) bool { return m == nil || *m > last }) {
 		return false
 	}
 	// The partition bit first: it waits for the relaunched device to have
