@@ -52,7 +52,7 @@ final class OutboxMessage {
   final bool retrying;
 }
 
-OutboxMessage project(OutboxItem item) {
+OutboxMessage projectOutbox(OutboxItem item) {
   final entry = item.entry;
   final ack = item.ack;
   return OutboxMessage(

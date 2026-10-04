@@ -271,7 +271,7 @@ Future<void> c4(F f) async {
   await flush();
   final ack = transport.ack(moved.clientId, cb);
   await flush();
-  final shown = project(ctx.item(moved.clientId)!);
+  final shown = projectOutbox(ctx.item(moved.clientId)!);
   same(shown.state, OutboxState.sent, 'acked');
   same(shown.conversationId, cb, 'shown in the ack\'s conversation');
   same(shown.seq, ack.seq, 'at the ack\'s seq');
@@ -282,8 +282,8 @@ Future<void> c4(F f) async {
   final dup = transport.ack(moved.clientId, cb);
   same(dup.duplicate, true, 'a replay is answered duplicate');
   await flush();
-  same(project(ctx.item(moved.clientId)!).state, OutboxState.sent, 'still sent');
-  same(project(ctx.item(moved.clientId)!).seq, ack.seq, 'at the original seq');
+  same(projectOutbox(ctx.item(moved.clientId)!).state, OutboxState.sent, 'still sent');
+  same(projectOutbox(ctx.item(moved.clientId)!).seq, ack.seq, 'at the original seq');
 
   // One entry in each status, each then met by its record.
   final internal = await ctx.composeText('internal');
@@ -353,7 +353,7 @@ Future<void> c7(F f) async {
     await flush();
     final item = ctx.item(e.clientId)!;
     same(item.state, OutboxState.failed, '${code.wire} fails at once');
-    same(project(item).error, 'refused: ${code.wire}', 'the server\'s message is the inline error');
+    same(projectOutbox(item).error, 'refused: ${code.wire}', 'the server\'s message is the inline error');
     same(jsonEncode(await ctx.stored(bystander.clientId)), before, 'an error naming another clientId changes nothing else');
     same(ctx.item(bystander.clientId)?.state, OutboxState.sending, 'the bystander is still in flight');
     final sent = transport.framesFor(e.clientId).length;
@@ -405,7 +405,7 @@ Future<void> c8(F f) async {
   final item = ctx.item(bare.clientId)!;
   same(item.state, OutboxState.failed, 'a bare 1008 fails the in-flight entry');
   check(item.entry.lastError is Bare1008, 'its error is the bare 1008');
-  same(project(item).error, bare1008Message, 'with the fixed message');
+  same(projectOutbox(item).error, bare1008Message, 'with the fixed message');
   transport.open();
   await flush();
   same(transport.framesFor(bare.clientId).length, 1, 'and it is not resent');
@@ -450,7 +450,7 @@ Future<void> c9(F f) async {
   final second = await context(store: store, faults: f.outbox, lock: lock.lock());
   final item = ctx.item(e.clientId)!;
   same(item.state, OutboxState.failed, 'survives a relaunch as FAILED');
-  same(project(item).error, 'removed from the room', 'with its inline error');
+  same(projectOutbox(item).error, 'removed from the room', 'with its inline error');
   t2.open();
   await flush();
   await clock.advance(outboxBackoffCapMs * 2);
@@ -766,7 +766,7 @@ void main() {
       await flush();
       final item = ctx.item(entry.clientId)!;
       expect(item.state, OutboxState.failed);
-      expect(project(item).error, RefusingUploader.message);
+      expect(projectOutbox(item).error, RefusingUploader.message);
       expect(transport.frames, isEmpty, reason: 'nothing was sent without its handle');
       await ctx.outbox.retry(entry.clientId);
       await ctx.clock.advance(outboxBackoffCapMs);
@@ -776,7 +776,7 @@ void main() {
       // nothing that will send it.
       final again = ctx.item(entry.clientId)!;
       expect(again.state, OutboxState.failed, reason: 'failed again, not stuck pending');
-      expect(project(again).error, RefusingUploader.message);
+      expect(projectOutbox(again).error, RefusingUploader.message);
       expect((await ctx.stored(entry.clientId))!.status, OutboxStatus.failed, reason: 'and stored so');
       expect(await ctx.outbox.discard(entry.clientId), isTrue, reason: 'so DELETE is still offered');
       expect(await ctx.store.list(), isEmpty);
@@ -841,7 +841,7 @@ void main() {
         attachments: const [OutboundAttachmentDraft(kind: 'image', filename: 'a.png'), OutboundAttachmentDraft(kind: 'image', filename: 'b.png')],
       ));
       await flush();
-      expect(project(ctx.item(entry.clientId)!).error, 'the second one would not go');
+      expect(projectOutbox(ctx.item(entry.clientId)!).error, 'the second one would not go');
       expect(transport.frames, isEmpty);
       refuseSecond = false;
       await ctx.outbox.retry(entry.clientId);
