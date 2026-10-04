@@ -49,7 +49,7 @@ class StatesScreen extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: CatenaryMetrics.s4, vertical: CatenaryMetrics.s2),
           child: Row(
             children: [
-              // The mark a thread shows, and the word a long-press gives.
+              // The mark a thread shows; the word is its semantics label.
               SizedBox(width: 64, child: StatusMark(status: s, retrying: retrying)),
               const Spacer(),
               StatusLabel(status: s, readBy: readBy, memberCount: memberCount, retrying: retrying),

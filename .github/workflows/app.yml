@@ -10,6 +10,16 @@ name: app
 # CSS to hold it there, so a pull request that edits only the web client's
 # tokens is exactly the one that makes the app's table stale.
 #
+# web/smoke.ts and server/spec/testdata/read-fraction.json are in for the same
+# reason: app/test/typing_test.dart and app/test/states_test.dart read them.
+# app/test/pins_test.dart derives that list from what app/test opens and fails
+# when either list here misses one (CANT-203 ruling 2).
+#
+# web/smoke.ts and server/spec/testdata/read-fraction.json are in for the same
+# reason: app/test/typing_test.dart and app/test/states_test.dart read them.
+# app/test/pins_test.dart derives that list from what app/test opens and fails
+# when either list here misses one (CANT-203 ruling 2).
+#
 # dart/ and dart-client/ are in because the app WILL BE built on them: the
 # generated wire package and the protocol half (CANT-42). The skeleton imports
 # neither yet, so today a change there triggers a build that cannot see it;
@@ -20,6 +30,8 @@ on:
     paths:
       - "app/**"
       - "web/src/styles/tokens.css"
+      - "web/smoke.ts"
+      - "server/spec/testdata/read-fraction.json"
       - "dart/**"
       - "dart-client/**"
       - ".github/workflows/app.yml"
@@ -28,6 +40,8 @@ on:
     paths:
       - "app/**"
       - "web/src/styles/tokens.css"
+      - "web/smoke.ts"
+      - "server/spec/testdata/read-fraction.json"
       - "dart/**"
       - "dart-client/**"
       - ".github/workflows/app.yml"

@@ -1,8 +1,9 @@
 // Delivery state at a phone's width (narrow call M2): status words become
 // marks. THE ONLY PLACE GLYPHS ARE PERMITTED — `•` sent, `••` delivered, `••`
 // in the accent for read. FAILED stays a word, in the fault color, because it
-// needs a tap target next to it. A long-press gives the full word, which is
-// `statusLabel` in store/status.dart.
+// needs a tap target next to it. The full word is the mark's semantics label
+// (`statusLabel` in store/status.dart), so a screen reader says SENT or READ
+// where the eye sees a dot; the mark itself offers no gesture.
 //
 // `queued` and `sending` are the outbox's own states, which the canvas's
 // marks do not cover; they stay words too, in meta grey, so a message that
