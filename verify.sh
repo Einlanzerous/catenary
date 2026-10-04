@@ -9,7 +9,8 @@
 # FIVE STEPS HERE SKIP rather than fail when what they need is absent, and a
 # skip is not a pass:
 #
-#   Dart            both the analyze and the conformance runner — and the
+#   Dart            both the analyze and the conformance runner, and the
+#                   Dart client's analyze and tests (CANT-42) — and the
 #                   dependency step below, on the same condition — when `dart`
 #                   is not on PATH or at $DART.
 #   the database    the store's schema tests, when CATENARY_TEST_DATABASE_URL is
@@ -143,12 +144,18 @@ web_deps_stale() {
   [ "$ROOT/web/package-lock.json" -nt "$ROOT/web/node_modules/.package-lock.json" ] && return 0
   return 1
 }
-DART_STAMP="$ROOT/dart/.dart_tool/.verify-resolved"
+# One stamp per package: `dart/` (catenary_wire) and `dart-client/`
+# (catenary_client, CANT-42), which depends on the first by path.
+dart_stamp() {
+  printf '%s/%s/.dart_tool/.verify-resolved' "$ROOT" "$1"
+}
 dart_deps_stale() {
-  [ -f "$ROOT/dart/.dart_tool/package_config.json" ] || return 0
-  [ -f "$DART_STAMP" ] || return 0
-  [ "$ROOT/dart/pubspec.yaml" -nt "$DART_STAMP" ] && return 0
-  [ "$ROOT/dart/pubspec.lock" -nt "$DART_STAMP" ] && return 0
+  local stamp
+  stamp="$(dart_stamp "$1")"
+  [ -f "$ROOT/$1/.dart_tool/package_config.json" ] || return 0
+  [ -f "$stamp" ] || return 0
+  [ "$ROOT/$1/pubspec.yaml" -nt "$stamp" ] && return 0
+  [ "$ROOT/$1/pubspec.lock" -nt "$stamp" ] && return 0
   return 1
 }
 
@@ -163,14 +170,16 @@ fi
 # no SDK skips here for the same reason and on the same condition it skips
 # there — one absence lane, named twice, not a fifth one.
 if command -v dart >/dev/null; then
-  if dart_deps_stale; then
-    (cd "$ROOT/dart" && dart pub get) >"$LOGDIR/v-dart-pub-get.log" 2>&1
-    rc=$?
-    [ $rc -eq 0 ] && touch "$DART_STAMP"
-    result $rc "dart pub get — dart dependencies were absent or behind pubspec"
-  else
-    result 0 "dart dependencies are current"
-  fi
+  for pkg in dart dart-client; do
+    if dart_deps_stale "$pkg"; then
+      (cd "$ROOT/$pkg" && dart pub get) >"$LOGDIR/v-$pkg-pub-get.log" 2>&1
+      rc=$?
+      [ $rc -eq 0 ] && touch "$(dart_stamp "$pkg")"
+      result $rc "dart pub get — $pkg dependencies were absent or behind pubspec"
+    else
+      result 0 "$pkg dependencies are current"
+    fi
+  done
 else
   printf '   \033[33mSKIP\033[0m dart not on PATH — nothing to resolve\n'
 fi
@@ -208,6 +217,21 @@ if command -v dart >/dev/null; then
   result $? "dart analyze"
   (cd "$ROOT/dart" && dart run bin/conformance.dart) >"$LOGDIR/v-dart.log" 2>&1
   result $? "$(grep -oE 'all green — [0-9]+ vectors|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-dart.log" | tail -1)"
+else
+  printf '   \033[33mSKIP\033[0m dart not on PATH (set DART=/path/to/dart-sdk/bin)\n'
+fi
+
+# CANT-42: the Dart client's protocol half, `catenary_client`. Its tests open
+# real SQLite files through package:sqlite3, whose library a build hook
+# provides, so this step is also what proves the binding on the machine it
+# runs on. The count is printed because "All tests passed!" says nothing about
+# how many there were.
+step "CANT-42 · the Dart client (dart-client/)"
+if command -v dart >/dev/null; then
+  (cd "$ROOT/dart-client" && dart analyze) >"$LOGDIR/v-dart-client-analyze.log" 2>&1
+  result $? "dart analyze"
+  (cd "$ROOT/dart-client" && dart test --reporter=expanded --no-color) >"$LOGDIR/v-dart-client-test.log" 2>&1
+  result $? "dart test ($(grep -oE '\+[0-9]+( ~[0-9]+)?( -[0-9]+)?: (All tests passed!|Some tests failed\.)' "$LOGDIR/v-dart-client-test.log" | tail -1))"
 else
   printf '   \033[33mSKIP\033[0m dart not on PATH (set DART=/path/to/dart-sdk/bin)\n'
 fi
