@@ -756,6 +756,45 @@ void main() {
     });
   });
 
+  // CANT-202 ruling 0: the holder re-reads the store on a timer, so an entry another context composed is sent without a compose, ack or reconnect
+  // in the holder.
+  group('the holder\'s re-read', () {
+    // Two contexts over one outbox file; B composes while A holds the lock. Returns how many frames A has written for the entry after the clock
+    // advances `holderRereadMs`, with nothing else happening in A.
+    Future<int> framesAfterOneInterval(num rereadMs) async {
+      final dir = tempDir();
+      final clock = FakeClock();
+      final server = ScriptedServer();
+      final tA = ScriptedTransport(server);
+      final tB = ScriptedTransport(server);
+      SqliteDrainLock drainLock() {
+        final locks = SqliteLocks(dir, timers: clock);
+        addTearDown(locks.close);
+        return SqliteDrainLock(locks, timers: clock);
+      }
+
+      await context(store: openStore(dir), transport: tA, clock: clock, lock: drainLock(), rereadMs: rereadMs);
+      final b = await context(store: openStore(dir), transport: tB, clock: clock, lock: drainLock(), rereadMs: rereadMs);
+      await flush();
+      tA.open();
+      await flush();
+      tB.open();
+      await clock.advance(200);
+      final entry = await b.composeText('from the other context');
+      await clock.advance(holderRereadMs);
+      same(tB.frames.length, 0, 'only the holder writes frames');
+      return tA.framesFor(entry.clientId).length;
+    }
+
+    test('with the interval as built, the holder sends it after holderRereadMs', () async {
+      same(await framesAfterOneInterval(holderRereadMs), 1, 'the holder sent it with no compose, ack or reconnect of its own');
+    });
+
+    test('with the interval at one hour, the same advance leaves it unsent', () async {
+      same(await framesAfterOneInterval(3600000), 0, 'nothing woke the holder');
+    });
+  });
+
   group('attachments', () {
     test('the default uploader refuses, and the entry fails with its message — never a loop', () async {
       final transport = ScriptedTransport();
