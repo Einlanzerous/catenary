@@ -239,6 +239,12 @@ if command -v dart >/dev/null; then
   result $? "dart analyze"
   (cd "$ROOT/dart-client" && dart test --reporter=expanded --no-color) >"$LOGDIR/v-dart-client-test.log" 2>&1
   result $? "dart test ($(grep -oE '\+[0-9]+( ~[0-9]+)?( -[0-9]+)?: (All tests passed!|Some tests failed\.)' "$LOGDIR/v-dart-client-test.log" | tail -1))"
+  # The third runner of CANT-156's decision vectors, beside `npm run decisions`
+  # above and Go's TestTheDecisionVectors below. Its line says how many cases
+  # it ran AND which kinds it deferred, by name: a kind this package has no
+  # code for yet is reported, never silently absent.
+  (cd "$ROOT/dart-client" && dart run bin/decisions.dart) >"$LOGDIR/v-dart-decisions.log" 2>&1
+  result $? "$(grep -oE 'all green — [0-9]+ decision vectors.*|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-dart-decisions.log" | tail -1)"
 else
   printf '   \033[33mSKIP\033[0m dart not on PATH (set DART=/path/to/dart-sdk/bin)\n'
 fi

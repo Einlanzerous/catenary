@@ -8,10 +8,11 @@
 /// correct client. Never set outside a test or a rig proving that an assertion
 /// can fail.
 ///
-/// The names are the TypeScript names, because the lanes set them by name.
+/// THE NAMES ARE THE TYPESCRIPT NAMES, because the lanes set them by name, and
+/// a test reads faults.ts and fails when `Faults.names` differs from it.
 library;
 
-/// The journal's two switches, which is all a `Journal` implementation reads.
+/// The journal's three switches, which is all a `Journal` implementation reads.
 abstract interface class JournalFaults {
   /// Obligation 2: a live `message` frame moves the cursor to its log_seq.
   bool get cursorOnLiveFrames;
@@ -20,6 +21,13 @@ abstract interface class JournalFaults {
   /// log_seq is above the cursor, whatever its id. Counts a message twice when
   /// a page re-carries one that arrived live, and drops a CANT-92 re-emission.
   bool get dedupeByLogSeq;
+
+  /// CANT-46, Go's `KeepHeldConversation`: a `Conversation` served for a
+  /// conversation the journal already holds is dropped and the held record
+  /// stays, on a page and on a live frame alike. The client keeps the
+  /// `firstUnreadSeq` and `headSeq` it had and is still clean under
+  /// `client.Compare` — the control for the convergence rig's `SameState`.
+  bool get keepHeldConversation;
 }
 
 final class Faults implements JournalFaults {
@@ -30,6 +38,7 @@ final class Faults implements JournalFaults {
     this.skipWipe = false,
     this.ignoreRetrigger = false,
     this.skipStaleCatchUp = false,
+    this.keepHeldConversation = false,
     this.refreshUnlocked = false,
     this.noChain = false,
     this.proposeAfresh = false,
@@ -40,8 +49,72 @@ final class Faults implements JournalFaults {
     this.alwaysTerminal = false,
   });
 
+  /// The switches named in [set], which is how a driver is told them. A name
+  /// this list does not know is refused: a fault that silently did nothing
+  /// would make its lane's control pass for the wrong reason.
+  factory Faults.named(Iterable<String> set) {
+    final on = set.toSet();
+    final unknown = on.difference(names.toSet());
+    if (unknown.isNotEmpty) throw ArgumentError('faults: unknown switch ${unknown.join(', ')}');
+    return Faults(
+      cursorOnLiveFrames: on.contains('cursorOnLiveFrames'),
+      dedupeByLogSeq: on.contains('dedupeByLogSeq'),
+      endCatchUpEarly: on.contains('endCatchUpEarly'),
+      skipWipe: on.contains('skipWipe'),
+      ignoreRetrigger: on.contains('ignoreRetrigger'),
+      skipStaleCatchUp: on.contains('skipStaleCatchUp'),
+      keepHeldConversation: on.contains('keepHeldConversation'),
+      refreshUnlocked: on.contains('refreshUnlocked'),
+      noChain: on.contains('noChain'),
+      proposeAfresh: on.contains('proposeAfresh'),
+      unbounded: on.contains('unbounded'),
+      presentRefusedToken: on.contains('presentRefusedToken'),
+      neverPresentRefusedToken: on.contains('neverPresentRefusedToken'),
+      neverTerminal: on.contains('neverTerminal'),
+      alwaysTerminal: on.contains('alwaysTerminal'),
+    );
+  }
+
   /// A correct client.
   static const none = Faults();
+
+  /// Every switch, in faults.ts's order.
+  static const names = [
+    'cursorOnLiveFrames',
+    'dedupeByLogSeq',
+    'endCatchUpEarly',
+    'skipWipe',
+    'ignoreRetrigger',
+    'skipStaleCatchUp',
+    'refreshUnlocked',
+    'noChain',
+    'proposeAfresh',
+    'unbounded',
+    'presentRefusedToken',
+    'neverPresentRefusedToken',
+    'neverTerminal',
+    'alwaysTerminal',
+    'keepHeldConversation',
+  ];
+
+  /// Each switch by name, which is what a status or a log line prints.
+  Map<String, bool> toMap() => {
+        'cursorOnLiveFrames': cursorOnLiveFrames,
+        'dedupeByLogSeq': dedupeByLogSeq,
+        'endCatchUpEarly': endCatchUpEarly,
+        'skipWipe': skipWipe,
+        'ignoreRetrigger': ignoreRetrigger,
+        'skipStaleCatchUp': skipStaleCatchUp,
+        'refreshUnlocked': refreshUnlocked,
+        'noChain': noChain,
+        'proposeAfresh': proposeAfresh,
+        'unbounded': unbounded,
+        'presentRefusedToken': presentRefusedToken,
+        'neverPresentRefusedToken': neverPresentRefusedToken,
+        'neverTerminal': neverTerminal,
+        'alwaysTerminal': alwaysTerminal,
+        'keepHeldConversation': keepHeldConversation,
+      };
 
   @override
   final bool cursorOnLiveFrames;
@@ -69,6 +142,9 @@ final class Faults implements JournalFaults {
   /// catch-up, so the refused record sits above the stored cursor, unseen,
   /// until some other trigger happens to come along.
   final bool skipStaleCatchUp;
+
+  @override
+  final bool keepHeldConversation;
 
   // CANT-31 §2, §3 and §5, and CANT-127/129. Declared here so the switch list
   // is the reference's whole list; the credential layer is what reads them.

@@ -8,7 +8,15 @@
 /// written by hand here.
 library;
 
+export 'src/backoff.dart';
+export 'src/closes.dart';
+export 'src/credential.dart';
 export 'src/db.dart';
 export 'src/faults.dart';
+export 'src/io_seams.dart';
 export 'src/journal.dart';
+export 'src/seams.dart';
 export 'src/sqlite_journal.dart';
+export 'src/status.dart';
+export 'src/terminal.dart';
+export 'src/transport.dart';

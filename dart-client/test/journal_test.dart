@@ -103,6 +103,19 @@ void main() {
         expect(r.readBy, isNull, reason: 'the re-emission below the cursor is dropped');
       });
 
+      test('a served conversation replaces the held one; under keepHeldConversation it does not, and nothing else changes', () async {
+        Future<({int? unread, int? cursor, int messages})> reServed(Faults faults) async {
+          final j = open();
+          await j.applyPage(page(1, messages: [message(1)], conversations: [conversation(conv, firstUnreadSeq: 1, headSeq: 1)], users: [user(other)]), faults);
+          await j.applyPage(page(2, messages: [message(2)], conversations: [conversation(conv, firstUnreadSeq: 2, headSeq: 2)]), faults);
+          await j.applyLive(LiveWrite(conversations: [conversation(conv, firstUnreadSeq: 3, headSeq: 2)]), faults);
+          return (unread: j.snapshot().conversations.single.firstUnreadSeq, cursor: j.cursor, messages: j.messageCount);
+        }
+
+        expect(await reServed(Faults.none), (unread: 3, cursor: 2, messages: 2));
+        expect(await reServed(const Faults(keepHeldConversation: true)), (unread: 1, cursor: 2, messages: 2));
+      });
+
       test('a wipe clears messages, conversations, users, the cursor and the counted log, and is counted', () async {
         final j = open();
         await j.applyPage(bootstrapPage(3, [message(1), message(2), message(3)]), Faults.none);

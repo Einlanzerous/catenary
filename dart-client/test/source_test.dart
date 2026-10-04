@@ -8,6 +8,9 @@
 ///    (CANT-46 ruling 0).
 /// 2. TWO FILES (CANT-42 ruling 1). Journal and transport code never names the
 ///    outbox's file. The outbox's side of this rule lands with the outbox.
+/// 3. NO MONOTONIC CLOCK (CANT-31 §1), and NO HEARTBEAT NUMBER that did not
+///    arrive on `ready` (CANT-23): the reference's own two greps, over this
+///    package's source.
 library;
 
 import 'dart:convert';
@@ -66,6 +69,16 @@ bool isOutboxSource(String path) => path.split('/').any((part) => part.startsWit
 List<String> outboxFileNamed(String path, String source) =>
     !isOutboxSource(path) && source.contains(outboxFile) ? ['$path names the outbox\'s file'] : [];
 
+/// Source with comments removed, so prose citing a number is not code.
+String code(String source) => source.replaceAll(RegExp(r'/\*[\s\S]*?\*/'), '').replaceAll(RegExp(r'//.*$', multiLine: true), '');
+
+/// A monotonic clock: a device that slept measures six hours as a few seconds
+/// on one, so nothing is scheduled or measured on it.
+final monotonic = RegExp(r'\bStopwatch\b|Timeline\.now|\.elapsed(Ticks|Micro|Milli)');
+
+final heartbeatDefault = RegExp(r'\b(35|105)\b');
+final heartbeatAssigned = RegExp(r'(heartbeat|interval|pong|ping|missed)\w*\s*[:=]\s*[1-9]\d', caseSensitive: false);
+
 void main() {
   final packages = resolvedPackages();
   bool isFlutterPackage(String name) {
@@ -116,5 +129,23 @@ void main() {
     expect(outboxFileNamed('lib/src/outbox/store.dart', "const outboxDbFile = '$outboxFile.db';"), isEmpty);
     expect(outboxFileNamed('lib/src/outbox_store.dart', "const outboxDbFile = '$outboxFile.db';"), isEmpty);
     expect(outboxFileNamed('lib/src/db.dart', "const catenaryDbFile = 'catenary.db';"), isEmpty);
+  });
+
+  test('no monotonic clock anywhere under lib/', () {
+    for (final MapEntry(:key, :value) in sources().entries) {
+      expect(monotonic.hasMatch(code(value)), isFalse, reason: key);
+    }
+    expect(monotonic.hasMatch(code('final w = Stopwatch()..start(); // timing')), isTrue, reason: 'planted');
+    expect(monotonic.hasMatch(code('// a Stopwatch would be wrong here')), isFalse, reason: 'prose is not code');
+  });
+
+  test('no numeric heartbeat constant under lib/', () {
+    for (final MapEntry(:key, :value) in sources().entries) {
+      final c = code(value);
+      expect(heartbeatDefault.hasMatch(c), isFalse, reason: '$key: neither default appears as a number');
+      expect(heartbeatAssigned.hasMatch(c), isFalse, reason: '$key: nothing heartbeat-named is assigned a number');
+    }
+    expect(heartbeatDefault.hasMatch(code('const interval = Duration(seconds: 35);')), isTrue, reason: 'planted');
+    expect(heartbeatAssigned.hasMatch(code('var missedPongLimit = 20;')), isTrue, reason: 'planted');
   });
 }
