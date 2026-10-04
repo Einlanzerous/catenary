@@ -69,6 +69,30 @@ func resolveDriver(cfg Config) (string, error) {
 	return filepath.Join(web, "dist-transport-driver", "driver.js"), nil
 }
 
+// resolveDartDriver is resolveDriver for the Dart client: the named
+// executable, or one built from the repo root with `dart build cli`, which
+// bundles the driver with the SQLite library its build hook provides. A named
+// driver that is missing is an error, never a quiet rebuild somewhere else.
+func resolveDartDriver(cfg Config) (string, error) {
+	if cfg.DartDriver != "" {
+		if _, err := os.Stat(cfg.DartDriver); err != nil {
+			return "", fmt.Errorf("-dart-driver %s: %w", cfg.DartDriver, err)
+		}
+		return cfg.DartDriver, nil
+	}
+	root, err := repoRoot(cfg.RepoRoot)
+	if err != nil {
+		return "", err
+	}
+	pkg := filepath.Join(root, "dart-client")
+	build := exec.Command("dart", "build", "cli", "-t", "bin/driver.dart", "-o", "build/driver")
+	build.Dir = pkg
+	if b, err := build.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("dart build cli (in %s): %w\n%s", pkg, err, b)
+	}
+	return filepath.Join(pkg, "build", "driver", "bundle", "bin", "driver"), nil
+}
+
 // repoRoot finds the catenary repo root from this file's own compiled-in
 // source path — server/cmd/soakrig/serverproc.go, three directories under the
 // root — so a run started from any working directory finds ./cmd/catenary

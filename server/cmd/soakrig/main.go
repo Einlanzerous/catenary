@@ -79,7 +79,9 @@ usage:
                                restart, then every client's journal compared
                                against the server's committed log. -cohort=go,
                                ts or mixed picks the Go client, the TypeScript
-                               transport through its Node driver, or both.
+                               transport through its Node driver, or both;
+                               dart and mixed-dart do the same with the Dart
+                               client through its own driver.
 
   soakrig provision [flags]   create ONE new account and device against a
                                database this process reaches directly, and
@@ -148,10 +150,14 @@ func runSoakCmd(args []string) int {
 	fs.StringVar(&cfg.ServerLogDir, "server-log-dir", "", "write the server subprocess's stdout/stderr here, one file per instance (across the restart)")
 	fs.StringVar(&cfg.Cohort, "cohort", cohortGo,
 		"which client runs each account: go (internal/client), ts (the TypeScript transport, through its Node driver), "+
-			"or mixed (the two alternating by index, in the same room, judged by one Compare)")
+			"mixed (the two alternating by index, in the same room, judged by one Compare), "+
+			"or dart and mixed-dart (the same two shapes with the Dart client through its own driver)")
 	fs.StringVar(&cfg.TSDriver, "ts-driver", os.Getenv("CATENARY_TS_DRIVER"),
 		"the built TypeScript driver bundle, web/dist-transport-driver/driver.js (CATENARY_TS_DRIVER). "+
 			"Empty builds it from the repo root on demand. Only read for -cohort=ts or mixed.")
+	fs.StringVar(&cfg.DartDriver, "dart-driver", os.Getenv("CATENARY_DART_DRIVER"),
+		"the built Dart driver, dart-client/build/driver/bundle/bin/driver (CATENARY_DART_DRIVER). "+
+			"Empty builds it from the repo root on demand. Only read for -cohort=dart or mixed-dart.")
 	fs.StringVar(&cfg.Node, "node", "", "the node binary the TypeScript driver runs under. Empty is node on PATH.")
 	var quiet bool
 	fs.BoolVar(&quiet, "quiet", false, "suppress the harness's own progress logging on stderr (the report on stdout is unaffected)")

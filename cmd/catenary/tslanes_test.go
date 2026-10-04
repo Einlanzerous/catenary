@@ -19,7 +19,7 @@ package main
 // after the network drops — is what it proves. `clientDies` needs the journal
 // to outlive the client, or a relaunch bootstraps from nothing and is clean by
 // construction, proof of nothing; so it runs the driver over the durable
-// IdbJournal persisted to a file (CANT-169, `tsDurableTheo`), SIGKILLs it
+// IdbJournal persisted to a file (CANT-169, `durableTheo`), SIGKILLs it
 // mid-stream, and launches a new driver process over the same file. That is
 // CANT-35 criterion 32's "the kill-test lane with the driver relaunched over a
 // persisted journal", and obligation 1's durable half against a real server.
@@ -53,19 +53,35 @@ func tsDriverScript(t *testing.T) string {
 	return p
 }
 
-// newTSClient starts a driver for an enrolled device, with the Go rigs' own
-// backoff and its journal in memory, and kills it when the test ends. The
-// transport is not started.
-func newTSClient(t *testing.T, base string, dev wire.EnrollResponse, faults client.Faults) *tsDriver {
-	return newTSClientOver(t, base, dev, faults, "")
+// driverLane is which out-of-process client a lane runs: the TypeScript
+// transport under node, or the Dart one as its own built executable (CANT-42
+// row d, dartlanes_test.go). ONE SET OF LANES, run once per driver: each test
+// body below takes the lane, so the Dart client is held to exactly what the
+// TypeScript client is, by the same code, and not by a copy that can drift.
+type driverLane struct {
+	// name is how the client is called in a failure message.
+	name string
+	// script is the built driver, or a skip when its variable is unset.
+	script func(t *testing.T) string
+	// native is tsDriverConfig.Native: an executable, not a bundle for node.
+	native bool
 }
 
-// newTSClientOver is newTSClient with the durable journal persisted to
+var tsLane = driverLane{name: "TypeScript", script: tsDriverScript}
+
+// newClient starts a driver for an enrolled device, with the Go rigs' own
+// backoff and its journal in memory, and kills it when the test ends. The
+// transport is not started.
+func (l driverLane) newClient(t *testing.T, base string, dev wire.EnrollResponse, faults client.Faults) *tsDriver {
+	return l.newClientOver(t, base, dev, faults, "")
+}
+
+// newClientOver is newClient with the durable journal persisted to
 // journalFile; "" is a journal in memory.
-func newTSClientOver(t *testing.T, base string, dev wire.EnrollResponse, faults client.Faults, journalFile string) *tsDriver {
+func (l driverLane) newClientOver(t *testing.T, base string, dev wire.EnrollResponse, faults client.Faults, journalFile string) *tsDriver {
 	t.Helper()
 	cfg := tsDriverConfig{
-		Script: tsDriverScript(t), BaseURL: base, Faults: faults, JournalFile: journalFile,
+		Script: l.script(t), Native: l.native, BaseURL: base, Faults: faults, JournalFile: journalFile,
 		BackoffMin: 20 * time.Millisecond, BackoffMax: 250 * time.Millisecond,
 	}
 	cfg.enrolled(dev)
@@ -89,10 +105,10 @@ func tsRun(t *testing.T, ctx context.Context, d *tsDriver) (end func()) {
 		}
 		once = true
 		if err := d.Stop(); err != nil {
-			t.Errorf("stop the TypeScript client: %v", err)
+			t.Errorf("stop the out-of-process client: %v", err)
 		}
 		if err := <-done; err != nil {
-			t.Errorf("the TypeScript client's session ended with %v, want nil after a stop", err)
+			t.Errorf("the out-of-process client's session ended with %v, want nil after a stop", err)
 		}
 	}
 	t.Cleanup(func() {
@@ -104,21 +120,21 @@ func tsRun(t *testing.T, ctx context.Context, d *tsDriver) (end func()) {
 	return end
 }
 
-// tsTheo is theoFactory for the TypeScript client.
-func tsTheo(k *killRig, dev wire.EnrollResponse, _ *client.Journal, faults client.Faults) cohortClient {
-	d := newTSClient(k.t, k.base(), dev, faults)
+// theo is theoFactory for the lane's client, its journal in memory.
+func (l driverLane) theo(k *killRig, dev wire.EnrollResponse, _ *client.Journal, faults client.Faults) cohortClient {
+	d := l.newClient(k.t, k.base(), dev, faults)
 	tsRun(k.t, k.ctx, d)
 	return d
 }
 
-// tsDurableTheo is theoFactory for a TypeScript client over a durable journal:
+// durableTheo is theoFactory for the lane's client over a durable journal:
 // every driver it launches in one test persists to the same file, so the one
 // runKillTestWith launches after a Kill is a new process that reopens what the
 // dead one committed.
-func tsDurableTheo(t *testing.T) theoFactory {
-	file := filepath.Join(t.TempDir(), "journal.json")
+func (l driverLane) durableTheo(t *testing.T) theoFactory {
+	file := filepath.Join(t.TempDir(), "journal")
 	return func(k *killRig, dev wire.EnrollResponse, _ *client.Journal, faults client.Faults) cohortClient {
-		d := newTSClientOver(k.t, k.base(), dev, faults, file)
+		d := l.newClientOver(k.t, k.base(), dev, faults, file)
 		tsRun(k.t, k.ctx, d)
 		return d
 	}
@@ -150,8 +166,10 @@ func sameIDs(a, b []wire.Uuid) bool {
 // Criterion 6's five phases, the TypeScript client resuming through a server
 // that stops without draining: clean at every checkpoint, each message counted
 // once, and something to lose at the restart.
-func TestTheTSClientResumesThroughTheKillTest(t *testing.T) {
-	requireCleanKillTest(t, serverStops, runKillTestWith(t, serverStops, client.Faults{}, tsTheo))
+func TestTheTSClientResumesThroughTheKillTest(t *testing.T) { tsLane.resumesThroughTheKillTest(t) }
+
+func (l driverLane) resumesThroughTheKillTest(t *testing.T) {
+	l.requireCleanKillTest(t, serverStops, runKillTestWith(t, serverStops, client.Faults{}, l.theo))
 }
 
 // CANT-169 — CANT-35 criterion 32's kill-test lane: the TypeScript client dies
@@ -161,8 +179,12 @@ func TestTheTSClientResumesThroughTheKillTest(t *testing.T) {
 // in the journal too — and something to lose at the restart, read from the dead
 // client's file.
 func TestTheTSClientSurvivesItsOwnDeathOverADurableJournal(t *testing.T) {
-	res := runKillTestWith(t, clientDies, client.Faults{}, tsDurableTheo(t))
-	requireCleanKillTest(t, clientDies, res)
+	tsLane.survivesItsOwnDeathOverADurableJournal(t)
+}
+
+func (l driverLane) survivesItsOwnDeathOverADurableJournal(t *testing.T) {
+	res := runKillTestWith(t, clientDies, client.Faults{}, l.durableTheo(t))
+	l.requireCleanKillTest(t, clientDies, res)
 	// NOT A BOOTSTRAP IN DISGUISE. A relaunch over an empty journal would also
 	// compare clean; this one found the dead client's cursor, its messages and
 	// its evidence log on disk, and counted nothing twice across the death.
@@ -177,7 +199,7 @@ func TestTheTSClientSurvivesItsOwnDeathOverADurableJournal(t *testing.T) {
 	t.Logf("on disk at the relaunch: cursor %d, %d messages, %d counted", h.Cursor, len(h.Messages), len(h.Counted))
 }
 
-func requireCleanKillTest(t *testing.T, mode killMode, res killResult) {
+func (l driverLane) requireCleanKillTest(t *testing.T, mode killMode, res killResult) {
 	t.Helper()
 	for _, cp := range []struct {
 		name string
@@ -195,7 +217,7 @@ func requireCleanKillTest(t *testing.T, mode killMode, res killResult) {
 	if res.final.Counted != res.final.ServerMessages {
 		t.Errorf("counted %d, server log %d: each message counted exactly once", res.final.Counted, res.final.ServerMessages)
 	}
-	t.Logf("the TypeScript client, %s — missing at restart %d · %s · %d replays, head unchanged", mode, res.missingAtRestart, res.final, res.replays)
+	t.Logf("the %s client, %s — missing at restart %d · %s · %d replays, head unchanged", l.name, mode, res.missingAtRestart, res.final, res.replays)
 }
 
 // Criterion 19's kill-test controls, the TypeScript client broken in one
@@ -204,13 +226,15 @@ func requireCleanKillTest(t *testing.T, mode killMode, res killResult) {
 // loses EXACTLY the gap messages — the ones Theo can see that committed while
 // the listener was held down, with a /sync in flight — at the checkpoint
 // TestTheKillTestCatchesABrokenClient reads for Go.
-func TestTheKillTestCatchesABrokenTSClient(t *testing.T) {
+func TestTheKillTestCatchesABrokenTSClient(t *testing.T) { tsLane.theKillTestCatchesABrokenClient(t) }
+
+func (l driverLane) theKillTestCatchesABrokenClient(t *testing.T) {
 	for _, lane := range []struct {
 		mode killMode
 		theo func(t *testing.T) theoFactory
 	}{
-		{serverStops, func(*testing.T) theoFactory { return tsTheo }},
-		{clientDies, tsDurableTheo},
+		{serverStops, func(*testing.T) theoFactory { return l.theo }},
+		{clientDies, l.durableTheo},
 	} {
 		t.Run(string(lane.mode)+": a cursor moved by live frames loses the gap", func(t *testing.T) {
 			res := runKillTestWith(t, lane.mode, client.Faults{CursorOnLiveFrames: true}, lane.theo(t))
@@ -229,17 +253,21 @@ func TestTheKillTestCatchesABrokenTSClient(t *testing.T) {
 	}
 }
 
-func tsRestoreDevice(t *testing.T, faults client.Faults) func(r *rig, dev wire.EnrollResponse) restoreDevice {
+func (l driverLane) restoreDevice(t *testing.T, faults client.Faults) func(r *rig, dev wire.EnrollResponse) restoreDevice {
 	return func(r *rig, dev wire.EnrollResponse) restoreDevice {
-		return &tsDevice{t: t, ctx: r.ctx, d: newTSClient(t, r.base, dev, faults)}
+		return &tsDevice{t: t, ctx: r.ctx, d: l.newClient(t, r.base, dev, faults)}
 	}
 }
 
 // Criterion 7 and criterion 19's `skipWipe`, the TypeScript client through the
 // truncated-and-regrown log.
 func TestTheTSClientDiscardsALogTruncatedBelowItsCursor(t *testing.T) {
+	tsLane.discardsALogTruncatedBelowItsCursor(t)
+}
+
+func (l driverLane) discardsALogTruncatedBelowItsCursor(t *testing.T) {
 	t.Run("the client wipes and bootstraps from 0", func(t *testing.T) {
-		res := runRestoreWith(t, tsRestoreDevice(t, client.Faults{}))
+		res := runRestoreWith(t, l.restoreDevice(t, client.Faults{}))
 		d := res.atDiscard
 		if d.status.Discards != 1 || d.status.Wipes != 1 {
 			t.Errorf("at the discard: %d discards, %d wipes — want one of each", d.status.Discards, d.status.Wipes)
@@ -263,7 +291,7 @@ func TestTheTSClientDiscardsALogTruncatedBelowItsCursor(t *testing.T) {
 	})
 
 	t.Run("a client that re-syncs from 0 without wiping ends missing exactly the regrown messages", func(t *testing.T) {
-		res := runRestoreWith(t, tsRestoreDevice(t, client.Faults{SkipWipe: true}))
+		res := runRestoreWith(t, l.restoreDevice(t, client.Faults{SkipWipe: true}))
 		d := res.atDiscard
 		if d.status.Discards != 1 || d.status.Wipes != 0 {
 			t.Fatalf("at the discard: %d discards, %d wipes — the fault must see the signal and not wipe", d.status.Discards, d.status.Wipes)
@@ -290,12 +318,16 @@ func TestTheTSClientDiscardsALogTruncatedBelowItsCursor(t *testing.T) {
 // schema minimum of 5, and the generated decoder refuses a `ready` below it —
 // and a limit of one, so the whole thing takes seconds.
 func TestTheTSClientSeversAHalfDeadSocketOnTheHeartbeat(t *testing.T) {
+	tsLane.seversAHalfDeadSocketOnTheHeartbeat(t)
+}
+
+func (l driverLane) seversAHalfDeadSocketOnTheHeartbeat(t *testing.T) {
 	const interval, limit = 5, 1
 	k := newKillRig(t, func(c *config.Config) {
 		c.HeartbeatIntervalSec, c.MissedPongLimit = interval, limit
 	})
 	theo := mkUser(k.ctx, t, k.pool, "theo", "Theo")
-	d := newTSClient(t, k.base(), k.enroll(theo, "phone"), client.Faults{})
+	d := l.newClient(t, k.base(), k.enroll(theo, "phone"), client.Faults{})
 	tsRun(t, k.ctx, d)
 	awaitClient(t, d, "ready", func() bool { s := d.Status(); return s.Ready && s.PongsReceived >= 1 })
 

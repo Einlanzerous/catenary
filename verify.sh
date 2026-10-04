@@ -9,10 +9,10 @@
 # SIX STEPS HERE SKIP rather than fail when what they need is absent, and a
 # skip is not a pass:
 #
-#   Dart            both the analyze and the conformance runner, and the
-#                   Dart client's analyze and tests (CANT-42) — and the
-#                   dependency step below, on the same condition — when `dart`
-#                   is not on PATH or at $DART.
+#   Dart            both the analyze and the conformance runner, the Dart
+#                   client's analyze and tests, and the Dart cohort's lanes
+#                   (CANT-42) — and the dependency step below, on the same
+#                   condition — when `dart` is not on PATH or at $DART.
 #   the database    the store's schema tests, when CATENARY_TEST_DATABASE_URL is
 #                   unset. `go test` still runs; those tests call t.Skip.
 #   the served page CANT-26's client-rule check, on the same condition — its
@@ -368,6 +368,45 @@ if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   result $? "kill-test and restore-test lanes: clean with the server stopped and with the client killed and relaunched over its durable journal (CANT-169), and cursorOnLiveFrames and endCatchUpEarly (in both modes) and skipWipe each caught; the heartbeat severs a black hole"
 else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the TypeScript cohort runs against a real Postgres.\n'
+fi
+
+# CANT-42 row d: the Dart client as the client, out of process, through its own
+# driver (dart-client/bin/driver.dart) and the SAME Go adapter the TypeScript
+# driver is run by — the soak clean, mixed with the Go client and with
+# `dedupeByLogSeq` watched failing; every command of the driver against a real
+# server; and cmd/catenary's kill-test and restore-test lanes, which are the
+# TypeScript lanes' own bodies run with the Dart driver named.
+#
+# THE DRIVER IS BUILT HERE, by `dart build cli`, which bundles it with the
+# SQLite library its build hook provides, AND NAMED BY CATENARY_DART_DRIVER.
+# Every test in the step fails on a named driver that is missing or will not
+# execute, and the step asserts that none skipped. It sits inside the
+# `command -v dart` guard and skips only there.
+step "CANT-42 · the Dart cohort — every driver command, the soak and its control, kill-test and restore-test lanes"
+if ! command -v dart >/dev/null; then
+  printf '   \033[33mSKIP\033[0m dart not on PATH (set DART=/path/to/dart-sdk/bin)\n'
+elif [ -z "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the Dart cohort runs against a real Postgres.\n'
+else
+  DART_DRIVER="$ROOT/dart-client/build/driver/bundle/bin/driver"
+  rm -rf "$ROOT/dart-client/build/driver"
+  (cd "$ROOT/dart-client" && dart build cli -t bin/driver.dart -o build/driver) >"$LOGDIR/v-dart-driver-build.log" 2>&1
+  result $? "dart build cli — the Dart driver"
+  dart_lane() { # dart_lane LOG WANT_PASSES DIR PKG RUN
+    local log="$1" want="$2" dir="$3" pkg="$4" run="$5"
+    (cd "$dir" && CATENARY_DART_DRIVER="$DART_DRIVER" go test -run "$run" -v -count=1 "$pkg") >"$log" 2>&1
+    local rc=$?
+    local passed skipped
+    passed=$(grep -cE '^--- PASS: ' "$log")
+    skipped=$(grep -cE -- '--- SKIP: ' "$log")
+    [ $rc -eq 0 ] && [ "$passed" -eq "$want" ] && [ "$skipped" -eq 0 ]
+  }
+  dart_lane "$LOGDIR/v-dart-driver.log" 1 "$ROOT/server" ./cmd/soakrig/ '^TestTheDartDriverAnswersEveryCommand$'
+  result $? "the Dart driver answers start, send, read, sever, blackhole, catchup, status, snapshot and stop, through the TypeScript driver's own adapter"
+  dart_lane "$LOGDIR/v-dart-soak.log" 3 "$ROOT/server" ./cmd/soakrig/ '^(TestDartSoakBaselinePasses|TestMixedDartSoakBaselinePasses|TestBrokenDartRunCountsAsServerFailure)$'
+  result $? "the soak: dart and mixed-dart pass clean, and dedupeByLogSeq is caught ($(grep -oE 'verdict=[a-z_]+ cohort=[a-z-]+' "$LOGDIR/v-dart-soak.log" | tr '\n' ' ' | sed 's/ $//'))"
+  dart_lane "$LOGDIR/v-dart-lanes.log" 5 "$ROOT" ./cmd/catenary/ '^(TestTheDartClientResumesThroughTheKillTest|TestTheDartClientSurvivesItsOwnDeathOverADurableJournal|TestTheKillTestCatchesABrokenDartClient|TestTheDartClientDiscardsALogTruncatedBelowItsCursor|TestTheDartClientSeversAHalfDeadSocketOnTheHeartbeat)$'
+  result $? "kill-test and restore-test lanes: clean with the server stopped and with the client killed and relaunched over its SQLite journal, and cursorOnLiveFrames and endCatchUpEarly (in both modes) and skipWipe each caught; the heartbeat severs a black hole"
 fi
 
 # CANT-46: one person, two devices running two different clients, each held
