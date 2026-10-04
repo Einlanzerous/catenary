@@ -116,7 +116,7 @@ void main() {
     await flush();
     final item = w.outbox.view().single;
     expect(item.state, OutboxState.failed);
-    expect(project(item).error, 'removed from the room');
+    expect(projectOutbox(item).error, 'removed from the room');
 
     final bare = await w.outbox.compose(OutboxDraft(conversationId: conv, text: 'bare'));
     await flush();
