@@ -385,6 +385,33 @@ void main() {
       expect(thread.messages.skip(4).every((m) => m.mine), isTrue);
       expect(thread.newCount, 1, reason: 'your own unsent messages are never new');
       expect(preview(thread), 'You: on my way');
+      expect(thread.unacked, 3);
+      expect(thread.last!.id, 'c-failed', reason: 'composed after every record, so it is what the rail says');
+    });
+
+    test('the rail reads the newer of the log\'s end and the tail\'s: an old failed send does not sit over a later reply', () {
+      // Composed at 09:00 and failed; the room's records run to 12:03, and the
+      // direct's only record is from 09:00 the same day.
+      final stale = [
+        item('c-failed', OutboxState.failed, composedAt: '2026-10-04T09:00:00.000Z', error: const ServerRefusal('internal', 'refused', false)),
+      ];
+      final views = conversationViews(projection: projection(), outbox: stale, me: me, secure: true);
+      final thread = views.firstWhere((c) => c.id == room);
+      expect(thread.messages.last.id, 'c-failed', reason: 'the thread still draws the tail after the log');
+      expect(thread.last!.id, m4, reason: 'the rail reads the reply, as lastMessageOf does in web/src/store.ts');
+      expect(preview(thread), 'Nadia: hello');
+      expect(railMark(thread).kind, RailMarkKind.count, reason: 'the unread reply, not the failed mark');
+      expect([for (final c in views) c.id], [room, direct], reason: 'sorted by 12:03, not by 09:00');
+
+      // And a conversation holding nothing but the tail reads the tail.
+      final only = conversationViews(
+        projection: const Projection(conversations: conversations, users: users),
+        outbox: stale,
+        me: me,
+        secure: true,
+      ).firstWhere((c) => c.id == room);
+      expect(only.last!.id, 'c-failed');
+      expect(railMark(only).status, MessageStatus.failed);
     });
 
     test('an acked entry sits at the ack\'s seq as sent, and is not shown beside its own record', () {

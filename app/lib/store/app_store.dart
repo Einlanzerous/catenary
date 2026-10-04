@@ -236,10 +236,12 @@ List<ConversationView> conversationViews({
           if (users[id] != null) users[id]!.name,
       ],
       secure: secure,
+      unacked: tails[c.id]?.length ?? 0,
     ));
   }
-  // Most recent first; a conversation with nothing in it sorts last. The sort
-  // is stable, so equal stamps keep the projection's order, which is by id.
+  // Most recent first, by what the rail says each last held (`last`: the newer
+  // of the log's end and the tail's); a conversation with nothing in it sorts
+  // last. Equal stamps keep the projection's order, which is by id.
   final epoch = DateTime.fromMillisecondsSinceEpoch(0);
   final ordered = [for (var i = 0; i < views.length; i++) (i, views[i])]..sort((a, b) {
       final byTime = (b.$2.last?.at ?? epoch).compareTo(a.$2.last?.at ?? epoch);
@@ -326,7 +328,7 @@ final class AppStore extends ChangeNotifier {
         _projection = projectApplied(_projection, applied);
         _show();
       }),
-      transport.subscribe((_) => _show()),
+      transport.subscribe((_) => _showStatus()),
       // The server's list, verbatim: the order is the order they started.
       transport.onTyping((f) {
         _typing[f.conversationId] = List.of(f.userIds);
@@ -335,7 +337,7 @@ final class AppStore extends ChangeNotifier {
       _seams.lifecycle.subscribe((e) {
         if (e != LifecycleEvent.online && e != LifecycleEvent.offline) return;
         _online = e == LifecycleEvent.online;
-        _show();
+        _showStatus();
       }),
     ];
     // Subscribed first, read second, so nothing applied in between is missed.
@@ -343,8 +345,9 @@ final class AppStore extends ChangeNotifier {
     _outbox = session.outbox.view();
     // The countdown the banner reads moves between status changes, so the
     // status is read again once a second while a dial is being waited for.
+    // The status only: no thread is rebuilt for a second going by.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_connection.kind == ConnectionKind.reconnecting) _show();
+      if (_connection.kind == ConnectionKind.reconnecting) _showStatus();
     });
     _show();
     return true;
@@ -355,14 +358,11 @@ final class AppStore extends ChangeNotifier {
     if (_session != null) _show();
   }
 
-  /// Rebuilds what the widgets read and tells them.
+  /// Rebuilds everything the widgets read, and tells them: for a change to the
+  /// journal, the outbox or who is typing.
   void _show() {
     final session = _session;
     if (session == null || _disposed) return;
-    final status = session.transport.status();
-    // A typing list is a fact about a live session; one that has ended says
-    // nothing about who is typing now.
-    if (!status.ready) _typing.clear();
     _conversations = conversationViews(
       projection: _projection,
       outbox: _outbox,
@@ -370,6 +370,23 @@ final class AppStore extends ChangeNotifier {
       secure: addressIsSecure(session.address),
       typing: _typing,
     );
+    _showStatus();
+  }
+
+  /// Re-derives the banner, and tells the widgets: for a change to the
+  /// transport's status or the network, and for the countdown. The threads
+  /// are left as they are, unless a session ending has emptied a typing list.
+  void _showStatus() {
+    final session = _session;
+    if (session == null || _disposed) return;
+    final status = session.transport.status();
+    // A typing list is a fact about a live session; one that has ended says
+    // nothing about who is typing now.
+    if (!status.ready && _typing.isNotEmpty) {
+      _typing.clear();
+      _show();
+      return;
+    }
     final info = connectionInfo(status, now: _now(), online: _online);
     _connection = ConnectionView(
       kind: info.kind,

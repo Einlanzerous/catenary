@@ -53,9 +53,12 @@ Map<String, String> storeMethods(String source) => {
         if (!m.group(2)!.startsWith('_') && m.group(1) != 'return') m.group(2)!: m.group(1)!,
     };
 
-/// A command is known by its verb: `send`, `read` or `markRead`, `type` or
-/// `typing`, `retry`, `discard`, alone or leading a longer name (`retryNow`).
-final _command = RegExp(r'^(?:send|read|markRead|type|typing|retry|discard)(?:[A-Z]\w*)?$');
+/// A command is known by its verb: `send` or `compose`, `read` or `markRead`,
+/// `type` or `typing`, `retry`, `discard` or `delete`, alone or leading a
+/// longer name (`retryNow`). `compose` and `delete` are the outbox's and the
+/// thread's own words for a send and a discard, so a method named for either
+/// is held to the rule too.
+final _command = RegExp(r'^(?:send|compose|read|markRead|type|typing|retry|discard|delete)(?:[A-Z]\w*)?$');
 
 /// Rule 2: each command of the store that does not return a `Future`.
 List<String> commandBreaks(String store) => [
@@ -116,6 +119,8 @@ void main() {
 
     for (final (member, name, type) in [
       ('  void send(String conversationId, String text) {}', 'send', 'void'),
+      ('  void compose(String conversationId, String text) {}', 'compose', 'void'),
+      ('  void delete(String clientId) {}', 'delete', 'void'),
       ('  void read(String conversationId) {}', 'read', 'void'),
       ('  void markRead(String conversationId) {}', 'markRead', 'void'),
       ('  void typing(String conversationId, bool on) {}', 'typing', 'void'),

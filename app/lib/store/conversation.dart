@@ -89,6 +89,7 @@ class ConversationView {
     this.muted = false,
     this.typing = const [],
     this.secure = true,
+    this.unacked = 0,
   });
 
   final String id;
@@ -96,7 +97,7 @@ class ConversationView {
   final String name;
   final int memberCount;
 
-  /// In seq order.
+  /// The log in seq order, then the tail: the last [unacked] of these.
   final List<ThreadMessage> messages;
   final int? firstUnreadSeq;
   final bool muted;
@@ -109,7 +110,23 @@ class ConversationView {
   /// the canvas, which is drawn over TLS.
   final bool secure;
 
-  ThreadMessage? get last => messages.isEmpty ? null : messages.last;
+  /// How many of [messages], at its end, are your own outbox entries the
+  /// server has not acked. They are drawn after the log whatever their age: an
+  /// entry has no seq to be placed by.
+  final int unacked;
+
+  /// What the rail says this conversation last held: the newer of the log's
+  /// last message and the tail's, by time (`lastMessageOf` in
+  /// web/src/store.ts). A send moves the preview, the marker and the room's
+  /// place the moment it is composed, and a failed one from this morning does
+  /// not sit over a reply from this afternoon.
+  ThreadMessage? get last {
+    if (messages.isEmpty) return null;
+    final entry = unacked > 0 ? messages.last : null;
+    final record = unacked < messages.length ? messages[messages.length - unacked - 1] : null;
+    if (entry == null || record == null) return entry ?? record;
+    return entry.at.isBefore(record.at) ? record : entry;
+  }
 
   /// What is new here: messages at or past `firstUnreadSeq` that somebody
   /// else wrote. The badge and the "N NEW" rule are both this number.
