@@ -36,6 +36,7 @@ import 'package:flutter/foundation.dart';
 import 'address.dart';
 import 'connection.dart';
 import 'conversation.dart';
+import 'enrollment.dart';
 import 'session.dart';
 import 'status.dart';
 
@@ -380,6 +381,71 @@ final class AppStore extends ChangeNotifier {
   Future<void> retryNow() async => _running.transport.retryNow();
 
   Session get _running => _session ?? (throw StateError('store: this device is not enrolled'));
+
+  /// The origin this device's credential belongs to, or null before it is
+  /// enrolled. The re-enrollment screen shows it and does not edit it.
+  String? get address => _session?.address;
+
+  /// A first enrollment: spends [token] at [typedAddress] (store/enrollment.dart)
+  /// and on success starts a session on what came back. [release] is
+  /// `kReleaseMode`, passed in so a test can name either.
+  Future<EnrollOutcome> enroll({
+    required String typedAddress,
+    required String token,
+    required String deviceName,
+    required bool release,
+  }) async {
+    final store = openCredentialStore(_seams.directory);
+    final EnrollOutcome outcome;
+    try {
+      outcome = await enrollDeviceAt(
+        directory: _seams.directory,
+        store: store,
+        typedAddress: typedAddress,
+        token: token,
+        deviceName: deviceName,
+        release: release,
+        fetch: _seams.fetch,
+      );
+    } finally {
+      store.close();
+    }
+    if (outcome is Enrolled) await start();
+    return outcome;
+  }
+
+  /// RE-ENROLL on a credential terminal, as the web does it (ruling 3):
+  /// `reenrollCredential` replaces the pair, the journal is wiped (a cursor is
+  /// a position in the log as the PREVIOUS credential's account could see it,
+  /// and the new pair may be another person's), and a new session starts. The
+  /// outbox is not touched: its entries are keyed by account. The address is
+  /// the one already stored.
+  Future<EnrollOutcome> reenroll({required String token, required String deviceName, required bool release}) async {
+    final session = _session;
+    if (session == null) return const EnrollFailed('This device is not enrolled.');
+    final outcome = await enrollDeviceAt(
+      directory: _seams.directory,
+      store: session.credentials,
+      typedAddress: session.address,
+      token: token,
+      deviceName: deviceName,
+      release: release,
+      fetch: _seams.fetch,
+    );
+    if (outcome is Enrolled) {
+      // The old session ends first, so no late frame under the old credential
+      // can land after the wipe; `start` ends it again, which is a no-op.
+      session.end();
+      final journal = SqliteJournal.open('${_seams.directory}/$journalFileName');
+      try {
+        await journal.wipe();
+      } finally {
+        journal.close();
+      }
+      await start();
+    }
+    return outcome;
+  }
 
   void _onOutbox(List<OutboxItem> items) {
     _outbox = items;
