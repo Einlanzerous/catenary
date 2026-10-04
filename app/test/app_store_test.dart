@@ -6,6 +6,7 @@
 
 import 'dart:io';
 
+import 'package:catenary/enroll.dart';
 import 'package:catenary/main.dart';
 import 'package:catenary/rail.dart';
 import 'package:catenary/store/address.dart';
@@ -611,16 +612,17 @@ void main() {
       expect(store.conversations, hasLength(2));
     });
 
-    testWidgets('the app reads the store on an enrolled device, and the fixtures on one that is not', (tester) async {
+    testWidgets('the app reads the store on an enrolled device, and shows the enrollment screen on one that is not', (tester) async {
       tester.view.physicalSize = const Size(390, 844);
       tester.view.devicePixelRatio = 1;
       addTearDown(tester.view.reset);
 
-      // Not enrolled: the canvas, until CANT-208 lands the enrollment screen.
+      // Not enrolled: the enrollment screen, and no fixture behind it.
       final empty = AppStore(seams());
       expect(await tester.runAsync(empty.start), isFalse);
       await tester.pumpWidget(TickerMode(enabled: false, child: CatenaryApp(initialMode: ThemeMode.dark, store: empty)));
-      expect(find.byKey(const ValueKey('rail-kitchen')), findsOneWidget);
+      expect(find.byType(EnrollScreen), findsOneWidget);
+      expect(find.byKey(const ValueKey('rail-kitchen')), findsNothing);
       await tester.runAsync(() async => empty.dispose());
 
       await tester.runAsync(() => enroll('http://192.168.1.20:4012'));

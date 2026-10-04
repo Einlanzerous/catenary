@@ -6,22 +6,25 @@
 // opens the token and state specimens, which is how a design change is looked
 // at on a device.
 //
-// A DEVICE THAT IS NOT ENROLLED STILL SHOWS THE FIXTURES (fixtures.dart), and
-// only until CANT-208 lands the enrollment screen: this row arrives first, and
-// a build between the two with nothing to show and no way to enroll would be
-// worse than the canvas. CANT-208 replaces that branch with its screen, and
-// after it nothing here reads the fixtures.
+// A DEVICE THAT IS NOT ENROLLED SHOWS THE ENROLLMENT SCREEN (enroll.dart), and
+// nothing else. The fixtures (fixtures.dart) are what the panes read only when
+// the app is built without a store, which is how the canvas is looked at in a
+// test.
 
 import 'dart:async';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kReleaseMode;
 import 'package:flutter/material.dart';
 
+import 'enroll.dart';
 import 'fixtures.dart';
 import 'rail.dart';
 import 'specimen.dart';
 import 'store/app_store.dart';
 import 'store/connection.dart';
 import 'store/conversation.dart';
+import 'store/enrollment.dart';
 import 'store/platform.dart';
 import 'theme.dart';
 import 'thread.dart';
@@ -47,8 +50,9 @@ class CatenaryApp extends StatefulWidget {
   /// moves it rather than editing fixtures.
   final DateTime Function() clock;
 
-  /// What the panes read, already started. Without one, or with one that
-  /// found no enrollment, they read the fixtures.
+  /// What the panes read, already started. With one that found no enrollment
+  /// the first screen is the enrollment screen; without one, the panes read
+  /// the fixtures.
   final AppStore? store;
 
   @override
@@ -95,7 +99,27 @@ class _ShellState extends State<_Shell> {
   // to every thread, which pass them to the banner: RETRY dials now
   // (`AppStore.retryNow`) and RE-ENROLL is CANT-208's (the enrollment screen).
   VoidCallback? get _onRetry => widget.store?.retryNow;
-  VoidCallback? get _onReenroll => null;
+  VoidCallback? get _onReenroll => _reenroll;
+
+  /// RE-ENROLL: the enrollment screen over everything, with the stored address
+  /// shown and not editable. A success pops back to the first route, which
+  /// the store's new session has by then redrawn.
+  void _reenroll() {
+    final store = widget.store;
+    if (store == null) return;
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      builder: (ctx) => EnrollScreen(
+        deviceName: defaultDeviceName(Platform.operatingSystem),
+        lockedAddress: store.address,
+        onCancel: () => Navigator.of(ctx).pop(),
+        onSubmit: (_, token, name) async {
+          final outcome = await store.reenroll(token: token, deviceName: name, release: kReleaseMode);
+          if (outcome is Enrolled && ctx.mounted) Navigator.of(ctx).popUntil((r) => r.isFirst);
+          return outcome;
+        },
+      ),
+    ));
+  }
 
   @override
   void initState() {
@@ -117,9 +141,16 @@ class _ShellState extends State<_Shell> {
     if (store == null) return _fixtureRail(context);
     return ListenableBuilder(
       listenable: store,
-      builder: (context, _) => store.enrolled ? _storeRail(context, store) : _fixtureRail(context),
+      builder: (context, _) => store.enrolled ? _storeRail(context, store) : _enrollScreen(store),
     );
   }
+
+  /// The first screen of a device that is not enrolled: nothing else is shown
+  /// until it has a credential.
+  Widget _enrollScreen(AppStore store) => EnrollScreen(
+        deviceName: defaultDeviceName(Platform.operatingSystem),
+        onSubmit: (address, token, name) => store.enroll(typedAddress: address, token: token, deviceName: name, release: kReleaseMode),
+      );
 
   Widget _storeRail(BuildContext context, AppStore store) {
     return RailScreen(
