@@ -125,7 +125,9 @@ void _migrate(Database db, String path, List<String> migrations) {
     db.userVersion = migrations.length;
     db.execute('COMMIT');
   } catch (_) {
-    db.execute('ROLLBACK');
+    // Guarded: after a full disk or an I/O error SQLite has already rolled
+    // back, and a second ROLLBACK would throw over the error that matters.
+    if (!db.autocommit) db.execute('ROLLBACK');
     rethrow;
   }
 }
