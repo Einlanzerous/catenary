@@ -10,9 +10,11 @@ name: app
 # CSS to hold it there, so a pull request that edits only the web client's
 # tokens is exactly the one that makes the app's table stale.
 #
-# dart/ and dart-client/ are in because the app is built on them: the generated
-# wire package and the protocol half (CANT-42). Their own tests run in ci.yml;
-# what runs here is that the app still analyzes and builds against them.
+# dart/ and dart-client/ are in because the app WILL BE built on them: the
+# generated wire package and the protocol half (CANT-42). The skeleton imports
+# neither yet, so today a change there triggers a build that cannot see it;
+# once app/pubspec.yaml takes the dependency, what runs here is that the app
+# still analyzes and builds against them. Their own tests run in ci.yml.
 on:
   pull_request:
     paths:

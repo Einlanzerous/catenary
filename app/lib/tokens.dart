@@ -104,9 +104,9 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
   final Color accentDim;
   /// `--accent-queue` — offline QUEUE button
   final Color accentQueue;
-  /// `--on-accent` — The tile darkens on paper white so the cutout stays visible.
+  /// `--on-accent` — text on an accent fill
   final Color onAccent;
-  /// `--accent-mark` — ── the only other color in the system ─────────────────────
+  /// `--accent-mark` — the logomark tile; the brand, not a state. Nothing else uses it
   final Color accentMark;
   /// `--signal-fault` — failed send only — never decorative
   final Color signalFault;
