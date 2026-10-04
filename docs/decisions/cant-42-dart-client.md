@@ -63,13 +63,17 @@ Two contexts over one data directory are two writers over one journal, and the j
 - A refused **live** write is a catch-up trigger; a refused page is retried by the catch-up that issued it, from the stored cursor.
 - `skipStaleCatchUp` is the negative control, with the meaning it has in TypeScript.
 
+A background isolate is a second context, and nothing excludes it but the guards above and the lock: `CANT-52`, E7's push handling, will run one, and nothing has exercised it yet.
+
+A `/sync` page in flight across a stale-journal reload lands on the wiped store, in both transports: `CANT-199`.
+
 ## 6 · `CANT-36` §9 has no Dart counterpart
 
 The outbox record's `navigator.storage.persist()` refusal line is **not built**. It exists because a browser may evict IndexedDB. The local store here is real SQLite on a real filesystem — one of the reasons D3 chose Flutter over a webview whose storage the OS may evict.
 
 ## 7 · How the outbox is held to its criteria
 
-`dart-client/test/outbox_criteria_test.dart` is `web/outbox.test.ts` written a second time: the criteria a headless outbox can be held to — **0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12 and 15** — each run once clean, where it must pass, and once per named fault from the same sixteen-row table, where it must fail. Criteria 5 and 6 are rendering and belong to the app; 16 is the refused-`persist()` line and has no counterpart (§6); 13 and 14 are attachments and are not built (see *What this leaves open*).
+`dart-client/test/outbox_criteria_test.dart` is `web/outbox.test.ts` written a second time: the criteria a headless outbox can be held to — **0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12 and 15** — each run once clean, where it must pass, and once per named fault from the same sixteen-row table, where it must fail. Criteria 5 and 6 are rendering and belong to the app; 16 is the refused-`persist()` line and has no counterpart (§6); 13 and 14 are attachments and are not built: an attachment draft carries no media and the default uploader refuses, and `CANT-201` carries it, blocked by `CANT-162`.
 
 Two faults are spelled for a browser and mean this here: `relaxedDurability` is a connection opened without `synchronous = FULL`; `everyTabDrains` and `lockWithoutReady` are a context that drains without the lock, or takes it while its session is not `ready`.
 
@@ -88,9 +92,3 @@ The two real outboxes are also run against each other across a partition: `CANT-
 ## The journal mode of the two files
 
 **Decided, `CANT-202` ruling 1: `catenary.db` and `catenary-outbox.db` both use SQLite's default rollback journal (`journal_mode = delete`), not WAL,** each with `synchronous = FULL` and a 2-second busy timeout. `dart-client/test/sqlite_journal_test.dart` reads `PRAGMA journal_mode` and `PRAGMA synchronous` on the connection `openCatenaryDb` returned and on `SqliteOutboxStore.open`'s, and asserts `delete` and 2 on both; `dart-client/test/outbox_criteria_test.dart` asserts the same on the outbox store's connection.
-
-## What this leaves open
-
-- **A background isolate is a second context and is not excluded by anything but the guards above.** E7's push handling will run one. The lock and the generation guard are built for it; nothing has exercised it.
-- **Attachments in the Dart outbox are not built.** An attachment draft carries no media and the default uploader refuses. `CANT-201` carries it, blocked by `CANT-162`.
-- **A `/sync` page in flight across a stale-journal reload lands on the wiped store,** in both transports: `CANT-199`.
