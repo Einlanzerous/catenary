@@ -15,10 +15,8 @@
 /// never holds up a `status`. Nothing else is ever written to stdout; the
 /// transport's own log, when asked for, goes to stderr.
 ///
-/// NINE COMMANDS HERE: start, send, read, sever, blackhole, catchup, status,
-/// snapshot and stop, each as the driver.ts header states it. `compose` and
-/// `outbox` are CANT-42 row f, after the Dart outbox exists; until then they
-/// are answered `UnknownCommand`, as any other unknown command is.
+/// ALL ELEVEN COMMANDS: start, send, read, compose, outbox, sever, blackhole,
+/// catchup, status, snapshot and stop, each as the driver.ts header states it.
 ///
 /// `Kill` IS NOT A COMMAND. It is SIGKILL on this process, sent from Go, and
 /// nothing here can observe it. Closing stdin ends the process too, so a rig
@@ -30,6 +28,15 @@
 /// file — after a SIGKILL — resumes from what the dead one had committed.
 /// There is no stand-in to persist, as the Node driver needs for IndexedDB:
 /// SQLite's own commit is the durability point.
+///
+/// THE OUTBOX (CANT-42 row f) is the real `Outbox` over `TransportOutbox`,
+/// opened by `start` and closed by `stop`, with its default in-process drain
+/// lock — one process is one context, as in the Node driver. Its store is the
+/// real `SqliteOutboxStore`: in memory without a journal file, and at
+/// `<file>.outbox` beside `--journal=<file>` with one, so a driver killed
+/// after `compose` answered and relaunched over the same file lists the entry
+/// unsettled and sends it under the same clientId. `compose` answers once the
+/// entry is durable — SQLite's commit — and never waits for an ack.
 ///
 /// BOTH URLS COME FROM `baseUrl`. The transport builds its socket URL and its
 /// /sync URL from the one base URL `start` gives it, so a rig that hands this
@@ -207,6 +214,17 @@ Future<void> main(List<String> argv) async {
   }
 
   final StagedJournal journal = journalFile == null ? MemoryJournal() : SqliteJournal.open(journalFile);
+  // The outbox's store outlives a transport, as the journal does; the outbox
+  // itself and its adapter belong to one.
+  final OutboxStore outboxStore = journalFile == null ? MemoryOutboxStore() : SqliteOutboxStore.open('$journalFile.outbox');
+  Outbox? outbox;
+  TransportOutbox? adapter;
+  void closeBox() {
+    outbox?.close();
+    adapter?.close();
+    outbox = adapter = null;
+  }
+
   Transport? transport;
   TcpProxy? proxy;
   var proxyTarget = '';
@@ -229,6 +247,7 @@ Future<void> main(List<String> argv) async {
       }
       final port = p.port;
       final credential = args['credential']! as Map<String, Object?>;
+      final log = args['log'] == true ? const StderrLogger() as Logger : const SilentLogger();
       final faults = (args['faults'] as Map<String, Object?>?) ?? const {};
       final backoffMin = args['backoffMinMs'] as num?;
       final backoffMax = args['backoffMaxMs'] as num?;
@@ -247,7 +266,7 @@ Future<void> main(List<String> argv) async {
         connect: (url, protocols) =>
             ioWebSocket(url.replace(host: InternetAddress.loopbackIPv4.address, port: port), protocols),
         lifecycle: ManualLifecycle(),
-        logger: args['log'] == true ? const StderrLogger() : const SilentLogger(),
+        logger: log,
         backoffMinMs: backoffMin == null || backoffMin <= 0 ? null : backoffMin,
         backoffMaxMs: backoffMax == null || backoffMax <= 0 ? null : backoffMax,
         faults: Faults.named([
@@ -256,8 +275,31 @@ Future<void> main(List<String> argv) async {
         ]),
       ));
       transport = t;
+      // Attached before the first dial, so the outbox sees this transport's
+      // first `ready` rather than reading it late.
+      final a = adapter = TransportOutbox(t, log);
+      outbox = await Outbox.open(store: outboxStore, transport: a, accountId: credential['userId']! as String);
       t.start();
       return const <String, Object?>{};
+    },
+    'compose': (args) async {
+      need();
+      final box = outbox ?? (throw const DriverError('NotStarted', 'driver: no outbox is open; send start first'));
+      final conversationId = args['conversationId'], text = args['text'];
+      if (conversationId is! String || text is! String) {
+        throw const DriverError('BadArgs', 'driver: compose takes {conversationId, text}');
+      }
+      final entry = await box.compose(OutboxDraft(conversationId: conversationId, text: text));
+      return {'clientId': entry.clientId};
+    },
+    'outbox': (_) async {
+      need();
+      final box = outbox ?? (throw const DriverError('NotStarted', 'driver: no outbox is open; send start first'));
+      return {
+        'entries': [
+          for (final i in box.view()) {'clientId': i.entry.clientId, 'state': i.state.name},
+        ],
+      };
     },
     'send': (args) async {
       final t = need();
@@ -315,6 +357,7 @@ Future<void> main(List<String> argv) async {
       };
     },
     'stop': (_) async {
+      closeBox();
       transport?.stop();
       transport = null;
       return const <String, Object?>{};
@@ -361,6 +404,7 @@ Future<void> main(List<String> argv) async {
   await for (final line in stdin.transform(utf8.decoder).transform(const LineSplitter())) {
     unawaited(handle(line));
   }
+  closeBox();
   transport?.stop();
   proxy?.close();
   await stdout.flush();

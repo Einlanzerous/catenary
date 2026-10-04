@@ -379,7 +379,7 @@ fi
 
 # CANT-42 row d: the Dart client as the client, out of process, through its own
 # driver (dart-client/bin/driver.dart) and the SAME Go adapter the TypeScript
-# driver is run by — the soak clean, mixed with the Go client and with
+# driver is run by — its outbox commands included (row f) — the soak clean, mixed with the Go client and with
 # `dedupeByLogSeq` watched failing; every command of the driver against a real
 # server; and cmd/catenary's kill-test and restore-test lanes, which are the
 # TypeScript lanes' own bodies run with the Dart driver named.
@@ -408,8 +408,8 @@ else
     skipped=$(grep -cE -- '--- SKIP: ' "$log")
     [ $rc -eq 0 ] && [ "$passed" -eq "$want" ] && [ "$skipped" -eq 0 ]
   }
-  dart_lane "$LOGDIR/v-dart-driver.log" 1 "$ROOT/server" ./cmd/soakrig/ '^TestTheDartDriverAnswersEveryCommand$'
-  result $? "the Dart driver answers start, send, read, sever, blackhole, catchup, status, snapshot and stop, through the TypeScript driver's own adapter"
+  dart_lane "$LOGDIR/v-dart-driver.log" 2 "$ROOT/server" ./cmd/soakrig/ '^(TestTheDartDriverAnswersEveryCommand|TestADartComposedTextSurvivesTheDriversDeath)$'
+  result $? "the Dart driver answers all eleven commands through the TypeScript driver's own adapter; a text composed with no session is persisted beside the journal, survives the driver's death, and is sent once under the same clientId"
   dart_lane "$LOGDIR/v-dart-soak.log" 3 "$ROOT/server" ./cmd/soakrig/ '^(TestDartSoakBaselinePasses|TestMixedDartSoakBaselinePasses|TestBrokenDartRunCountsAsServerFailure)$'
   result $? "the soak: dart and mixed-dart pass clean, and dedupeByLogSeq is caught ($(grep -oE 'verdict=[a-z_]+ cohort=[a-z-]+' "$LOGDIR/v-dart-soak.log" | tr '\n' ' ' | sed 's/ $//'))"
   dart_lane "$LOGDIR/v-dart-lanes.log" 5 "$ROOT" ./cmd/catenary/ '^(TestTheDartClientResumesThroughTheKillTest|TestTheDartClientSurvivesItsOwnDeathOverADurableJournal|TestTheKillTestCatchesABrokenDartClient|TestTheDartClientDiscardsALogTruncatedBelowItsCursor|TestTheDartClientSeversAHalfDeadSocketOnTheHeartbeat)$'
