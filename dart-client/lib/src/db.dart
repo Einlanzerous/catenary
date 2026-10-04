@@ -139,7 +139,12 @@ void _createPrivate(String path) {
   }
   final native = path.toNativeUtf8();
   try {
-    if (_chmod(native, 0x180) != 0) throw FileSystemException('could not make the database file private (chmod 0600)', path);
+    if (_chmod(native, 0x180) != 0) {
+      // Removed, not left: the next open would find it, take it for a file
+      // that already existed, and write into it at whatever mode it has.
+      file.deleteSync();
+      throw FileSystemException('could not make the database file private (chmod 0600)', path);
+    }
   } finally {
     malloc.free(native);
   }
