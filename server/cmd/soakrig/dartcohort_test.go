@@ -17,6 +17,7 @@ import (
 	"errors"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -117,8 +118,9 @@ func TestBrokenDartRunCountsAsServerFailure(t *testing.T) {
 	}
 }
 
-// THE DART DRIVER ANSWERS EVERY COMMAND in the driver.ts header other than
-// `compose` and `outbox`, through the adapter the TypeScript driver is run by:
+// THE DART DRIVER ANSWERS EVERY COMMAND in the driver.ts header — `compose`
+// and `outbox` are TestADartComposedTextSurvivesTheDriversDeath's, below; S5
+// with a Dart device is CANT-188's lane and not here — through the adapter the TypeScript driver is run by:
 // newTSDriver, with a different command line. Each command is called and its
 // effect observed against a real server, in the order a rig uses them.
 func TestTheDartDriverAnswersEveryCommand(t *testing.T) {
@@ -166,10 +168,14 @@ func TestTheDartDriverAnswersEveryCommand(t *testing.T) {
 	if err := reader.Read(ctx, read); !errors.Is(err, client.ErrNotConnected) {
 		t.Fatalf("read before start = %v, want ErrNotConnected", err)
 	}
-	// A command the driver does not have: answered, and named.
+	// A command the driver does not have is answered, and named; and the
+	// outbox's two are refused before `start`, when there is no outbox.
 	var de *tsDriverError
-	if err := reader.call(ctx, "compose", map[string]any{"conversationId": wid(room), "text": "x"}, nil); !errors.As(err, &de) || de.Kind != "UnknownCommand" {
-		t.Fatalf("compose = %v, want UnknownCommand until CANT-42 row f", err)
+	if err := reader.call(ctx, "nope", nil, nil); !errors.As(err, &de) || de.Kind != "UnknownCommand" {
+		t.Fatalf("an unknown command = %v, want UnknownCommand", err)
+	}
+	if _, err := reader.Compose(ctx, wid(room), "x"); !errors.As(err, &de) || de.Kind != "NotStarted" {
+		t.Fatalf("compose before start = %v, want NotStarted", err)
 	}
 
 	// `start` (Run), and `status`.
@@ -274,4 +280,109 @@ func TestTheDartDriverAnswersEveryCommand(t *testing.T) {
 		t.Errorf("a second start reports %d readys, want a new transport's 1", s.Readys)
 	}
 	t.Log("the Dart driver answered start, send, read, sever, blackhole, catchup, status, snapshot and stop")
+}
+
+// CANT-42 row f — `compose` and `outbox` on the Dart driver, hosting the real
+// Dart outbox over the real Dart transport, with the outbox persisted beside
+// the journal file: a driver killed after `compose` and relaunched lists the
+// entry as unsettled and sends it under the same clientId. The Dart twin of
+// TestAComposedTextSurvivesTheDriversDeath, through the same adapter.
+func TestADartComposedTextSurvivesTheDriversDeath(t *testing.T) {
+	exe := dartDriverExe(t)
+	h := startLocalServer(t, soakDBFixture(t))
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	room, author := uuid.New(), uuid.New()
+	if _, err := h.pool.Exec(ctx, `INSERT INTO conversations (id, kind, name) VALUES ($1, 'group', 'the dart outbox')`, room); err != nil {
+		t.Fatal(err)
+	}
+	if err := insertUser(ctx, h.pool, author, "dart-composer", "dart-composer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.pool.Exec(ctx, `INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1, $2)`, room, author); err != nil {
+		t.Fatal(err)
+	}
+	dev, err := h.enroll(ctx, 0, author, "phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The device's network is a proxy the test can take away, and its journal
+	// a file a second process can reopen.
+	proxy := newSeveringProxy(t, targetHost(h.baseURL))
+	cfg := tsDriverConfig{
+		Script: exe, Native: true, BaseURL: proxy.base(), JournalFile: filepath.Join(t.TempDir(), "journal.sqlite"),
+		BackoffMin: soakBackoffMin, BackoffMax: soakBackoffMax,
+	}
+	cfg.enrolled(dev)
+	launch := func() *tsDriver {
+		t.Helper()
+		d, err := newTSDriver(cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(d.Kill)
+		go func() { _ = d.Run(ctx) }()
+		return d
+	}
+	committed := func(id wire.Uuid) int {
+		t.Helper()
+		var n int
+		if err := h.pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE author_id = $1 AND client_id::text = $2`, author, id).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	d := launch()
+	if err := d.Await(ctx, func() bool { return d.Status().Ready }); err != nil {
+		t.Fatalf("the driver never became ready: %v", err)
+	}
+	proxy.hold()
+	if err := d.Await(ctx, func() bool { return !d.Status().Ready }); err != nil {
+		t.Fatal(err)
+	}
+
+	// `compose` with no session: persisted, answered with its clientId, and
+	// not sent. `send` in the same position is refused — that is the
+	// difference between the two.
+	id, err := d.Compose(ctx, wid(room), "composed, then the process died")
+	if err != nil {
+		t.Fatalf("compose behind a held proxy: %v", err)
+	}
+	text := "sent, not composed"
+	if _, err := d.Send(ctx, wire.ClientSend{ClientID: wid(uuid.New()), ConversationID: wid(room), Text: &text}); !errors.Is(err, client.ErrNotConnected) {
+		t.Errorf("send behind a held proxy = %v, want ErrNotConnected", err)
+	}
+	listed, err := d.Outbox(ctx)
+	if err != nil || len(listed) != 1 || listed[0].ClientID != id || listed[0].State != "queued" {
+		t.Fatalf("the outbox after compose = %+v (err %v), want the one entry %s, queued", listed, err, id)
+	}
+
+	// SIGKILL, and a new process over the same file.
+	d.Kill()
+	d = launch()
+	var left []outboxEntry
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		// `outbox` is refused before `start`, which Run sends.
+		if left, err = d.Outbox(ctx); err == nil {
+			break
+		}
+	}
+	if err != nil || len(left) != 1 || left[0].ClientID != id || left[0].State != "queued" {
+		t.Fatalf("the relaunched driver's outbox = %+v (err %v), want the one entry %s, queued", left, err, id)
+	}
+	if n := committed(id); n != 0 {
+		t.Fatalf("%d rows committed for a text composed behind a held proxy", n)
+	}
+
+	proxy.heal()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		left, lerr := d.Outbox(ctx)
+		if n := committed(id); lerr == nil && n == 1 && len(left) == 0 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("after the heal: %d rows committed, outbox %+v (err %v); want exactly one row and an empty outbox", n, left, lerr)
+		}
+	}
 }
