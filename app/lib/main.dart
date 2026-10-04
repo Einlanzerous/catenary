@@ -92,10 +92,9 @@ class _ShellState extends State<_Shell> {
   Timer? _minute;
 
   // THE BANNER'S TWO ACTIONS ARE SEAMS HERE. Both are handed to the rail and
-  // to every thread, which pass them to the banner, and neither does anything
-  // yet: RETRY is CANT-209's (the store's reconnect) and RE-ENROLL is
-  // CANT-208's (the enrollment screen). Each row fills its own.
-  VoidCallback? get _onRetry => null;
+  // to every thread, which pass them to the banner: RETRY dials now
+  // (`AppStore.retryNow`) and RE-ENROLL is CANT-208's (the enrollment screen).
+  VoidCallback? get _onRetry => widget.store?.retryNow;
   VoidCallback? get _onReenroll => null;
 
   @override
@@ -144,6 +143,9 @@ class _ShellState extends State<_Shell> {
               connection: store.connection,
               onRetry: _onRetry,
               onReenroll: _onReenroll,
+              onSend: (text) => store.send(c.id, text),
+              onRetryMessage: store.retry,
+              onDiscardMessage: store.discard,
             ),
           ),
         ));

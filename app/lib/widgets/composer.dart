@@ -182,6 +182,7 @@ class _ComposerState extends State<Composer> {
   Widget _row(CatenaryTokens t) {
     final offline = widget.connection.offline;
     final terminal = widget.connection.isTerminal;
+    final off = offline || widget.onAttach == null;
     final drafted = _controller.text.trim().isNotEmpty;
     final hint = terminal
         ? 'This device cannot send'
@@ -194,7 +195,11 @@ class _ComposerState extends State<Composer> {
       primary = _Square('SEND', color: t.textDisabled, fill: t.surfaceBase, border: t.lineInner, onTap: null);
     } else if (!drafted) {
       // Live or not: a recording made offline is held and sent on reconnect.
-      primary = _Square('REC', color: t.onAccent, fill: t.accentWire, onTap: widget.onRecord);
+      // Drawn disabled while nothing is wired to record: the accent says
+      // "this works".
+      primary = widget.onRecord == null
+          ? _Square('REC', color: t.textDisabled, fill: t.surfaceBase, border: t.lineInner, onTap: null)
+          : _Square('REC', color: t.onAccent, fill: t.accentWire, onTap: widget.onRecord);
     } else if (offline) {
       primary = _Square('QUEUE', fontSize: 9, color: t.onAccent, fill: t.accentQueue, onTap: widget.onSend);
     } else {
@@ -203,12 +208,13 @@ class _ComposerState extends State<Composer> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        // A picked file is not composed without a session, so ADD dims.
+        // A picked file is not composed without a session, so ADD dims; and
+        // it dims while nothing is wired to attach.
         _Square(
           'ADD',
-          color: offline ? t.textDisabled : t.textMeta,
-          border: offline ? t.lineInner : t.lineEdge,
-          onTap: offline ? null : widget.onAttach,
+          color: off ? t.textDisabled : t.textMeta,
+          border: off ? t.lineInner : t.lineEdge,
+          onTap: off ? null : widget.onAttach,
         ),
         const SizedBox(width: 10),
         Expanded(

@@ -21,7 +21,10 @@
 // `package:catenary_client`, and a store method that sends, reads, types,
 // retries or discards returns a `Future`, so a later move to a background
 // isolate changes this file and no widget. test/store_boundary_test.dart holds
-// both. This row has none of those methods yet: the controls are CANT-209's.
+// both. The controls' commands are the four below `start`: [send], [retry],
+// [discard] and [retryNow]. Each is a `Future`, and none returns before the
+// outbox or the transport has taken the call. `read` and `typing` are not here:
+// no widget sends either yet.
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -352,6 +355,31 @@ final class AppStore extends ChangeNotifier {
     _show();
     return true;
   }
+
+  /// The composer's send: the text becomes an outbox entry in [conversationId],
+  /// whether or not a session is ready (`Outbox.compose`). Completes once the
+  /// entry is stored, not once the server has acked it, and the thread shows
+  /// it as queued until the outbox says otherwise. Blank text is not a
+  /// message. Throws when the device is not enrolled.
+  Future<void> send(String conversationId, String text) async {
+    final trimmed = text.trim();
+    if (trimmed.isEmpty) return;
+    await _running.outbox.compose(OutboxDraft(conversationId: conversationId, text: trimmed));
+  }
+
+  /// RETRY on a failed message: `Outbox.retry`, under the same `client_id`.
+  /// The message's `ThreadMessage.id` is that id for an outbox row.
+  Future<void> retry(String clientId) => _running.outbox.retry(clientId);
+
+  /// DELETE on a failed message: `Outbox.discard`, which removes this device's
+  /// copy and nothing the server holds. True when an entry was removed.
+  Future<bool> discard(String clientId) => _running.outbox.discard(clientId);
+
+  /// The banner's RETRY: `Transport.retryNow`, which dials now instead of
+  /// waiting out the backoff. The banner follows the transport's own status.
+  Future<void> retryNow() async => _running.transport.retryNow();
+
+  Session get _running => _session ?? (throw StateError('store: this device is not enrolled'));
 
   void _onOutbox(List<OutboxItem> items) {
     _outbox = items;
