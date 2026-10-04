@@ -59,9 +59,9 @@ package main
 // three kinds of comparison it owes a fourth kind, the sixth comparison a run
 // makes: every composed client_id committed exactly once, both devices
 // holding all six at the server's seq, and both outboxes empty. The Go
-// reference client has no outbox, so until the Dart driver exists S5 runs
-// with two TypeScript devices, which proves the schedule and the commands and
-// nothing about agreement.
+// reference client has no outbox, so S5's cross-implementation pair is
+// TypeScript against Dart (CANT-188); with two TypeScript devices it proves
+// the schedule and the commands and nothing about agreement.
 //
 // THREE COMPARISONS, all required to have run: A against B (SameState); each
 // device against the server (the unchanged client.Compare); and each device's
@@ -124,14 +124,15 @@ const (
 // convergeConfig is one run: a schedule and who device A and device B are.
 type convergeConfig struct {
 	Schedule string
-	// A and B are the implementation behind each of P's devices: cohortGo or
-	// cohortTS. A schedule is run in both role assignments, because a
-	// one-directional pass is not convergence.
+	// A and B are the implementation behind each of P's devices: cohortGo,
+	// cohortTS or cohortDart. A schedule is run in both role assignments,
+	// because a one-directional pass is not convergence.
 	A, B string
 
 	// TSDriver is the built driver bundle and Node the node binary, for a
-	// cohortTS device. Dir holds the devices' durable journals.
-	TSDriver, Node, Dir string
+	// cohortTS device; DartDriver is the built Dart driver, for a cohortDart
+	// one. Dir holds the devices' durable journals.
+	TSDriver, Node, DartDriver, Dir string
 
 	// FaultsB is set on device B. The fault control runs S1 with
 	// KeepHeldConversation here.
@@ -235,10 +236,11 @@ type convergeDevice struct {
 	faults client.Faults
 	proxy  *partitionProxy
 
-	// The durable journal: a *client.Journal for Go, a file for TypeScript.
+	// The durable journal: a *client.Journal for Go, a file for a client in
+	// its own process — fake-indexeddb's dump for TypeScript, SQLite for Dart.
 	journal     *client.Journal
 	journalFile string
-	script      string
+	script      string // the driver: a bundle for node, or the Dart executable
 	node        string
 
 	c    cohortClient
@@ -260,9 +262,10 @@ func (d *convergeDevice) launch() error {
 			return err
 		}
 		d.c = c
-	case cohortTS:
+	case cohortTS, cohortDart:
+		// One adapter, two command lines (tsdriver.go).
 		cfg := tsDriverConfig{
-			Node: d.node, Script: d.script, BaseURL: d.proxy.base(), Faults: d.faults,
+			Node: d.node, Script: d.script, Native: d.impl == cohortDart, BaseURL: d.proxy.base(), Faults: d.faults,
 			BackoffMin: soakBackoffMin, BackoffMax: soakBackoffMax, JournalFile: d.journalFile,
 		}
 		cfg.enrolled(d.enroll)
@@ -480,6 +483,9 @@ func (r *convergeRun) device(ctx context.Context, label, impl string, owner uuid
 		}
 	case cohortTS:
 		d.journalFile = filepath.Join(r.cfg.Dir, fmt.Sprintf("converge-%s-%s.json", label, uuid.NewString()[:8]))
+	case cohortDart:
+		d.script = r.cfg.DartDriver
+		d.journalFile = filepath.Join(r.cfg.Dir, fmt.Sprintf("converge-%s-%s.sqlite", label, uuid.NewString()[:8]))
 	}
 	return d, true
 }

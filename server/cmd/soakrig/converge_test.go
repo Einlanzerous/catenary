@@ -71,8 +71,8 @@ func TestConvergenceTSAgainstGo(t *testing.T) {
 // on each device while both are held, drained on return. TWO TYPESCRIPT
 // DEVICES, because the Go reference client has no outbox: this proves the
 // schedule and the driver's `compose` and `outbox`, and nothing about two
-// implementations agreeing. The Dart lane (CANT-188) is where it meets a
-// second one.
+// implementations agreeing. TestConvergenceOfTheOutboxTSAgainstDart, below,
+// is where it meets a second one.
 func TestConvergenceOfTheOutboxAcrossAPartition(t *testing.T) {
 	h, cfg := convergeLane(t)
 	cfg.Schedule, cfg.A, cfg.B = scheduleS5, cohortTS, cohortTS
@@ -343,5 +343,144 @@ func TestThePartitionProxyHoldsAndHeals(t *testing.T) {
 				t.Errorf("after heal() a /sync through the proxy failed: %v", err)
 			}
 		})
+	}
+}
+
+// --- CANT-188: the Dart lane -------------------------------------------------
+//
+// The same rig with a Dart device behind one of the two proxies: the Dart
+// client's transport over its SQLite journal, through its own driver, against
+// the TypeScript transport through the Node driver. This is the pair CANT-46's
+// own Done-when names — two DIFFERENT client implementations of one person —
+// with neither of them the Go reference the rig's author also runs.
+//
+// GATED ON BOTH DRIVERS: CATENARY_TS_DRIVER and CATENARY_DART_DRIVER. Either
+// unset skips; either set and missing fails, and so does a Dart driver that
+// cannot be executed (dartDriverExe). verify.sh's Dart convergence step sets
+// both.
+
+func dartConvergeLane(t *testing.T) (*harness, convergeConfig) {
+	t.Helper()
+	exe := dartDriverExe(t)
+	h, cfg := convergeLane(t)
+	cfg.DartDriver = exe
+	return h, cfg
+}
+
+// tsAndDart runs fn once with each of the two as device A.
+func tsAndDart(t *testing.T, fn func(t *testing.T, a, b string)) {
+	t.Helper()
+	for _, roles := range [][2]string{{cohortTS, cohortDart}, {cohortDart, cohortTS}} {
+		t.Run("A="+roles[0]+",B="+roles[1], func(t *testing.T) { fn(t, roles[0], roles[1]) })
+	}
+}
+
+// Schedules S1–S4 converge with one TypeScript device and one Dart device, in
+// both role assignments.
+func TestConvergenceTSAgainstDart(t *testing.T) {
+	h, base := dartConvergeLane(t)
+	for _, schedule := range []string{scheduleS1, scheduleS2, scheduleS3, scheduleS4} {
+		t.Run(schedule, func(t *testing.T) {
+			tsAndDart(t, func(t *testing.T, a, b string) {
+				cfg := base
+				cfg.Schedule, cfg.A, cfg.B = schedule, a, b
+				rep := h.runConverge(context.Background(), cfg)
+				t.Log(rep.String())
+				if rep.Verdict != VerdictConverged {
+					t.Fatalf("verdict = %s, want converged", rep.Verdict)
+				}
+				if rep.ComparisonsRun != convergeComparisons {
+					t.Errorf("comparisons run = %d, want %d", rep.ComparisonsRun, convergeComparisons)
+				}
+				if rep.Holds == 0 || rep.RefusedDials == 0 {
+					t.Errorf("holds %d, dials refused %d: a run that held nothing proved nothing", rep.Holds, rep.RefusedDials)
+				}
+			})
+		})
+	}
+}
+
+// S5 WITH A REAL CROSS-IMPLEMENTATION PAIR, for the first time: the
+// TypeScript outbox and the Dart outbox each compose three texts while held,
+// and both drain on return. Every composed client_id committed exactly once,
+// both devices holding all six at the server's seq, both outboxes empty — in
+// both role assignments. This is the mechanical check that the two outboxes
+// agree, which docs/decisions/cant-36-outbox.md names this ticket as.
+func TestConvergenceOfTheOutboxTSAgainstDart(t *testing.T) {
+	h, base := dartConvergeLane(t)
+	tsAndDart(t, func(t *testing.T, a, b string) {
+		cfg := base
+		cfg.Schedule, cfg.A, cfg.B = scheduleS5, a, b
+		rep := h.runConverge(context.Background(), cfg)
+		t.Log(rep.String())
+		if rep.Verdict != VerdictConverged {
+			t.Fatalf("verdict = %s, want converged", rep.Verdict)
+		}
+		if rep.ComparisonsRun != convergeComparisons+1 {
+			t.Errorf("comparisons run = %d, want %d: the three comparisons and the outbox's", rep.ComparisonsRun, convergeComparisons+1)
+		}
+		if rep.Holds != 2 || rep.RefusedDials == 0 {
+			t.Errorf("holds %d, dials refused %d: S5 holds both devices", rep.Holds, rep.RefusedDials)
+		}
+	})
+}
+
+// THE FAULT, ON THE DART DEVICE. keepHeldConversation set by name through the
+// Dart driver's `start`: S1 ends diverged, naming FirstUnreadSeq, with both
+// devices still clean under client.Compare.
+func TestConvergenceCatchesAHeldConversationOnTheDartDevice(t *testing.T) {
+	h, cfg := dartConvergeLane(t)
+	cfg.Schedule, cfg.A, cfg.B = scheduleS1, cohortTS, cohortDart
+	cfg.FaultsB = client.Faults{KeepHeldConversation: true}
+	rep := h.runConverge(context.Background(), cfg)
+	t.Log(rep.String())
+	if rep.Verdict != VerdictDiverged {
+		t.Fatalf("verdict = %s, want diverged", rep.Verdict)
+	}
+	if !strings.Contains(strings.Join(rep.Pairwise, "\n"), "FirstUnreadSeq") {
+		t.Errorf("the pairwise report does not name FirstUnreadSeq: %q", rep.Pairwise)
+	}
+	if !rep.CompareA.Clean() || !rep.CompareB.Clean() {
+		t.Errorf("client.Compare saw the fault (A: %s; B: %s); it reads no state this fault touches", rep.CompareA, rep.CompareB)
+	}
+	if len(rep.Markers) == 0 || !strings.Contains(rep.Markers[0], "device B") {
+		t.Errorf("the marker comparison did not name device B, the Dart one: %q", rep.Markers)
+	}
+}
+
+// The partition reaches a Dart driver the way it reaches the others: by being
+// its base URL.
+func TestThePartitionProxyHoldsAndHealsADartClient(t *testing.T) {
+	h, cfg := dartConvergeLane(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cfg.A, cfg.B, cfg.SettleTimeout = cohortDart, cohortDart, 30*time.Second
+	r := &convergeRun{h: h, cfg: cfg}
+	defer r.teardown()
+	if !r.setup(ctx) {
+		t.Fatalf("the opening: %q", r.rep.HarnessErrors)
+	}
+	d := r.a
+	d.proxy.hold()
+	if err := r.await(ctx, d.c, func() bool { return !d.c.Status().Ready }); err != nil {
+		t.Fatalf("after hold() the Dart client's socket is still there: %v", err)
+	}
+	// Its catch-up goes through the same address: a held proxy refuses the
+	// /sync as well as the socket, which is what makes it a partition.
+	pages := d.c.Status().Pages
+	d.c.CatchUp()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) && d.proxy.refusedDials() < 2 {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if s := d.c.Status(); s.Pages != pages || s.Ready {
+		t.Errorf("behind a held proxy the Dart client pulled a page or became ready: pages %d → %d, ready %v", pages, s.Pages, s.Ready)
+	}
+	if d.proxy.refusedDials() == 0 {
+		t.Error("the held proxy refused nothing: the Dart client is not dialing through it")
+	}
+	d.proxy.heal()
+	if err := r.await(ctx, d.c, func() bool { s := d.c.Status(); return s.Ready && s.CaughtUp }); err != nil {
+		t.Fatalf("after heal() the Dart client never came back: %v", err)
 	}
 }

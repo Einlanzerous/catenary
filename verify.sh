@@ -419,9 +419,9 @@ fi
 # CANT-46: one person, two devices running two different clients, each held
 # off the network in turn behind the rig's own partitionProxy, and then judged
 # against each other (client.SameState) as well as against the server. The
-# stand-in pair until the Dart driver exists is the TypeScript transport
-# against the Go reference (ruling 3 → option 0), every schedule in both role
-# assignments.
+# first pair is the TypeScript transport against the Go reference (ruling 3 →
+# option 0), every schedule in both role assignments; the pair the ticket
+# names, TypeScript against Dart, is the lane at the end of this step.
 #
 # IT REUSES THE BUNDLE THE CANT-153 STEP BUILT, and its `ts_lane`: the expected
 # number of passes is asserted and a skip is a failure, so a `-run` pattern
@@ -437,10 +437,30 @@ if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   result $? "the controls: keepHeldConversation is caught as FirstUnreadSeq, and a hold that held nothing, a skipped comparison and an unequal opening are each a harness failure ($(grep -oE 'verdict=[a-z_]+' "$LOGDIR/v-converge-controls.log" | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2, $1; sep=", "}'))"
   # CANT-187 (ruling 1 → option 0): the outbox inside the test. S5 composes on
   # both devices while both are held, through the driver's `compose`, and owes
-  # a sixth comparison. Two TypeScript devices until the Dart driver exists —
-  # the Go reference client has no outbox, and the lane says so.
+  # a sixth comparison. Two TypeScript devices here — the Go reference client
+  # has no outbox, and the lane says so; the Dart lane below is S5's real pair.
   ts_lane "$LOGDIR/v-converge-outbox.log" 3 "$ROOT/server" ./cmd/soakrig/ '^(TestConvergenceOfTheOutboxAcrossAPartition|TestS5RefusesADeviceWithNoOutbox|TestAComposedTextSurvivesTheDriversDeath)$'
   result $? "S5: texts composed while held are committed exactly once and both outboxes empty ($(grep -oE 'pair=[a-z+]+ roles=[A-Za-z:,]+ schedule=S5 verdict=[a-z_]+' "$LOGDIR/v-converge-outbox.log" | tr '\n' ';' | sed 's/;$//; s/;/; /g')); a composed text survives the driver's death"
+  # CANT-188: the Dart lane — the same rig with a Dart device behind one of the
+  # two proxies and the TypeScript transport behind the other, which is the
+  # pair CANT-46's own Done-when names. Both drivers are named, the ones the
+  # two cohort steps above built, and both gates are asserted: a skip is a
+  # failure. Inside the `command -v dart` guard, and it skips only there.
+  if command -v dart >/dev/null; then
+    both_lane() { # both_lane LOG WANT_PASSES RUN
+      local log="$1" want="$2" run="$3"
+      (cd "$ROOT/server" && CATENARY_TS_DRIVER="$TS_DRIVER" CATENARY_DART_DRIVER="$DART_DRIVER" go test -run "$run" -v -count=1 ./cmd/soakrig/) >"$log" 2>&1
+      local rc=$?
+      local passed skipped
+      passed=$(grep -cE '^--- PASS: ' "$log")
+      skipped=$(grep -cE -- '--- SKIP: ' "$log")
+      [ $rc -eq 0 ] && [ "$passed" -eq "$want" ] && [ "$skipped" -eq 0 ]
+    }
+    both_lane "$LOGDIR/v-converge-dart.log" 4 '^(TestConvergenceTSAgainstDart|TestConvergenceOfTheOutboxTSAgainstDart|TestConvergenceCatchesAHeldConversationOnTheDartDevice|TestThePartitionProxyHoldsAndHealsADartClient)$'
+    result $? "TypeScript against Dart, S1–S5 both ways round and the fault on the Dart device: $(grep -oE 'schedule=S[0-9] verdict=[a-z_]+' "$LOGDIR/v-converge-dart.log" | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2" "$3, $1; sep=", "}'); the partition reaches a Dart driver"
+  else
+    printf '   \033[33mSKIP\033[0m dart not on PATH — the Dart convergence lane needs the Dart driver.\n'
+  fi
 else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the convergence rig runs against a real Postgres.\n'
 fi
