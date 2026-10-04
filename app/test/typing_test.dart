@@ -5,7 +5,6 @@
 
 import 'dart:io';
 
-import 'package:catenary/main.dart';
 import 'package:catenary/store/typing.dart';
 import 'package:catenary/theme.dart';
 import 'package:catenary/widgets/typing_row.dart';
@@ -55,7 +54,5 @@ void main() {
     expect(find.text('Several people'), findsOneWidget);
     await show([]);
     expect(find.byType(Text), findsNothing);
-    // Referenced so the app's own entrypoint stays in this test's build.
-    expect(CatenaryApp, isNotNull);
   });
 }

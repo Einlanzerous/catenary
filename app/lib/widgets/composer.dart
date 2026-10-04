@@ -1,15 +1,27 @@
 // The composer: the bottom of the window, and the only place a message
-// starts. The twin of web/src/components/Composer.vue, with the keyboard
-// hints a phone has no keys for left out.
+// starts. Built to the narrow canvas (`Catenary Mobile.dc.html`, frame 04 A,
+// calls M4, M7 and M8): ADD and the primary action are 44px squares flanking
+// the field.
+//
+//   idle        ADD · Message · REC      record is the accent-filled one: it
+//                                        is the signature feature and the
+//                                        hardest thing to hit on the move
+//   typing      ADD · the draft · SEND
+//   recording   the clock, the levels, ✕, SEND — it REPLACES the whole row,
+//               and the clock lands where the text cursor was
+//   offline     ADD dimmed · "Sends when reconnected" · QUEUE, in the dimmer
+//               copper
 //
 // IT NEVER PRETENDS A MESSAGE LEFT THE BUILDING. Off a live session the
-// primary action reads QUEUE, in the dimmer copper, and the placeholder says
-// the message will send when reconnected. ATTACH dims, because an upload
-// cannot be queued safely (CANT-36). On a terminal client nothing composed
-// now will drain, so the composer does not offer to queue it and the one
-// accent does not sit on a button that cannot work (Invariant 3).
+// primary action reads QUEUE. ADD dims, because an upload cannot be queued
+// safely (CANT-36), and for the same reason a recording cannot be started.
+// On a terminal client nothing composed now will drain, so the composer does
+// not offer to queue it and the one accent does not sit on a button that
+// cannot work (Invariant 3) — that state is not on the canvas.
 //
-// RECORDING IS AMBER, NOT RED: red belongs to failure alone.
+// RECORDING IS AMBER, NOT RED: red belongs to failure alone. SLIDE LEFT TO
+// CANCEL is the only gesture in the system, and the ✕ stays as a visible
+// fallback so the gesture is never the sole route.
 
 import 'dart:math' as math;
 
@@ -17,14 +29,22 @@ import 'package:flutter/material.dart';
 
 import '../metrics.dart';
 import '../store/connection.dart';
-import '../store/status.dart';
 import '../tokens.dart';
+import 'glyph.dart';
 import 'pulse.dart';
 
-class Composer extends StatelessWidget {
+/// `00:17`: the recording clock, two digits each side.
+String recordingClock(Duration d) {
+  final s = d.inSeconds < 0 ? 0 : d.inSeconds;
+  return '${(s ~/ 60).toString().padLeft(2, '0')}:${(s % 60).toString().padLeft(2, '0')}';
+}
+
+/// How far left a recording has to be dragged to cancel it.
+const double slideToCancel = 64;
+
+class Composer extends StatefulWidget {
   const Composer({
     super.key,
-    required this.conversationName,
     required this.connection,
     this.controller,
     this.recording,
@@ -35,7 +55,6 @@ class Composer extends StatelessWidget {
     this.onSendRecording,
   });
 
-  final String conversationName;
   final ConnectionView connection;
   final TextEditingController? controller;
 
@@ -49,12 +68,47 @@ class Composer extends StatelessWidget {
   final VoidCallback? onSendRecording;
 
   @override
+  State<Composer> createState() => _ComposerState();
+}
+
+class _ComposerState extends State<Composer> {
+  TextEditingController? _own;
+  double _slid = 0;
+
+  TextEditingController get _controller => widget.controller ?? (_own ??= TextEditingController());
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addListener(_changed);
+  }
+
+  @override
+  void didUpdateWidget(Composer old) {
+    super.didUpdateWidget(old);
+    if (old.controller != widget.controller) {
+      (old.controller ?? _own)?.removeListener(_changed);
+      _controller.addListener(_changed);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_changed);
+    _own?.dispose();
+    super.dispose();
+  }
+
+  void _changed() => setState(() {});
+
+  @override
   Widget build(BuildContext context) {
     final t = CatenaryTokens.of(context);
+    final recording = widget.recording;
     return Container(
       decoration: BoxDecoration(color: t.surfaceRail, border: Border(top: BorderSide(color: t.lineHair))),
-      padding: const EdgeInsets.fromLTRB(CatenaryMetrics.s4, 10, CatenaryMetrics.s4, 12),
-      child: recording != null ? _recording(t, recording!) : _field(t),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
+      child: recording != null ? _recording(t, recording) : _row(t),
     );
   }
 
@@ -63,125 +117,145 @@ class Composer extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Container(
-          key: const ValueKey('composer-recording'),
-          decoration: BoxDecoration(
-            color: t.surfaceBase,
-            border: Border.all(color: t.accentWire),
-            borderRadius: BorderRadius.circular(CatenaryMetrics.radiusInput),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          child: Row(
-            children: [
-              Pulse(child: Container(width: 8, height: 8, color: t.accentWire)),
-              const SizedBox(width: 14),
-              Text(
-                clock(elapsed),
-                style: TextStyle(
-                  fontFamily: fontMono,
-                  fontSize: 13,
-                  color: t.textPrimary,
-                  fontFeatures: const [FontFeature.tabularFigures()],
+        GestureDetector(
+          onHorizontalDragUpdate: (d) => setState(() => _slid = math.max(0, _slid - d.delta.dx)),
+          onHorizontalDragEnd: (_) {
+            final cancel = _slid >= slideToCancel;
+            setState(() => _slid = 0);
+            if (cancel) widget.onCancelRecording?.call();
+          },
+          child: Container(
+            key: const ValueKey('composer-recording'),
+            decoration: BoxDecoration(
+              color: t.surfaceBase,
+              border: Border.all(color: t.accentWire),
+              borderRadius: BorderRadius.circular(CatenaryMetrics.radiusInput),
+            ),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Row(
+              children: [
+                Pulse(child: Container(width: 8, height: 8, color: t.accentWire)),
+                const SizedBox(width: 10),
+                Text(
+                  recordingClock(elapsed),
+                  style: TextStyle(
+                    fontFamily: fontMono,
+                    fontSize: 13,
+                    height: 18 / 13,
+                    color: t.textPrimary,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
                 ),
-              ),
-              const SizedBox(width: 14),
-              Expanded(child: SizedBox(height: 26, child: CustomPaint(painter: _LevelsPainter(t.accentWire)))),
-              const SizedBox(width: 14),
-              _Ghost('CANCEL', color: t.textMeta, onTap: onCancelRecording),
-              const SizedBox(width: CatenaryMetrics.s4),
-              _Primary('SEND', color: t.onAccent, fill: t.accentWire, onTap: onSendRecording),
-            ],
+                const SizedBox(width: 10),
+                Expanded(child: SizedBox(height: 26, child: CustomPaint(painter: _LevelsPainter(t.accentWire)))),
+                const SizedBox(width: 10),
+                GestureDetector(
+                  key: const ValueKey('composer-cancel-recording'),
+                  behavior: HitTestBehavior.opaque,
+                  onTap: widget.onCancelRecording,
+                  child: SizedBox(
+                    width: 32,
+                    height: 36,
+                    child: Center(child: GlyphIcon(Glyph.cross, color: t.textSecondary, size: 9)),
+                  ),
+                ),
+                const SizedBox(width: 4),
+                _Square('SEND', size: 36, fontSize: 9, color: t.onAccent, fill: t.accentWire, onTap: widget.onSendRecording),
+              ],
+            ),
           ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'slide left to cancel · lift to keep recording',
+          style: TextStyle(fontFamily: fontMono, fontSize: 9.5, height: 12 / 9.5, color: t.textMeta),
         ),
       ],
     );
   }
 
-  Widget _field(CatenaryTokens t) {
-    final offline = connection.offline;
-    final terminal = connection.isTerminal;
-    final placeholder = terminal
-        ? 'Message $conversationName — this device cannot send; see the banner'
+  Widget _row(CatenaryTokens t) {
+    final offline = widget.connection.offline;
+    final terminal = widget.connection.isTerminal;
+    final drafted = _controller.text.trim().isNotEmpty;
+    final hint = terminal
+        ? 'This device cannot send'
         : offline
-            ? 'Message $conversationName — will send when reconnected'
-            : 'Message $conversationName';
-    return Container(
-      decoration: BoxDecoration(
-        color: t.surfaceBase,
-        border: Border.all(color: t.lineEdge),
-        borderRadius: BorderRadius.circular(CatenaryMetrics.radiusInput),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          TextField(
-            key: const ValueKey('composer-input'),
-            controller: controller,
-            minLines: 1,
-            maxLines: 8,
-            style: CatenaryType.body.style.copyWith(height: 24 / 15, color: t.textPrimary),
-            decoration: InputDecoration(
-              hintText: placeholder,
-              hintStyle: CatenaryType.body.style.copyWith(height: 24 / 15, color: t.textSecondary),
-              hintMaxLines: 2,
-              border: InputBorder.none,
-              enabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              contentPadding: const EdgeInsets.fromLTRB(14, 11, 14, 4),
+            ? 'Sends when reconnected'
+            : 'Message';
+    final Widget primary;
+    if (terminal) {
+      // Nothing sends, so the one accent does not sit on this button.
+      primary = _Square('SEND', color: t.textDisabled, fill: t.surfaceBase, border: t.lineInner, onTap: null);
+    } else if (offline) {
+      primary = _Square('QUEUE', fontSize: 9, color: t.onAccent, fill: t.accentQueue, onTap: drafted ? widget.onSend : null);
+    } else if (drafted) {
+      primary = _Square('SEND', color: t.onAccent, fill: t.accentWire, onTap: widget.onSend);
+    } else {
+      primary = _Square('REC', color: t.onAccent, fill: t.accentWire, onTap: widget.onRecord);
+    }
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.end,
+      children: [
+        // Uploads can't be queued safely, so ADD dims when offline.
+        _Square(
+          'ADD',
+          color: offline ? t.textDisabled : t.textMeta,
+          border: offline ? t.lineInner : t.lineEdge,
+          onTap: offline ? null : widget.onAttach,
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Container(
+            constraints: const BoxConstraints(minHeight: 44),
+            alignment: Alignment.centerLeft,
+            decoration: BoxDecoration(
+              color: t.surfaceBase,
+              border: Border.all(color: t.lineEdge),
+              borderRadius: BorderRadius.circular(CatenaryMetrics.radiusInput),
+            ),
+            child: TextField(
+              key: const ValueKey('composer-input'),
+              controller: _controller,
+              minLines: 1,
+              maxLines: 6,
+              cursorColor: t.accentWire,
+              cursorWidth: 1,
+              style: TextStyle(fontFamily: fontSans, fontSize: 15, height: 24 / 15, color: t.textPrimary),
+              decoration: InputDecoration(
+                isCollapsed: true,
+                hintText: hint,
+                hintStyle: TextStyle(
+                  fontFamily: fontSans,
+                  fontSize: offline ? 14 : 15,
+                  height: 24 / (offline ? 14 : 15),
+                  color: offline ? t.textSecondary : t.textMeta,
+                ),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+              ),
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 6, 12, 9),
-            child: Row(
-              children: [
-                // Uploads can't be queued safely, so ATTACH dims when offline.
-                _Ghost('ATTACH', color: offline ? t.textDisabled : t.textMeta, onTap: offline ? null : onAttach),
-                const SizedBox(width: CatenaryMetrics.s4),
-                _Ghost('RECORD', color: terminal ? t.textDisabled : t.textMeta, onTap: terminal ? null : onRecord),
-                const Spacer(),
-                // Terminal: nothing sends, so the one accent does not sit on
-                // this button.
-                terminal
-                    ? _Primary('SEND', color: t.textDisabled, fill: t.surfaceBase, onTap: null)
-                    : offline
-                        ? _Primary('QUEUE', color: t.onAccent, fill: t.accentQueue, onTap: onSend)
-                        : _Primary('SEND', color: t.onAccent, fill: t.accentWire, onTap: onSend),
-              ],
-            ),
-          ),
-        ],
-      ),
+        ),
+        const SizedBox(width: 10),
+        KeyedSubtree(key: const ValueKey('composer-primary'), child: primary),
+      ],
     );
   }
 }
 
-class _Ghost extends StatelessWidget {
-  const _Ghost(this.label, {required this.color, required this.onTap});
+/// A square button with a mono label: the 44px targets flanking the field.
+class _Square extends StatelessWidget {
+  const _Square(this.label, {required this.color, required this.onTap, this.fill, this.border, this.size = 44, this.fontSize = 9.5});
 
   final String label;
   final Color color;
-  final VoidCallback? onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 5),
-        child: Text(label, style: CatenaryType.label.tracked.copyWith(color: color)),
-      ),
-    );
-  }
-}
-
-class _Primary extends StatelessWidget {
-  const _Primary(this.label, {required this.color, required this.fill, required this.onTap});
-
-  final String label;
-  final Color color;
-  final Color fill;
+  final Color? fill;
+  final Color? border;
+  final double size;
+  final double fontSize;
   final VoidCallback? onTap;
 
   @override
@@ -190,20 +264,19 @@ class _Primary extends StatelessWidget {
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       child: Container(
-        key: const ValueKey('composer-primary'),
-        color: fill,
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-        child: Text(label, style: CatenaryType.label.tracked.copyWith(color: color)),
+        width: size,
+        height: size,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(color: fill, border: border == null ? null : Border.all(color: border!)),
+        child: Text(label, style: TextStyle(fontFamily: fontMono, fontSize: fontSize, letterSpacing: fontSize * 0.1, color: color)),
       ),
     );
   }
 }
 
 /// The level bars beside the recording clock. A PLACEHOLDER SHAPE, not the
-/// recording's peaks and not a port of the web client's seeded generator:
-/// that generator overflows 2^53 and draws different bars in Dart than in
-/// JavaScript, which is why a voice note's real waveform is computed on the
-/// server. This one only has to say "sound is being taken".
+/// recording's peaks: a voice note's real waveform is computed on the server
+/// and arrives on the wire. This one only has to say "sound is being taken".
 class _LevelsPainter extends CustomPainter {
   const _LevelsPainter(this.color);
 

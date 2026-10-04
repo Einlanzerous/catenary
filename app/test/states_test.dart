@@ -13,6 +13,7 @@ import 'package:catenary/tokens.dart';
 import 'package:catenary/widgets/composer.dart';
 import 'package:catenary/widgets/connection_banner.dart';
 import 'package:catenary/widgets/status_label.dart';
+import 'package:catenary/widgets/status_mark.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -25,114 +26,160 @@ Future<void> show(WidgetTester tester, Widget child, {Brightness brightness = Br
   ));
 }
 
-Color primaryFill(WidgetTester tester) =>
-    tester.widget<Container>(find.byKey(const ValueKey('composer-primary'))).color!;
+/// The fill of the 44px square at the right of the field.
+Color? primaryFill(WidgetTester tester) => (tester
+        .widget<Container>(find.descendant(of: find.byKey(const ValueKey('composer-primary')), matching: find.byType(Container)))
+        .decoration! as BoxDecoration)
+    .color;
 
 void main() {
   for (final (brightness, t) in [(Brightness.dark, CatenaryTokens.dark), (Brightness.light, CatenaryTokens.light)]) {
     final theme = brightness.name;
 
-    testWidgets('$theme · recording: the clock, CANCEL and SEND, amber and not red', (tester) async {
+    testWidgets('$theme · recording: the clock, ✕ and SEND, amber and not red; a slide left cancels', (tester) async {
       var cancelled = 0, sent = 0;
       await show(
         tester,
         Composer(
-          conversationName: 'Kitchen',
           connection: const ConnectionView.live(),
-          recording: const Duration(seconds: 74),
+          recording: const Duration(seconds: 17),
           onCancelRecording: () => cancelled++,
           onSendRecording: () => sent++,
         ),
         brightness: brightness,
       );
-      expect(find.text('1:14'), findsOneWidget);
+      expect(find.text('00:17'), findsOneWidget);
+      expect(find.text('slide left to cancel · lift to keep recording'), findsOneWidget);
       final box = tester.widget<Container>(find.byKey(const ValueKey('composer-recording')));
       expect((box.decoration! as BoxDecoration).border!.top.color, t.accentWire, reason: 'amber: red belongs to failure alone');
+      // It replaces the whole composer row (M7).
       expect(find.byKey(const ValueKey('composer-input')), findsNothing);
-      await tester.tap(find.text('CANCEL'));
+      expect(find.text('ADD'), findsNothing);
+
       await tester.tap(find.text('SEND'));
+      // The ✕ is the visible fallback, so the gesture is never the sole route.
+      await tester.tap(find.byKey(const ValueKey('composer-cancel-recording')));
       expect((cancelled, sent), (1, 1));
+      // A slide short of the threshold keeps recording; one past it cancels.
+      await tester.drag(find.text('00:17'), const Offset(-(slideToCancel - 24), 0));
+      expect(cancelled, 1);
+      await tester.drag(find.text('00:17'), const Offset(-(slideToCancel + 24), 0));
+      expect(cancelled, 2);
     });
 
-    testWidgets('$theme · offline-queued: QUEUE in the dimmer copper, the placeholder says so, ATTACH is off', (tester) async {
-      var sent = 0, attached = 0, recorded = 0;
+    testWidgets('$theme · idle is ADD · Message · REC, and a draft turns REC into SEND', (tester) async {
+      var sent = 0, recorded = 0;
+      final draft = TextEditingController();
+      await show(
+        tester,
+        Composer(connection: const ConnectionView.live(), controller: draft, onSend: () => sent++, onRecord: () => recorded++),
+        brightness: brightness,
+      );
+      expect(find.text('Message'), findsOneWidget);
+      expect(find.text('REC'), findsOneWidget);
+      expect(primaryFill(tester), t.accentWire, reason: 'record is the accent-filled one');
+      expect(tester.getSize(find.byKey(const ValueKey('composer-primary'))), const Size(44, 44));
+      await tester.tap(find.text('REC'));
+      expect(recorded, 1);
+
+      draft.text = 'Eight works';
+      await tester.pump();
+      expect(find.text('REC'), findsNothing);
+      await tester.tap(find.text('SEND'));
+      expect(sent, 1);
+    });
+
+    testWidgets('$theme · offline-queued: QUEUE in the dimmer copper, the hint says so, ADD is off', (tester) async {
+      var sent = 0, attached = 0;
+      final draft = TextEditingController();
       await show(
         tester,
         Composer(
-          conversationName: 'Kitchen',
           connection: const ConnectionView(kind: ConnectionKind.offline),
+          controller: draft,
           onSend: () => sent++,
           onAttach: () => attached++,
-          onRecord: () => recorded++,
         ),
         brightness: brightness,
       );
       expect(find.text('QUEUE'), findsOneWidget);
       expect(find.text('SEND'), findsNothing);
+      expect(find.text('REC'), findsNothing, reason: 'a recording is an upload, and an upload cannot be queued');
       expect(primaryFill(tester), t.accentQueue);
-      expect(find.text('Message Kitchen — will send when reconnected'), findsOneWidget);
-      await tester.tap(find.text('QUEUE'));
-      await tester.tap(find.text('ATTACH'));
-      await tester.tap(find.text('RECORD'));
-      expect((sent, attached, recorded), (1, 0, 1), reason: 'an upload cannot be queued; a text and a recording can');
-      expect(tester.widget<Text>(find.text('ATTACH')).style!.color, t.textDisabled);
-    });
+      expect(find.text('Sends when reconnected'), findsOneWidget);
+      await tester.tap(find.text('ADD'));
+      expect(attached, 0);
+      expect(tester.widget<Text>(find.text('ADD')).style!.color, t.textDisabled);
 
-    testWidgets('$theme · live: SEND on the one accent', (tester) async {
-      await show(tester, const Composer(conversationName: 'Kitchen', connection: ConnectionView.live()), brightness: brightness);
-      expect(find.text('SEND'), findsOneWidget);
-      expect(primaryFill(tester), t.accentWire);
-      expect(find.text('Message Kitchen'), findsOneWidget);
+      await tester.tap(find.text('QUEUE'));
+      expect(sent, 0, reason: 'there is nothing to queue yet');
+      draft.text = 'Eight works';
+      await tester.pump();
+      await tester.tap(find.text('QUEUE'));
+      expect(sent, 1);
     });
 
     testWidgets('$theme · terminal: nothing sends, and the accent is not on the button', (tester) async {
-      var sent = 0, recorded = 0;
+      var sent = 0;
+      final draft = TextEditingController(text: 'Eight works');
       await show(
         tester,
         Composer(
-          conversationName: 'Kitchen',
           connection: const ConnectionView(kind: ConnectionKind.terminal, terminal: TerminalCause.credential),
+          controller: draft,
           onSend: () => sent++,
-          onRecord: () => recorded++,
         ),
         brightness: brightness,
       );
       expect(find.text('QUEUE'), findsNothing, reason: 'a terminal client drains nothing, so it does not offer to queue');
       expect(primaryFill(tester), t.surfaceBase);
       await tester.tap(find.text('SEND'));
-      await tester.tap(find.text('RECORD'));
-      expect((sent, recorded), (0, 0));
-      expect(find.text('Message Kitchen — this device cannot send; see the banner'), findsOneWidget);
+      expect(sent, 0);
     });
 
     testWidgets('$theme · failed: the one other color, and only there', (tester) async {
-      await show(tester, const StatusLabel(status: MessageStatus.failed), brightness: brightness);
+      await show(tester, const StatusMark(status: MessageStatus.failed), brightness: brightness);
       expect(tester.widget<Text>(find.text('FAILED')).style!.color, t.signalFault);
       for (final s in MessageStatus.values.where((s) => s != MessageStatus.failed)) {
+        await show(tester, StatusMark(status: s), brightness: brightness);
+        expect(tester.widget<Text>(find.byType(Text)).style!.color, isNot(t.signalFault), reason: '${s.name} is not a failure');
         await show(tester, StatusLabel(status: s), brightness: brightness);
-        expect(tester.widget<Text>(find.byType(Text)).style!.color, t.textMeta, reason: '${s.name} is not a failure');
+        expect(tester.widget<Text>(find.byType(Text)).style!.color, t.textMeta);
+      }
+    });
+
+    testWidgets('$theme · status words become marks: • sent, •• delivered, •• read in the accent', (tester) async {
+      for (final (status, text, color) in [
+        (MessageStatus.sent, '•', t.textMeta),
+        (MessageStatus.delivered, '••', t.textMeta),
+        (MessageStatus.read, '••', t.accentWire),
+        (MessageStatus.queued, 'QUEUED', t.textMeta),
+        (MessageStatus.sending, 'SENDING', t.textMeta),
+      ]) {
+        await show(tester, StatusMark(status: status), brightness: brightness);
+        final mark = tester.widget<Text>(find.byType(Text));
+        expect((mark.data, mark.style!.color), (text, color), reason: status.name);
       }
     });
 
     testWidgets('$theme · resyncing: counts, never a spinner, and no 0 / 0', (tester) async {
       await show(
         tester,
-        const ConnectionBanner(connection: ConnectionView(kind: ConnectionKind.resyncing, synced: 1284, total: 12480, roomsPending: 2)),
+        const ConnectionBanner(connection: ConnectionView(kind: ConnectionKind.resyncing, synced: 412, total: 1180)),
         brightness: brightness,
       );
-      expect(find.text('Reconnected — catching up'), findsOneWidget);
-      expect(find.text('1,284 / 12,480 messages'), findsOneWidget);
-      expect(find.text('2 ROOMS PENDING'), findsOneWidget);
+      expect(find.text('Catching up'), findsOneWidget);
+      expect(find.text('412 / 1,180'), findsOneWidget);
       final bar = tester.widget<FractionallySizedBox>(find.byKey(const ValueKey('catchup-progress')));
-      expect(bar.widthFactor, closeTo(1284 / 12480, 1e-9));
+      expect(bar.widthFactor, closeTo(412 / 1180, 1e-9));
       expect(find.byType(CircularProgressIndicator), findsNothing);
 
       await show(tester, const ConnectionBanner(connection: ConnectionView(kind: ConnectionKind.resyncing)), brightness: brightness);
-      expect(find.textContaining('messages'), findsNothing, reason: 'no total yet, so no number is claimed');
+      expect(find.textContaining('/'), findsNothing, reason: 'no total yet, so no number is claimed');
     });
   }
 
-  testWidgets('reconnecting counts: the attempt and the countdown, with RETRY NOW', (tester) async {
+  testWidgets('reconnecting counts: the attempt and the countdown, with RETRY', (tester) async {
     var retried = 0;
     await show(
       tester,
@@ -141,16 +188,18 @@ void main() {
         onRetry: () => retried++,
       ),
     );
-    expect(find.text('Connection lost — reconnecting'), findsOneWidget);
-    expect(find.text('attempt 3 · retry in 0:08'), findsOneWidget);
-    await tester.tap(find.text('RETRY NOW'));
+    expect(find.text('Reconnecting'), findsOneWidget);
+    expect(find.text('attempt 3 · 0:08'), findsOneWidget);
+    await tester.tap(find.text('RETRY'));
     expect(retried, 1);
   });
 
-  testWidgets('offline says messages will queue', (tester) async {
+  testWidgets('offline says how many are queued, and never "0 queued"', (tester) async {
+    await show(tester, const ConnectionBanner(connection: ConnectionView(kind: ConnectionKind.offline, queued: 2)));
+    expect(find.text('Offline — 2 queued'), findsOneWidget);
+    expect(find.text('RETRY'), findsOneWidget);
     await show(tester, const ConnectionBanner(connection: ConnectionView(kind: ConnectionKind.offline)));
     expect(find.text('Offline — messages will queue'), findsOneWidget);
-    expect(find.text('RECONNECT'), findsOneWidget);
   });
 
   testWidgets('a terminal client offers no retry; only a credential one offers RE-ENROLL', (tester) async {
@@ -160,7 +209,7 @@ void main() {
     );
     expect(find.textContaining('Nothing sends until then.'), findsOneWidget);
     expect(find.text('RE-ENROLL'), findsOneWidget);
-    expect(find.text('RETRY NOW'), findsNothing);
+    expect(find.text('RETRY'), findsNothing);
 
     await show(
       tester,
@@ -168,7 +217,7 @@ void main() {
     );
     expect(find.text('PROTOCOL'), findsOneWidget);
     expect(find.text('RE-ENROLL'), findsNothing, reason: 're-enrolling cannot fix a client the server will not speak to');
-    expect(find.text('RETRY NOW'), findsNothing);
+    expect(find.text('RETRY'), findsNothing);
   });
 
   testWidgets('a live connection shows no banner, and a journal error shows beside any other', (tester) async {
@@ -227,9 +276,9 @@ void main() {
         home: const TickerMode(enabled: false, child: StatesScreen()),
       ));
       expect(find.byType(ConnectionBanner), findsNWidgets(connectionFixtures.length));
-      expect(find.byType(Composer), findsNWidgets(4));
+      expect(find.byType(Composer), findsNWidgets(5));
       expect(find.text('Several people'), findsOneWidget);
-      expect(find.text('FAILED'), findsOneWidget);
+      expect(find.text('FAILED'), findsNWidgets(2), reason: 'the mark and the word are both FAILED');
       expect(find.text('READ 5/7'), findsOneWidget);
     }
   });

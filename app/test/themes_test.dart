@@ -1,11 +1,35 @@
 // Both themes render: the app is pumped in each, and what is on screen is
 // painted from that theme's table and from nothing else.
 
-import 'package:catenary/main.dart';
+import 'package:catenary/specimen.dart';
+import 'package:catenary/theme.dart';
 import 'package:catenary/metrics.dart';
 import 'package:catenary/tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// The token specimen under one theme, with a toggle that swaps it.
+class _Specimen extends StatefulWidget {
+  const _Specimen(this.initial);
+
+  final ThemeMode initial;
+
+  @override
+  State<_Specimen> createState() => _SpecimenState();
+}
+
+class _SpecimenState extends State<_Specimen> {
+  late ThemeMode mode = widget.initial;
+
+  @override
+  Widget build(BuildContext context) => MaterialApp(
+        theme: catenaryTheme(Brightness.light),
+        darkTheme: catenaryTheme(Brightness.dark),
+        themeMode: mode,
+        themeAnimationDuration: Duration.zero,
+        home: SpecimenScreen(mode: mode, onMode: (m) => setState(() => mode = m)),
+      );
+}
 
 void main() {
   for (final (mode, tokens, label) in [
@@ -13,7 +37,7 @@ void main() {
     (ThemeMode.light, CatenaryTokens.light, 'TOKENS · LIGHT'),
   ]) {
     testWidgets('$label renders from its own table', (tester) async {
-      await tester.pumpWidget(CatenaryApp(initialMode: mode));
+      await tester.pumpWidget(_Specimen(mode));
       expect(find.text(label), findsOneWidget);
 
       final context = tester.element(find.byType(Scaffold));
@@ -33,7 +57,7 @@ void main() {
   }
 
   testWidgets('the toggle swaps one table for the other', (tester) async {
-    await tester.pumpWidget(const CatenaryApp(initialMode: ThemeMode.dark));
+    await tester.pumpWidget(const _Specimen(ThemeMode.dark));
     await tester.tap(find.byKey(const ValueKey('theme-toggle')));
     await tester.pumpAndSettle();
     expect(find.text('TOKENS · LIGHT'), findsOneWidget);
@@ -41,7 +65,7 @@ void main() {
   });
 
   testWidgets('radius is 0 except 2px on inputs', (tester) async {
-    await tester.pumpWidget(const CatenaryApp(initialMode: ThemeMode.dark));
+    await tester.pumpWidget(const _Specimen(ThemeMode.dark));
     final theme = Theme.of(tester.element(find.byType(Scaffold)));
     final input = theme.inputDecorationTheme.border! as OutlineInputBorder;
     expect(input.borderRadius, BorderRadius.circular(2));
