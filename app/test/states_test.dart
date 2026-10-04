@@ -162,6 +162,26 @@ void main() {
       }
     });
 
+    // CANT-203 ruling 0, as built: queued and sending are words, and a send
+    // held under backoff reads RETRYING. Sent, delivered and read are marks.
+    testWidgets('$theme · queued, sending and retrying are words in meta grey; the rest are marks', (tester) async {
+      for (final (status, retrying, word) in [
+        (MessageStatus.queued, false, 'QUEUED'),
+        (MessageStatus.sending, false, 'SENDING'),
+        (MessageStatus.sending, true, 'RETRYING'),
+      ]) {
+        await show(tester, StatusMark(status: status, retrying: retrying), brightness: brightness);
+        final mark = tester.widget<Text>(find.byType(Text));
+        expect((mark.data, mark.style!.color), (word, t.textMeta), reason: '${status.name} retrying=$retrying');
+      }
+      for (final status in [MessageStatus.sent, MessageStatus.delivered, MessageStatus.read]) {
+        await show(tester, StatusMark(status: status), brightness: brightness);
+        final mark = tester.widget<Text>(find.byType(Text));
+        expect(mark.data, anyOf('•', '••'), reason: '${status.name} is a mark');
+        expect(mark.semanticsLabel, statusLabel(status), reason: '${status.name}: the word is the semantics label');
+      }
+    });
+
     testWidgets('$theme · resyncing: counts, never a spinner, and no 0 / 0', (tester) async {
       await show(
         tester,
