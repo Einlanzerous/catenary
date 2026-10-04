@@ -6,7 +6,7 @@
 # R1's tunnel run (spike/r1-websocket), and R2/R5, which need an Android device
 # and a willing friend. There are no steps for those.
 #
-# FIVE STEPS HERE SKIP rather than fail when what they need is absent, and a
+# SIX STEPS HERE SKIP rather than fail when what they need is absent, and a
 # skip is not a pass:
 #
 #   Dart            both the analyze and the conformance runner, and the
@@ -21,13 +21,16 @@
 #   the web render  CANT-39's smoke render, on the same condition — it runs
 #                   against a live, seeded server. Its conformance and outbox
 #                   halves still run.
+#   the Flutter app its analyze and widget tests (CANT-40), when `flutter` is
+#                   not on PATH or at $FLUTTER. .github/workflows/app.yml runs
+#                   them in CI, with the Android build.
 #   R6              when the Purser checkout the spike's `replace` points at is
 #                   absent, which is every machine but one.
 #
 # They skip rather than fail because CI runs this file whole, and a step that
 # can never pass there is a red light everyone learns to ignore. CI forces the
-# first two present — `setup-dart` and the Postgres service — so only R6
-# actually skips there.
+# first two present — `setup-dart` and the Postgres service — so only R6 and
+# the Flutter app actually skip there, and the app has its own workflow.
 #
 # THE FIRST STEP RESOLVES DEPENDENCIES, and only when they are missing. Without
 # it this script was green on its SECOND run in a fresh worktree and red on its
@@ -39,6 +42,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DART="${DART:-$HOME/tools/dart-sdk/bin}"
 [ -d "$DART" ] && export PATH="$DART:$PATH"
+# APPENDED, not prepended: the Flutter SDK ships its own `dart`, an older one,
+# and the Dart steps must keep running the SDK named above.
+FLUTTER="${FLUTTER:-$HOME/dev-tools/flutter/bin}"
+[ -d "$FLUTTER" ] && export PATH="$PATH:$FLUTTER"
 
 # ONE DIRECTORY PER RUN. These logs are read AFTER the step that wrote them, so
 # two runs must not be able to read or truncate each other's.
@@ -234,6 +241,23 @@ if command -v dart >/dev/null; then
   result $? "dart test ($(grep -oE '\+[0-9]+( ~[0-9]+)?( -[0-9]+)?: (All tests passed!|Some tests failed\.)' "$LOGDIR/v-dart-client-test.log" | tail -1))"
 else
   printf '   \033[33mSKIP\033[0m dart not on PATH (set DART=/path/to/dart-sdk/bin)\n'
+fi
+
+# CANT-40: the Flutter app. Analyze and the widget tests need no device, and
+# one of those tests is a contract with the web client — test/tokens_test.dart
+# reads web/src/styles/tokens.css and fails when either token table moves
+# alone — so it belongs in the one command a web change has to pass. The
+# Android build is NOT here: it needs a JDK and an Android SDK, and it runs in
+# .github/workflows/app.yml. SKIP is for the genuine absence, no Flutter SDK,
+# which is the case in ci.yml's own verify job; app.yml is what runs it there.
+step "CANT-40 · the Flutter app (app/) — analyze, the token contract, both themes"
+if command -v flutter >/dev/null; then
+  (cd "$ROOT/app" && flutter pub get && flutter analyze) >"$LOGDIR/v-app-analyze.log" 2>&1
+  result $? "flutter analyze"
+  (cd "$ROOT/app" && flutter test --reporter=expanded --no-color) >"$LOGDIR/v-app-test.log" 2>&1
+  result $? "flutter test ($(grep -oE '\+[0-9]+( ~[0-9]+)?( -[0-9]+)?: (All tests passed!|Some tests failed\.)' "$LOGDIR/v-app-test.log" | tail -1))"
+else
+  printf '   \033[33mSKIP\033[0m flutter not on PATH (set FLUTTER=/path/to/flutter/bin) — .github/workflows/app.yml runs it in CI\n'
 fi
 
 step "R4 · Go"
