@@ -353,12 +353,18 @@ fi
 # is not there fails rather than skips. The controls run in the same lane —
 # the fault, the partition that held nothing, the skipped comparison and the
 # opening that left a device without the room — each watched failing.
-step "CANT-46 · cross-client convergence — TypeScript against the Go reference, S1–S4 in both role assignments, and the controls"
+step "CANT-46 · cross-client convergence — TypeScript against the Go reference, S1–S4 in both role assignments, the controls, and S5 (the outbox)"
 if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   ts_lane "$LOGDIR/v-converge.log" 2 "$ROOT/server" ./cmd/soakrig/ '^(TestConvergenceTSAgainstGo|TestThePartitionProxyHoldsAndHeals)$'
   result $? "S1–S4 converge, both ways round: $(grep -oE 'schedule=S[0-9] verdict=[a-z_]+' "$LOGDIR/v-converge.log" | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2" "$3, $1; sep=", "}'); the partition proxy holds and heals for both clients"
   ts_lane "$LOGDIR/v-converge-controls.log" 5 "$ROOT/server" ./cmd/soakrig/ '^(TestConvergenceCatchesAHeldConversation|TestAPartitionThatHeldNothingIsAHarnessFailure|TestASkippedPairwiseComparisonIsAHarnessFailure|TestAnOpeningThatLeavesADeviceWithoutTheRoomIsAHarnessFailure|TestALiveDeviceReachesTheHighWaterMarkOnlyAfterACatchUp)$'
   result $? "the controls: keepHeldConversation is caught as FirstUnreadSeq, and a hold that held nothing, a skipped comparison and an unequal opening are each a harness failure ($(grep -oE 'verdict=[a-z_]+' "$LOGDIR/v-converge-controls.log" | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2, $1; sep=", "}'))"
+  # CANT-187 (ruling 1 → option 0): the outbox inside the test. S5 composes on
+  # both devices while both are held, through the driver's `compose`, and owes
+  # a sixth comparison. Two TypeScript devices until the Dart driver exists —
+  # the Go reference client has no outbox, and the lane says so.
+  ts_lane "$LOGDIR/v-converge-outbox.log" 3 "$ROOT/server" ./cmd/soakrig/ '^(TestConvergenceOfTheOutboxAcrossAPartition|TestS5RefusesADeviceWithNoOutbox|TestAComposedTextSurvivesTheDriversDeath)$'
+  result $? "S5: texts composed while held are committed exactly once and both outboxes empty ($(grep -oE 'pair=[a-z+]+ roles=[A-Za-z:,]+ schedule=S5 verdict=[a-z_]+' "$LOGDIR/v-converge-outbox.log" | tr '\n' ';' | sed 's/;$//; s/;/; /g')); a composed text survives the driver's death"
 else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the convergence rig runs against a real Postgres.\n'
 fi

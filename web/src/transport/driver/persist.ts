@@ -17,11 +17,20 @@
  * A relaunch reads the file back into a fresh fake-indexeddb, through the
  * database's own upgrade steps and one readwrite transaction, before the
  * journal is opened over it.
+ *
+ * THE OUTBOX (CANT-46 ruling 1 → option 0) is the real `IdbOutboxStore` over
+ * its own fake-indexeddb database, `catenary-outbox`, as in a browser. With a
+ * journal file it is persisted beside it, at `<file>.outbox`: every write
+ * resolves only after the store's transaction has committed AND the whole
+ * outbox has been renamed into place, so `compose` answering means the entry
+ * outlives a SIGKILL, which is §2's "persist before render" for a process.
  */
 
 import { existsSync } from 'node:fs'
 import { readFile, rename, writeFile } from 'node:fs/promises'
-import { IDBFactory } from 'fake-indexeddb'
+import { IDBFactory, IDBKeyRange } from 'fake-indexeddb'
+import { IdbOutboxStore } from '@/outbox/idb-store'
+import type { OutboxEntry, OutboxStore } from '@/outbox/types'
 import { openCatenaryDb } from '../db'
 import { IdbJournal } from '../idb-journal'
 
@@ -65,5 +74,32 @@ async function restore(factory: IDBFactory, d: Dump): Promise<void> {
     })
   } finally {
     db.close()
+  }
+}
+
+/** Opens the driver's outbox store: in memory, or persisted at `file`. */
+export async function openOutboxStore(file?: string): Promise<OutboxStore> {
+  const inner = await IdbOutboxStore.open({ factory: new IDBFactory(), keyRange: IDBKeyRange })
+  if (file === undefined) return inner
+  if (existsSync(file)) for (const e of JSON.parse(await readFile(file, 'utf8')) as OutboxEntry[]) await inner.put(e)
+  const tmp = `${file}.tmp`
+  // One flush at a time, each of the store as it then is: two writes racing
+  // one temporary file would rename a torn one into place.
+  let tail: Promise<void> = Promise.resolve()
+  const flushed = <T>(written: T): Promise<T> => {
+    const done = tail.then(async () => {
+      await writeFile(tmp, JSON.stringify(await inner.list()))
+      await rename(tmp, file)
+    })
+    tail = done.catch(() => undefined)
+    return done.then(() => written)
+  }
+  return {
+    add: async (e) => flushed(await inner.add(e)),
+    put: async (e) => flushed(await inner.put(e)),
+    update: async (id, mutate) => flushed(await inner.update(id, mutate)),
+    delete: async (id) => flushed(await inner.delete(id)),
+    list: () => inner.list(),
+    close: () => inner.close(),
   }
 }

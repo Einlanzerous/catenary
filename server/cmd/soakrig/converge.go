@@ -53,6 +53,16 @@ package main
 // rule ("zero here would mean the kill landed on a quiet log and proved
 // nothing").
 //
+// S5 PUTS THE OUTBOX INSIDE THE TEST (ruling 1 → option 0). A partition is
+// exactly when an outbox matters: both devices are held, each composes three
+// texts through its driver's real outbox, and both are healed. Beyond the
+// three kinds of comparison it owes a fourth kind, the sixth comparison a run
+// makes: every composed client_id committed exactly once, both devices
+// holding all six at the server's seq, and both outboxes empty. The Go
+// reference client has no outbox, so until the Dart driver exists S5 runs
+// with two TypeScript devices, which proves the schedule and the commands and
+// nothing about agreement.
+//
 // THREE COMPARISONS, all required to have run: A against B (SameState); each
 // device against the server (the unchanged client.Compare); and each device's
 // first_unread_seq per conversation against the Conversation the server last
@@ -98,10 +108,15 @@ const (
 	scheduleS2 = "S2"
 	scheduleS3 = "S3"
 	scheduleS4 = "S4"
+	scheduleS5 = "S5"
 
 	// convergeComparisons is how many comparisons a run owes: the pair, each
-	// device against the server, and each device's markers.
+	// device against the server, and each device's markers. S5 owes one more,
+	// the outbox's.
 	convergeComparisons = 5
+
+	// s5Composed is how many texts each device composes while held.
+	s5Composed = 3
 
 	defaultSettleTimeout = 60 * time.Second
 )
@@ -142,10 +157,12 @@ type ConvergeReport struct {
 	// Pairwise is SameState between the two devices; Relaunch is S4's check
 	// that the device that came back is the device that left; Markers is each
 	// device's first_unread_seq against the server's own last-served record.
-	Pairwise, Relaunch, Markers []string
-	CompareA, CompareB          client.Report
+	// Outbox is S5's: what became of the texts composed while held.
+	Pairwise, Relaunch, Markers, Outbox []string
+	CompareA, CompareB                  client.Report
 
-	ComparisonsRun int
+	// ComparisonsOwed is what the schedule had to run for the run to count.
+	ComparisonsRun, ComparisonsOwed int
 	// Holds is how many times a device was held, and RefusedDials how many
 	// dials the proxies refused while it was.
 	Holds        int
@@ -160,6 +177,7 @@ func (r ConvergeReport) Differences() []string {
 	d = append(d, r.Pairwise...)
 	d = append(d, r.Relaunch...)
 	d = append(d, r.Markers...)
+	d = append(d, r.Outbox...)
 	if !r.CompareA.Clean() {
 		d = append(d, "device A against the server: "+r.CompareA.String())
 	}
@@ -178,7 +196,7 @@ func (r ConvergeReport) Line() string {
 func (r ConvergeReport) String() string {
 	var b strings.Builder
 	b.WriteString(r.Line())
-	fmt.Fprintf(&b, "\n  comparisons: %d/%d run · holds %d", r.ComparisonsRun, convergeComparisons, r.Holds)
+	fmt.Fprintf(&b, "\n  comparisons: %d/%d run · holds %d", r.ComparisonsRun, r.ComparisonsOwed, r.Holds)
 	for _, d := range r.Differences() {
 		fmt.Fprintf(&b, "\n  DIFFERS: %s", d)
 	}
@@ -200,7 +218,7 @@ func pairName(a, b string) string {
 // comparisons that did run say.
 func classifyConverge(r *ConvergeReport) ConvergeVerdict {
 	switch {
-	case len(r.HarnessErrors) > 0 || r.ComparisonsRun < convergeComparisons:
+	case len(r.HarnessErrors) > 0 || r.ComparisonsOwed == 0 || r.ComparisonsRun < r.ComparisonsOwed:
 		return VerdictConvergeHarnessFailure
 	case len(r.Differences()) > 0:
 		return VerdictDiverged
@@ -302,7 +320,21 @@ type convergeRun struct {
 	doneQ    chan struct{}
 	rigToken wire.Token // P's third device: the rig's own view of what P is served
 	qToken   wire.Token
+
+	// composed is S5's: the client_id of every text a device's outbox took
+	// while that device was held.
+	composed []wire.Uuid
 }
+
+// outboxClient is what S5 calls on a device beyond cohortClient: the two
+// driver commands that reach its real outbox. *tsDriver satisfies it; the Go
+// reference client has no outbox and does not.
+type outboxClient interface {
+	Compose(ctx context.Context, conversationID wire.Uuid, text string) (wire.Uuid, error)
+	Outbox(ctx context.Context) ([]outboxEntry, error)
+}
+
+var _ outboxClient = (*tsDriver)(nil)
 
 // runConverge is one schedule, one role assignment, against the server h is
 // already running.
@@ -310,7 +342,10 @@ func (h *harness) runConverge(ctx context.Context, cfg convergeConfig) ConvergeR
 	if cfg.SettleTimeout == 0 {
 		cfg.SettleTimeout = defaultSettleTimeout
 	}
-	r := &convergeRun{h: h, cfg: cfg, rep: ConvergeReport{Schedule: cfg.Schedule, A: cfg.A, B: cfg.B}}
+	r := &convergeRun{h: h, cfg: cfg, rep: ConvergeReport{Schedule: cfg.Schedule, A: cfg.A, B: cfg.B, ComparisonsOwed: convergeComparisons}}
+	if cfg.Schedule == scheduleS5 {
+		r.rep.ComparisonsOwed++
+	}
 	defer r.teardown()
 	if r.setup(ctx) && r.schedule(ctx) {
 		r.judge(ctx)
@@ -496,6 +531,8 @@ func (r *convergeRun) schedule(ctx context.Context) bool {
 		return r.s3(ctx)
 	case scheduleS4:
 		return r.s4(ctx)
+	case scheduleS5:
+		return r.s5(ctx)
 	}
 	return r.fail("no schedule named %q", r.cfg.Schedule)
 }
@@ -618,6 +655,147 @@ func (r *convergeRun) s4(ctx context.Context) bool {
 	}
 	r.b.proxy.heal()
 	return true
+}
+
+// S5 — both held. Each device composes three texts through its outbox, which
+// persists them and returns without an ack; Q sends one. Both are healed, and
+// the outboxes drain on the sessions that follow. The partition bit is the
+// same check as every other schedule's: each held device is missing Q's
+// message.
+func (r *convergeRun) s5(ctx context.Context) bool {
+	devices := []*convergeDevice{r.a, r.b}
+	boxes := make([]outboxClient, len(devices))
+	for i, d := range devices {
+		box, ok := d.c.(outboxClient)
+		if !ok {
+			return r.fail("S5: device %s (%s) has no outbox to compose through", d.label, d.impl)
+		}
+		boxes[i] = box
+	}
+	for i, d := range devices {
+		r.hold(d)
+		if err := r.await(ctx, d.c, func() bool { return !d.c.Status().Ready }); err != nil {
+			return r.fail("S5: device %s was held and stayed ready: %v", d.label, err)
+		}
+		for n := 0; n < s5Composed; n++ {
+			cctx, cancel := context.WithTimeout(ctx, r.cfg.SettleTimeout)
+			id, err := boxes[i].Compose(cctx, wid(r.room), fmt.Sprintf("S5 · composed on %s while held · %d", d.label, n))
+			cancel()
+			if err != nil {
+				return r.fail("S5: device %s's compose %d: %v", d.label, n+1, err)
+			}
+			r.composed = append(r.composed, id)
+		}
+		// COMPOSED, NOT SENT: the entry is in the outbox and nothing has
+		// reached the server, or the device was not held.
+		if n, err := r.committed(ctx, r.composed); err != nil || n != 0 {
+			return r.fail("S5: %d of the texts composed while held are already committed (err %v)", n, err)
+		}
+	}
+	if _, ok := r.send(ctx, r.room); !ok {
+		return false
+	}
+	for _, d := range devices {
+		if !r.heal(ctx, d) {
+			return false
+		}
+	}
+	// The drain is the devices' own, on their own sessions: settling has
+	// nothing to settle until every composed text is on the server. A text
+	// that never arrives is the client's failure, and judgeOutbox names it.
+	deadline := time.Now().Add(r.cfg.SettleTimeout)
+	for time.Now().Before(deadline) && ctx.Err() == nil {
+		if n, err := r.committed(ctx, r.composed); err == nil && n == len(r.composed) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return true
+}
+
+// committed counts the rows of `messages` P wrote under any of the given
+// client_ids. Not a credential table; the same direct read serverLogFor makes.
+func (r *convergeRun) committed(ctx context.Context, ids []wire.Uuid) (int, error) {
+	var n int
+	err := r.h.pool.QueryRow(ctx, `SELECT count(*) FROM messages WHERE author_id = $1 AND client_id::text = ANY($2)`, r.p, ids).Scan(&n)
+	return n, err
+}
+
+// judgeOutbox is S5's fourth kind of comparison, and the sixth a run makes:
+// every composed client_id committed exactly once, both devices holding each
+// at the server's seq, and both outboxes empty — waited for, bounded, since an
+// entry leaves only when the record carrying its client_id lands.
+func (r *convergeRun) judgeOutbox(ctx context.Context, snaps [2]client.Snapshot) {
+	rows, err := r.h.pool.Query(ctx, `SELECT client_id::text, id::text, seq FROM messages WHERE author_id = $1 AND client_id::text = ANY($2)`, r.p, r.composed)
+	if err != nil {
+		r.fail("S5: read the composed messages: %v", err)
+		return
+	}
+	type row struct {
+		id  wire.Uuid
+		seq int64
+	}
+	byClientID := map[wire.Uuid][]row{}
+	for rows.Next() {
+		var cid, id string
+		var seq int64
+		if err := rows.Scan(&cid, &id, &seq); err != nil {
+			rows.Close()
+			r.fail("S5: read the composed messages: %v", err)
+			return
+		}
+		byClientID[wire.Uuid(cid)] = append(byClientID[wire.Uuid(cid)], row{wire.Uuid(id), seq})
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		r.fail("S5: read the composed messages: %v", err)
+		return
+	}
+
+	for _, cid := range r.composed {
+		got := byClientID[cid]
+		if len(got) != 1 {
+			r.rep.Outbox = append(r.rep.Outbox, fmt.Sprintf("composed client_id %s is committed %d times, want exactly once", cid, len(got)))
+			continue
+		}
+		for i, d := range []*convergeDevice{r.a, r.b} {
+			held := false
+			for _, m := range snaps[i].Messages {
+				if m.ID == got[0].id {
+					held = true
+					if m.Seq != got[0].seq {
+						r.rep.Outbox = append(r.rep.Outbox, fmt.Sprintf("device %s holds composed message %s at seq %d; the server committed it at %d", d.label, m.ID, m.Seq, got[0].seq))
+					}
+				}
+			}
+			if !held {
+				r.rep.Outbox = append(r.rep.Outbox, fmt.Sprintf("device %s does not hold composed message %s", d.label, got[0].id))
+			}
+		}
+	}
+
+	for _, d := range []*convergeDevice{r.a, r.b} {
+		box := d.c.(outboxClient)
+		var left []outboxEntry
+		deadline := time.Now().Add(r.cfg.SettleTimeout)
+		for {
+			octx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			left, err = box.Outbox(octx)
+			cancel()
+			if err != nil {
+				r.fail("S5: read device %s's outbox: %v", d.label, err)
+				return
+			}
+			if len(left) == 0 || time.Now().After(deadline) || ctx.Err() != nil {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		for _, e := range left {
+			r.rep.Outbox = append(r.rep.Outbox, fmt.Sprintf("device %s's outbox still holds %s (%s)", d.label, e.ClientID, e.State))
+		}
+	}
+	r.rep.ComparisonsRun++
 }
 
 func prefix(p string, lines []string) []string {
@@ -806,6 +984,9 @@ func (r *convergeRun) judge(ctx context.Context) {
 	for i, d := range []*convergeDevice{r.a, r.b} {
 		r.rep.Markers = append(r.rep.Markers, markerDiffs("device "+d.label, snaps[i], served)...)
 		r.rep.ComparisonsRun++
+	}
+	if r.cfg.Schedule == scheduleS5 {
+		r.judgeOutbox(ctx, snaps)
 	}
 }
 

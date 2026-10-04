@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/magos/catenary/internal/client"
+	"github.com/magos/catenary/internal/wire"
 )
 
 // convergeLane is one server and the driver bundle, for a test's runs.
@@ -63,6 +64,96 @@ func TestConvergenceTSAgainstGo(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+// S5 — the outbox inside the test (ruling 1 → option 0): three texts composed
+// on each device while both are held, drained on return. TWO TYPESCRIPT
+// DEVICES, because the Go reference client has no outbox: this proves the
+// schedule and the driver's `compose` and `outbox`, and nothing about two
+// implementations agreeing. The Dart lane (CANT-188) is where it meets a
+// second one.
+func TestConvergenceOfTheOutboxAcrossAPartition(t *testing.T) {
+	h, cfg := convergeLane(t)
+	cfg.Schedule, cfg.A, cfg.B = scheduleS5, cohortTS, cohortTS
+	rep := h.runConverge(context.Background(), cfg)
+	t.Log(rep.String())
+	if rep.Verdict != VerdictConverged {
+		t.Fatalf("verdict = %s, want converged", rep.Verdict)
+	}
+	if rep.ComparisonsRun != convergeComparisons+1 {
+		t.Errorf("comparisons run = %d, want %d: the three comparisons and the outbox's", rep.ComparisonsRun, convergeComparisons+1)
+	}
+	if rep.Holds != 2 || rep.RefusedDials == 0 {
+		t.Errorf("holds %d, dials refused %d: S5 holds both devices", rep.Holds, rep.RefusedDials)
+	}
+}
+
+// The Go reference client has no outbox, and S5 says so rather than passing a
+// schedule it did not run.
+func TestS5RefusesADeviceWithNoOutbox(t *testing.T) {
+	h, cfg := convergeLane(t)
+	cfg.Schedule, cfg.A, cfg.B = scheduleS5, cohortTS, cohortGo
+	rep := h.runConverge(context.Background(), cfg)
+	t.Log(rep.String())
+	if rep.Verdict != VerdictConvergeHarnessFailure {
+		t.Fatalf("verdict = %s, want harness_failure", rep.Verdict)
+	}
+	if !strings.Contains(strings.Join(rep.HarnessErrors, "\n"), "has no outbox") {
+		t.Errorf("the harness error does not say why: %q", rep.HarnessErrors)
+	}
+}
+
+// `compose` answering means the entry is on disk: a driver killed with a text
+// in its outbox and relaunched over the same journal file still holds it,
+// under the same client_id, and sends it once it has a network.
+func TestAComposedTextSurvivesTheDriversDeath(t *testing.T) {
+	h, cfg := convergeLane(t)
+	cfg.A, cfg.B, cfg.SettleTimeout = cohortTS, cohortTS, 30*time.Second
+	r := &convergeRun{h: h, cfg: cfg}
+	defer r.teardown()
+	ctx := context.Background()
+	if !r.setup(ctx) {
+		t.Fatalf("the opening: %q", r.rep.HarnessErrors)
+	}
+	d := r.a
+	d.proxy.hold()
+	if err := r.await(ctx, d.c, func() bool { return !d.c.Status().Ready }); err != nil {
+		t.Fatal(err)
+	}
+	id, err := d.c.(outboxClient).Compose(ctx, wid(r.room), "composed, then the process died")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.kill()
+	if err := d.launch(); err != nil {
+		t.Fatal(err)
+	}
+	// Asked of the relaunched driver once its transport is up: `outbox` is
+	// refused before `start`, which Run sends.
+	var left []outboxEntry
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if left, err = d.c.(outboxClient).Outbox(ctx); err == nil {
+			break
+		}
+	}
+	if err != nil || len(left) != 1 || left[0].ClientID != id || left[0].State != "queued" {
+		t.Fatalf("the relaunched driver's outbox = %+v (err %v), want the one entry %s, queued", left, err, id)
+	}
+	if n, err := r.committed(ctx, []wire.Uuid{id}); err != nil || n != 0 {
+		t.Fatalf("%d rows committed for a text composed behind a held proxy (err %v)", n, err)
+	}
+
+	d.proxy.heal()
+	for deadline := time.Now().Add(30 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		n, err := r.committed(ctx, []wire.Uuid{id})
+		left, lerr := d.c.(outboxClient).Outbox(ctx)
+		if err == nil && lerr == nil && n == 1 && len(left) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after the heal: %d rows committed (err %v), outbox %+v (err %v); want exactly one row and an empty outbox", n, err, left, lerr)
+		}
 	}
 }
 
