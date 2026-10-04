@@ -40,7 +40,17 @@
 /// THE CREDENTIAL IS HELD (`HeldCredential`, Go's `Refresh: false`), which is
 /// what the rigs run (CANT-31 criterion 39).
 ///
-/// Run: dart run bin/driver.dart [--journal=<file>]   (from dart-client/)
+/// BUILT, NOT `dart run`. `dart run` writes `Running build hooks...` to stdout
+/// ahead of the first answer, and nothing but answers may be on stdout. From
+/// dart-client/:
+///
+///     dart build cli -t bin/driver.dart -o build/driver
+///     build/driver/bundle/bin/driver [--journal=<file>]
+///
+/// The bundle carries the SQLite library package:sqlite3's build hook
+/// provides. `--probe` opens a SQLite database in memory and exits 0: it is
+/// how a rig finds out, before it hands this driver a client, that the
+/// executable runs AND can load that library.
 library;
 
 import 'dart:async';
@@ -185,6 +195,11 @@ Future<void> main(List<String> argv) async {
   for (final a in argv) {
     if (a.startsWith('--journal=')) {
       journalFile = a.substring('--journal='.length);
+    } else if (a == '--probe') {
+      // Through the journal's own open, so it is the real binding and the
+      // real migrations that are proven, and nothing touches a disk.
+      SqliteJournal.open(':memory:').close();
+      exit(0);
     } else {
       stderr.writeln('driver: unknown argument $a');
       exit(2);

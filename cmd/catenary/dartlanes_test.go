@@ -18,7 +18,6 @@ package main
 // the driver and sets it.
 
 import (
-	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -34,11 +33,12 @@ func dartDriverExe(t *testing.T) string {
 	if _, err := os.Stat(p); err != nil {
 		t.Fatalf("CATENARY_DART_DRIVER=%s: %v — the lane was asked to run the Dart driver and there is none; build it with `dart build cli -t bin/driver.dart -o build/driver` in dart-client/", p, err)
 	}
-	// An unknown argument exits 2: a driver that is there and will not run
-	// fails here, not later as a client that never became ready.
-	var exit *exec.ExitError
-	if err := exec.Command(p, "--probe").Run(); !errors.As(err, &exit) || exit.ExitCode() != 2 {
-		t.Fatalf("CATENARY_DART_DRIVER=%s cannot be executed: %v", p, err)
+	// `--probe` opens a SQLite database in memory through the journal's own
+	// open and exits 0. A file that is there and will not execute, or a
+	// bundle that cannot load its SQLite library, fails here — not later, as
+	// N clients that never became ready.
+	if out, err := exec.Command(p, "--probe").CombinedOutput(); err != nil {
+		t.Fatalf("CATENARY_DART_DRIVER=%s cannot be executed, or cannot open SQLite: %v\n%s", p, err, out)
 	}
 	return p
 }
