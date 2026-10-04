@@ -6,6 +6,7 @@
 import 'package:flutter/material.dart';
 
 import 'metrics.dart';
+import 'states.dart';
 import 'tokens.dart';
 
 class SpecimenScreen extends StatelessWidget {
@@ -79,6 +80,11 @@ class _Header extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+          TextButton(
+            key: const ValueKey('open-states'),
+            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const StatesScreen())),
+            child: Text('STATES', style: CatenaryType.meta.tracked),
           ),
           TextButton(
             key: const ValueKey('theme-toggle'),
