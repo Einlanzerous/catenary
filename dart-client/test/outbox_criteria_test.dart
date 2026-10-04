@@ -691,7 +691,7 @@ void main() {
       expect(faultTable, want);
     });
 
-    test('criterion numbers: the reference\'s, less the three that render the app', () {
+    test('criterion numbers: the reference\'s, less the two that render the app (5, 6) and the one with no Dart counterpart (16)', () {
       final want = referenceCriteria(reference).where((n) => !const {5, 6, 16}.contains(n)).toList();
       expect(criteria.keys.toList(), want);
       expect(criteria.keys.toList(), [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 15]);

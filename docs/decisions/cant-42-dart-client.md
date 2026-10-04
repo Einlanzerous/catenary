@@ -39,7 +39,7 @@ The SDK floor is Dart **3.10**, where `dart/` says 3.6: `package:sqlite3` builds
 
 Wire records are stored as the generated codec's JSON beside the columns the store queries by, so a field added to the schema needs no migration here.
 
-A file this code creates is created empty and made `0600` before SQLite opens it. If that fails, the file is deleted rather than left wider.
+A **database** file this code creates — `catenary.db`, `catenary-outbox.db` — is created empty and made `0600` before SQLite opens it; if that fails, the file is deleted rather than left wider. The lock files are the exception: they are opened bare and take the umask's mode. They hold nothing.
 
 ## 3 · "No ORM, in-process migrator" is extended to Dart
 
@@ -69,7 +69,7 @@ The outbox record's `navigator.storage.persist()` refusal line is **not built**.
 
 ## 7 · How the outbox is held to its criteria
 
-`dart-client/test/outbox_criteria_test.dart` is `web/outbox.test.ts` written a second time: the criteria a headless outbox can be held to — **0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12 and 15** — each run once clean, where it must pass, and once per named fault from the same sixteen-row table, where it must fail. Criteria 5, 6 and 16 are rendering and belong to the app; 13 and 14 are attachments and are not built (see *What this leaves open*).
+`dart-client/test/outbox_criteria_test.dart` is `web/outbox.test.ts` written a second time: the criteria a headless outbox can be held to — **0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12 and 15** — each run once clean, where it must pass, and once per named fault from the same sixteen-row table, where it must fail. Criteria 5 and 6 are rendering and belong to the app; 16 is the refused-`persist()` line and has no counterpart (§6); 13 and 14 are attachments and are not built (see *What this leaves open*).
 
 Two faults are spelled for a browser and mean this here: `relaxedDurability` is a connection opened without `synchronous = FULL`; `everyTabDrains` and `lockWithoutReady` are a context that drains without the lock, or takes it while its session is not `ready`.
 
