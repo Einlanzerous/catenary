@@ -305,6 +305,11 @@ if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   result $? "TypeScript soak smoke — $(grep -oE 'N=[0-9]+ duration=[a-z0-9.]+ verdict=[a-z_]+ cohort=[a-z]+' "$LOGDIR/v-ts-soak-smoke.log" | tail -1)"
   ts_lane "$LOGDIR/v-ts-soak-control.log" 3 "$ROOT/server" ./cmd/soakrig/ '^(TestTSSoakBaselinePasses|TestMixedSoakBaselinePasses|TestBrokenTSRunCountsAsServerFailure)$'
   result $? "the soak: ts and mixed pass clean, and dedupeByLogSeq is caught ($(grep -oE 'verdict=[a-z_]+ cohort=[a-z]+' "$LOGDIR/v-ts-soak-control.log" | tr '\n' ' ' | sed 's/ $//'))"
+  # CANT-185 (CANT-46 row 0): the ninth command. Run here because this is the
+  # step that names the bundle — in the ordinary sweep the TypeScript half of
+  # this test skips, and a skip is not the driver answering `read`.
+  ts_lane "$LOGDIR/v-ts-read.log" 1 "$ROOT/server" ./cmd/soakrig/ '^TestReadMovesTheServedMarkerAndIsRefusedWithoutAReadySession$'
+  result $? "read, through the Go client and the TypeScript driver: the served first_unread_seq moves, and a read with no ready session is refused"
   ts_lane "$LOGDIR/v-ts-lanes.log" 5 "$ROOT" ./cmd/catenary/ '^(TestTheTSClientResumesThroughTheKillTest|TestTheTSClientSurvivesItsOwnDeathOverADurableJournal|TestTheKillTestCatchesABrokenTSClient|TestTheTSClientDiscardsALogTruncatedBelowItsCursor|TestTheTSClientSeversAHalfDeadSocketOnTheHeartbeat)$'
   result $? "kill-test and restore-test lanes: clean with the server stopped and with the client killed and relaunched over its durable journal (CANT-169), and cursorOnLiveFrames and endCatchUpEarly (in both modes) and skipWipe each caught; the heartbeat severs a black hole"
 else

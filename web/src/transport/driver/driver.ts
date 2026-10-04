@@ -15,7 +15,7 @@
  * else is ever written to stdout; the transport's own log, when asked for,
  * goes to stderr.
  *
- * EIGHT COMMANDS, and no more:
+ * NINE COMMANDS, and no more:
  *
  *   start      {baseUrl, credential: {userId, deviceId, accessToken}, faults,
  *              backoffMinMs, backoffMaxMs, clientVersion, log} — builds a
@@ -26,6 +26,12 @@
  *   send       {frame: ClientSend, wire JSON} → {ack: ServerAck, wire JSON};
  *              refused with the kind NotConnected, SessionEnded, SendInFlight
  *              or SendRefused (which carries the `error` frame, wire JSON).
+ *   read       {frame: ClientRead, wire JSON} → {}; written on the session when
+ *              the transport's `status.ready` is true and refused with the
+ *              kind NotConnected otherwise, before `start` included. THE REFUSAL IS THE DRIVER'S:
+ *              `Transport.read` drops a frame silently when there is no
+ *              connection, and a frame written between the upgrade and
+ *              `ready` is not one the server has agreed to take (CANT-46).
  *   sever      drops the socket through the proxy (proxy.ts): no close frame.
  *   blackhole  silences the socket through the proxy, and leaves it open.
  *   catchup    `Transport.catchUp()`: a trigger.
@@ -53,6 +59,7 @@
 
 import readline from 'node:readline'
 import {
+  decodeClientRead,
   decodeClientSend,
   encodeConversation,
   encodeMessage,
@@ -195,6 +202,16 @@ export function serve(io: DriverIO, opts: ServeOptions = {}): void {
         if (e instanceof Error) throw new DriverError(e.name, e.message)
         throw e
       }
+    },
+
+    async read(args) {
+      const frame = decodeClientRead(args.frame)
+      // Not `need()`: before `start` there is no session either, and the Go
+      // half reads one refusal for both, as `(*Client).Read` gives one.
+      const t = transport
+      if (t === null || !t.status().ready) throw new DriverError('NotConnected', 'driver: read without a ready session')
+      t.read(frame)
+      return {}
     },
 
     async sever() {

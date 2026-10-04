@@ -171,13 +171,13 @@ export abstract class StagedJournal implements Journal {
     const next = cloneState(this.s)
     const messages: Message[] = []
     for (const m of page.messages) if (record(next, m, faults)) messages.push(m)
-    for (const c of page.conversations) next.conversations.set(c.id, c)
+    const conversations = hold(next, page.conversations, faults)
     for (const u of page.users) next.users.set(u.id, u)
     if (next.cursor === null || page.logSeq > next.cursor) next.cursor = page.logSeq
-    await this.land(next, 'page', messages, page.conversations, page.users)
+    await this.land(next, 'page', messages, conversations, page.users)
     return {
       source: 'page', cursor: next.cursor, messages,
-      conversations: [...page.conversations], users: [...page.users], receipts: [], wiped: false,
+      conversations, users: [...page.users], receipts: [], wiped: false,
     }
   }
 
@@ -189,12 +189,12 @@ export abstract class StagedJournal implements Journal {
       messages.push(m)
       if (faults.cursorOnLiveFrames && (next.cursor === null || m.logSeq > next.cursor)) next.cursor = m.logSeq
     }
-    for (const c of write.conversations ?? []) next.conversations.set(c.id, c)
+    const conversations = hold(next, write.conversations ?? [], faults)
     for (const u of write.users ?? []) next.users.set(u.id, u)
-    await this.land(next, 'live', messages, write.conversations ?? [], write.users ?? [])
+    await this.land(next, 'live', messages, conversations, write.users ?? [])
     return {
       source: 'live', cursor: next.cursor, messages,
-      conversations: [...(write.conversations ?? [])], users: [...(write.users ?? [])], receipts: [], wiped: false,
+      conversations, users: [...(write.users ?? [])], receipts: [], wiped: false,
     }
   }
 
@@ -283,6 +283,20 @@ function record(s: JournalState, m: Message, faults: JournalFaults): boolean {
   if (!s.messages.has(m.id)) s.counted.push(m.id)
   s.messages.set(m.id, m)
   return true
+}
+
+/**
+ * Holds served conversations: a later record replaces an earlier one, by id.
+ * Returns the records written, which is every one of them in a correct client.
+ */
+function hold(s: JournalState, served: readonly Conversation[], faults: JournalFaults): Conversation[] {
+  const written: Conversation[] = []
+  for (const c of served) {
+    if (faults.keepHeldConversation && s.conversations.has(c.id)) continue
+    s.conversations.set(c.id, c)
+    written.push(c)
+  }
+  return written
 }
 
 export function emptyState(wipes: number): JournalState {

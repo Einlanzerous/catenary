@@ -3,7 +3,7 @@ package main
 // CANT-153 (CANT-35 ruling 0 → A) — the Go half of the TypeScript cohort:
 // cohortClient, the interface every rig drives a client through, and tsDriver,
 // which satisfies it by running web/src/transport/driver/driver.ts as a child
-// process (`node web/dist-transport-driver/driver.js`) and speaking its eight
+// process (`node web/dist-transport-driver/driver.js`) and speaking its nine
 // line-delimited JSON commands over stdio. The protocol is written down once,
 // at the top of driver.ts; this file is its caller.
 //
@@ -32,7 +32,7 @@ import (
 )
 
 // cohortClient is exactly what the rigs call on a client: the soak's phases,
-// and CatchUp for the kill test. *client.Client satisfies it unchanged; the
+// CatchUp for the kill test, and Read for the convergence rig (CANT-46). *client.Client satisfies it unchanged; the
 // Go-only journal a rig may also hold stays outside it.
 //
 // A RIG THAT COMPARES does not call Snapshot on a cohortClient directly: it
@@ -44,6 +44,7 @@ type cohortClient interface {
 	Run(ctx context.Context) error
 	Await(ctx context.Context, pred func() bool) error
 	Send(ctx context.Context, f wire.ClientSend) (wire.ServerAck, error)
+	Read(ctx context.Context, f wire.ClientRead) error
 	Sever()
 	Status() client.Status
 	Snapshot() client.Snapshot
@@ -389,6 +390,17 @@ func (d *tsDriver) Send(ctx context.Context, f wire.ClientSend) (wire.ServerAck,
 	return out.Ack, nil
 }
 
+// Read writes a `read` frame on a ready session. The driver refuses it with
+// NotConnected otherwise, which is the error a *client.Client returns.
+func (d *tsDriver) Read(ctx context.Context, f wire.ClientRead) error {
+	err := d.call(ctx, "read", map[string]any{"frame": f}, nil)
+	var de *tsDriverError
+	if errors.As(err, &de) && de.Kind == "NotConnected" {
+		return client.ErrNotConnected
+	}
+	return err
+}
+
 // Sever drops the socket through the driver's proxy: no close frame, the same
 // as a network drop, and Run carries on.
 func (d *tsDriver) Sever() { _ = d.quick("sever") }
@@ -519,6 +531,7 @@ func tsFaults(f client.Faults) (map[string]bool, error) {
 		"neverPresentRefusedToken": f.NeverPresentRefusedToken,
 		"neverTerminal":            f.NeverTerminal,
 		"alwaysTerminal":           f.AlwaysTerminal,
+		"keepHeldConversation":     f.KeepHeldConversation,
 	}, nil
 }
 
