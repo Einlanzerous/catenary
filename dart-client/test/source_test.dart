@@ -11,6 +11,10 @@
 /// 3. NO MONOTONIC CLOCK (CANT-31 §1), and NO HEARTBEAT NUMBER that did not
 ///    arrive on `ready` (CANT-23): the reference's own two greps, over this
 ///    package's source.
+/// 4. A STALE REFUSAL MOVES THE EPOCH (CANT-199). Every branch of the transport
+///    that sees `JournalStale` increments the epoch, and the transport's
+///    journal write calls are the three that were looked at: a fourth has to
+///    be classified here before it lands.
 library;
 
 import 'dart:convert';
@@ -89,6 +93,58 @@ final monotonic = RegExp(r'\bStopwatch\b|Timeline\.now|\.elapsed(Ticks|Micro|Mil
 
 final heartbeatDefault = RegExp(r'\b(35|105)\b');
 final heartbeatAssigned = RegExp(r'(heartbeat|interval|pong|ping|missed)\w*\s*[:=]\s*[1-9]\d', caseSensitive: false);
+
+/// The `Journal` members the transport calls that write nothing.
+const journalReads = {'cursor', 'snapshot', 'holdsConversation', 'holdsUser', 'messageCount', 'headSeqTotal'};
+
+/// Every other `_journal.` call site in the transport, by member: its writes.
+/// `applyLive` is two sites, the `skipStaleCatchUp` control's and the guarded
+/// one. A `wipe` skips the generation check, so it is never refused as stale.
+const journalWrites = {'applyLive': 2, 'applyPage': 1, 'wipe': 1};
+
+Map<String, int> journalWriteCalls(String transport) {
+  final found = <String, int>{};
+  for (final m in RegExp(r'\b_journal\s*\.\s*([A-Za-z_]\w*)').allMatches(code(transport))) {
+    final member = m.group(1)!;
+    if (!journalReads.contains(member)) found[member] = (found[member] ?? 0) + 1;
+  }
+  return found;
+}
+
+/// The block whose `{` is at or after `from`, braces included.
+String blockAt(String source, int from) {
+  final open = source.indexOf('{', from);
+  var depth = 0;
+  for (var i = open; i < source.length; i++) {
+    if (source[i] == '{') depth++;
+    if (source[i] == '}' && --depth == 0) return source.substring(open, i + 1);
+  }
+  throw StateError('unbalanced braces after offset $from');
+}
+
+/// Every handler in `transport` that sees `JournalStale`: an `on JournalStale`
+/// clause, or a bare `catch` whose body names it.
+List<String> staleBranches(String transport) {
+  final c = code(transport);
+  return [
+    for (final m in RegExp(r'\bon\s+JournalStale\b[^{]*\{|\bcatch\s*\([^)]*\)\s*\{').allMatches(c))
+      if (m.group(0)!.contains('JournalStale') || blockAt(c, m.end - 1).contains('JournalStale')) m.group(0)! + blockAt(c, m.end - 1),
+  ];
+}
+
+/// Why `transport` breaks rule 4, or an empty list.
+List<String> staleEpochRule(String transport) {
+  final calls = journalWriteCalls(transport);
+  final branches = staleBranches(transport);
+  return [
+    for (final name in {...calls.keys, ...journalWrites.keys})
+      if (calls[name] != journalWrites[name])
+        '_journal.$name is called at ${calls[name] ?? 0} site(s), and ${journalWrites[name] ?? 0} were classified: say whether it can be refused as stale',
+    if (branches.length != 2) '${branches.length} branches see JournalStale, and two were looked at: the live write\'s and the page\'s',
+    for (final b in branches)
+      if (!RegExp(r'\b_epoch\+\+').hasMatch(b)) 'a branch that sees JournalStale does not increment the epoch: ${b.split('\n').first.trim()}',
+  ];
+}
 
 void main() {
   final packages = resolvedPackages();
@@ -175,5 +231,49 @@ void main() {
     }
     expect(heartbeatDefault.hasMatch(code('const interval = Duration(seconds: 35);')), isTrue, reason: 'planted');
     expect(heartbeatAssigned.hasMatch(code('var missedPongLimit = 20;')), isTrue, reason: 'planted');
+  });
+
+  test('CANT-199 · every branch that sees JournalStale increments the epoch, and the journal writes are the three classified', () {
+    final transport = File('lib/src/transport.dart').readAsStringSync();
+    expect(journalWriteCalls(transport), journalWrites);
+    expect(staleBranches(transport), hasLength(2));
+    expect(staleEpochRule(transport), isEmpty);
+  });
+
+  test('CANT-199 · the stale-epoch rule refuses each thing it names, planted', () {
+    final transport = File('lib/src/transport.dart').readAsStringSync();
+
+    // The increment taken out of each branch in turn.
+    const live = 'if (!faults.staleKeepsEpoch) _epoch++;';
+    const paged = 'if (e is JournalStale && !faults.staleKeepsEpoch) _epoch++;';
+    for (final (line, without) in [(live, ''), (paged, 'if (e is JournalStale) _log.warn(\'stale\');')]) {
+      final planted = transport.replaceFirst(line, without);
+      expect(planted, isNot(transport), reason: 'the plant landed: $line');
+      expect(staleEpochRule(planted).join('\n'), contains('does not increment the epoch'), reason: line);
+    }
+
+    // The increment in a comment is not an increment.
+    final commented = transport.replaceFirst(live, '// $live');
+    expect(staleEpochRule(commented).join('\n'), contains('does not increment the epoch'));
+
+    // A third branch, and a third write path with no branch at all.
+    const third = '''
+  Future<void> _third() async {
+    try {
+      await _journal.applyPage(p, faults);
+    } on JournalStale catch (_) {
+      _catchup.trigger();
+    }
+  }
+''';
+    final withThird = staleEpochRule('$transport$third').join('\n');
+    expect(withThird, contains('3 branches see JournalStale'));
+    expect(withThird, contains('does not increment the epoch'));
+    expect(withThird, contains('_journal.applyPage is called at 2 site(s)'));
+    expect(staleEpochRule('$transport\nvoid _mark() { _journal.applyReceipt(r, faults); }\n').join('\n'), contains('_journal.applyReceipt is called at 1 site(s), and 0 were classified'));
+    expect(staleEpochRule('$transport\nvoid _again() { _journal.wipe(); }\n').join('\n'), contains('_journal.wipe is called at 2 site(s)'));
+
+    // And a transport with no stale handling at all does not pass by matching nothing.
+    expect(staleEpochRule('void f() { _journal.cursor; }'), isNotEmpty);
   });
 }
