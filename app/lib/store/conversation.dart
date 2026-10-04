@@ -9,8 +9,9 @@
 // transcript's word count is derived from the text on screen. A stamp is
 // derived from `now`.
 //
-// These are view models, fed today by fixtures (fixtures.dart). Feeding them
-// from `catenary_client`'s journal is CANT-200.
+// These are view models. An enrolled device's are built from the journal and
+// the outbox by store/app_store.dart; the specimen screen's and the widget
+// tests' are fixtures (fixtures.dart).
 
 import 'package:flutter/foundation.dart';
 
@@ -87,6 +88,8 @@ class ConversationView {
     this.firstUnreadSeq,
     this.muted = false,
     this.typing = const [],
+    this.secure = true,
+    this.unacked = 0,
   });
 
   final String id;
@@ -94,7 +97,7 @@ class ConversationView {
   final String name;
   final int memberCount;
 
-  /// In seq order.
+  /// The log in seq order, then the tail: the last [unacked] of these.
   final List<ThreadMessage> messages;
   final int? firstUnreadSeq;
   final bool muted;
@@ -102,7 +105,28 @@ class ConversationView {
   /// The display names of the people typing, in the order each started.
   final List<String> typing;
 
-  ThreadMessage? get last => messages.isEmpty ? null : messages.last;
+  /// Whether the address these messages travel to is `https`. The store sets
+  /// it from the stored address's scheme (store/address.dart); a fixture is
+  /// the canvas, which is drawn over TLS.
+  final bool secure;
+
+  /// How many of [messages], at its end, are your own outbox entries the
+  /// server has not acked. They are drawn after the log whatever their age: an
+  /// entry has no seq to be placed by.
+  final int unacked;
+
+  /// What the rail says this conversation last held: the newer of the log's
+  /// last message and the tail's, by time (`lastMessageOf` in
+  /// web/src/store.ts). A send moves the preview, the marker and the room's
+  /// place the moment it is composed, and a failed one from this morning does
+  /// not sit over a reply from this afternoon.
+  ThreadMessage? get last {
+    if (messages.isEmpty) return null;
+    final entry = unacked > 0 ? messages.last : null;
+    final record = unacked < messages.length ? messages[messages.length - unacked - 1] : null;
+    if (entry == null || record == null) return entry ?? record;
+    return entry.at.isBefore(record.at) ? record : entry;
+  }
 
   /// What is new here: messages at or past `firstUnreadSeq` that somebody
   /// else wrote. The badge and the "N NEW" rule are both this number.
@@ -114,8 +138,12 @@ class ConversationView {
 
   /// The thread header's second line. TLS, not E2E: the server can read
   /// these messages, and a badge asserting otherwise is the one claim this
-  /// surface must not make (D1).
-  String get subtitle => kind == ConversationKind.group ? '$memberCount MEMBERS · TLS' : 'DIRECT · TLS';
+  /// surface must not make (D1). And TLS only where it is: over an `http`
+  /// address the last word is CLEARTEXT, because that is what the link is.
+  String get subtitle {
+    final transport = secure ? 'TLS' : 'CLEARTEXT';
+    return kind == ConversationKind.group ? '$memberCount MEMBERS · $transport' : 'DIRECT · $transport';
+  }
 }
 
 /// Two letters for an avatar tile: first and last initial, or the first two

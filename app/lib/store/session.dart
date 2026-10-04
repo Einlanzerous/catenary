@@ -112,8 +112,10 @@ final class Session {
 
 /// Reads the address and the credential from [seams.directory] and, with both,
 /// starts a session. [replacing] is ended first, so the same call is the
-/// restart a login or a re-enrollment needs.
-Future<SessionStart> startSession(SessionSeams seams, {Session? replacing}) async {
+/// restart a login or a re-enrollment needs. [onOutbox] is called with the
+/// outbox's view on every change to it: the outbox takes its listener when it
+/// is opened and at no other time, so the store hands its own in here.
+Future<SessionStart> startSession(SessionSeams seams, {Session? replacing, void Function(List<OutboxItem> items)? onOutbox}) async {
   replacing?.end();
   final dir = seams.directory;
   final address = readAddress(dir);
@@ -178,6 +180,7 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing}) asyn
       transport: adapter,
       accountId: held.userId,
       lock: SqliteDrainLock(locks),
+      onChange: onOutbox,
     );
   } on Object {
     closeAll();

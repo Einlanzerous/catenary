@@ -11,6 +11,9 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'app_store.dart';
+import 'session.dart';
+
 /// The application-support directory: private to the app, backed up by
 /// nothing the app does not ask for, and the same on every launch. It holds
 /// both databases, the lock files and the address.
@@ -93,3 +96,8 @@ final class DebugLogger implements Logger {
     debugPrint('catenary $level: $msg${fields.isEmpty ? '' : ' $fields'}');
   }
 }
+
+/// The store over this device's own seams: its support directory, its network
+/// and lifecycle signals, and `debugPrint` for the log. Not started.
+Future<AppStore> deviceStore() async =>
+    AppStore(SessionSeams(directory: await supportDirectory(), lifecycle: FlutterLifecycle(), logger: const DebugLogger()));
