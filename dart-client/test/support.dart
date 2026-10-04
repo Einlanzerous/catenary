@@ -17,34 +17,52 @@ final me = uuid(1);
 final other = uuid(2);
 final conv = uuid(100);
 
-User user(String id) => User(id: id, name: 'User ${id.substring(id.length - 4)}');
+User user(String id, [String? name]) => User(id: id, name: name ?? 'User ${id.substring(id.length - 4)}');
 
-Conversation conversation(String id, {int headSeq = 0}) => Conversation(
+Conversation conversation(String id, {String? name, int headSeq = 0, int? firstUnreadSeq}) => Conversation(
       id: id,
       kind: ConversationKind.group,
-      name: 'Room ${id.substring(id.length - 4)}',
+      name: name ?? 'Room ${id.substring(id.length - 4)}',
       memberCount: 2,
       headSeq: headSeq,
+      firstUnreadSeq: firstUnreadSeq,
     );
 
-Message message(int n, {String? id, String? conversationId, int? seq, int? readBy, DeliveryState state = DeliveryState.sent}) => Message(
+Message message(
+  int n, {
+  String? id,
+  String? conversationId,
+  String? authorId,
+  int? seq,
+  int? logSeq,
+  String? text,
+  int? readBy,
+  DeliveryState state = DeliveryState.sent,
+}) =>
+    Message(
       id: id ?? uuid(1000 + n),
       seq: seq ?? n,
-      logSeq: n,
+      logSeq: logSeq ?? n,
       conversationId: conversationId ?? conv,
-      authorId: other,
+      authorId: authorId ?? other,
       at: at,
       state: state,
-      text: 'message $n',
+      text: text ?? 'message $n',
       readBy: readBy,
     );
 
-SyncResponse page(int logSeq, {List<Message> messages = const [], List<Conversation> conversations = const [], List<User> users = const []}) =>
-    SyncResponse(logSeq: logSeq, messages: messages, conversations: conversations, users: users, hasMore: false, serverTime: at);
+SyncResponse page(
+  int logSeq, {
+  List<Message> messages = const [],
+  List<Conversation> conversations = const [],
+  List<User> users = const [],
+  bool hasMore = false,
+}) =>
+    SyncResponse(logSeq: logSeq, messages: messages, conversations: conversations, users: users, hasMore: hasMore, serverTime: at);
 
 /// A first page that introduces `conv`, `me` and `other`.
-SyncResponse bootstrapPage([int logSeq = 0, List<Message> messages = const []]) =>
-    page(logSeq, messages: messages, conversations: [conversation(conv)], users: [user(me), user(other)]);
+SyncResponse bootstrapPage([int logSeq = 0, List<Message> messages = const [], bool hasMore = false]) =>
+    page(logSeq, messages: messages, conversations: [conversation(conv)], users: [user(me), user(other)], hasMore: hasMore);
 
 /// A snapshot as the JSON its records encode to, which is what two journals
 /// holding the same thing agree on.

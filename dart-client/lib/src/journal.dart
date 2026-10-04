@@ -215,20 +215,18 @@ abstract class StagedJournal implements Journal {
     for (final m in page.messages) {
       if (_record(next, m, faults)) messages.add(m);
     }
-    for (final c in page.conversations) {
-      next.conversations[c.id] = c;
-    }
+    final conversations = _hold(next, page.conversations, faults);
     for (final u in page.users) {
       next.users[u.id] = u;
     }
     final held = next.cursor;
     if (held == null || page.logSeq > held) next.cursor = page.logSeq;
-    await _land(next, AppliedSource.page, messages, page.conversations, page.users);
+    await _land(next, AppliedSource.page, messages, conversations, page.users);
     return Applied(
       source: AppliedSource.page,
       cursor: next.cursor,
       messages: messages,
-      conversations: List.of(page.conversations),
+      conversations: conversations,
       users: List.of(page.users),
     );
   }
@@ -243,18 +241,16 @@ abstract class StagedJournal implements Journal {
       final held = next.cursor;
       if (faults.cursorOnLiveFrames && (held == null || m.logSeq > held)) next.cursor = m.logSeq;
     }
-    for (final c in write.conversations) {
-      next.conversations[c.id] = c;
-    }
+    final conversations = _hold(next, write.conversations, faults);
     for (final u in write.users) {
       next.users[u.id] = u;
     }
-    await _land(next, AppliedSource.live, messages, write.conversations, write.users);
+    await _land(next, AppliedSource.live, messages, conversations, write.users);
     return Applied(
       source: AppliedSource.live,
       cursor: next.cursor,
       messages: messages,
-      conversations: List.of(write.conversations),
+      conversations: conversations,
       users: List.of(write.users),
     );
   }
@@ -357,4 +353,16 @@ bool _record(JournalState s, Message m, JournalFaults faults) {
   if (!s.messages.containsKey(m.id)) s.counted.add(m.id);
   s.messages[m.id] = m;
   return true;
+}
+
+/// Holds served conversations: a later record replaces an earlier one, by id.
+/// Returns the records written, which is every one of them in a correct client.
+List<Conversation> _hold(JournalState s, List<Conversation> served, JournalFaults faults) {
+  final written = <Conversation>[];
+  for (final c in served) {
+    if (faults.keepHeldConversation && s.conversations.containsKey(c.id)) continue;
+    s.conversations[c.id] = c;
+    written.add(c);
+  }
+  return written;
 }
