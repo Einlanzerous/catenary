@@ -97,7 +97,7 @@ class _ShellState extends State<_Shell> {
 
   // THE BANNER'S TWO ACTIONS ARE SEAMS HERE. Both are handed to the rail and
   // to every thread, which pass them to the banner: RETRY dials now
-  // (`AppStore.retryNow`) and RE-ENROLL is CANT-208's (the enrollment screen).
+  // (`AppStore.retryNow`) and RE-ENROLL shows the enrollment screen (`_reenroll`).
   VoidCallback? get _onRetry => widget.store?.retryNow;
   VoidCallback? get _onReenroll => _reenroll;
 
