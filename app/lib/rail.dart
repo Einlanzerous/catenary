@@ -76,7 +76,8 @@ class RailScreen extends StatelessWidget {
                   const SizedBox(width: 10),
                   Text('CATENARY', style: mono.copyWith(fontSize: 12, letterSpacing: 2.4, color: t.textPrimary)),
                   const Spacer(),
-                  GlyphIcon(Glyph.search, color: t.textMeta),
+                  // Drawn disabled: search is not built in this epic.
+                  GlyphIcon(Glyph.search, color: t.textDisabled),
                   const SizedBox(width: CatenaryMetrics.s4),
                   Text(myInitials, style: mono.copyWith(fontSize: 11, letterSpacing: 1.32)),
                 ],

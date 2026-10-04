@@ -31,7 +31,17 @@ import 'widgets/typing_row.dart';
 import 'widgets/waveform.dart';
 
 class ThreadScreen extends StatelessWidget {
-  const ThreadScreen({super.key, required this.conversation, required this.connection, this.onBack, this.onRetry, this.onReenroll});
+  const ThreadScreen({
+    super.key,
+    required this.conversation,
+    required this.connection,
+    this.onBack,
+    this.onRetry,
+    this.onReenroll,
+    this.onSend,
+    this.onRetryMessage,
+    this.onDiscardMessage,
+  });
 
   final ConversationView conversation;
   final ConnectionView connection;
@@ -40,6 +50,15 @@ class ThreadScreen extends StatelessWidget {
   /// The banner's two actions, passed through to it.
   final VoidCallback? onRetry;
   final VoidCallback? onReenroll;
+
+  /// The composer's send, given the draft. The draft is cleared once this
+  /// completes and kept when it throws.
+  final Future<void> Function(String text)? onSend;
+
+  /// RETRY and DELETE on a failed message, given its `client_id` (the
+  /// message's `id`).
+  final Future<void> Function(String clientId)? onRetryMessage;
+  final Future<void> Function(String clientId)? onDiscardMessage;
 
   @override
   Widget build(BuildContext context) {
@@ -99,9 +118,10 @@ class ThreadScreen extends StatelessWidget {
                       ],
                     ),
                   ),
-                  GlyphIcon(Glyph.search, color: t.textMeta),
+                  // Drawn disabled: search and the thread's menu are not built.
+                  GlyphIcon(Glyph.search, color: t.textDisabled),
                   const SizedBox(width: 14),
-                  GlyphIcon(Glyph.more, color: t.textMeta),
+                  GlyphIcon(Glyph.more, color: t.textDisabled),
                   const SizedBox(width: CatenaryMetrics.s4),
                 ],
               ),
@@ -131,18 +151,64 @@ class ThreadScreen extends StatelessWidget {
                           top: 14,
                           bottom: 10,
                         ),
-                        GroupRow() => MessageGroup(group: row, memberCount: c.memberCount),
+                        GroupRow() => MessageGroup(
+                          group: row,
+                          memberCount: c.memberCount,
+                          onRetry: onRetryMessage,
+                          onDiscard: onDiscardMessage,
+                        ),
                       },
                   ],
                 ),
               ),
             ),
-            Composer(connection: connection),
+            if (onSend == null) Composer(connection: connection) else _ThreadComposer(connection: connection, onSend: onSend!),
           ],
         ),
       ),
     );
   }
+}
+
+/// The composer with a draft of its own: send hands the text over and clears
+/// the field once the call completes, and keeps it when the call throws.
+class _ThreadComposer extends StatefulWidget {
+  const _ThreadComposer({required this.connection, required this.onSend});
+
+  final ConnectionView connection;
+  final Future<void> Function(String text) onSend;
+
+  @override
+  State<_ThreadComposer> createState() => _ThreadComposerState();
+}
+
+class _ThreadComposerState extends State<_ThreadComposer> {
+  final _draft = TextEditingController();
+  var _sending = false;
+
+  @override
+  void dispose() {
+    _draft.dispose();
+    super.dispose();
+  }
+
+  Future<void> _send() async {
+    // A second tap while the first is being stored would compose it twice.
+    if (_sending) return;
+    final text = _draft.text;
+    _sending = true;
+    try {
+      await widget.onSend(text);
+      if (mounted && _draft.text == text) _draft.clear();
+    } on Object {
+      // The draft stays where it was typed.
+    } finally {
+      _sending = false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => Composer(connection: widget.connection, controller: _draft, onSend: _send);
 }
 
 /// A labelled hairline: the date separator, and the "N NEW" rule.
@@ -175,19 +241,26 @@ class _Rule extends StatelessWidget {
 
 /// One author's run of messages.
 class MessageGroup extends StatelessWidget {
-  const MessageGroup({super.key, required this.group, required this.memberCount});
+  const MessageGroup({super.key, required this.group, required this.memberCount, this.onRetry, this.onDiscard});
 
   final GroupRow group;
   final int memberCount;
+
+  /// RETRY and DELETE on a failed message of the group, given its `client_id`.
+  final Future<void> Function(String clientId)? onRetry;
+  final Future<void> Function(String clientId)? onDiscard;
 
   @override
   Widget build(BuildContext context) {
     final t = CatenaryTokens.of(context);
     final first = group.first;
     final mine = first.mine;
-    // The mark is the group's newest message's: it is the one still moving.
+    // The mark is the group's newest message's: it is the one still moving. A
+    // failed send in the group outranks it, though: the outbox does not stop
+    // at a failed entry, so a later message in the same run can go through,
+    // and the failure must not be hidden behind it.
     final newest = group.messages.last;
-    final failed = mine && newest.status == MessageStatus.failed;
+    final failed = mine && group.messages.any((m) => m.status == MessageStatus.failed);
     return Container(
       key: ValueKey('group-${first.id}'),
       margin: EdgeInsets.only(top: mine ? 8 : 0, bottom: mine ? 6 : 0),
@@ -245,11 +318,19 @@ class MessageGroup extends StatelessWidget {
                   ],
                 ),
               ),
-              if (mine) StatusMark(key: const ValueKey('group-status'), status: newest.status),
+              if (mine) StatusMark(key: const ValueKey('group-status'), status: failed ? MessageStatus.failed : newest.status),
             ],
           ),
-          for (final m in group.messages) ..._body(t, m),
-          if (failed) _FailedActions(reason: newest.failure),
+          for (final m in group.messages) ...[
+            ..._body(t, m),
+            // RETRY and DELETE sit under the message they act on.
+            if (mine && m.status == MessageStatus.failed)
+              _FailedActions(
+                reason: m.failure,
+                onRetry: onRetry == null ? null : () => onRetry!(m.id),
+                onDiscard: onDiscard == null ? null : () => onDiscard!(m.id),
+              ),
+          ],
         ],
       ),
     );
@@ -286,9 +367,11 @@ class MessageGroup extends StatelessWidget {
 /// narrow layout spends more vertical space than desktop, because a mis-tap
 /// here deletes a message.
 class _FailedActions extends StatelessWidget {
-  const _FailedActions({this.reason});
+  const _FailedActions({this.reason, this.onRetry, this.onDiscard});
 
   final String? reason;
+  final VoidCallback? onRetry;
+  final VoidCallback? onDiscard;
 
   @override
   Widget build(BuildContext context) {
@@ -308,20 +391,30 @@ class _FailedActions extends StatelessWidget {
         const SizedBox(height: 9),
         Row(
           children: [
-            Container(
-              height: 44,
-              alignment: Alignment.center,
-              color: t.signalFault,
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Text('RETRY', style: label.copyWith(color: t.onAccent)),
+            GestureDetector(
+              key: const ValueKey('failed-retry'),
+              behavior: HitTestBehavior.opaque,
+              onTap: onRetry,
+              child: Container(
+                height: 44,
+                alignment: Alignment.center,
+                color: t.signalFault,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Text('RETRY', style: label.copyWith(color: t.onAccent)),
+              ),
             ),
             const SizedBox(width: 8),
-            Container(
-              height: 44,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(border: Border.all(color: t.surfaceAvatar)),
-              padding: const EdgeInsets.symmetric(horizontal: 14),
-              child: Text('DELETE', style: label.copyWith(color: t.textSecondary)),
+            GestureDetector(
+              key: const ValueKey('failed-delete'),
+              behavior: HitTestBehavior.opaque,
+              onTap: onDiscard,
+              child: Container(
+                height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(border: Border.all(color: t.surfaceAvatar)),
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                child: Text('DELETE', style: label.copyWith(color: t.textSecondary)),
+              ),
             ),
           ],
         ),
@@ -364,12 +457,16 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
+                // Drawn disabled: playback is not built, and an accent square
+                // is a promise (one copper accent, and playing is one of its
+                // four meanings).
                 Container(
+                  key: const ValueKey('voice-play'),
                   width: 32,
                   height: 32,
                   alignment: Alignment.center,
-                  color: t.accentWire,
-                  child: GlyphIcon(Glyph.play, color: t.onAccent, size: 10),
+                  decoration: BoxDecoration(color: t.surfaceBase, border: Border.all(color: t.lineInner)),
+                  child: GlyphIcon(Glyph.play, color: t.textDisabled, size: 10),
                 ),
                 const SizedBox(width: 10),
                 Expanded(
