@@ -164,6 +164,20 @@ void main() {
       expect(stored(path).messages, 3, reason: 'a second connection reads what the first committed to the file');
     });
 
+    // CANT-202 ruling 1: both files use SQLite's rollback journal. Asked of the connection each open function returned, not of a second
+    // connection to the file: synchronous is per connection, and a second connection would report its own.
+    test('both files run the rollback journal and synchronous = FULL, on the connection each open function returned', () {
+      final dir = tempDir();
+      final journal = openCatenaryDb(catenaryDbPath(dir));
+      addTearDown(journal.close);
+      final outbox = SqliteOutboxStore.open(outboxDbPath(dir));
+      addTearDown(outbox.close);
+      for (final (name, db) in [('catenary.db', journal), ('catenary-outbox.db', outbox.database)]) {
+        expect(db.select('PRAGMA journal_mode').single.values.single, 'delete', reason: '$name: the rollback journal');
+        expect(db.select('PRAGMA synchronous').single.values.single, 2, reason: '$name: 2 is FULL');
+      }
+    });
+
     test('brings a fresh file to the current user_version, with the journal and credential tables', () {
       final path = catenaryDbPath(tempDir());
       final j = SqliteJournal.open(path);
