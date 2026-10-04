@@ -1,0 +1,9 @@
+# Static analysis for the Catenary Flutter client. `flutter analyze` is the CI
+# gate (.github/workflows/app.yml), as it is for the estate's other Flutter
+# apps.
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    prefer_single_quotes: true
+    avoid_print: true

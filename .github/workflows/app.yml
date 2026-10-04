@@ -1,0 +1,81 @@
+name: app
+
+# The Flutter client (E5, CANT-40). Its own workflow, scoped by path, so a
+# server-only pull request does not pay for a Flutter toolchain and an Android
+# build — the way the estate's other Flutter apps are checked (Chronicle's and
+# Argosy's mobile.yml).
+#
+# web/src/styles/tokens.css IS IN THE PATH FILTER, and that is load-bearing:
+# app/lib/tokens.dart is that table in a second runtime and app/test reads the
+# CSS to hold it there, so a pull request that edits only the web client's
+# tokens is exactly the one that makes the app's table stale.
+#
+# dart/ and dart-client/ are in because the app is built on them: the generated
+# wire package and the protocol half (CANT-42). Their own tests run in ci.yml;
+# what runs here is that the app still analyzes and builds against them.
+on:
+  pull_request:
+    paths:
+      - "app/**"
+      - "web/src/styles/tokens.css"
+      - "dart/**"
+      - "dart-client/**"
+      - ".github/workflows/app.yml"
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "web/src/styles/tokens.css"
+      - "dart/**"
+      - "dart-client/**"
+      - ".github/workflows/app.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: app-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The two versions the local toolchain pins (~/dev-tools/env.sh): Temurin 17
+  # and Flutter 3.44.2 stable. A skew between CI and the box is a class of
+  # "works here, fails there" nobody should have to debug twice.
+  FLUTTER_VERSION: "3.44.2"
+  JAVA_VERSION: "17"
+
+jobs:
+  android:
+    name: app — analyze, test, Android debug build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - run: flutter analyze
+
+      # Includes the token contract: test/tokens_test.dart reads the web
+      # client's tokens.css and fails when either table moves alone.
+      - run: flutter test
+
+      # A DEBUG apk. It proves the Android half compiles — Gradle, the manifest
+      # and its placeholders, the bundled fonts — without a signing key, which
+      # nothing here has and no release lane yet needs.
+      - run: flutter build apk --debug

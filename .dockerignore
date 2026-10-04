@@ -14,6 +14,7 @@ web/node_modules
 web/dist
 dart
 dart-client
+app
 
 # Read-only history and evidence (spike/), and the generated wire packages for
 # the other two languages. server/ holds the Go conformance runner, which is a
