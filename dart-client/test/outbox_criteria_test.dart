@@ -13,7 +13,8 @@
 /// that file's table and fails when this one's fault names or criterion
 /// numbers differ. The ones a headless outbox can be held to are 0, 1, 2, 3, 4,
 /// 7, 8, 9, 10, 11, 12 and 15: 5, 6 and 16 render the app, and 13 and 14 are
-/// attachments.
+/// attachments. What holds an attachment's media, and the offline rule, are
+/// test/outbox_media_test.dart.
 ///
 /// WHERE THE REFERENCE CHECKS ANOTHER TAB'S RENDER, THIS CHECKS ANOTHER
 /// CONTEXT'S NEXT READ. There is no `BroadcastChannel` here (types.dart): a
@@ -23,6 +24,7 @@ library;
 
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:catenary_client/catenary_client.dart';
 import 'package:catenary_wire/catenary_wire.dart';
@@ -723,7 +725,7 @@ void main() {
       expect(Directory(dir).listSync().map((e) => e.uri.pathSegments.last).toSet(), {'catenary.db', 'catenary-outbox.db'});
       expect(outboxDbPath(dir), '$dir/catenary-outbox.db');
       final tables = {for (final r in store.database.select("SELECT name FROM sqlite_schema WHERE type = 'table'")) r['name']};
-      expect(tables, {'outbox'}, reason: 'and it holds the outbox and nothing of the journal\'s');
+      expect(tables, {'outbox', 'outbox_media'}, reason: 'and it holds the outbox, its media, and nothing of the journal\'s');
       expect(store.database.userVersion, outboxMigrations.length);
       if (Platform.isLinux) expect((File(outboxDbPath(dir)).statSync().mode & 0x1ff).toRadixString(8), '600');
     });
@@ -807,7 +809,7 @@ void main() {
       final ctx = await context(transport: transport);
       transport.open();
       await flush();
-      final entry = await ctx.outbox.compose(OutboxDraft(conversationId: conv, text: 'with a photo', attachments: const [OutboundAttachmentDraft(kind: 'image', filename: 'a.png')]));
+      final entry = await ctx.outbox.compose(OutboxDraft(conversationId: conv, text: 'with a photo', attachments: [OutboundAttachmentDraft(kind: 'image', source: _media, filename: 'a.png')]));
       await flush();
       final item = ctx.item(entry.clientId)!;
       expect(item.state, OutboxState.failed);
@@ -848,7 +850,7 @@ void main() {
       final entry = await ctx.outbox.compose(OutboxDraft(
         conversationId: conv,
         text: 'two photos',
-        attachments: const [OutboundAttachmentDraft(kind: 'image', filename: 'a.png'), OutboundAttachmentDraft(kind: 'voice', durationMs: 900)],
+        attachments: [OutboundAttachmentDraft(kind: 'image', source: _media, filename: 'a.png'), OutboundAttachmentDraft(kind: 'voice', source: _media, durationMs: 900)],
       ));
       await flush();
       expect(offered, ['a.png', null], reason: 'each offered once, in order');
@@ -883,7 +885,7 @@ void main() {
       await flush();
       final entry = await ctx.outbox.compose(OutboxDraft(
         conversationId: conv,
-        attachments: const [OutboundAttachmentDraft(kind: 'image', filename: 'a.png'), OutboundAttachmentDraft(kind: 'image', filename: 'b.png')],
+        attachments: [OutboundAttachmentDraft(kind: 'image', source: _media, filename: 'a.png'), OutboundAttachmentDraft(kind: 'image', source: _media, filename: 'b.png')],
       ));
       await flush();
       expect(projectOutbox(ctx.item(entry.clientId)!).error, 'the second one would not go');
@@ -918,6 +920,10 @@ void main() {
     });
   });
 }
+
+/// What these attachments are composed from. What becomes of it is
+/// test/outbox_media_test.dart's.
+final _media = MediaBytes(Uint8List.fromList([1, 2, 3]));
 
 /// An uploader that answers with whatever `handle` returns, or fails with
 /// what it throws.

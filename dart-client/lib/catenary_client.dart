@@ -20,6 +20,7 @@ export 'src/io_seams.dart';
 export 'src/journal.dart';
 export 'src/lock.dart';
 export 'src/outbox/coordination.dart';
+export 'src/outbox/media.dart';
 export 'src/outbox/outbox.dart';
 export 'src/outbox/projection.dart';
 export 'src/outbox/store.dart';

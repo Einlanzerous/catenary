@@ -10,11 +10,16 @@
 //   recording   the clock, the levels, ✕, SEND — it REPLACES the whole row,
 //               and the clock lands where the text cursor was
 //   offline     ADD dimmed · "Sends when reconnected" · QUEUE, in the dimmer
-//               copper
+//               copper. That is the canvas's offline frame; CANT-201
+//               ruling 2 settles the square it leaves open: REC with no
+//               draft, as when idle, and QUEUE once there is one
 //
-// IT NEVER PRETENDS A MESSAGE LEFT THE BUILDING. Off a live session the
-// primary action reads QUEUE. ADD dims, because an upload cannot be queued
-// safely (CANT-36), and for the same reason a recording cannot be started.
+// IT NEVER PRETENDS A MESSAGE LEFT THE BUILDING. Off a live session a draft's
+// primary action reads QUEUE. ADD dims: a picked file is not composed without
+// a session (CANT-36: `ATTACH` dimmed offline, `RECORD` allowed). REC STAYS,
+// because the outbox holds a recording with its media and uploads it when a
+// session is ready (CANT-201 rulings 1 and 2) — the note is kept, not sent,
+// and the hint beside it says so.
 // On a terminal client nothing composed now will drain, so the composer does
 // not offer to queue it and the one accent does not sit on a button that
 // cannot work (Invariant 3) — that state is not on the canvas.
@@ -187,17 +192,18 @@ class _ComposerState extends State<Composer> {
     if (terminal) {
       // Nothing sends, so the one accent does not sit on this button.
       primary = _Square('SEND', color: t.textDisabled, fill: t.surfaceBase, border: t.lineInner, onTap: null);
-    } else if (offline) {
-      primary = _Square('QUEUE', fontSize: 9, color: t.onAccent, fill: t.accentQueue, onTap: drafted ? widget.onSend : null);
-    } else if (drafted) {
-      primary = _Square('SEND', color: t.onAccent, fill: t.accentWire, onTap: widget.onSend);
-    } else {
+    } else if (!drafted) {
+      // Live or not: a recording made offline is held and sent on reconnect.
       primary = _Square('REC', color: t.onAccent, fill: t.accentWire, onTap: widget.onRecord);
+    } else if (offline) {
+      primary = _Square('QUEUE', fontSize: 9, color: t.onAccent, fill: t.accentQueue, onTap: widget.onSend);
+    } else {
+      primary = _Square('SEND', color: t.onAccent, fill: t.accentWire, onTap: widget.onSend);
     }
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        // Uploads can't be queued safely, so ADD dims when offline.
+        // A picked file is not composed without a session, so ADD dims.
         _Square(
           'ADD',
           color: offline ? t.textDisabled : t.textMeta,

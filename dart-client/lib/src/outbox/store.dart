@@ -13,6 +13,16 @@
 /// `COMMIT` has returned: a row the app shows QUEUED has to survive a power cut
 /// just after compose.
 ///
+/// AN ATTACHMENT'S MEDIA IS A BLOB IN THIS FILE (CANT-201 ruling 0), in
+/// `outbox_media`, keyed by the entry's `client_id` and the attachment's index.
+/// It is written in the transaction that writes the entry and deleted in the
+/// transaction that deletes it, so the two never exist apart and the durability
+/// above covers the media with no code of its own. THE DELETE IS EXPLICIT, NOT
+/// A FOREIGN-KEY CASCADE: SQLite enforces a foreign key only on a connection
+/// that has set `PRAGMA foreign_keys = ON`, nothing here sets it, and setting
+/// it in the shared open would change the journal's connections too. A listing
+/// never touches the table.
+///
 /// `order` IS DRAWN INSIDE THE INSERT'S OWN TRANSACTION — `BEGIN IMMEDIATE`,
 /// read the account's highest `order`, insert at that plus one, `COMMIT` — and
 /// never from `AUTOINCREMENT` or a rowid, which would allocate outside the rule
@@ -21,6 +31,7 @@ library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:catenary_wire/catenary_wire.dart';
 import 'package:meta/meta.dart';
@@ -49,6 +60,17 @@ const outboxMigrations = <String>[
   ) STRICT;
   CREATE UNIQUE INDEX outbox_by_account_order ON outbox (account_id, "order");
   ''',
+  // 2 · an unsent attachment's media (CANT-201 ruling 0): one row per
+  // attachment that has any, under its entry's `client_id` and its own index
+  // in the entry's `attachments`.
+  '''
+  CREATE TABLE outbox_media (
+    client_id TEXT NOT NULL,
+    idx INTEGER NOT NULL,
+    bytes BLOB NOT NULL,
+    PRIMARY KEY (client_id, idx)
+  ) STRICT;
+  ''',
 ];
 
 int byOrder(OutboxEntry a, OutboxEntry b) => a.accountId == b.accountId ? a.order.compareTo(b.order) : a.accountId.compareTo(b.accountId);
@@ -65,9 +87,16 @@ final class MemoryOutboxStore implements OutboxStore {
   }
 
   final _rows = <Uuid, OutboxEntry>{};
+  final _media = <Uuid, Map<int, Uint8List>>{};
+
+  void _hold(Uuid clientId, List<Uint8List?> media) {
+    for (final (i, bytes) in media.indexed) {
+      if (bytes != null) (_media[clientId] ??= {})[i] = Uint8List.fromList(bytes);
+    }
+  }
 
   @override
-  Future<OutboxEntry> add(OutboxEntry entry) async {
+  Future<OutboxEntry> add(OutboxEntry entry, [List<Uint8List?> media = const []]) async {
     // Synchronous from read to write, which is this store's whole transaction.
     var highest = 0;
     for (final e in _rows.values) {
@@ -75,12 +104,14 @@ final class MemoryOutboxStore implements OutboxStore {
     }
     final stored = entry.copy()..order = highest + 1;
     _rows[stored.clientId] = stored;
+    _hold(stored.clientId, media);
     return stored.copy();
   }
 
   @override
-  Future<void> put(OutboxEntry entry) async {
+  Future<void> put(OutboxEntry entry, [List<Uint8List?> media = const []]) async {
     _rows[entry.clientId] = entry.copy();
+    _hold(entry.clientId, media);
   }
 
   @override
@@ -96,10 +127,17 @@ final class MemoryOutboxStore implements OutboxStore {
   @override
   Future<void> delete(Uuid clientId) async {
     _rows.remove(clientId);
+    _media.remove(clientId);
   }
 
   @override
   Future<List<OutboxEntry>> list() async => [for (final e in _rows.values) e.copy()]..sort(byOrder);
+
+  @override
+  Future<Uint8List?> media(Uuid clientId, int index) async {
+    final held = _media[clientId]?[index];
+    return held == null ? null : Uint8List.fromList(held);
+  }
 
   @override
   void close() {}
@@ -152,8 +190,20 @@ final class SqliteOutboxStore implements OutboxStore {
 
   OutboxEntry _decode(Row row) => OutboxEntry.fromJson(jsonDecode(row['record'] as String) as Map<String, dynamic>);
 
+  /// Inside the entry's own transaction, always: this is never called outside
+  /// a `_write` that also writes the entry.
+  void _hold(Uuid clientId, List<Uint8List?> media) {
+    for (final (i, bytes) in media.indexed) {
+      if (bytes == null) continue;
+      _db.execute(
+        'INSERT INTO outbox_media (client_id, idx, bytes) VALUES (?, ?, ?) ON CONFLICT (client_id, idx) DO UPDATE SET bytes = excluded.bytes',
+        [clientId, i, bytes],
+      );
+    }
+  }
+
   @override
-  Future<OutboxEntry> add(OutboxEntry entry) => _write(() {
+  Future<OutboxEntry> add(OutboxEntry entry, [List<Uint8List?> media = const []]) => _write(() {
         // THE ACCOUNT'S HIGHEST ORDER, read inside this transaction, so nothing
         // another context commits can land between the read and the insert.
         final highest = _db.select('SELECT max("order") AS highest FROM outbox WHERE account_id = ?', [entry.accountId]).single['highest'] as int?;
@@ -163,11 +213,15 @@ final class SqliteOutboxStore implements OutboxStore {
           'INSERT INTO outbox (client_id, account_id, "order", record) VALUES (?, ?, ?, ?)',
           [stored.clientId, stored.accountId, stored.order, jsonEncode(stored.toJson())],
         );
+        _hold(stored.clientId, media);
         return stored;
       });
 
   @override
-  Future<void> put(OutboxEntry entry) => _write(() => _insert(entry));
+  Future<void> put(OutboxEntry entry, [List<Uint8List?> media = const []]) => _write(() {
+        _insert(entry);
+        _hold(entry.clientId, media);
+      });
 
   @override
   Future<OutboxEntry?> update(Uuid clientId, void Function(OutboxEntry e) mutate) => _write(() {
@@ -179,11 +233,22 @@ final class SqliteOutboxStore implements OutboxStore {
         return held;
       });
 
+  /// The entry, then its media, in one transaction: a media delete that fails
+  /// takes the entry's delete back with it, and neither is ever left alone.
   @override
-  Future<void> delete(Uuid clientId) => _write(() => _db.execute('DELETE FROM outbox WHERE client_id = ?', [clientId]));
+  Future<void> delete(Uuid clientId) => _write(() {
+        _db.execute('DELETE FROM outbox WHERE client_id = ?', [clientId]);
+        _db.execute('DELETE FROM outbox_media WHERE client_id = ?', [clientId]);
+      });
 
   @override
   Future<List<OutboxEntry>> list() async => [for (final row in _db.select('SELECT record FROM outbox ORDER BY account_id, "order"')) _decode(row)];
+
+  @override
+  Future<Uint8List?> media(Uuid clientId, int index) async {
+    final rows = _db.select('SELECT bytes FROM outbox_media WHERE client_id = ? AND idx = ?', [clientId, index]);
+    return rows.isEmpty ? null : rows.single['bytes'] as Uint8List;
+  }
 
   @override
   void close() => _db.close();

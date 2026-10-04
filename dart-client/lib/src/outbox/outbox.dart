@@ -18,6 +18,14 @@
 /// The rules are `docs/decisions/cant-36-outbox.md`; section numbers below are
 /// that file's.
 ///
+/// AN UPLOAD WAITS FOR A READY SESSION, AND IS THE LOCK HOLDER'S (CANT-201
+/// ruling 1). A recording may be composed with no session at all: it is held
+/// with its media, `pending`, and no uploader is called — one called with no
+/// connection would only throw, and a throw fails the entry for good. It is
+/// offered when this context is `ready` AND holds the drain lock, which is
+/// also how an entry reloaded after a relaunch is offered, and why two
+/// contexts over one store do not both upload it.
+///
 /// A SECOND CONTEXT SEES ANOTHER'S WRITES AT ITS NEXT READ. The reference
 /// re-reads on a `BroadcastChannel` post; there is no channel here. Every
 /// context re-reads on `refresh()`, and the lock's holder re-reads on a timer
@@ -27,6 +35,7 @@ library;
 
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:catenary_wire/catenary_wire.dart';
 
@@ -168,7 +177,16 @@ final class Outbox {
   final _inFlight = <Uuid>{};
   final _acks = <Uuid, ServerAck>{};
 
+  /// Entries this context has offered to the uploader and not heard back on.
+  /// One is never offered twice at once, whatever asks.
+  final _uploading = <Uuid>{};
+
   var _ready = false;
+
+  /// The last close this context saw was terminal (CANT-31 §6). Known only
+  /// from that event: the seam has no way to ask a transport that was already
+  /// terminal when the outbox attached.
+  var _terminal = false;
   var _holding = false;
   void Function()? _releaseLock;
   Object? _wake;
@@ -218,9 +236,31 @@ final class Outbox {
   /// render, or become eligible for a frame. Completes with the stored entry,
   /// whose `clientId` is the wire's idempotency key, WITHOUT WAITING FOR AN
   /// ACK: with no ready session the entry is queued and drains when one is.
+  ///
+  /// AN ATTACHMENT, WITH NO READY SESSION (CANT-201 ruling 1): a `voice` one is
+  /// taken, held with its media, and uploaded when a session is ready; any
+  /// other kind is a picked file and is refused with `ComposeRefused`, as is
+  /// every attachment on a terminal client. A refusal writes nothing. An
+  /// attachment not yet uploaded must name its `source`, which is read here,
+  /// once, and stored in the entry's own transaction (ruling 0).
   Future<OutboxEntry> compose(OutboxDraft draft) async {
     final account = _accountId;
     if (account == null) throw StateError('outbox: no enrolled account to compose as');
+    if (draft.attachments.isNotEmpty && !_ready) {
+      if (_terminal) throw const ComposeRefused(ComposeRefused.terminal);
+      if (draft.attachments.any((a) => a.kind != 'voice')) throw const ComposeRefused(ComposeRefused.pickedFileOffline);
+    }
+    final media = <Uint8List?>[];
+    for (final a in draft.attachments) {
+      final source = a.source;
+      if (source != null) {
+        media.add(await source.read());
+      } else if (a.upload == UploadState.uploaded && a.uploadId != null) {
+        media.add(null);
+      } else {
+        throw const ComposeRefused(ComposeRefused.noMedia);
+      }
+    }
     final base = OutboxEntry(
       clientId: _mintId(),
       accountId: account,
@@ -230,7 +270,7 @@ final class Outbox {
       text: draft.text,
       replyToMessageId: draft.replyToMessageId,
       replyPreview: draft.replyPreview,
-      attachments: draft.attachments,
+      attachments: [for (final a in draft.attachments) a.held()],
     );
 
     final OutboxEntry entry;
@@ -239,18 +279,21 @@ final class Outbox {
       _entries[entry.clientId] = entry;
       _drain();
       _emit();
-      await _store.put(entry);
+      await _store.put(entry, media);
     } else if (_faults.orderOutsideTxn) {
       entry = base..order = _localOrder(account);
-      await _store.put(entry);
+      await _store.put(entry, media);
     } else {
-      entry = await _store.add(base);
+      entry = await _store.add(base, media);
     }
 
     if (_closed) return entry;
     _entries[entry.clientId] = entry;
     _emit();
     if (_awaitsUpload(entry)) {
+      // Not this context's to upload, or not yet: the entry is held `pending`
+      // and whoever holds the lock on a ready session is offered it.
+      if (!_mayUpload) return entry;
       await _upload(entry.clientId);
       return _entries[entry.clientId] ?? entry;
     }
@@ -260,35 +303,56 @@ final class Outbox {
 
   bool _awaitsUpload(OutboxEntry e) => e.attachments.any((a) => a.upload != UploadState.uploaded || a.uploadId == null);
 
+  /// An upload is attempted only on a ready session and only by the drain
+  /// lock's holder — §8's one writer, for uploads as for frames.
+  bool get _mayUpload => _ready && _holding;
+
   /// §10, with no upload queue: each attachment not yet uploaded is offered to
-  /// the `Uploader`, on compose and again on every RETRY. A handle it returns
-  /// is persisted on the entry before the next is asked for, and the entry
-  /// joins the drain once its last one has; a refusal fails the entry with the
-  /// uploader's own message — so an attachment entry is never left `pending`
-  /// with nothing that will ever send it.
+  /// the `Uploader` — on compose, on every RETRY, and whenever the holder
+  /// reads the store on a ready session, which is what offers an entry that
+  /// was composed offline, in another context, or before a relaunch. A handle
+  /// it returns is persisted on the entry before the next is asked for, and
+  /// the entry joins the drain once its last one has; a refusal fails the
+  /// entry with the uploader's own message — so an attachment entry is never
+  /// left `pending` with nothing that will ever send it.
   Future<void> _upload(Uuid clientId) async {
-    final count = _entries[clientId]?.attachments.length ?? 0;
-    for (var i = 0; i < count; i++) {
-      final entry = _entries[clientId];
-      if (entry == null || _closed) return;
-      final a = entry.attachments[i];
-      if (a.upload == UploadState.uploaded && a.uploadId != null) continue;
-      final Uuid handle;
-      try {
-        handle = await _uploader.upload(entry, a);
-      } catch (e) {
-        await _fail(clientId, UploadFailure('$e'));
-        return;
+    if (!_uploading.add(clientId)) return;
+    try {
+      final count = _entries[clientId]?.attachments.length ?? 0;
+      for (var i = 0; i < count; i++) {
+        final entry = _entries[clientId];
+        if (entry == null || _closed) return;
+        final a = entry.attachments[i];
+        if (a.upload == UploadState.uploaded && a.uploadId != null) continue;
+        final Uuid handle;
+        try {
+          handle = await _uploader.upload(entry, a);
+        } catch (e) {
+          await _fail(clientId, UploadFailure('$e'));
+          return;
+        }
+        await _mutate(clientId, (x) {
+          x.attachments = [
+            for (final (j, b) in x.attachments.indexed)
+              if (j == i) b.uploadedAs(handle) else b,
+          ];
+        });
       }
-      await _mutate(clientId, (x) {
-        x.attachments = [
-          for (final (j, b) in x.attachments.indexed)
-            if (j == i) b.uploadedAs(handle) else b,
-        ];
-      });
+    } finally {
+      _uploading.remove(clientId);
     }
     _emit();
     _drain();
+  }
+
+  /// Every `pending` entry of this account still awaiting an upload is offered,
+  /// once: `_upload` passes over one already offered and not yet answered.
+  void _offerUploads() {
+    if (_closed || !_mayUpload) return;
+    for (final e in _sorted()) {
+      if (!_mine(e) || e.status != OutboxStatus.pending || !_awaitsUpload(e)) continue;
+      unawaited(_upload(e.clientId));
+    }
   }
 
   /// §7: `failed` back to `pending` under the SAME clientId, at its original
@@ -311,10 +375,12 @@ final class Outbox {
         x.notBefore = null;
       });
       // An attachment that never uploaded is offered again, so the entry
-      // either joins the drain or fails again with the uploader's message.
+      // either joins the drain or fails again with the uploader's message —
+      // or, with no ready session to upload on, waits for one as it would
+      // have at compose.
       if (pending != null && _awaitsUpload(pending)) {
         _emit();
-        await _upload(clientId);
+        if (_mayUpload) await _upload(clientId);
         return;
       }
     }
@@ -363,6 +429,7 @@ final class Outbox {
     // the count says nothing of that.
     _emit();
     _drain();
+    _offerUploads();
   }
 
   void setAccount(Uuid? accountId) {
@@ -427,8 +494,12 @@ final class Outbox {
 
   void _onReady() {
     _ready = true;
+    _terminal = false;
     _requestLock();
     _drain();
+    // Nothing unless this context already holds the lock; the grant's own
+    // re-read is what offers a held recording on the first `ready`.
+    _offerUploads();
   }
 
   /// §5 and §7: a close before the ack leaves an in-flight entry `pending`, to
@@ -436,6 +507,7 @@ final class Outbox {
   /// a bare `1008`, which fails it and does not requeue it (CANT-31 §7).
   Future<void> _onClosed(bool bare1008, bool terminal) async {
     _ready = false;
+    _terminal = terminal;
     final flying = _inFlight.toList();
     _inFlight.clear();
     if (!_faults.lockWithoutReady) _dropLock();

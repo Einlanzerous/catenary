@@ -89,8 +89,8 @@ void main() {
       expect(sent, 1);
     });
 
-    testWidgets('$theme · offline-queued: QUEUE in the dimmer copper, the hint says so, ADD is off', (tester) async {
-      var sent = 0, attached = 0;
+    testWidgets('$theme · offline-queued: REC with no draft and QUEUE in the dimmer copper with one, the hint says so, ADD is off', (tester) async {
+      var sent = 0, attached = 0, recorded = 0;
       final draft = TextEditingController();
       await show(
         tester,
@@ -99,24 +99,34 @@ void main() {
           controller: draft,
           onSend: () => sent++,
           onAttach: () => attached++,
+          onRecord: () => recorded++,
         ),
         brightness: brightness,
       );
-      expect(find.text('QUEUE'), findsOneWidget);
+      // An empty draft: the outbox holds a recording offline (CANT-201 rulings
+      // 1 and 2), so the square is REC, as on a live session.
+      expect(find.text('REC'), findsOneWidget, reason: 'a recording is held with its media and sent on reconnect');
+      expect(find.text('QUEUE'), findsNothing, reason: 'there is nothing to queue yet');
       expect(find.text('SEND'), findsNothing);
-      expect(find.text('REC'), findsNothing, reason: 'a recording is an upload, and an upload cannot be queued');
-      expect(primaryFill(tester), t.accentQueue);
+      expect(primaryFill(tester), t.accentWire);
       expect(find.text('Sends when reconnected'), findsOneWidget);
+      await tester.tap(find.text('REC'));
+      expect((recorded, sent), (1, 0));
       await tester.tap(find.text('ADD'));
       expect(attached, 0);
       expect(tester.widget<Text>(find.text('ADD')).style!.color, t.textDisabled);
 
-      await tester.tap(find.text('QUEUE'));
-      expect(sent, 0, reason: 'there is nothing to queue yet');
+      // A draft: QUEUE, and never SEND.
       draft.text = 'Eight works';
       await tester.pump();
+      expect(find.text('QUEUE'), findsOneWidget);
+      expect(find.text('REC'), findsNothing);
+      expect(find.text('SEND'), findsNothing);
+      expect(primaryFill(tester), t.accentQueue);
+      await tester.tap(find.text('ADD'));
+      expect(attached, 0, reason: 'ADD is off with a draft too');
       await tester.tap(find.text('QUEUE'));
-      expect(sent, 1);
+      expect((recorded, sent), (1, 1));
     });
 
     testWidgets('$theme · terminal: nothing sends, and the accent is not on the button', (tester) async {

@@ -152,6 +152,7 @@ Future<Ctx> context({
   FakeClock? clock,
   Uuid Function()? mintId,
   void Function(List<OutboxItem> items)? onView,
+  Uploader uploader = const RefusingUploader(),
   // Long, so a criterion that advances the clock by minutes is not a thousand
   // re-reads. The criterion about the re-read sets it.
   num rereadMs = 3600000,
@@ -166,6 +167,7 @@ Future<Ctx> context({
     timers: ctx.clock,
     random: () => 0.5,
     mintId: mintId,
+    uploader: uploader,
     faults: faults,
     onChange: onView,
     rereadMs: rereadMs,
