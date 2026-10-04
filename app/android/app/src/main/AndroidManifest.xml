@@ -1,4 +1,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The debug and profile manifests have declared this for hot reload;
+         a release build reaches no server without it. -->
+    <uses-permission android:name="android.permission.INTERNET"/>
     <application
         android:label="${appLabel}"
         android:name="${applicationName}"
