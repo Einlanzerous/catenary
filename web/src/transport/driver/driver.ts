@@ -28,10 +28,11 @@
  *              or SendRefused (which carries the `error` frame, wire JSON).
  *   read       {frame: ClientRead, wire JSON} → {}; written on the session when
  *              the transport's `status.ready` is true and refused with the
- *              kind NotConnected otherwise, before `start` included. THE REFUSAL IS THE DRIVER'S:
- *              `Transport.read` drops a frame silently when there is no
- *              connection, and a frame written between the upgrade and
- *              `ready` is not one the server has agreed to take (CANT-46).
+ *              kind NotConnected otherwise, before `start` included. THE
+ *              REFUSAL IS THE DRIVER'S: `Transport.read` drops a frame
+ *              silently when there is no connection, and a frame written
+ *              between the upgrade and `ready` is not one the server has
+ *              agreed to take (CANT-46).
  *   sever      drops the socket through the proxy (proxy.ts): no close frame.
  *   blackhole  silences the socket through the proxy, and leaves it open.
  *   catchup    `Transport.catchUp()`: a trigger.

@@ -32,8 +32,9 @@ import (
 )
 
 // cohortClient is exactly what the rigs call on a client: the soak's phases,
-// CatchUp for the kill test, and Read for the convergence rig (CANT-46). *client.Client satisfies it unchanged; the
-// Go-only journal a rig may also hold stays outside it.
+// CatchUp for the kill test, and Read for the convergence rig (CANT-46).
+// *client.Client satisfies it unchanged; the Go-only journal a rig may also
+// hold stays outside it.
 //
 // A RIG THAT COMPARES does not call Snapshot on a cohortClient directly: it
 // reads through tsSnapshotter when the client has one (soakClient.snapshot in
