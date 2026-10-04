@@ -3,17 +3,14 @@ package main
 // CANT-46 (CANT-185) — `read` through cohortClient, against a real server, for
 // each client that exists: the `first_unread_seq` the server then serves that
 // person has moved, and a read with no ready session is refused with
-// client.ErrNotConnected — before the client has started, and behind a network
-// that has gone away. The TypeScript half runs when CATENARY_TS_DRIVER names
+// client.ErrNotConnected — before the client has started, and behind a held
+// partitionProxy. The TypeScript half runs when CATENARY_TS_DRIVER names
 // the built driver, as tscohort_test.go's lanes do.
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
 	"testing"
 	"time"
 
@@ -23,47 +20,12 @@ import (
 	"github.com/magos/catenary/internal/wire"
 )
 
-// servedConversation walks /sync for one credential from after=0 to
-// has_more:false and returns the last Conversation record served for id —
-// the server's own answer, not any client's copy of it.
+// servedConversation is the Conversation the server last serves one
+// credential for id, from the rig's own /sync walk (converge.go).
 func servedConversation(ctx context.Context, baseURL string, token wire.Token, id wire.Uuid) (wire.Conversation, bool, error) {
-	var (
-		last  wire.Conversation
-		found bool
-		after int64
-	)
-	for {
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/sync?after=%d", baseURL, after), nil)
-		if err != nil {
-			return last, false, err
-		}
-		req.Header.Set("Authorization", "Bearer "+string(token))
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return last, false, err
-		}
-		body, err := io.ReadAll(resp.Body)
-		_ = resp.Body.Close()
-		if err != nil {
-			return last, false, err
-		}
-		if resp.StatusCode != http.StatusOK {
-			return last, false, fmt.Errorf("GET /sync: %s: %s", resp.Status, body)
-		}
-		var page wire.SyncResponse
-		if err := json.Unmarshal(body, &page); err != nil {
-			return last, false, fmt.Errorf("decode SyncResponse: %w", err)
-		}
-		for _, c := range page.Conversations {
-			if c.ID == id {
-				last, found = c, true
-			}
-		}
-		after = int64(page.LogSeq)
-		if !page.HasMore {
-			return last, found, nil
-		}
-	}
+	_, served, err := syncWalk(ctx, baseURL, token)
+	c, ok := served[id]
+	return c, ok, err
 }
 
 func TestReadMovesTheServedMarkerAndIsRefusedWithoutAReadySession(t *testing.T) {
@@ -180,16 +142,15 @@ func TestReadMovesTheServedMarkerAndIsRefusedWithoutAReadySession(t *testing.T) 
 				}
 			}
 
-			// BEHIND A NETWORK THAT HAS GONE AWAY: the open socket is cut and
-			// every redial is refused, so the session is not ready and the read
+			// BEHIND A HELD PROXY: the open socket is cut and every redial is
+			// refused, so the session is not ready and the read
 			// is refused rather than dropped.
-			_ = proxy.ln.Close()
-			proxy.severAll()
+			proxy.hold()
 			if err := reader.Await(ctx, func() bool { return !reader.Status().Ready }); err != nil {
 				t.Fatalf("the reader never noticed its network had gone: %v", err)
 			}
 			if err := reader.Read(ctx, wire.ClientRead{ConversationID: wid(room), UpToSeq: 3}); !errors.Is(err, client.ErrNotConnected) {
-				t.Fatalf("a read behind a dead network = %v, want ErrNotConnected", err)
+				t.Fatalf("a read behind a held proxy = %v, want ErrNotConnected", err)
 			}
 			if after, _, err := servedConversation(ctx, h.baseURL, readerDev.AccessToken, wid(room)); err != nil || after.FirstUnreadSeq == nil || *after.FirstUnreadSeq != 3 {
 				t.Errorf("the refused read moved the marker: the server serves %+v (err %v), want first_unread_seq still 3", after, err)
