@@ -7,7 +7,7 @@
 ///    Flutter SDK — which is what lets a plain `dart` executable host it
 ///    (CANT-46 ruling 0).
 /// 2. TWO FILES (CANT-42 ruling 1). Journal and transport code never names the
-///    outbox's file. The outbox's side of this rule lands with the outbox.
+///    outbox's file, and outbox code never names the journal's.
 /// 3. NO MONOTONIC CLOCK (CANT-31 §1), and NO HEARTBEAT NUMBER that did not
 ///    arrive on `ready` (CANT-23): the reference's own two greps, over this
 ///    package's source.
@@ -66,8 +66,19 @@ const outboxFile = 'catenary-' 'outbox';
 /// The outbox's own sources, which are the only ones that may name its file.
 bool isOutboxSource(String path) => path.split('/').any((part) => part.startsWith('outbox'));
 
+/// The rule is the LIBRARY's. A driver under `bin/` hosts the journal and the
+/// outbox side by side and is neither.
+bool isLibrary(String path) => path.startsWith('lib/');
+
 List<String> outboxFileNamed(String path, String source) =>
-    !isOutboxSource(path) && source.contains(outboxFile) ? ['$path names the outbox\'s file'] : [];
+    isLibrary(path) && !isOutboxSource(path) && source.contains(outboxFile) ? ['$path names the outbox\'s file'] : [];
+
+/// The journal's file, and the only ways to open it: its name, db.dart's
+/// names for it, and the two modules that hold a connection to it.
+final journalFile = RegExp(r'catenary\.db|catenaryDb|openCatenaryDb|catenaryMigrations|sqlite_journal\.dart|credential_store\.dart');
+
+List<String> journalFileNamed(String path, String source) =>
+    isLibrary(path) && isOutboxSource(path) && journalFile.hasMatch(source) ? ['$path names the journal\'s file'] : [];
 
 /// Source with comments removed, so prose citing a number is not code.
 String code(String source) => source.replaceAll(RegExp(r'/\*[\s\S]*?\*/'), '').replaceAll(RegExp(r'//.*$', multiLine: true), '');
@@ -129,6 +140,23 @@ void main() {
     expect(outboxFileNamed('lib/src/outbox/store.dart', "const outboxDbFile = '$outboxFile.db';"), isEmpty);
     expect(outboxFileNamed('lib/src/outbox_store.dart', "const outboxDbFile = '$outboxFile.db';"), isEmpty);
     expect(outboxFileNamed('lib/src/db.dart', "const catenaryDbFile = 'catenary.db';"), isEmpty);
+    expect(outboxFileNamed('bin/driver.dart', "open('$outboxFile.db')"), isEmpty, reason: 'a driver hosts both and is neither');
+  });
+
+  test('outbox code never names the journal\'s file, or opens it', () {
+    final outbox = sources().keys.where((p) => isLibrary(p) && isOutboxSource(p)).toList();
+    expect(outbox, containsAll(['lib/src/outbox/store.dart', 'lib/src/outbox/outbox.dart', 'lib/src/outbox/transport_adapter.dart']), reason: 'there is outbox code to check');
+    expect([for (final MapEntry(:key, :value) in sources().entries) ...journalFileNamed(key, value)], isEmpty);
+  });
+
+  test('the two-file rule refuses the journal\'s file named from the outbox\'s side, planted', () {
+    expect(journalFileNamed('lib/src/outbox/store.dart', "sqlite3.open('\$dir/catenary.db')"), hasLength(1));
+    expect(journalFileNamed('lib/src/outbox/store.dart', 'openCatenaryDb(path)'), hasLength(1));
+    expect(journalFileNamed('lib/src/outbox/store.dart', 'catenaryDbPath(dir)'), hasLength(1));
+    expect(journalFileNamed('lib/src/outbox/outbox.dart', "import '../sqlite_journal.dart';"), hasLength(1));
+    expect(journalFileNamed('lib/src/outbox/outbox.dart', "import '../credential_store.dart';"), hasLength(1));
+    expect(journalFileNamed('lib/src/outbox/store.dart', "import '../db.dart';\nopenMigrated(path, outboxMigrations)"), isEmpty, reason: 'the versioned open is shared; the file is not');
+    expect(journalFileNamed('lib/src/sqlite_journal.dart', 'openCatenaryDb(path)'), isEmpty);
   });
 
   test('no monotonic clock anywhere under lib/', () {

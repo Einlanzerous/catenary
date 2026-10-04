@@ -74,9 +74,11 @@ final class SqliteLocks {
 
   /// ONE ATTEMPT, never a wait. True when this object now holds `name`; false
   /// when another connection — another isolate's, another process's, or
-  /// another `SqliteLocks` — does.
+  /// another `SqliteLocks` — does, and false when this object already holds
+  /// it: a lock is held once.
   bool tryAcquire(String name) {
     final db = _connections[name] ??= _open(name);
+    if (!db.autocommit) return false;
     try {
       db.execute('BEGIN EXCLUSIVE');
       return true;
