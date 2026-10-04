@@ -216,16 +216,19 @@ final class Rig {
     num? backoffMinMs,
     num? backoffMaxMs,
     int? syncLimit,
-  }) : journal = journal ?? MemoryJournal() {
+    FakeClock? clock,
+    CredentialSeam Function(Rig r)? seam,
+  })  : journal = journal ?? MemoryJournal(),
+        clock = clock ?? FakeClock() {
     t = createTransport(TransportConfig(
-      baseUrl: 'http://catenary.test',
-      credential: HeldCredential(credential),
+      baseUrl: baseUrl,
+      credential: seam?.call(this) ?? HeldCredential(credential),
       journal: this.journal,
       clientVersion: '0.0.0-test',
       connect: net.connect,
       fetch: sync.fetch,
-      now: clock.now,
-      timers: clock,
+      now: this.clock.now,
+      timers: this.clock,
       random: random,
       lifecycle: lifecycle,
       logger: logger,
@@ -237,8 +240,10 @@ final class Rig {
     addTearDown(t.stop);
   }
 
+  static const baseUrl = 'http://catenary.test';
+
   late final Transport t;
-  final clock = FakeClock();
+  final FakeClock clock;
   final net = FakeNet();
   final sync = FakeSync();
   final lifecycle = ManualLifecycle();

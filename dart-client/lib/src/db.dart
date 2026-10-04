@@ -16,6 +16,10 @@
 /// its `COMMIT` returns (CANT-24 obligation 1, persist before render).
 library;
 
+import 'dart:ffi';
+import 'dart:io';
+
+import 'package:ffi/ffi.dart';
 import 'package:sqlite3/sqlite3.dart';
 
 /// The journal and the credential (CANT-42 ruling 1 → two files). The outbox
@@ -100,6 +104,7 @@ const _busyTimeoutMs = 2000;
 /// Opens the file at [path], creating it if absent, and runs each missing step
 /// of [migrations] once.
 Database openMigrated(String path, List<String> migrations) {
+  _createPrivate(path);
   final db = sqlite3.open(path);
   try {
     db.execute('PRAGMA busy_timeout = $_busyTimeoutMs');
@@ -109,6 +114,39 @@ Database openMigrated(String path, List<String> migrations) {
   } catch (_) {
     db.close();
     rethrow;
+  }
+}
+
+/// `chmod(2)`, from the C library every process on these platforms already
+/// has loaded. `dart:io` can read a file's mode and cannot set one.
+final int Function(Pointer<Utf8> path, int mode) _chmod =
+    DynamicLibrary.process().lookupFunction<Int32 Function(Pointer<Utf8>, Uint32), int Function(Pointer<Utf8>, int)>('chmod');
+
+/// A file this code creates is created EMPTY and made `0600` before SQLite
+/// writes a byte to it, so what it comes to hold — the credential, in
+/// `catenary.db` (CANT-42 ruling 3) — was never readable by anybody but its
+/// owner. SQLite gives a database's journal the database's own mode. A file
+/// that already exists keeps the mode it has. Windows has no such mode, and
+/// its per-user data directory is the boundary there.
+void _createPrivate(String path) {
+  if (Platform.isWindows || path == ':memory:' || path.isEmpty) return;
+  final file = File(path);
+  if (file.existsSync()) return;
+  try {
+    file.createSync(exclusive: true);
+  } on PathExistsException {
+    return; // another context created it between the check and here
+  }
+  final native = path.toNativeUtf8();
+  try {
+    if (_chmod(native, 0x180) != 0) {
+      // Removed, not left: the next open would find it, take it for a file
+      // that already existed, and write into it at whatever mode it has.
+      file.deleteSync();
+      throw FileSystemException('could not make the database file private (chmod 0600)', path);
+    }
+  } finally {
+    malloc.free(native);
   }
 }
 
