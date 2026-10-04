@@ -110,6 +110,13 @@ jobs:
         working-directory: dart
         run: dart pub get
 
+      # catenary_client (CANT-42) depends on catenary_wire by path, so it
+      # resolves second. package:sqlite3's library arrives through its build
+      # hook when the tests first run, inside verify.sh.
+      - name: Install Dart client dependencies
+        working-directory: dart-client
+        run: dart pub get
+
       # Recorded so a lane that goes red on a toolchain bump says so in its own
       # log rather than in somebody's afternoon. gofmt is listed because the
       # generator now REQUIRES it — CANT-15 made it format the emitted Go on
