@@ -119,8 +119,8 @@ func TestBrokenDartRunCountsAsServerFailure(t *testing.T) {
 }
 
 // THE DART DRIVER ANSWERS EVERY COMMAND in the driver.ts header — `compose`
-// and `outbox` are TestADartComposedTextSurvivesTheDriversDeath's and S5's,
-// below and in converge_test.go — through the adapter the TypeScript driver is run by:
+// and `outbox` are TestADartComposedTextSurvivesTheDriversDeath's, below; S5
+// with a Dart device is CANT-188's lane and not here — through the adapter the TypeScript driver is run by:
 // newTSDriver, with a different command line. Each command is called and its
 // effect observed against a real server, in the order a rig uses them.
 func TestTheDartDriverAnswersEveryCommand(t *testing.T) {
