@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.14.0](https://github.com/Einlanzerous/catenary/compare/v0.13.0...v0.14.0) (2026-10-04)
+
+
+### Features
+
+* CANT-185 — read on the driver protocol, Client.Read, and the KeepHeldConversation fault (CANT-46a) ([#126](https://github.com/Einlanzerous/catenary/issues/126)) ([50ee4cc](https://github.com/Einlanzerous/catenary/commit/50ee4cc413e3694eef834d0fb7f910314a3d0efd))
+* CANT-186 — client.SameState, the partition proxy and the convergence rig (CANT-46b) ([#129](https://github.com/Einlanzerous/catenary/issues/129)) ([e9eb8a3](https://github.com/Einlanzerous/catenary/commit/e9eb8a3804c1ff48b32ace5f3d6afd35b0cfc646))
+* CANT-187 — the outbox through the driver: compose, outbox, and schedule S5 (CANT-46c) ([#130](https://github.com/Einlanzerous/catenary/issues/130)) ([5c9bdfa](https://github.com/Einlanzerous/catenary/commit/5c9bdfa86ef89801e85942dd28bb0e1fe95a3e38))
+* CANT-191 — the catenary_client package, its SQLite binding and migrator, and the journal (CANT-42a) ([#127](https://github.com/Einlanzerous/catenary/issues/127)) ([083b895](https://github.com/Einlanzerous/catenary/commit/083b89519817c7dbaf671b2128454ab0fac467a2))
+* CANT-192 — the Dart transport core and the decision-vector runner (CANT-42b) ([#132](https://github.com/Einlanzerous/catenary/issues/132)) ([7eac3eb](https://github.com/Einlanzerous/catenary/commit/7eac3eb27508523791942322d6cdcbf003a465f0))
+* CANT-193 — the Dart credential layer, the SQLite-held lock, and the full decision-vector runner (CANT-42c) ([#134](https://github.com/Einlanzerous/catenary/issues/134)) ([2ab75e0](https://github.com/Einlanzerous/catenary/commit/2ab75e000620e7e4d1e41579f5a9649346ef2d5b))
+* CANT-194 — the Dart driver and the Dart cohort: soak, kill-test and restore-test lanes (CANT-42d) ([#133](https://github.com/Einlanzerous/catenary/issues/133)) ([fe9913c](https://github.com/Einlanzerous/catenary/commit/fe9913c1fcf3f8f9a572ee7b3c68173ccb08c765))
+* CANT-196 — the Dart outbox: store, state machine, drain under the lock, and its criteria (CANT-42e) ([#136](https://github.com/Einlanzerous/catenary/issues/136)) ([7007201](https://github.com/Einlanzerous/catenary/commit/7007201b454a8e31ae3c504a464eab8127ba6f81))
+* CANT-40 — the Flutter app skeleton and the shared tokens, lifted from tokens.css ([#131](https://github.com/Einlanzerous/catenary/issues/131)) ([17774aa](https://github.com/Einlanzerous/catenary/commit/17774aa2ce42c2fccf5d76b175ad723722d80c1a))
+* CANT-44 — the composer, the connection states and the typing rule in the Flutter client ([#135](https://github.com/Einlanzerous/catenary/issues/135)) ([c836677](https://github.com/Einlanzerous/catenary/commit/c836677840f6da0d77bb032f91f2f8611547de58))
+
 ## [0.13.0](https://github.com/Einlanzerous/catenary/compare/v0.12.0...v0.13.0) (2026-10-01)
 
 
