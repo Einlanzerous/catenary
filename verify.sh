@@ -340,6 +340,29 @@ else
   printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the TypeScript cohort runs against a real Postgres.\n'
 fi
 
+# CANT-46: one person, two devices running two different clients, each held
+# off the network in turn behind the rig's own partitionProxy, and then judged
+# against each other (client.SameState) as well as against the server. The
+# stand-in pair until the Dart driver exists is the TypeScript transport
+# against the Go reference (ruling 3 → option 0), every schedule in both role
+# assignments.
+#
+# IT REUSES THE BUNDLE THE CANT-153 STEP BUILT, and its `ts_lane`: the expected
+# number of passes is asserted and a skip is a failure, so a `-run` pattern
+# that matched nothing cannot be a green line, and a lane handed a driver that
+# is not there fails rather than skips. The controls run in the same lane —
+# the fault, the partition that held nothing, the skipped comparison and the
+# opening that left a device without the room — each watched failing.
+step "CANT-46 · cross-client convergence — TypeScript against the Go reference, S1–S4 in both role assignments, and the controls"
+if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  ts_lane "$LOGDIR/v-converge.log" 2 "$ROOT/server" ./cmd/soakrig/ '^(TestConvergenceTSAgainstGo|TestThePartitionProxyHoldsAndHeals)$'
+  result $? "S1–S4 converge, both ways round: $(grep -oE 'schedule=S[0-9] verdict=[a-z_]+' "$LOGDIR/v-converge.log" | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2" "$3, $1; sep=", "}'); the partition proxy holds and heals for both clients"
+  ts_lane "$LOGDIR/v-converge-controls.log" 5 "$ROOT/server" ./cmd/soakrig/ '^(TestConvergenceCatchesAHeldConversation|TestAPartitionThatHeldNothingIsAHarnessFailure|TestASkippedPairwiseComparisonIsAHarnessFailure|TestAnOpeningThatLeavesADeviceWithoutTheRoomIsAHarnessFailure|TestALiveDeviceReachesTheHighWaterMarkOnlyAfterACatchUp)$'
+  result $? "the controls: keepHeldConversation is caught as FirstUnreadSeq, and a hold that held nothing, a skipped comparison and an unequal opening are each a harness failure ($(grep -oE 'verdict=[a-z_]+' "$LOGDIR/v-converge-controls.log" | sort | uniq -c | awk '{printf "%s%s×%s", sep, $2, $1; sep=", "}'))"
+else
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the convergence rig runs against a real Postgres.\n'
+fi
+
 step "R4 · the staleness guard actually fails the build — once per generated file"
 # CANT-12 criterion 3: proved PER PIPELINE, not once overall. The check has
 # always walked every target; the PROOF used to touch one file, so three of the

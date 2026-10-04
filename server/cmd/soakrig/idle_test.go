@@ -7,7 +7,7 @@ package main
 // "unauthorized" — all deterministic, over loopback, no real-time waiting.
 //
 // TWO SMALL TCP PROXIES stand in for what a real deployment's tunnel does to
-// an idle connection: severingProxy cuts an established connection with no
+// an idle connection: the severing proxy (a partitionProxy) cuts an established connection with no
 // close frame (the network-level event Cloudflare/Traefik actually produce,
 // not a clean WebSocket close), and flakyStartProxy refuses the first few
 // connection attempts outright, forcing a real reconnect before the client
@@ -25,7 +25,6 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -33,76 +32,31 @@ import (
 	"github.com/google/uuid"
 )
 
-// severingProxy is a plain TCP pass-through the test dials instead of the
-// real server, so it can cut every connection it is currently carrying on
-// command — an abrupt network cut, the same shape a real idle timeout in
-// front of the service produces, and deterministic rather than waited for.
-type severingProxy struct {
-	ln     net.Listener
-	target string
-
-	mu    sync.Mutex
-	conns map[net.Conn]struct{}
-}
-
-func newSeveringProxy(t *testing.T, target string) *severingProxy {
+// newSeveringProxy is a partitionProxy (partitionproxy.go, CANT-46) the test
+// dials instead of the real server, so it can cut every connection it is
+// currently carrying on command — an abrupt network cut, the same shape a
+// real idle timeout in front of the service produces, and deterministic
+// rather than waited for. It was this file's own type until CANT-46 needed
+// the same pass-through outside a test.
+func newSeveringProxy(t *testing.T, target string) *partitionProxy {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	p, err := newPartitionProxy(target)
 	if err != nil {
 		t.Fatal(err)
 	}
-	p := &severingProxy{ln: ln, target: target, conns: map[net.Conn]struct{}{}}
-	go p.accept()
-	t.Cleanup(func() { _ = ln.Close(); p.severAll() })
+	t.Cleanup(p.close)
 	return p
-}
-
-func (p *severingProxy) base() string { return "http://" + p.ln.Addr().String() }
-
-func (p *severingProxy) accept() {
-	for {
-		c, err := p.ln.Accept()
-		if err != nil {
-			return
-		}
-		up, err := net.Dial("tcp", p.target)
-		if err != nil {
-			_ = c.Close()
-			continue
-		}
-		p.mu.Lock()
-		p.conns[c], p.conns[up] = struct{}{}, struct{}{}
-		p.mu.Unlock()
-		go func() { _, _ = io.Copy(up, c); _ = up.Close(); _ = c.Close() }()
-		go func() { _, _ = io.Copy(c, up); _ = c.Close(); _ = up.Close() }()
-	}
-}
-
-// severAll closes every connection currently proxied — no close frame, an
-// abrupt cut — without stopping the listener: a NEW connection afterward is
-// still accepted and proxied normally, exactly as a real reconnect through a
-// tunnel would be.
-func (p *severingProxy) severAll() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	for c := range p.conns {
-		_ = c.Close()
-	}
-	p.conns = map[net.Conn]struct{}{}
 }
 
 // waitForProxyConnection blocks until at least one TCP connection has been
 // proxied through — proof the client's dial reached the real server, so a
 // caller that then mutates state (e.g. backdating a token) knows it happens
 // AFTER the dial already in flight, never before it.
-func waitForProxyConnection(t *testing.T, p *severingProxy) {
+func waitForProxyConnection(t *testing.T, p *partitionProxy) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		p.mu.Lock()
-		n := len(p.conns)
-		p.mu.Unlock()
-		if n > 0 {
+		if p.carrying() > 0 {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

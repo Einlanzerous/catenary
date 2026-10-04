@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	"github.com/magos/catenary/internal/wire"
 )
@@ -160,6 +161,87 @@ func diffByID[T any](kind string, a, b []T, id func(T) wire.Uuid) []string {
 			diffs = append(diffs, fmt.Sprintf("%s %s only in the first", kind, k))
 		case !reflect.DeepEqual(av, bv):
 			diffs = append(diffs, fmt.Sprintf("%s %s differs: %+v vs %+v", kind, k, av, bv))
+		}
+	}
+	for k := range bm {
+		if _, ok := am[k]; !ok {
+			diffs = append(diffs, fmt.Sprintf("%s %s only in the second", kind, k))
+		}
+	}
+	sort.Strings(diffs)
+	return diffs
+}
+
+// SameState lists every difference between two devices OF ONE PERSON that
+// have both caught up after the last write (CANT-46): messages, conversations
+// and users, record by record, with each difference naming the record's id
+// and the struct fields that differ. Empty means the two hold the same state.
+//
+// IT IS NOT SameView, and SameView is not edited. SameView is the strict
+// comparison a restored device is held to against a fresh bootstrap. Two live
+// devices that went through different serves legitimately differ in exactly
+// the fields the schema marks as serve-time, and the projections below remove
+// those three and nothing else (CANT-46 ruling 2 → option 0):
+//
+//   - Message.State and Message.ReadBy: "a message a client has already been
+//     served is never on a later page, so a held message's state is not
+//     refreshed by catching up" (DeliveryState's FRESHNESS paragraph).
+//   - Conversation.Name, on a `direct` conversation only: "the other member's
+//     display name AS OF THE SERVE THAT CARRIED IT". A group's name is the
+//     room's own and is compared.
+//
+// Everything else is compared by reflect.DeepEqual over the generated wire
+// structs, so a field added to the schema later is compared without this
+// function being edited. THE CURSOR IS NOT COMPARED: it is a position in a
+// sparse log, not conversation state.
+func SameState(a, b Snapshot) []string {
+	var diffs []string
+	diffs = append(diffs, diffStateByID("message", a.Messages, b.Messages,
+		func(m wire.Message) wire.Uuid { return m.ID },
+		func(m wire.Message) wire.Message {
+			m.State, m.ReadBy = "", nil
+			return m
+		})...)
+	diffs = append(diffs, diffStateByID("conversation", a.Conversations, b.Conversations,
+		func(c wire.Conversation) wire.Uuid { return c.ID },
+		func(c wire.Conversation) wire.Conversation {
+			if c.Kind == wire.ConversationKindDirect {
+				c.Name = ""
+			}
+			return c
+		})...)
+	diffs = append(diffs, diffStateByID("user", a.Users, b.Users,
+		func(u wire.User) wire.Uuid { return u.ID },
+		func(u wire.User) wire.User { return u })...)
+	return diffs
+}
+
+// diffStateByID is SameState's walk: both records go through project, and a
+// difference names the fields that differ rather than printing two records.
+func diffStateByID[T any](kind string, a, b []T, id func(T) wire.Uuid, project func(T) T) []string {
+	am, bm := map[wire.Uuid]T{}, map[wire.Uuid]T{}
+	for _, v := range a {
+		am[id(v)] = v
+	}
+	for _, v := range b {
+		bm[id(v)] = v
+	}
+	var diffs []string
+	for k, av := range am {
+		bv, ok := bm[k]
+		if !ok {
+			diffs = append(diffs, fmt.Sprintf("%s %s only in the first", kind, k))
+			continue
+		}
+		pa, pb := reflect.ValueOf(project(av)), reflect.ValueOf(project(bv))
+		var fields []string
+		for i := 0; i < pa.NumField(); i++ {
+			if !reflect.DeepEqual(pa.Field(i).Interface(), pb.Field(i).Interface()) {
+				fields = append(fields, pa.Type().Field(i).Name)
+			}
+		}
+		if len(fields) > 0 {
+			diffs = append(diffs, fmt.Sprintf("%s %s differs in %s", kind, k, strings.Join(fields, ", ")))
 		}
 	}
 	for k := range bm {
