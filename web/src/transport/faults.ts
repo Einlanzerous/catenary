@@ -51,6 +51,13 @@ export interface Faults {
    *  reconnects, or any session that ends, ends the client. */
   neverTerminal: boolean
   alwaysTerminal: boolean
+
+  /** CANT-46, Go's `KeepHeldConversation`: a `Conversation` served for a
+   *  conversation the journal already holds is dropped and the held record
+   *  stays, on a page and on a live frame alike. The client keeps the
+   *  `firstUnreadSeq` and `headSeq` it had and is still clean under
+   *  `client.Compare` — the control for the convergence rig's `SameState`. */
+  keepHeldConversation: boolean
 }
 
 export const NO_FAULTS: Readonly<Faults> = Object.freeze({
@@ -68,7 +75,8 @@ export const NO_FAULTS: Readonly<Faults> = Object.freeze({
   neverPresentRefusedToken: false,
   neverTerminal: false,
   alwaysTerminal: false,
+  keepHeldConversation: false,
 })
 
-/** The journal's two switches, which is all a `Journal` implementation reads. */
-export type JournalFaults = Pick<Faults, 'cursorOnLiveFrames' | 'dedupeByLogSeq'>
+/** The journal's three switches, which is all a `Journal` implementation reads. */
+export type JournalFaults = Pick<Faults, 'cursorOnLiveFrames' | 'dedupeByLogSeq' | 'keepHeldConversation'>

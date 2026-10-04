@@ -112,7 +112,8 @@ const (
 var (
 	// ErrKilled is what Run returns after Kill.
 	ErrKilled = errors.New("client: killed")
-	// ErrNotConnected is Send without an open socket.
+	// ErrNotConnected is Send without an open socket, or Read without a ready
+	// session.
 	ErrNotConnected = errors.New("client: no socket is open")
 	// ErrSessionEnded is a Send whose socket closed before it was answered.
 	// The outcome is unknown; retrying with the SAME client_id is safe.
@@ -199,6 +200,17 @@ type Faults struct {
 	// direction.
 	NeverTerminal  bool
 	AlwaysTerminal bool
+
+	// KeepHeldConversation breaks obligation 1's "a later record replaces an
+	// earlier one" for conversations (CANT-46): a `Conversation` served for a
+	// conversation the journal already holds is dropped and the held record
+	// stays, on a page and on a live frame alike. Messages and the cursor are
+	// untouched, so the client keeps the `first_unread_seq` and `head_seq` it
+	// had before and is still clean under Compare — the one fault whose whole
+	// effect is on state Compare does not read, which is why the convergence
+	// rig's pairwise SameState needs it as its control. The TypeScript
+	// client's `keepHeldConversation`.
+	KeepHeldConversation bool
 
 	// HelloInstead, when set, is written in place of the hello — a frame
 	// that is not a hello, or a hello naming the wrong device or wire
@@ -888,6 +900,26 @@ func (c *Client) Send(ctx context.Context, f wire.ClientSend) (wire.ServerAck, e
 	}
 }
 
+// Read writes a `read` frame on a ready session and returns: the server
+// answers a receipt with a `receipt` frame to everybody, not with an ack to
+// the reader, so there is nothing to wait for. ON A READY SESSION, not merely
+// an open socket — a frame written between the upgrade and `ready` is not one
+// the server has agreed to take — and ErrNotConnected otherwise. This device's
+// own `first_unread_seq` moves when the catch-up its own receipt triggers
+// lands (onReceipt), never here.
+func (c *Client) Read(ctx context.Context, f wire.ClientRead) error {
+	c.mu.Lock()
+	conn, ready := c.conn, c.ready
+	c.mu.Unlock()
+	if conn == nil || !ready {
+		return ErrNotConnected
+	}
+	if err := c.write(ctx, conn, f); err != nil {
+		return fmt.Errorf("client: read: %w", err)
+	}
+	return nil
+}
+
 // Status is a point-in-time view.
 func (c *Client) Status() Status {
 	// BEFORE EITHER LOCK: the hold is read from the Journal and from this
@@ -1307,13 +1339,22 @@ func (c *Client) applyIntroduction(cv *wire.Conversation, u *wire.User) {
 		return
 	}
 	if cv != nil {
-		c.j.conversations[cv.ID] = *cv
+		c.putConversationLocked(*cv)
 	}
 	if u != nil {
 		c.j.users[u.ID] = *u
 	}
 	c.j.mu.Unlock()
 	c.notify()
+}
+
+// putConversationLocked holds a served conversation: a later record replaces
+// an earlier one, by id. The caller holds c.j.mu.
+func (c *Client) putConversationLocked(cv wire.Conversation) {
+	if _, held := c.j.conversations[cv.ID]; held && c.cfg.Faults.KeepHeldConversation {
+		return
+	}
+	c.j.conversations[cv.ID] = cv
 }
 
 // onReceipt is a live `receipt`, under CANT-35 ruling 4 → B. One naming this
@@ -1342,7 +1383,7 @@ func (c *Client) applyPage(p wire.SyncResponse, epoch int) bool {
 		c.recordLocked(m)
 	}
 	for _, cv := range p.Conversations {
-		c.j.conversations[cv.ID] = cv
+		c.putConversationLocked(cv)
 	}
 	for _, u := range p.Users {
 		c.j.users[u.ID] = u

@@ -192,7 +192,7 @@ test('obligation 4 · a wipe clears the stored journal and never the credential'
   const cred = enrolled(Date.UTC(2026, 8, 29))
   await enrollCredential(creds, browserLock(), cred)
   const journal = await IdbJournal.open({ factory })
-  await journal.applyPage(P1, { cursorOnLiveFrames: false, dedupeByLogSeq: false })
+  await journal.applyPage(P1, { cursorOnLiveFrames: false, dedupeByLogSeq: false, keepHeldConversation: false })
   const a = await journal.wipe()
   assert.equal(a.wiped, true)
   journal.close()
@@ -253,7 +253,7 @@ test('a stored record the wire schema refuses is refused at open, not rendered',
   await assert.rejects(IdbJournal.open({ factory }))
 })
 
-const NO_FAULTS = { cursorOnLiveFrames: false, dedupeByLogSeq: false }
+const NO_FAULTS = { cursorOnLiveFrames: false, dedupeByLogSeq: false, keepHeldConversation: false }
 
 /**
  * Two tabs over one database, each with its own mirror (CANT-35 ruling 1 → A),

@@ -365,3 +365,55 @@ test('CANT-37 · status().headSeqTotal and .messages count towards head_seq, dis
   assert.equal(r.t.status().messages, 5, 'and its messages land with it')
   assert.equal(r.t.status().caughtUp, true, 'resync reaches head_seq exactly')
 })
+
+// --- CANT-46: keepHeldConversation, the convergence rig's control --------------
+
+/**
+ * A room held with `firstUnreadSeq` 1 is re-served on a page with the marker
+ * at 3 and one new message, then on a live `conversation` frame with it at 5.
+ */
+async function reServedConversation(faults: Partial<Faults>) {
+  const r = rig({ faults })
+  const m = [1, 2, 3, 4].map((n) => message(n))
+  let moved = false
+  r.sync.answer = (req) => {
+    if (req.after === 0) {
+      return page({ ...bootstrapPage(3, m.slice(0, 3)), conversations: [conversation(CONV, { firstUnreadSeq: 1, headSeq: 3 })] })
+    }
+    if (moved && req.after === 3) {
+      return page({ logSeq: 4, messages: [m[3]], conversations: [conversation(CONV, { firstUnreadSeq: 3, headSeq: 4 })] })
+    }
+    return page({ logSeq: moved ? 4 : 3 })
+  }
+  r.t.start()
+  const s = await r.connect()
+  await flush()
+  const held = () => r.t.snapshot().conversations.find((c) => c.id === CONV)
+  const atBootstrap = held()?.firstUnreadSeq
+
+  moved = true
+  r.t.catchUp()
+  await flush()
+  const afterPage = { firstUnreadSeq: held()?.firstUnreadSeq, headSeq: held()?.headSeq }
+  const holdsPageMessage = r.t.snapshot().messages.some((x) => x.id === m[3].id)
+  const cursor = r.t.status().cursor
+
+  s.frame({ type: 'conversation', conversation: conversation(CONV, { firstUnreadSeq: 5, headSeq: 4 }) })
+  await flush()
+  return { atBootstrap, afterPage, holdsPageMessage, cursor, afterLive: held()?.firstUnreadSeq }
+}
+
+test('CANT-46 · a re-served conversation replaces the held one, on a page and on a live frame', async () => {
+  const clean = await reServedConversation({})
+  assert.equal(clean.atBootstrap, 1)
+  assert.deepEqual(clean.afterPage, { firstUnreadSeq: 3, headSeq: 4 }, 'the page replaced the held record')
+  assert.equal(clean.afterLive, 5, 'and so did the live frame')
+})
+
+test('CANT-46 · negative control keepHeldConversation keeps the held record and nothing else', async () => {
+  const broken = await reServedConversation({ keepHeldConversation: true })
+  assert.deepEqual(broken.afterPage, { firstUnreadSeq: 1, headSeq: 3 }, 'the held record survived the page')
+  assert.equal(broken.afterLive, 1, 'and the live frame')
+  assert.equal(broken.holdsPageMessage, true, 'the message the page carried is held all the same')
+  assert.equal(broken.cursor, 4, 'and the cursor moved, so client.Compare cannot see this fault')
+})
