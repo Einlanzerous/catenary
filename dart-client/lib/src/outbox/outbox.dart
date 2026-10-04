@@ -250,25 +250,45 @@ final class Outbox {
     if (_closed) return entry;
     _entries[entry.clientId] = entry;
     _emit();
-    if (entry.attachments.isNotEmpty) {
-      await _upload(entry);
+    if (_awaitsUpload(entry)) {
+      await _upload(entry.clientId);
       return _entries[entry.clientId] ?? entry;
     }
     _drain();
     return entry;
   }
 
-  /// §10, with no upload queue: each attachment is offered to the `Uploader`
-  /// once, and a refusal fails the entry with the uploader's own message.
-  Future<void> _upload(OutboxEntry entry) async {
-    for (final a in entry.attachments) {
+  bool _awaitsUpload(OutboxEntry e) => e.attachments.any((a) => a.upload != UploadState.uploaded || a.uploadId == null);
+
+  /// §10, with no upload queue: each attachment not yet uploaded is offered to
+  /// the `Uploader`, on compose and again on every RETRY. A handle it returns
+  /// is persisted on the entry before the next is asked for, and the entry
+  /// joins the drain once its last one has; a refusal fails the entry with the
+  /// uploader's own message — so an attachment entry is never left `pending`
+  /// with nothing that will ever send it.
+  Future<void> _upload(Uuid clientId) async {
+    final count = _entries[clientId]?.attachments.length ?? 0;
+    for (var i = 0; i < count; i++) {
+      final entry = _entries[clientId];
+      if (entry == null || _closed) return;
+      final a = entry.attachments[i];
+      if (a.upload == UploadState.uploaded && a.uploadId != null) continue;
+      final Uuid handle;
       try {
-        await _uploader.upload(entry, a);
+        handle = await _uploader.upload(entry, a);
       } catch (e) {
-        await _fail(entry.clientId, UploadFailure('$e'));
+        await _fail(clientId, UploadFailure('$e'));
         return;
       }
+      await _mutate(clientId, (x) {
+        x.attachments = [
+          for (final (j, b) in x.attachments.indexed)
+            if (j == i) b.uploadedAs(handle) else b,
+        ];
+      });
     }
+    _emit();
+    _drain();
   }
 
   /// §7: `failed` back to `pending` under the SAME clientId, at its original
@@ -285,11 +305,18 @@ final class Outbox {
         ..lastError = null);
       _entries[fresh.clientId] = fresh;
     } else {
-      await _mutate(clientId, (x) {
+      final pending = await _mutate(clientId, (x) {
         x.status = OutboxStatus.pending;
         x.lastError = null;
         x.notBefore = null;
       });
+      // An attachment that never uploaded is offered again, so the entry
+      // either joins the drain or fails again with the uploader's message.
+      if (pending != null && _awaitsUpload(pending)) {
+        _emit();
+        await _upload(clientId);
+        return;
+      }
     }
     _emit();
     _drain();
@@ -325,7 +352,6 @@ final class Outbox {
     if (_closed) return;
     final rows = await _store.list();
     if (_closed) return;
-    final before = _entries.length;
     _entries.clear();
     for (final e in rows) {
       if (!_gone.contains(e.clientId)) _entries[e.clientId] = e;
@@ -333,7 +359,9 @@ final class Outbox {
     // What this session knows of an entry that is no longer stored is moot.
     _inFlight.removeWhere((id) => !_entries.containsKey(id));
     _acks.removeWhere((id, _) => !_entries.containsKey(id));
-    if (_entries.length != before) _emit();
+    // Always: another context may have failed an entry, or retried one, and
+    // the count says nothing of that.
+    _emit();
     _drain();
   }
 
@@ -487,7 +515,7 @@ final class Outbox {
       final id = e.clientId;
       if (_inFlight.contains(id) || _acks.containsKey(id) || _busy.contains(id)) continue;
       // An attachment not yet uploaded is skipped, never waited on.
-      if (e.attachments.any((a) => a.upload != UploadState.uploaded || a.uploadId == null)) continue;
+      if (_awaitsUpload(e)) continue;
       final notBefore = e.notBefore;
       if (notBefore != null) {
         final t = DateTime.parse(notBefore).millisecondsSinceEpoch;

@@ -88,6 +88,10 @@ final class OutboundAttachmentDraft {
   final Uuid? uploadId;
   final UploadState upload;
 
+  /// This attachment, uploaded under `handle`.
+  OutboundAttachmentDraft uploadedAs(Uuid handle) =>
+      OutboundAttachmentDraft(kind: kind, filename: filename, durationMs: durationMs, uploadId: handle, upload: UploadState.uploaded);
+
   Map<String, Object?> toJson() => {
         'kind': kind,
         if (filename != null) 'filename': filename,
@@ -179,7 +183,9 @@ final class OutboxEntry {
 
   /// Display-only. Never sent.
   final ReplyRef? replyPreview;
-  final List<OutboundAttachmentDraft> attachments;
+
+  /// Replaced, never mutated in place: a copy shares the list.
+  List<OutboundAttachmentDraft> attachments;
 
   /// `sending` versus `queued` is DERIVED, never stored, and there is no
   /// stored ack.

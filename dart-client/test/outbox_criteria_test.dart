@@ -529,6 +529,15 @@ Future<void> c11(F f) async {
 }
 
 // ── criterion 12 · order is drawn inside the insert's own transaction ───────
+//
+// WHAT THIS CAN AND CANNOT SEE. It shows two contexts, each over its own
+// connection, drawing distinct values, and `orderOutsideTxn` — an order taken
+// from a context's own memory — colliding. It does NOT race two transactions:
+// package:sqlite3 is synchronous, so each `add` is BEGIN IMMEDIATE … COMMIT
+// inside one event-loop turn, and the gaps below only reorder whole
+// transactions. That the highest order is read INSIDE the transaction is
+// store.dart's `add`, read there; across isolates and processes it is
+// BEGIN IMMEDIATE that makes it hold.
 
 Future<void> c12(F f) async {
   final dir = tempDir();
@@ -762,6 +771,116 @@ void main() {
       await ctx.outbox.retry(entry.clientId);
       await ctx.clock.advance(outboxBackoffCapMs);
       expect(transport.frames, isEmpty, reason: 'and a RETRY does not send it either');
+      // RETRY offers it to the uploader again, which refuses again: the entry
+      // is FAILED, with its RETRY and its DELETE, and never QUEUED with
+      // nothing that will send it.
+      final again = ctx.item(entry.clientId)!;
+      expect(again.state, OutboxState.failed, reason: 'failed again, not stuck pending');
+      expect(project(again).error, RefusingUploader.message);
+      expect((await ctx.stored(entry.clientId))!.status, OutboxStatus.failed, reason: 'and stored so');
+      expect(await ctx.outbox.discard(entry.clientId), isTrue, reason: 'so DELETE is still offered');
+      expect(await ctx.store.list(), isEmpty);
+    });
+
+    test('an uploader that succeeds: each handle is persisted, and the entry then drains with them', () async {
+      final transport = ScriptedTransport();
+      final offered = <String?>[];
+      final ctx = Ctx.over(MemoryOutboxStore(), transport, FakeClock());
+      ctx.outbox = await Outbox.open(
+        store: ctx.store,
+        transport: transport,
+        accountId: account,
+        now: ctx.clock.now,
+        timers: ctx.clock,
+        uploader: _Handles((a) {
+          offered.add(a.filename);
+          return uuid(4000 + offered.length);
+        }),
+      );
+      addTearDown(ctx.close);
+      transport.open();
+      await flush();
+      final entry = await ctx.outbox.compose(OutboxDraft(
+        conversationId: conv,
+        text: 'two photos',
+        attachments: const [OutboundAttachmentDraft(kind: 'image', filename: 'a.png'), OutboundAttachmentDraft(kind: 'voice', durationMs: 900)],
+      ));
+      await flush();
+      expect(offered, ['a.png', null], reason: 'each offered once, in order');
+      final stored = (await ctx.stored(entry.clientId))!;
+      expect([for (final a in stored.attachments) (a.uploadId, a.upload)], [(uuid(4001), UploadState.uploaded), (uuid(4002), UploadState.uploaded)], reason: 'the handles are on the stored entry');
+      expect(transport.framesFor(entry.clientId).single.toJson()['attachments'], [
+        {'kind': 'image', 'upload_id': uuid(4001)},
+        {'kind': 'voice', 'upload_id': uuid(4002)},
+      ]);
+      expect(ctx.item(entry.clientId)!.state, OutboxState.sending);
+    });
+
+    test('an upload that fails part-way keeps the handles it had, and RETRY asks only for the rest', () async {
+      final transport = ScriptedTransport();
+      final offered = <String?>[];
+      var refuseSecond = true;
+      final ctx = Ctx.over(MemoryOutboxStore(), transport, FakeClock());
+      ctx.outbox = await Outbox.open(
+        store: ctx.store,
+        transport: transport,
+        accountId: account,
+        now: ctx.clock.now,
+        timers: ctx.clock,
+        uploader: _Handles((a) {
+          offered.add(a.filename);
+          if (a.filename == 'b.png' && refuseSecond) throw const UploadRefused('the second one would not go');
+          return uuid(4100 + offered.length);
+        }),
+      );
+      addTearDown(ctx.close);
+      transport.open();
+      await flush();
+      final entry = await ctx.outbox.compose(OutboxDraft(
+        conversationId: conv,
+        attachments: const [OutboundAttachmentDraft(kind: 'image', filename: 'a.png'), OutboundAttachmentDraft(kind: 'image', filename: 'b.png')],
+      ));
+      await flush();
+      expect(project(ctx.item(entry.clientId)!).error, 'the second one would not go');
+      expect(transport.frames, isEmpty);
+      refuseSecond = false;
+      await ctx.outbox.retry(entry.clientId);
+      await flush();
+      expect(offered, ['a.png', 'b.png', 'b.png'], reason: 'the first was not uploaded twice');
+      expect(transport.framesFor(entry.clientId), hasLength(1));
+    });
+
+    test('a non-holder\'s refresh announces a status another context changed, not only a count', () async {
+      final store = MemoryOutboxStore();
+      final lock = InProcessLockHub();
+      final transport = ScriptedTransport();
+      final holder = await context(store: store, transport: transport, lock: lock.lock());
+      final views = <List<OutboxState>>[];
+      final watcher = await context(store: store, lock: lock.lock(), onView: (items) => views.add([for (final i in items) i.state]));
+      transport.open();
+      await flush();
+      final entry = await holder.composeText('refused in the other context');
+      await flush();
+      await watcher.outbox.refresh();
+      expect(views.last, [OutboxState.queued]);
+      transport.refuse(entry.clientId, ErrorCode.notAMember, 'no', retryable: false);
+      await flush();
+      views.clear();
+      await watcher.outbox.refresh();
+      expect(views, [
+        [OutboxState.failed],
+      ], reason: 'one entry before and one after: the change is the status');
     });
   });
+}
+
+/// An uploader that answers with whatever `handle` returns, or fails with
+/// what it throws.
+final class _Handles implements Uploader {
+  const _Handles(this.handle);
+
+  final Uuid Function(OutboundAttachmentDraft a) handle;
+
+  @override
+  Future<Uuid> upload(OutboxEntry entry, OutboundAttachmentDraft attachment) async => handle(attachment);
 }

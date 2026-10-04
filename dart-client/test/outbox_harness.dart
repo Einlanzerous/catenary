@@ -121,6 +121,10 @@ Future<T> within<T>(String what, Future<T> p, [Duration limit = const Duration(m
 final class Ctx {
   Ctx._(this.store, this.transport, this.clock);
 
+  /// A context whose outbox the caller opens itself, with options `context`
+  /// does not carry.
+  Ctx.over(this.store, this.transport, this.clock);
+
   final OutboxStore store;
   final ScriptedTransport transport;
   final FakeClock clock;
