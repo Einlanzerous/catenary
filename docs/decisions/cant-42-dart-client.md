@@ -81,9 +81,12 @@ The two real outboxes are also run against each other across a partition: `CANT-
 
 **It is built, not run by `dart`.** `dart run` writes build-hook output to stdout ahead of the first answer, and the protocol allows nothing on stdout but answers. `dart build cli` produces an executable bundled with its SQLite library; `--probe` opens an in-memory database and exits 0, which is how a lane finds out the bundle can load that library before it hands the driver a client. The plan's wording, that a lane fails when "`dart` cannot be executed", is therefore met as "the driver cannot be executed, or cannot open SQLite".
 
+## The holder's re-read timer
+
+**Decided, `CANT-202` ruling 0: the lock's holder re-reads the outbox store every second** (`holderRereadMs`, a parameter of `Outbox.open`). The plan drops `BroadcastChannel` and says a second context sees another's writes "at its next read"; the timer is what makes the draining context's next read soon. Without it the holder reads only when it takes the lock, so an entry composed in a non-holding context waits for the holder's next reconnect. `dart-client/test/outbox_criteria_test.dart` holds both halves: with the interval as built the holder sends such an entry after the clock advances `holderRereadMs`, and with `rereadMs` at one hour the same advance leaves it unsent.
+
 ## What this leaves open
 
-- **The holder's re-read timer is not in the plan.** The plan drops `BroadcastChannel` and says a second context sees another's writes "at its next read", but not when the draining context reads. As built, the lock's holder re-reads the outbox store every second (`holderRereadMs`, a parameter of `Outbox.open`); without it an entry composed in a non-holder waits for the holder's next compose, ack or reconnect. Nothing in this epic has two contexts, so nothing yet depends on the number. It is a choice made at build time and is here to be confirmed or overruled.
 - **`catenary.db` uses SQLite's default rollback journal, not WAL,** with a 2-second busy timeout. The plan is silent on journal mode.
 - **A background isolate is a second context and is not excluded by anything but the guards above.** E7's push handling will run one. The lock and the generation guard are built for it; nothing has exercised it.
 - **Attachments in the Dart outbox are not built.** An attachment draft carries no media and the default uploader refuses. `CANT-201` carries it, blocked by `CANT-162`.
