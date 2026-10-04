@@ -9,10 +9,14 @@
 
 import 'dart:io';
 
-import 'package:catenary/main.dart';
+import 'package:catenary/fixtures.dart';
 import 'package:catenary/metrics.dart';
+import 'package:catenary/rail.dart';
+import 'package:catenary/specimen.dart';
 import 'package:catenary/states.dart';
+import 'package:catenary/store/connection.dart';
 import 'package:catenary/theme.dart';
+import 'package:catenary/thread.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -39,10 +43,47 @@ void main() {
       tester.view.physicalSize = const Size(820, 1830);
       tester.view.devicePixelRatio = 2;
       addTearDown(tester.view.reset);
-      await tester.pumpWidget(CatenaryApp(initialMode: mode));
+      await tester.pumpWidget(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+        home: SpecimenScreen(mode: mode, onMode: (_) {}),
+      ));
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/specimen-$name.png'));
     });
+
+    // The rail and the thread at the canvas's own moment (CANT-43), at its
+    // 390 logical pixels. The thread's view is taller than the canvas's 844
+    // because the app draws a photo at its real 3:2 where the mock has a
+    // 100px placeholder.
+    for (final (screen, height) in [('rail', 844.0), ('thread', 1090.0)]) {
+      testWidgets('render the $screen, $name', (tester) async {
+        await loadFonts();
+        final now = DateTime(2026, 8, 16, 14, 16);
+        tester.view.physicalSize = Size(780, height * 2);
+        tester.view.devicePixelRatio = 2;
+        addTearDown(tester.view.reset);
+        final conversations = fixtureConversations(now);
+        await tester.pumpWidget(MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+          home: TickerMode(
+            enabled: false,
+            child: screen == 'rail'
+                ? RailScreen(
+                    conversations: conversations,
+                    now: now,
+                    connection: const ConnectionView(kind: ConnectionKind.reconnecting, attempt: 3, retryIn: Duration(seconds: 8)),
+                    myInitials: 'HB',
+                    openId: 'kitchen',
+                  )
+                : ThreadScreen(conversation: conversations.first, connection: const ConnectionView.live()),
+          ),
+        ));
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/$screen-$name.png'));
+      });
+    }
 
     // Every connection, status, typing and composer state (CANT-44), with the
     // tickers muted: a pulse caught mid-fade is not what the state looks like.

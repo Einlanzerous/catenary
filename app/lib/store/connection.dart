@@ -39,6 +39,7 @@ class ConnectionView {
     this.synced,
     this.total,
     this.roomsPending,
+    this.queued,
     this.terminal,
     this.journalError,
   });
@@ -56,6 +57,9 @@ class ConnectionView {
   final int? synced;
   final int? total;
   final int? roomsPending;
+
+  /// Offline: how many of your own messages are waiting in the outbox.
+  final int? queued;
 
   final TerminalCause? terminal;
 

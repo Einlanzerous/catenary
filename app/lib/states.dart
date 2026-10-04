@@ -14,13 +14,14 @@ import 'tokens.dart';
 import 'widgets/composer.dart';
 import 'widgets/connection_banner.dart';
 import 'widgets/status_label.dart';
+import 'widgets/status_mark.dart';
 import 'widgets/typing_row.dart';
 
 /// The connection states the ticket names, and the two around them.
 const connectionFixtures = <(String, ConnectionView)>[
   ('RECONNECTING', ConnectionView(kind: ConnectionKind.reconnecting, attempt: 3, retryIn: Duration(seconds: 8))),
-  ('OFFLINE', ConnectionView(kind: ConnectionKind.offline)),
-  ('RESYNCING', ConnectionView(kind: ConnectionKind.resyncing, synced: 1284, total: 12480, roomsPending: 2)),
+  ('OFFLINE', ConnectionView(kind: ConnectionKind.offline, queued: 2)),
+  ('RESYNCING', ConnectionView(kind: ConnectionKind.resyncing, synced: 412, total: 1180)),
   ('TERMINAL · CREDENTIAL', ConnectionView(kind: ConnectionKind.terminal, terminal: TerminalCause.credential)),
   ('TERMINAL · PROTOCOL', ConnectionView(kind: ConnectionKind.terminal, terminal: TerminalCause.protocol)),
 ];
@@ -48,7 +49,9 @@ class StatesScreen extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: CatenaryMetrics.s4, vertical: CatenaryMetrics.s2),
           child: Row(
             children: [
-              Expanded(child: Text('sent it to your inbox instead', style: CatenaryType.body.style.copyWith(color: t.textPrimary))),
+              // The mark a thread shows, and the word a long-press gives.
+              SizedBox(width: 64, child: StatusMark(status: s, retrying: retrying)),
+              const Spacer(),
               StatusLabel(status: s, readBy: readBy, memberCount: memberCount, retrying: retrying),
             ],
           ),
@@ -66,7 +69,7 @@ class StatesScreen extends StatelessWidget {
                   GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTap: () => Navigator.of(context).maybePop(),
-                    child: Text('← TOKENS', style: CatenaryType.meta.tracked.copyWith(color: t.accentWire)),
+                    child: Text('‹ TOKENS', style: CatenaryType.meta.tracked.copyWith(color: t.accentWire)),
                   ),
                   const SizedBox(width: CatenaryMetrics.s4),
                   Text('States', style: CatenaryType.title.style.copyWith(color: t.textPrimary)),
@@ -75,7 +78,7 @@ class StatesScreen extends StatelessWidget {
             ),
             section('CONNECTION'),
             for (final (_, c) in connectionFixtures) ConnectionBanner(connection: c),
-            section('STATUS'),
+            section('STATUS · MARK, AND THE WORD BEHIND IT'),
             status(MessageStatus.queued),
             status(MessageStatus.sending),
             status(MessageStatus.queued, retrying: true),
@@ -85,19 +88,19 @@ class StatesScreen extends StatelessWidget {
             status(MessageStatus.read, readBy: 5, memberCount: 7),
             section('TYPING'),
             for (final names in typingFixtures) TypingRow(names: names),
-            section('COMPOSER · LIVE'),
-            const Composer(conversationName: 'Kitchen', connection: ConnectionView.live()),
+            section('COMPOSER · IDLE'),
+            const Composer(connection: ConnectionView.live()),
+            section('COMPOSER · TYPING'),
+            Composer(connection: const ConnectionView.live(), controller: TextEditingController(text: 'Eight works')),
             section('COMPOSER · OFFLINE, QUEUED'),
-            const Composer(conversationName: 'Kitchen', connection: ConnectionView(kind: ConnectionKind.offline)),
+            const Composer(connection: ConnectionView(kind: ConnectionKind.offline)),
             section('COMPOSER · RECORDING'),
             const Composer(
-              conversationName: 'Kitchen',
               connection: ConnectionView.live(),
               recording: Duration(seconds: 14),
             ),
             section('COMPOSER · TERMINAL'),
             const Composer(
-              conversationName: 'Kitchen',
               connection: ConnectionView(kind: ConnectionKind.terminal, terminal: TerminalCause.credential),
             ),
           ],
