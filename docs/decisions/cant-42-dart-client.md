@@ -85,9 +85,12 @@ The two real outboxes are also run against each other across a partition: `CANT-
 
 **Decided, `CANT-202` ruling 0: the lock's holder re-reads the outbox store every second** (`holderRereadMs`, a parameter of `Outbox.open`). The plan drops `BroadcastChannel` and says a second context sees another's writes "at its next read"; the timer is what makes the draining context's next read soon. Without it the holder reads only when it takes the lock, so an entry composed in a non-holding context waits for the holder's next reconnect. `dart-client/test/outbox_criteria_test.dart` holds both halves: with the interval as built the holder sends such an entry after the clock advances `holderRereadMs`, and with `rereadMs` at one hour the same advance leaves it unsent.
 
+## The journal mode of the two files
+
+**Decided, `CANT-202` ruling 1: `catenary.db` and `catenary-outbox.db` both use SQLite's default rollback journal (`journal_mode = delete`), not WAL,** each with `synchronous = FULL` and a 2-second busy timeout. `dart-client/test/sqlite_journal_test.dart` reads `PRAGMA journal_mode` and `PRAGMA synchronous` on the connection `openCatenaryDb` returned and on `SqliteOutboxStore.open`'s, and asserts `delete` and 2 on both; `dart-client/test/outbox_criteria_test.dart` asserts the same on the outbox store's connection.
+
 ## What this leaves open
 
-- **`catenary.db` uses SQLite's default rollback journal, not WAL,** with a 2-second busy timeout. The plan is silent on journal mode.
 - **A background isolate is a second context and is not excluded by anything but the guards above.** E7's push handling will run one. The lock and the generation guard are built for it; nothing has exercised it.
 - **Attachments in the Dart outbox are not built.** An attachment draft carries no media and the default uploader refuses. `CANT-201` carries it, blocked by `CANT-162`.
 - **A `/sync` page in flight across a stale-journal reload lands on the wiped store,** in both transports: `CANT-199`.

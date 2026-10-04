@@ -728,6 +728,12 @@ void main() {
       if (Platform.isLinux) expect((File(outboxDbPath(dir)).statSync().mode & 0x1ff).toRadixString(8), '600');
     });
 
+    test('the outbox store\'s own connection runs the rollback journal and synchronous = FULL (CANT-202 ruling 1)', () {
+      final store = openStore(tempDir());
+      expect(store.database.select('PRAGMA journal_mode').single.values.single, 'delete');
+      expect(store.database.select('PRAGMA synchronous').single.values.single, 2, reason: '2 is FULL');
+    });
+
     test('the table has no AUTOINCREMENT: order is a column this code writes', () {
       final store = openStore(tempDir());
       final sql = store.database.select("SELECT sql FROM sqlite_schema WHERE name = 'outbox'").single['sql'] as String;
