@@ -15,11 +15,6 @@ name: app
 # app/test/pins_test.dart derives that list from what app/test opens and fails
 # when either list here misses one (CANT-203 ruling 2).
 #
-# web/smoke.ts and server/spec/testdata/read-fraction.json are in for the same
-# reason: app/test/typing_test.dart and app/test/states_test.dart read them.
-# app/test/pins_test.dart derives that list from what app/test opens and fails
-# when either list here misses one (CANT-203 ruling 2).
-#
 # dart/ and dart-client/ are in because the app WILL BE built on them: the
 # generated wire package and the protocol half (CANT-42). The skeleton imports
 # neither yet, so today a change there triggers a build that cannot see it;

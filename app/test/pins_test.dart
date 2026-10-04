@@ -62,12 +62,12 @@ void main() {
 
     final paths = workflowPaths();
     expect(paths.keys, containsAll(['pull_request', 'push']), reason: 'parsed both path lists');
-    for (final event in ['pull_request', 'push']) {
-      for (final read in reads) {
-        expect(paths[event]!.any((g) => matches(g, read)), isTrue,
-            reason: '$read is read by app/test but no `$event` path in app.yml matches it');
-      }
-    }
+    final missing = [
+      for (final event in ['pull_request', 'push'])
+        for (final read in reads)
+          if (!paths[event]!.any((g) => matches(g, read))) '$event: $read',
+    ];
+    expect(missing, isEmpty, reason: 'read by app/test but matched by no path in app.yml');
   });
 
   test('the typeface is bundled: both families at 400, 500, 600, files present, no google_fonts', () {
