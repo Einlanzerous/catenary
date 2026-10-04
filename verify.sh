@@ -245,6 +245,13 @@ if command -v dart >/dev/null; then
   # code for yet is reported, never silently absent.
   (cd "$ROOT/dart-client" && dart run bin/decisions.dart) >"$LOGDIR/v-dart-decisions.log" 2>&1
   result $? "$(grep -oE 'all green — [0-9]+ decision vectors.*|[0-9]+ of [0-9]+ FAILED' "$LOGDIR/v-dart-decisions.log" | tail -1)"
+  # The Dart outbox's criteria, beside `npm run outbox` (which the web smoke
+  # step runs): CANT-36's numbered criteria, each once clean and once under
+  # every fault that must make it fail. `dart test` above already ran this
+  # file among the rest; it is run again by name so its own count is on a line
+  # of its own, where a criterion that went missing would show.
+  (cd "$ROOT/dart-client" && dart test test/outbox_criteria_test.dart --name '^(criterion|fault) ' --reporter=expanded --no-color) >"$LOGDIR/v-dart-outbox.log" 2>&1
+  result $? "outbox criteria ($(grep -cE ': criterion [0-9]+ holds$' "$LOGDIR/v-dart-outbox.log") hold clean, $(grep -cE ': fault [A-Za-z0-9]+ makes criterion [0-9]+ fail$' "$LOGDIR/v-dart-outbox.log") faults each fail theirs; $(grep -oE '\+[0-9]+( ~[0-9]+)?( -[0-9]+)?: (All tests passed!|Some tests failed\.)' "$LOGDIR/v-dart-outbox.log" | tail -1))"
 else
   printf '   \033[33mSKIP\033[0m dart not on PATH (set DART=/path/to/dart-sdk/bin)\n'
 fi
