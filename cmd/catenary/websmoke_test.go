@@ -128,6 +128,11 @@ type canvas struct {
 	hollisToken string
 	nadia       uuid.UUID
 	kitchen     uuid.UUID
+	// What the device run (devicerun_test.go) needs on top: the reader, and a
+	// room and an author for the messages it adds.
+	hollis uuid.UUID
+	marek  uuid.UUID
+	shed   uuid.UUID
 }
 
 // canvasUploads stands in for CANT-48's resolver, which does not exist yet:
@@ -390,5 +395,8 @@ func seedCanvas(t *testing.T, r *rig) canvas {
 	if len(uploads) != 0 {
 		t.Fatalf("%d prepared attachment(s) were never sent", len(uploads))
 	}
-	return canvas{hollisToken: hollisToken, nadia: id("nadia"), kitchen: kitchen}
+	return canvas{
+		hollisToken: hollisToken, nadia: id("nadia"), kitchen: kitchen,
+		hollis: me, marek: id("marek"), shed: shed,
+	}
 }

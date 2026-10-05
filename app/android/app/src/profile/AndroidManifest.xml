@@ -4,4 +4,9 @@
          to allow setting breakpoints, to provide hot reload, etc.
     -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- Cleartext for a development server on the LAN (CANT-210), in the debug
+         and profile manifests only. The main manifest never sets it, and a
+         release build refuses every http:// address in the app as well
+         (lib/store/address.dart); test/manifest_test.dart holds the first. -->
+    <application android:usesCleartextTraffic="true"/>
 </manifest>
