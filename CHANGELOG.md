@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.15.0](https://github.com/Einlanzerous/catenary/compare/v0.14.0...v0.15.0) (2026-10-05)
+
+
+### Features
+
+* CANT-205 — enrollDevice and the journal projection in dart-client (CANT-200a) ([#142](https://github.com/Einlanzerous/catenary/issues/142)) ([78214b7](https://github.com/Einlanzerous/catenary/commit/78214b7e60cddde805573fd262ac4f37e78d705e))
+* CANT-206 — the app takes catenary_client: platform seams, the address functions, the session (CANT-200b) ([#146](https://github.com/Einlanzerous/catenary/issues/146)) ([c26a70c](https://github.com/Einlanzerous/catenary/commit/c26a70c889b3e3da8d00843635e2fa20811ae6e7))
+* CANT-207 — the store: journal and outbox projected into the rail, the thread and the banner (CANT-200c) ([#151](https://github.com/Einlanzerous/catenary/issues/151)) ([6efef75](https://github.com/Einlanzerous/catenary/commit/6efef7503990752aca422cf532b04558989eef14))
+* CANT-208 — the enrollment screen and RE-ENROLL (CANT-200d) ([#153](https://github.com/Einlanzerous/catenary/issues/153)) ([bea09c3](https://github.com/Einlanzerous/catenary/commit/bea09c36601f87e29f6869367d3c633efc69ad65))
+* CANT-209 — the controls: send, retry, delete, reconnect, and the ones drawn disabled (CANT-200e) ([#152](https://github.com/Einlanzerous/catenary/issues/152)) ([6ca328a](https://github.com/Einlanzerous/catenary/commit/6ca328a79dd6d3737a2bd07931a5bae3971b014b))
+* CANT-210 — a server a phone can reach, and cleartext in the debug and profile manifests (CANT-200f) ([#154](https://github.com/Einlanzerous/catenary/issues/154)) ([572f697](https://github.com/Einlanzerous/catenary/commit/572f6972652d02c4652c679702b6de34c33d8072))
+* CANT-211 — media held with an outbox entry, and the offline rule (CANT-201a) ([#148](https://github.com/Einlanzerous/catenary/issues/148)) ([db40067](https://github.com/Einlanzerous/catenary/commit/db4006721f6c44ec27ecc481c4caedd657c3d678))
+
+
+### Bug Fixes
+
+* CANT-204 — a page in flight across another context's wipe is dropped (CANT-199a) ([#143](https://github.com/Einlanzerous/catenary/issues/143)) ([fd424c6](https://github.com/Einlanzerous/catenary/commit/fd424c6fef1792e450ac7731ad16805ca8f4ed54))
+
 ## [0.14.0](https://github.com/Einlanzerous/catenary/compare/v0.13.0...v0.14.0) (2026-10-04)
 
 
