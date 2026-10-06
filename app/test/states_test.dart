@@ -89,6 +89,23 @@ void main() {
       expect(sent, 1);
     });
 
+    // CANT-220 ruling 7: with nothing wired to record, REC is drawn disabled.
+    // The accent says "this works", and it does not sit on a square that
+    // does nothing — which is every build until recording exists.
+    testWidgets('$theme · REC with no recorder is drawn disabled, live and offline, and filled with the accent once there is one', (tester) async {
+      for (final connection in [const ConnectionView.live(), const ConnectionView(kind: ConnectionKind.offline)]) {
+        await show(tester, Composer(connection: connection), brightness: brightness);
+        expect(find.text('REC'), findsOneWidget, reason: connection.kind.name);
+        expect(tester.widget<Text>(find.text('REC')).style!.color, t.textDisabled, reason: connection.kind.name);
+        expect(primaryFill(tester), t.surfaceBase, reason: 'no accent fill, ${connection.kind.name}');
+        expect(primaryFill(tester), isNot(t.accentWire));
+
+        await show(tester, Composer(connection: connection, onRecord: () {}), brightness: brightness);
+        expect(primaryFill(tester), t.accentWire, reason: connection.kind.name);
+        expect(tester.widget<Text>(find.text('REC')).style!.color, t.onAccent);
+      }
+    });
+
     testWidgets('$theme · offline-queued: REC with no draft and QUEUE in the dimmer copper with one, the hint says so, ADD is off', (tester) async {
       var sent = 0, attached = 0, recorded = 0;
       final draft = TextEditingController();

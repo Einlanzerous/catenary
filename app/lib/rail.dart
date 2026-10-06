@@ -274,7 +274,7 @@ class _Marker extends StatelessWidget {
       case RailMarkKind.muted:
         return Text('MUTED', style: TextStyle(fontFamily: fontMono, fontSize: 9.5, height: 14 / 9.5, letterSpacing: 0.95, color: t.textDim));
       case RailMarkKind.status:
-        return StatusMark(status: mark.status ?? MessageStatus.sent);
+        return StatusMark(status: mark.status ?? MessageStatus.sent, retrying: mark.retrying);
       case RailMarkKind.none:
         return const SizedBox.shrink();
     }

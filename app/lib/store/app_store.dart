@@ -9,12 +9,14 @@
 // written and the server has not stored is the outbox's, and is laid after the
 // log as a tail, not placed in it — it has no `seq` of its own to be placed by.
 //
-// TWO VOCABULARIES, ONE ENUM (store/status.dart). A journal message's status
-// comes from the wire's `DeliveryState` and is `sent`, `delivered` or `read`.
-// `queued`, `sending` and `failed` come from the outbox's own state and from
-// nowhere else: they are a message's relationship to its outbox, which the
-// server has no opinion on (Invariant 3). [deliveryStatus] and [outboxStatus]
-// are the only two places a `MessageStatus` is made here.
+// TWO VOCABULARIES, ONE ENUM (store/status.dart). `queued`, `sending` and
+// `failed` come only from the outbox: they are a message's relationship to its
+// outbox, which the server has no opinion on (Invariant 3). `delivered` and
+// `read` come only from the wire's `DeliveryState`. `sent` comes from the
+// wire, or from the outbox's ack until the record arrives: an ack says the
+// server stored the message, which is all `sent` claims (CANT-220 ruling 4,
+// which supersedes CANT-200's narrower wording on this point). [deliveryStatus]
+// and [outboxStatus] are the only two places a `MessageStatus` is made here.
 //
 // RULING 2 → THE UI ISOLATE. This is a `ChangeNotifier` the widgets listen to,
 // on the isolate they run on. Nothing outside lib/store/ imports
@@ -123,6 +125,16 @@ int roomsPending(Projection projection) {
 
 DateTime _at(String timestamp) => DateTime.parse(timestamp).toLocal();
 
+/// A transcript's state as the thread draws it. One arm per wire value, and
+/// the wire's `unknown` sentinel stays unknown: it is not folded into
+/// `pending`, which would say a job is running.
+TranscriptStatus transcriptStatus(wire.TranscriptState state) => switch (state) {
+      wire.TranscriptState.pending => TranscriptStatus.pending,
+      wire.TranscriptState.ready => TranscriptStatus.ready,
+      wire.TranscriptState.failed => TranscriptStatus.failed,
+      wire.TranscriptState.unknown => TranscriptStatus.unknown,
+    };
+
 /// One journal message, as the thread shows it. [me] is the enrolled account.
 ThreadMessage journalMessage(wire.Message m, {required String me, required Map<String, wire.User> users}) {
   final attachments = m.attachments ?? const <wire.Attachment>[];
@@ -139,7 +151,12 @@ ThreadMessage journalMessage(wire.Message m, {required String me, required Map<S
     // The peaks are the server's (Invariant 3): no client derives a waveform.
     voice: voice == null
         ? null
-        : VoiceNote(duration: Duration(milliseconds: voice.durationMs), peaks: voice.peaks, transcript: voice.transcript.text),
+        : VoiceNote(
+            duration: Duration(milliseconds: voice.durationMs),
+            peaks: voice.peaks,
+            transcript: voice.transcript.state == wire.TranscriptState.ready ? voice.transcript.text : null,
+            status: transcriptStatus(voice.transcript.state),
+          ),
     image: image == null ? null : ImageAttachment(filename: image.filename, width: image.width, height: image.height),
     status: deliveryStatus(m.state),
     readBy: m.readBy,
@@ -166,6 +183,7 @@ ThreadMessage outboxMessage(OutboxItem item, {required int seq, required Map<Str
     voice: voice == null ? null : VoiceNote(duration: Duration(milliseconds: voice.durationMs!), peaks: const []),
     status: outboxStatus(o.state),
     failure: o.error,
+    retrying: o.retrying,
   );
 }
 
