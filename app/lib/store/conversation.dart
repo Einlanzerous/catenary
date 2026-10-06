@@ -20,17 +20,38 @@ import 'when.dart';
 
 enum ConversationKind { group, direct }
 
+/// Where a voice note's transcript stands, as the server last said. The
+/// wire's `TranscriptState`, kept apart from the text so that "no text" is not
+/// read as "still coming" (CANT-220 rulings 5 and 6).
+enum TranscriptStatus {
+  /// The job has not finished. The only state drawn as `TRANSCRIBING`.
+  pending,
+  ready,
+
+  /// The job failed, and there will be no transcript.
+  failed,
+
+  /// A state this build does not know. Nothing is claimed about it.
+  unknown,
+}
+
 /// A voice note as a message carries it. [peaks] are the server's, 0–100: the
 /// waveform is computed there, never on a client.
 @immutable
 class VoiceNote {
-  const VoiceNote({required this.duration, required this.peaks, this.transcript});
+  // ignore: prefer_initializing_formals — the parameter is `status`, the field is private.
+  const VoiceNote({required this.duration, required this.peaks, this.transcript, TranscriptStatus? status}) : _status = status;
 
   final Duration duration;
   final List<int> peaks;
 
-  /// Null while the transcript is pending.
+  /// The transcript's text, held only once it is ready.
   final String? transcript;
+  final TranscriptStatus? _status;
+
+  /// A note built without a status has one by its text: a fixture's, or one
+  /// of your own that has not left this device.
+  TranscriptStatus get status => _status ?? (transcript == null ? TranscriptStatus.pending : TranscriptStatus.ready);
 }
 
 @immutable
@@ -57,6 +78,7 @@ class ThreadMessage {
     this.status = MessageStatus.sent,
     this.readBy,
     this.failure,
+    this.retrying = false,
   });
 
   final String id;
@@ -75,6 +97,10 @@ class ThreadMessage {
 
   /// Why a failed send failed, in the server's or the outbox's words.
   final String? failure;
+
+  /// An unsent message held under backoff past its third retryable refusal:
+  /// the outbox's, and what turns QUEUED into RETRYING (CANT-36 ruling 3 C).
+  final bool retrying;
 }
 
 @immutable
@@ -169,7 +195,9 @@ String preview(ConversationView c) {
     // pending anything, and does not say so.
     final unsent = m.mine &&
         (m.status == MessageStatus.failed || m.status == MessageStatus.queued || m.status == MessageStatus.sending);
-    body = voice.transcript == null && !unsent
+    // And only a pending one says so: a failed transcript is not coming, and
+    // a state this build does not know is not claimed to be.
+    body = voice.status == TranscriptStatus.pending && !unsent
         ? 'transcript pending · ${clock(voice.duration)}'
         : 'voice note · ${clock(voice.duration)}';
   } else if (m.image != null && (m.text == null || m.text!.isEmpty)) {
@@ -186,11 +214,12 @@ enum RailMarkKind { none, count, muted, status }
 
 @immutable
 class RailMark {
-  const RailMark(this.kind, {this.count = 0, this.status});
+  const RailMark(this.kind, {this.count = 0, this.status, this.retrying = false});
 
   final RailMarkKind kind;
   final int count;
   final MessageStatus? status;
+  final bool retrying;
 }
 
 /// The trailing marker: the unread count, else MUTED, else your own last
@@ -204,7 +233,7 @@ RailMark railMark(ConversationView c, {bool open = false}) {
   if (unread > 0) return RailMark(RailMarkKind.count, count: unread);
   if (c.muted) return const RailMark(RailMarkKind.muted);
   final m = c.last;
-  if (m != null && m.mine) return RailMark(RailMarkKind.status, status: m.status);
+  if (m != null && m.mine) return RailMark(RailMarkKind.status, status: m.status, retrying: m.retrying);
   return const RailMark(RailMarkKind.none);
 }
 

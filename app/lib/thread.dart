@@ -318,7 +318,12 @@ class MessageGroup extends StatelessWidget {
                   ],
                 ),
               ),
-              if (mine) StatusMark(key: const ValueKey('group-status'), status: failed ? MessageStatus.failed : newest.status),
+              if (mine)
+                StatusMark(
+                  key: const ValueKey('group-status'),
+                  status: failed ? MessageStatus.failed : newest.status,
+                  retrying: !failed && newest.retrying,
+                ),
             ],
           ),
           for (final m in group.messages) ...[
@@ -445,6 +450,13 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
     final v = widget.voice;
     final transcript = v.transcript;
     final small = TextStyle(fontFamily: fontMono, fontSize: 9, height: 12 / 9);
+    final Widget? strip = switch (v.status) {
+      TranscriptStatus.pending => Text('TRANSCRIBING', style: small.copyWith(letterSpacing: 1.26, color: t.accentDim)),
+      // No pulse and no accent: nothing is running, and nothing here is tappable.
+      TranscriptStatus.failed => Text('NO TRANSCRIPT', style: small.copyWith(letterSpacing: 1.26, color: t.textMeta)),
+      TranscriptStatus.ready when transcript != null => _transcript(t, small, transcript),
+      TranscriptStatus.ready || TranscriptStatus.unknown => null,
+    };
     return Container(
       decoration: BoxDecoration(
         color: t.surfaceLift,
@@ -486,46 +498,55 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
               ],
             ),
           ),
-          Container(
-            decoration: BoxDecoration(
-              border: Border(top: BorderSide(color: t.lineInner)),
+          // What the server said of the transcript, and nothing more:
+          // TRANSCRIBING only while the job is pending, NO TRANSCRIPT once it
+          // has failed, and no strip for a state this build does not know
+          // (CANT-220 rulings 5 and 6).
+          if (strip != null)
+            Container(
+              decoration: BoxDecoration(
+                border: Border(top: BorderSide(color: t.lineInner)),
+              ),
+              padding: const EdgeInsets.fromLTRB(12, 9, 12, 11),
+              child: strip,
             ),
-            padding: const EdgeInsets.fromLTRB(12, 9, 12, 11),
-            child: transcript == null
-                ? Text('TRANSCRIBING', style: small.copyWith(letterSpacing: 1.26, color: t.accentDim))
-                : Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      GestureDetector(
-                        key: const ValueKey('transcript-toggle'),
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => setState(() => _expanded = !_expanded),
-                        child: Row(
-                          children: [
-                            Text('TRANSCRIPT', style: small.copyWith(letterSpacing: 1.26, color: t.textMeta)),
-                            const SizedBox(width: 8),
-                            Expanded(child: Container(height: 1, color: t.lineInner)),
-                            const SizedBox(width: 8),
-                            Text(
-                              _expanded ? 'COLLAPSE' : 'EXPAND · ${countWords(transcript)} W',
-                              style: small.copyWith(letterSpacing: 0.9, color: t.accentWire),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      Text(
-                        transcript,
-                        maxLines: _expanded ? null : 2,
-                        overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
-                        style: TextStyle(fontFamily: fontSans, fontSize: 13, height: 19 / 13, color: t.textSecondary),
-                      ),
-                    ],
-                  ),
-          ),
         ],
       ),
     );
+  }
+
+  /// The ready transcript: its header, and the text clamped to two lines
+  /// until it is expanded.
+  Widget _transcript(CatenaryTokens t, TextStyle small, String transcript) {
+    return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GestureDetector(
+            key: const ValueKey('transcript-toggle'),
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Row(
+              children: [
+                Text('TRANSCRIPT', style: small.copyWith(letterSpacing: 1.26, color: t.textMeta)),
+                const SizedBox(width: 8),
+                Expanded(child: Container(height: 1, color: t.lineInner)),
+                const SizedBox(width: 8),
+                Text(
+                  _expanded ? 'COLLAPSE' : 'EXPAND · ${countWords(transcript)} W',
+                  style: small.copyWith(letterSpacing: 0.9, color: t.accentWire),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            transcript,
+            maxLines: _expanded ? null : 2,
+            overflow: _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+            style: TextStyle(fontFamily: fontSans, fontSize: 13, height: 19 / 13, color: t.textSecondary),
+          ),
+        ],
+      );
   }
 }
 
