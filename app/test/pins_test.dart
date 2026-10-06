@@ -1,6 +1,7 @@
 // The picks CANT-203 ruled on, held by tests so a later ticket cannot move one
 // without a test saying so: the path filter of .github/workflows/app.yml
-// (ruling 2) and the bundled typeface (ruling 3).
+// (ruling 2) and the bundled typeface (ruling 3). And one CANT-220 ruled on:
+// the app runs the sqlite3 that dart-client's tests run (its ruling 3).
 
 import 'dart:io';
 
@@ -35,6 +36,19 @@ Map<String, List<String>> workflowPaths() {
     }
   }
   return out;
+}
+
+/// The version a pubspec.lock resolved [package] to.
+String lockedVersion(File lock, String package) {
+  final lines = lock.readAsLinesSync();
+  final at = lines.indexOf('  $package:');
+  expect(at, isNonNegative, reason: '${lock.path} resolves $package');
+  for (final line in lines.skip(at + 1)) {
+    if (!line.startsWith('    ')) break;
+    final v = RegExp(r'^    version: "([^"]+)"$').firstMatch(line);
+    if (v != null) return v.group(1)!;
+  }
+  fail('${lock.path}: no version under $package');
 }
 
 /// A GitHub path glob against a repo-relative file: `dir/**` matches anything
@@ -87,5 +101,13 @@ void main() {
       expect(f.readAsStringSync().contains('package:google_fonts'), isFalse, reason: '${f.path} imports google_fonts');
     }
     expect(pubspec.contains('google_fonts'), isFalse);
+  });
+
+  test('the app and dart-client resolve one sqlite3, and the app overrides nothing', () {
+    // dart-client's suite is what exercises the journal, the credential store
+    // and the outbox over real SQLite files. A version it does not run is a
+    // version nothing tested, so the two lockfiles name the same one.
+    expect(lockedVersion(File('pubspec.lock'), 'sqlite3'), lockedVersion(File('../dart-client/pubspec.lock'), 'sqlite3'));
+    expect(File('pubspec.yaml').readAsStringSync().contains('dependency_overrides'), isFalse);
   });
 }

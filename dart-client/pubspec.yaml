@@ -16,7 +16,13 @@ dependencies:
     path: ../dart
   ffi: ^2.1.0
   meta: ^1.16.0
-  sqlite3: ^3.7.0
+  # Held to 3.5.x, the newest line the Flutter app can resolve, so the app runs
+  # the sqlite3 these tests run (CANT-220 ruling 3). 3.6.0 is the first to need
+  # hooks ^2.2.0, which needs record_use ^1.0.0, which needs meta ^1.19.0, and
+  # Flutter 3.44.2 pins meta to 1.18.0. Lift the ceiling when the app's Flutter
+  # pins meta >= 1.19; app/test/pins_test.dart fails if the two lockfiles ever
+  # name different versions.
+  sqlite3: ">=3.5.2 <3.6.0"
 
 dev_dependencies:
   lints: ^5.0.0
