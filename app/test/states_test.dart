@@ -55,6 +55,10 @@ void main() {
       // It replaces the whole composer row (M7).
       expect(find.byKey(const ValueKey('composer-input')), findsNothing);
       expect(find.text('ADD'), findsNothing);
+      // The row's own SEND is the canvas's smaller square: 9px at .08em.
+      final send = tester.widget<Text>(find.text('SEND')).style!;
+      expect(send.fontSize, 9.0);
+      expect(send.letterSpacing, closeTo(0.72, 1e-9));
 
       await tester.tap(find.text('SEND'));
       // The ✕ is the visible fallback, so the gesture is never the sole route.
