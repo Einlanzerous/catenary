@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.16.0](https://github.com/Einlanzerous/catenary/compare/v0.15.0...v0.16.0) (2026-10-06)
+
+
+### Features
+
+* CANT-223 — the outbox asks the transport whether it is terminal, and the upload rules are pinned (CANT-220a) ([#155](https://github.com/Einlanzerous/catenary/issues/155)) ([3dc0dfe](https://github.com/Einlanzerous/catenary/commit/3dc0dfed348d9d7538032e8d6b7272e7924d4689))
+* CANT-225 — a failed transcript says so, an unknown one claims nothing, RETRYING reaches the thread, and a credential that could not be stored is not "unreachable" (CANT-220c) ([#157](https://github.com/Einlanzerous/catenary/issues/157)) ([4320ed1](https://github.com/Einlanzerous/catenary/commit/4320ed1fe1493c534d81cb68880a69fa24c62759))
+
+
+### Bug Fixes
+
+* CANT-226 — QUEUE and the recording row's SEND take the canvas's letter spacing (CANT-220d) ([#159](https://github.com/Einlanzerous/catenary/issues/159)) ([257d37a](https://github.com/Einlanzerous/catenary/commit/257d37abd9f98c53a60b242faba4142facb460e5))
+
 ## [0.15.0](https://github.com/Einlanzerous/catenary/compare/v0.14.0...v0.15.0) (2026-10-05)
 
 
