@@ -323,6 +323,13 @@ abstract interface class OutboxStore {
 /// `sendFrame` returns nothing: an answer, if any, arrives as an event.
 abstract interface class OutboxTransport {
   bool get isReady;
+
+  /// CANT-31 §6's terminal state, as the transport holds it NOW. Asked at
+  /// compose, because a `SessionClosed` is not how every terminal arrives: a
+  /// credential refused at `/refresh` before any socket opened ends no session
+  /// and emits nothing (CANT-220 ruling 2). The reference's seam has no such
+  /// member; CANT-162 is told.
+  bool get isTerminal;
   void sendFrame(ClientSend frame);
 
   /// Returns the unsubscribe.
@@ -404,6 +411,14 @@ final class ComposeRefused implements Exception {
 }
 
 /// Uploads one attachment and completes with its handle.
+///
+/// EVERY UPLOAD COMPLETES OR THROWS, WITHIN A BOUND THE UPLOADER OWNS (CANT-220
+/// ruling 1). The outbox offers an entry once and waits for this future: it
+/// keeps no deadline of its own, and does not offer the entry again while one
+/// is unanswered, across any number of reconnects. Only the uploader can tell
+/// a slow upload from a dead one. A throw fails the entry, which is what gives
+/// the person RETRY; a future that never completes holds it `pending` until
+/// relaunch.
 abstract interface class Uploader {
   Future<Uuid> upload(OutboxEntry entry, OutboundAttachmentDraft attachment);
 }

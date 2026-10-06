@@ -63,6 +63,11 @@ final class TransportOutbox implements OutboxTransport {
   @override
   bool get isReady => _ready;
 
+  /// Read from the transport each time, never cached: a terminal reached with
+  /// no session open notifies no `onSessionEnd` listener.
+  @override
+  bool get isTerminal => _transport.status().terminal.kind != TerminalKind.none;
+
   @override
   void sendFrame(ClientSend frame) {
     _transport.send(frame).then(
@@ -134,6 +139,10 @@ final class NullTransport implements OutboxTransport {
 
   @override
   bool get isReady => false;
+
+  /// No session is not a terminal one: nothing here has refused to reconnect.
+  @override
+  bool get isTerminal => false;
 
   @override
   void sendFrame(ClientSend frame) => throw StateError('NullTransport has no session');
