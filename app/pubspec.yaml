@@ -20,15 +20,6 @@ dependencies:
   connectivity_plus: ^7.0.0
   path_provider: ^2.1.5
 
-# catenary_client asks for sqlite3 ^3.7.0, which needs hooks ^2.2.0, which needs
-# record_use ^1.0.0, which needs meta ^1.19.0 — and Flutter 3.44.2 pins meta to
-# 1.18.0, so the app cannot resolve it. 3.5.2 is the newest sqlite3 that does
-# (3.6.0 is the first to need that hooks). Only the root's overrides count, so
-# dart-client keeps its own constraint under the plain `dart` SDK. Drop this
-# when Flutter's pinned meta reaches 1.19.
-dependency_overrides:
-  sqlite3: 3.5.2
-
 dev_dependencies:
   flutter_test:
     sdk: flutter
