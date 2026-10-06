@@ -40,13 +40,17 @@ enum TranscriptStatus {
 @immutable
 class VoiceNote {
   // ignore: prefer_initializing_formals — the parameter is `status`, the field is private.
-  const VoiceNote({required this.duration, required this.peaks, this.transcript, TranscriptStatus? status}) : _status = status;
+  const VoiceNote({required this.duration, required this.peaks, this.transcript, this.eta, TranscriptStatus? status}) : _status = status;
 
   final Duration duration;
   final List<int> peaks;
 
   /// The transcript's text, held only once it is ready.
   final String? transcript;
+
+  /// The server's estimate of the work left on a pending transcript, when it
+  /// sent one. Never derived here: the wire says a client must not invent it.
+  final Duration? eta;
   final TranscriptStatus? _status;
 
   /// A note built without a status has one by its text: a fixture's, or one

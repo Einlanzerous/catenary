@@ -15,8 +15,10 @@ import 'package:catenary/rail.dart';
 import 'package:catenary/specimen.dart';
 import 'package:catenary/states.dart';
 import 'package:catenary/store/connection.dart';
+import 'package:catenary/store/conversation.dart';
 import 'package:catenary/theme.dart';
 import 'package:catenary/thread.dart';
+import 'package:catenary/tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -99,6 +101,51 @@ void main() {
       ));
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/states-$name.png'));
+    });
+
+    // A voice note pending, with and without the server's estimate, over the
+    // collapsed transcript it turns into (CANT-229, the canvas's frame 04 B):
+    // all three are the same height.
+    testWidgets('render the voice note states, $name', (tester) async {
+      await loadFonts();
+      tester.view.physicalSize = const Size(780, 900);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      final peaks = fixturePeaks(9931, 48);
+      const length = Duration(seconds: 72);
+      await tester.pumpWidget(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+        home: TickerMode(
+          enabled: false,
+          child: Builder(
+            builder: (context) => Scaffold(
+              backgroundColor: CatenaryTokens.of(context).surfaceBase,
+              body: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  children: [
+                    VoiceNoteBlock(voice: VoiceNote(duration: length, peaks: peaks, eta: const Duration(seconds: 20))),
+                    const SizedBox(height: 14),
+                    VoiceNoteBlock(voice: VoiceNote(duration: length, peaks: peaks)),
+                    const SizedBox(height: 14),
+                    VoiceNoteBlock(
+                      voice: VoiceNote(
+                        duration: length,
+                        peaks: peaks,
+                        transcript:
+                            'Okay so I talked to Ted about the delivery and the short version is Thursday still works but they want us to confirm the count by tomorrow noon.',
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/voice-$name.png'));
     });
   }
 }

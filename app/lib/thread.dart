@@ -26,6 +26,7 @@ import 'tokens.dart';
 import 'widgets/composer.dart';
 import 'widgets/connection_banner.dart';
 import 'widgets/glyph.dart';
+import 'widgets/pulse.dart';
 import 'widgets/status_mark.dart';
 import 'widgets/typing_row.dart';
 import 'widgets/waveform.dart';
@@ -451,7 +452,7 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
     final transcript = v.transcript;
     final small = TextStyle(fontFamily: fontMono, fontSize: 9, height: 12 / 9);
     final Widget? strip = switch (v.status) {
-      TranscriptStatus.pending => Text('TRANSCRIBING', style: small.copyWith(letterSpacing: 1.26, color: t.accentDim)),
+      TranscriptStatus.pending => _pending(t, small, v.eta),
       // No pulse and no accent: nothing is running, and nothing here is tappable.
       TranscriptStatus.failed => Text('NO TRANSCRIPT', style: small.copyWith(letterSpacing: 1.26, color: t.textMeta)),
       TranscriptStatus.ready when transcript != null => _transcript(t, small, transcript),
@@ -512,6 +513,46 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
             ),
         ],
       ),
+    );
+  }
+
+  /// A pending transcript (frame 04 B): the pulse, the word, the server's
+  /// estimate when it sent one, and two skeleton lines. Each skeleton line
+  /// sits in a slot one transcript line tall under the same 6px gap, so the
+  /// strip is exactly as tall as the collapsed two-line transcript that
+  /// replaces it and the thread does not jump when it lands.
+  Widget _pending(CatenaryTokens t, TextStyle small, Duration? eta) {
+    Widget line(double width, Duration delay) => SizedBox(
+          height: 19,
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: FractionallySizedBox(
+              widthFactor: width,
+              child: Pulse.shimmer(delay: delay, child: Container(height: 9, color: t.surfaceRaised)),
+            ),
+          ),
+        );
+    return Column(
+      key: const ValueKey('transcript-pending'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Pulse(
+              period: const Duration(milliseconds: 1300),
+              child: Container(key: const ValueKey('transcript-pulse'), width: 5, height: 5, color: t.accentWire),
+            ),
+            const SizedBox(width: 8),
+            Text(
+              eta == null ? 'TRANSCRIBING' : 'TRANSCRIBING · ~${eta.inSeconds} S',
+              style: small.copyWith(letterSpacing: 1.26, color: t.accentDim),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        KeyedSubtree(key: const ValueKey('transcript-skeleton-1'), child: line(0.88, Duration.zero)),
+        KeyedSubtree(key: const ValueKey('transcript-skeleton-2'), child: line(0.58, const Duration(milliseconds: 300))),
+      ],
     );
   }
 
