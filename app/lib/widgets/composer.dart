@@ -165,7 +165,7 @@ class _ComposerState extends State<Composer> {
                   ),
                 ),
                 const SizedBox(width: 4),
-                _Square('SEND', size: 36, fontSize: 9, color: t.onAccent, fill: t.accentWire, onTap: widget.onSendRecording),
+                _Square('SEND', size: 36, fontSize: 9, tracking: 0.08, color: t.onAccent, fill: t.accentWire, onTap: widget.onSendRecording),
               ],
             ),
           ),
@@ -201,7 +201,7 @@ class _ComposerState extends State<Composer> {
           ? _Square('REC', color: t.textDisabled, fill: t.surfaceBase, border: t.lineInner, onTap: null)
           : _Square('REC', color: t.onAccent, fill: t.accentWire, onTap: widget.onRecord);
     } else if (offline) {
-      primary = _Square('QUEUE', fontSize: 9, color: t.onAccent, fill: t.accentQueue, onTap: widget.onSend);
+      primary = _Square('QUEUE', fontSize: 9, tracking: 0.08, color: t.onAccent, fill: t.accentQueue, onTap: widget.onSend);
     } else {
       primary = _Square('SEND', color: t.onAccent, fill: t.accentWire, onTap: widget.onSend);
     }
@@ -259,8 +259,20 @@ class _ComposerState extends State<Composer> {
 }
 
 /// A square button with a mono label: the 44px targets flanking the field.
+/// [tracking] is the label's letter spacing in ems. The canvas sets its two
+/// 9px labels, QUEUE and the recording row's SEND, tighter than the rest
+/// (.08em against .1em), which is what lets five letters sit in the square.
 class _Square extends StatelessWidget {
-  const _Square(this.label, {required this.color, required this.onTap, this.fill, this.border, this.size = 44, this.fontSize = 9.5});
+  const _Square(
+    this.label, {
+    required this.color,
+    required this.onTap,
+    this.fill,
+    this.border,
+    this.size = 44,
+    this.fontSize = 9.5,
+    this.tracking = 0.1,
+  });
 
   final String label;
   final Color color;
@@ -268,6 +280,7 @@ class _Square extends StatelessWidget {
   final Color? border;
   final double size;
   final double fontSize;
+  final double tracking;
   final VoidCallback? onTap;
 
   @override
@@ -280,7 +293,7 @@ class _Square extends StatelessWidget {
         height: size,
         alignment: Alignment.center,
         decoration: BoxDecoration(color: fill, border: border == null ? null : Border.all(color: border!)),
-        child: Text(label, style: TextStyle(fontFamily: fontMono, fontSize: fontSize, letterSpacing: fontSize * 0.1, color: color)),
+        child: Text(label, style: TextStyle(fontFamily: fontMono, fontSize: fontSize, letterSpacing: fontSize * tracking, color: color)),
       ),
     );
   }

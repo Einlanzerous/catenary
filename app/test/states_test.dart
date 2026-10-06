@@ -55,6 +55,10 @@ void main() {
       // It replaces the whole composer row (M7).
       expect(find.byKey(const ValueKey('composer-input')), findsNothing);
       expect(find.text('ADD'), findsNothing);
+      // The row's own SEND is the canvas's smaller square: 9px at .08em.
+      final send = tester.widget<Text>(find.text('SEND')).style!;
+      expect(send.fontSize, 9.0);
+      expect(send.letterSpacing, closeTo(0.72, 1e-9));
 
       await tester.tap(find.text('SEND'));
       // The ✕ is the visible fallback, so the gesture is never the sole route.
@@ -140,6 +144,14 @@ void main() {
       expect(find.text('REC'), findsNothing);
       expect(find.text('SEND'), findsNothing);
       expect(primaryFill(tester), t.accentQueue);
+      // The canvas's own type for this square: 9px at .08em, where ADD beside
+      // it is 9.5px at .1em (frame 04 A, OFFLINE — QUEUED).
+      final queue = tester.widget<Text>(find.text('QUEUE')).style!;
+      expect(queue.fontSize, 9.0);
+      expect(queue.letterSpacing, closeTo(0.72, 1e-9));
+      final add = tester.widget<Text>(find.text('ADD')).style!;
+      expect(add.fontSize, 9.5);
+      expect(add.letterSpacing, closeTo(0.95, 1e-9));
       await tester.tap(find.text('ADD'));
       expect(attached, 0, reason: 'ADD is off with a draft too');
       await tester.tap(find.text('QUEUE'));
