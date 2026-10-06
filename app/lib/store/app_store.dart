@@ -135,6 +135,9 @@ TranscriptStatus transcriptStatus(wire.TranscriptState state) => switch (state) 
       wire.TranscriptState.unknown => TranscriptStatus.unknown,
     };
 
+/// A zero is no estimate, as in the web client, which hides a falsy one.
+Duration? _eta(int? seconds) => seconds == null || seconds == 0 ? null : Duration(seconds: seconds);
+
 /// One journal message, as the thread shows it. [me] is the enrolled account.
 ThreadMessage journalMessage(wire.Message m, {required String me, required Map<String, wire.User> users}) {
   final attachments = m.attachments ?? const <wire.Attachment>[];
@@ -155,6 +158,7 @@ ThreadMessage journalMessage(wire.Message m, {required String me, required Map<S
             duration: Duration(milliseconds: voice.durationMs),
             peaks: voice.peaks,
             transcript: voice.transcript.state == wire.TranscriptState.ready ? voice.transcript.text : null,
+            eta: voice.transcript.state == wire.TranscriptState.pending ? _eta(voice.transcript.etaSec) : null,
             status: transcriptStatus(voice.transcript.state),
           ),
     image: image == null ? null : ImageAttachment(filename: image.filename, width: image.width, height: image.height),
