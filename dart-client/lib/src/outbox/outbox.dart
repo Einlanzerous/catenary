@@ -24,7 +24,14 @@
 /// connection would only throw, and a throw fails the entry for good. It is
 /// offered when this context is `ready` AND holds the drain lock, which is
 /// also how an entry reloaded after a relaunch is offered, and why two
-/// contexts over one store do not both upload it.
+/// contexts over one store do not both upload it. An entry offered and not yet
+/// answered is not offered again: bounding an upload is the `Uploader`'s
+/// (CANT-220 rulings 0 and 1).
+///
+/// A TERMINAL CLIENT TAKES NO ATTACHMENT, HOWEVER IT BECAME TERMINAL (CANT-220
+/// ruling 2). `compose` asks the transport, and does not rely on having seen a
+/// terminal close: a credential refused before any session opened closes
+/// nothing.
 ///
 /// A SECOND CONTEXT SEES ANOTHER'S WRITES AT ITS NEXT READ. The reference
 /// re-reads on a `BroadcastChannel` post; there is no channel here. Every
@@ -183,9 +190,8 @@ final class Outbox {
 
   var _ready = false;
 
-  /// The last close this context saw was terminal (CANT-31 §6). Known only
-  /// from that event: the seam has no way to ask a transport that was already
-  /// terminal when the outbox attached.
+  /// The last close this context saw was terminal (CANT-31 §6). Not every
+  /// terminal comes with a close, so `compose` also asks the transport.
   var _terminal = false;
   var _holding = false;
   void Function()? _releaseLock;
@@ -247,7 +253,7 @@ final class Outbox {
     final account = _accountId;
     if (account == null) throw StateError('outbox: no enrolled account to compose as');
     if (draft.attachments.isNotEmpty && !_ready) {
-      if (_terminal) throw const ComposeRefused(ComposeRefused.terminal);
+      if (_terminal || _transport.isTerminal) throw const ComposeRefused(ComposeRefused.terminal);
       if (draft.attachments.any((a) => a.kind != 'voice')) throw const ComposeRefused(ComposeRefused.pickedFileOffline);
     }
     final media = <Uint8List?>[];

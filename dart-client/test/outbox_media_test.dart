@@ -408,6 +408,91 @@ void main() {
     });
   });
 
+  group('the choices CANT-211 made alone, as ruled [CANT-220 rulings 0, 1 and 2]', () {
+    test('ruling 2: a transport that is terminal and has emitted no close takes no attachment, and still stores text', () async {
+      final store = MemoryOutboxStore();
+      final transport = ScriptedTransport()..terminal = true;
+      final uploader = ScriptedUploader(never);
+      final ctx = await context(store: store, transport: transport, uploader: uploader);
+      await expectLater(
+        ctx.outbox.compose(voiceDraft(recording())),
+        throwsA(isA<ComposeRefused>().having((e) => e.message, 'message', ComposeRefused.terminal)),
+      );
+      expect(await store.list(), isEmpty, reason: 'a refusal writes nothing');
+      expect(uploader.calls, isEmpty);
+      await ctx.composeText('kept for a re-enrollment');
+      expect(await store.list(), hasLength(1));
+    });
+
+    test('ruling 1: an uploader that never answers is called once across a close and the next ready, and its entry stays pending', () async {
+      final transport = ScriptedTransport();
+      final clock = FakeClock();
+      final uploader = ScriptedUploader(never);
+      final ctx = await context(transport: transport, clock: clock, uploader: uploader, rereadMs: holderRereadMs);
+      transport.open();
+      await flush();
+      // Not awaited: `compose` completes with the upload, and this one never does.
+      unawaited(ctx.outbox.compose(voiceDraft(recording())));
+      await flush();
+      final entry = (await ctx.store.list()).single;
+      expect(uploader.calls, [entry.clientId]);
+
+      transport.close();
+      await flush();
+      transport.open();
+      await clock.advance(holderRereadMs * 3);
+      expect(uploader.calls, [entry.clientId], reason: 'the outbox keeps no deadline and does not offer it again');
+      expect((await ctx.stored(entry.clientId))!.status, OutboxStatus.pending);
+      expect(transport.frames, isEmpty);
+    });
+
+    test('ruling 0: RETRY in a ready context that does not hold the lock calls no uploader there; the holder uploads it', () async {
+      final dir = tempDir();
+      final clock = FakeClock();
+      final server = ScriptedServer();
+      final tA = ScriptedTransport(server);
+      final tB = ScriptedTransport(server);
+      SqliteDrainLock drainLock() {
+        final locks = SqliteLocks(dir, timers: clock);
+        addTearDown(locks.close);
+        return SqliteDrainLock(locks, timers: clock);
+      }
+
+      final calls = <String>[];
+      var refuse = true;
+      final a = await context(
+        store: openStore(dir),
+        transport: tA,
+        clock: clock,
+        lock: drainLock(),
+        rereadMs: holderRereadMs,
+        uploader: ScriptedUploader((e, x) async => refuse ? throw const UploadRefused('would not go') : uuid(5007), name: 'A ', calls: calls),
+      );
+      final b = await context(store: openStore(dir), transport: tB, clock: clock, lock: drainLock(), rereadMs: holderRereadMs, uploader: ScriptedUploader((e, x) async => uuid(5008), name: 'B ', calls: calls));
+      tA.open();
+      await flush();
+      tB.open();
+      await clock.advance(200);
+      expect((a.outbox.isHolder, b.outbox.isHolder), (true, false));
+
+      final entry = await within('compose', b.outbox.compose(voiceDraft(recording())));
+      await clock.advance(holderRereadMs * 2);
+      expect(calls, ['A ${entry.clientId}'], reason: 'the holder offered it, and its uploader refused');
+      await b.outbox.refresh();
+      expect(b.item(entry.clientId)!.state, OutboxState.failed);
+
+      refuse = false;
+      await within('retry', b.outbox.retry(entry.clientId));
+      expect(calls, ['A ${entry.clientId}'], reason: 'ready is not enough: the context without the lock does not upload on RETRY');
+      expect((await b.stored(entry.clientId))!.status, OutboxStatus.pending);
+
+      await clock.advance(holderRereadMs * 2);
+      expect(calls, ['A ${entry.clientId}', 'A ${entry.clientId}']);
+      expect(tA.framesFor(entry.clientId), hasLength(1));
+      expect(tB.frames, isEmpty);
+    });
+  });
+
   group('an offline recording survives a relaunch', () {
     // Each context has its own connection to the store and its own to the
     // lock, as in criterion 15; the directory is what they share.

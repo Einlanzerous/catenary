@@ -65,6 +65,12 @@ final class ScriptedTransport implements OutboxTransport {
   @override
   bool get isReady => _ready;
 
+  /// Set by a test, with no event: a terminal reached with no session open.
+  var terminal = false;
+
+  @override
+  bool get isTerminal => terminal;
+
   @override
   void sendFrame(ClientSend frame) {
     if (!_ready) throw StateError('ScriptedTransport: frame written with no ready session');
