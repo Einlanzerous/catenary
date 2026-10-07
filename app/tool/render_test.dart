@@ -150,19 +150,21 @@ void main() {
     });
 
     // The failed-start screen (CANT-222): a device that could not open what
-    // it keeps.
-    testWidgets('render the failed start, $name', (tester) async {
-      await loadFonts();
-      tester.view.physicalSize = const Size(780, 1688);
-      tester.view.devicePixelRatio = 2;
-      addTearDown(tester.view.reset);
-      await tester.pumpWidget(MaterialApp(
-        debugShowCheckedModeBanner: false,
-        theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
-        home: StartFailedScreen(cause: StartFailedCause.stores, name: 'SqliteException', onRetry: () async {}),
-      ));
-      await tester.pumpAndSettle();
-      await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/start-failed-$name.png'));
-    });
+    // it keeps, and one whose re-enrollment could not clear the old journal.
+    for (final (cause, file) in [(StartFailedCause.stores, 'start-failed'), (StartFailedCause.wipeOwed, 'wipe-owed')]) {
+      testWidgets('render the failed start, $file, $name', (tester) async {
+        await loadFonts();
+        tester.view.physicalSize = const Size(780, 1688);
+        tester.view.devicePixelRatio = 2;
+        addTearDown(tester.view.reset);
+        await tester.pumpWidget(MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+          home: StartFailedScreen(cause: cause, name: 'SqliteException', onRetry: () async {}),
+        ));
+        await tester.pumpAndSettle();
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/$file-$name.png'));
+      });
+    }
   }
 }

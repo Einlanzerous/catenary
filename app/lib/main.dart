@@ -185,10 +185,13 @@ class _ShellState extends State<_Shell> {
   void _reenroll() {
     final store = widget.store;
     if (store == null) return;
+    // Read once: the store lets go of its session while it re-enrolls, and
+    // the form must go on showing the address it was opened for.
+    final address = store.address;
     Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (ctx) => EnrollScreen(
         deviceName: defaultDeviceName(Platform.operatingSystem),
-        lockedAddress: store.address,
+        lockedAddress: address,
         onCancel: () => Navigator.of(ctx).pop(),
         onSubmit: (_, token, name) async {
           final outcome = await store.reenroll(token: token, deviceName: name, release: kReleaseMode);

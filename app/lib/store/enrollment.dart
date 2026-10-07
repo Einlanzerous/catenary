@@ -87,6 +87,16 @@ const _unreachable = 'Could not reach that server — check the address and your
 const _notStored =
     'The server accepted that token, but this device could not save the credential. The token is now used — ask whoever invited you for a fresh one.';
 
+/// The credential store would not open, which is found out before any request
+/// is made (CANT-222).
+const enrollStorageText = 'This device could not open its own storage, so the token was not sent.';
+
+/// Something on this device threw that is not a refusal and not the network:
+/// an `Error`. It does not say whether the token was spent, because the app
+/// does not know: one thrown while decoding the server's 200 comes after.
+const enrollDeviceFaultText =
+    'This device hit an error while enrolling. Try again — if the token is then refused, it was used, and you need a fresh one from whoever invited you.';
+
 /// A failure to store the credential after `/enroll` answered 200.
 final class _NotStored implements Exception {
   const _NotStored();
@@ -100,10 +110,11 @@ String _refusalText(AddressRefusal r) => switch (r) {
 
 /// The web's two texts, `enrollErrorText`: a 400 is a malformed token or
 /// name; every other refusal answers identically on purpose (CANT-28), so it
-/// is one message. And one the web does not have: a credential the server
-/// issued and this device could not store.
+/// is one message. And two the web does not have: a credential the server
+/// issued and this device could not store, and an `Error` on this device.
 String enrollErrorText(Object e) {
   if (e is _NotStored) return _notStored;
+  if (e is Error) return enrollDeviceFaultText;
   if (e is! EnrollRefused) return _unreachable;
   if (e.status == 400) return 'That does not look like a valid enrollment token or device name.';
   return 'That enrollment token was not accepted — it may be wrong, expired or already used. Ask whoever invited you for a fresh one.';
@@ -111,7 +122,7 @@ String enrollErrorText(Object e) {
 
 /// Spends [token] at [typedAddress] and stores what comes back in [store]. The
 /// address is stored first and put back if the enrollment fails
-/// ([acceptAddress]). Never throws for a refusal or an unreachable server.
+/// ([acceptAddress]). Never throws: every way this can come out is an outcome.
 Future<EnrollOutcome> enrollDeviceAt({
   required String directory,
   required CredentialStore store,
@@ -137,7 +148,9 @@ Future<EnrollOutcome> enrollDeviceAt({
           } else {
             await reenrollCredential(store, lock, stored);
           }
-        } on Exception {
+        } on Object {
+          // An `Error` too: whatever it was, the token is spent and the
+          // credential is not kept, which is the one true thing to say.
           throw const _NotStored();
         }
         return stored;
@@ -148,9 +161,10 @@ Future<EnrollOutcome> enrollDeviceAt({
       CouldNotReach() => const EnrollFailed(_unreachable),
       AddressAccepted(:final value) => Enrolled(value),
     };
-  } on Exception catch (e) {
+  } on Object catch (e) {
     // The web rule: anything that is not a refusal reads as unreachable —
-    // except a failure after the server's 200, which is not the network's.
+    // except a failure after the server's 200, which is not the network's,
+    // and an `Error`, which is this device's.
     return EnrollFailed(enrollErrorText(e));
   }
 }

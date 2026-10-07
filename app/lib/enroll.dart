@@ -97,7 +97,14 @@ class _EnrollScreenState extends State<EnrollScreen> {
       _busy = true;
       _error = null;
     });
-    final outcome = await widget.onSubmit(_address.text.trim(), _token.text.trim(), _name.text.trim());
+    // Whatever the store does, the button comes back and there is a text: a
+    // throw here used to leave ENROLLING… up for good (CANT-222).
+    EnrollOutcome outcome;
+    try {
+      outcome = await widget.onSubmit(_address.text.trim(), _token.text.trim(), _name.text.trim());
+    } on Object {
+      outcome = const EnrollFailed(enrollDeviceFaultText);
+    }
     if (!mounted) return;
     setState(() {
       _busy = false;
