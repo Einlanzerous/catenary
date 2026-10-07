@@ -9,6 +9,11 @@
 // (test/store_boundary_test.dart), so a later move to a background isolate
 // changes the store and no widget.
 //
+// A JOURNAL IS ONE ACCOUNT'S (CANT-230). Before a transport is built the
+// journal is claimed for the held credential's account: its own is left as it
+// is, another account's is wiped, and one from before there was an owner is
+// adopted. This is the only place the credential and the journal meet.
+//
 // NOT ENROLLED STARTS NOTHING. With no `server` file, or no stored credential,
 // no transport is constructed and no socket opens (CANT-152's rule in the web
 // client): the caller's cue to show the enrollment screen. The address is read
@@ -153,6 +158,14 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing, void 
     cleanup.add(locks.close);
     journal = SqliteJournal.open('$dir/$journalFileName');
     cleanup.add(journal.close);
+    // THE JOURNAL IS CLAIMED BEFORE ANYTHING IS BUILT OVER IT (CANT-230). A
+    // re-enrollment writes the pair and then wipes the journal, as two
+    // writes; a process killed between them leaves this account's credential
+    // over another account's records and cursor. The claim wipes a journal
+    // that is someone else's, here, whatever was or was not written before
+    // the process died. One that cannot be written throws, and nothing below
+    // is constructed.
+    await journal.claim(held.userId);
     final outboxStore = SqliteOutboxStore.open('$dir/$outboxFileName');
     cleanup.add(outboxStore.close);
     transport = seams.transportFactory(TransportConfig(
