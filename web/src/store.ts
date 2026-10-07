@@ -671,18 +671,27 @@ export function jumpTo(messageId: string, seekMs?: number) {
 /* ── the transport word (CANT-221) ──────────────────────────────────────── */
 
 /**
- * The last word of the thread header: `TLS` for an `https://` origin and
+ * The last word of the thread header: `TLS` for an `https:` origin and
  * `CLEARTEXT` for anything else — the Flutter client's two words and its rule
  * (`addressIsSecure`, app/lib/store/address.dart), so both clients say the
  * same thing about one server.
  *
- * AN UNKNOWN ORIGIN IS NOT A SECURE ONE. '' — no session yet — reads
- * CLEARTEXT, because TLS is a claim and this is the surface that must not
- * make one it cannot keep (invariant 3). Never `E2E`: there is no input for
- * which this returns it.
+ * THE SAME TEST THE TRANSPORT DIALS BY. `createTransport` picks `wss:` over
+ * `ws:` on `new URL(baseUrl).protocol === 'https:'`, so the word is read the
+ * same way and cannot contradict the socket it describes.
+ *
+ * AN UNKNOWN ORIGIN IS NOT A SECURE ONE. '' — no session yet — and anything
+ * that does not parse read CLEARTEXT, because TLS is a claim and this is the
+ * surface that must not make one it cannot keep (invariant 3). Never `E2E`:
+ * there is no input for which this returns it.
  */
-export const transportWord = (origin: string): 'TLS' | 'CLEARTEXT' =>
-  /^https:\/\//i.test(origin) ? 'TLS' : 'CLEARTEXT'
+export function transportWord(origin: string): 'TLS' | 'CLEARTEXT' {
+  try {
+    return new URL(origin).protocol === 'https:' ? 'TLS' : 'CLEARTEXT'
+  } catch {
+    return 'CLEARTEXT'
+  }
+}
 
 /** `transportWord` over the origin the session actually talks to. */
 export const transportLabel = computed(() => transportWord(state.origin))
@@ -856,10 +865,6 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
     state.read.clear()
   }
   state.typing = {}
-  // The one place the header's transport word gets its input: the origin
-  // this session's transport and credential are about to be built over.
-  state.origin = seams.baseUrl
-
   const logger = seams.logger ?? consoleLogger
   const transport = createTransport({
     baseUrl: seams.baseUrl,
@@ -875,6 +880,10 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
     ...(seams.fetch ? { fetch: seams.fetch } : {}),
     ...(seams.WebSocket ? { WebSocket: seams.WebSocket } : {}),
   })
+  // The one place the header's transport word gets its input, and only once
+  // a transport exists over it: `createTransport` throws on an origin it
+  // cannot dial, and an origin nothing was built over is not one to name.
+  state.origin = seams.baseUrl
 
   let projection: Projection = EMPTY_PROJECTION
   const show = (next: Projection) => {

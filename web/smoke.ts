@@ -185,11 +185,12 @@ async function main() {
   check('rooms + direct headers', main.includes('ROOMS') && main.includes('DIRECT'))
   check('active thread title', main.includes('Kitchen Table'))
   // The chip states the guarantee that actually holds — for THIS server, which
-  // the Go test serves over plain http. The canvas's `· TLS` is asserted for an
-  // https origin in the CANT-221 block, once the live half has ended.
-  const liveWord = new URL(baseUrl).protocol === 'https:' ? 'TLS' : 'CLEARTEXT'
-  check('the header names the live origin\'s transport, and never E2E',
-    main.includes(`7 MEMBERS · ${liveWord}`) && !main.includes('E2E'), `${new URL(baseUrl).protocol} → ${liveWord}`)
+  // the Go test serves over plain http, so the word is typed here and not
+  // computed. The canvas's `· TLS` is asserted for an https origin in the
+  // CANT-221 block, once the live half has ended.
+  check('the live server is reached over plain http', baseUrl.startsWith('http://'), baseUrl)
+  check('so its header reads CLEARTEXT, and never TLS or E2E',
+    main.includes('7 MEMBERS · CLEARTEXT') && !main.includes('· TLS') && !main.includes('E2E'))
   check('CTRL+K, no Apple key', main.includes('CTRL+K') && !main.includes('⌘'))
 
   // Call 10a: typing is the thread's last row, not a strip under the composer.
@@ -331,13 +332,10 @@ async function main() {
   // session talks to, and is not a literal. The live session above stated its
   // origin the way the app does, through `startSession`'s `baseUrl`; it is
   // over, so from here the origin is stated the way every later section states
-  // a page a server WOULD serve — on `state`. https is left standing: it is
-  // the canvas's origin, and what sections 6 and 8 read their `· TLS` from.
+  // a page a server WOULD serve — on `state`. Kitchen Table is still open.
   {
-    const was = state.activeId
     const header = async (origin: string) => {
       state.origin = origin
-      select(KITCHEN)
       return (await render()).match(/<span class="members"[^>]*>([^<]*)</)?.[1] ?? ''
     }
     check('the session left the origin it talked to on the store', state.origin === baseUrl, state.origin)
@@ -347,8 +345,11 @@ async function main() {
     check('an origin nobody stated does not claim TLS', unknown === '7 MEMBERS · CLEARTEXT', unknown)
     const tls = await header('https://catenary.test')
     check('an https origin reads TLS — the canvas\'s chip', tls === '7 MEMBERS · TLS', tls)
-    state.activeId = was
   }
+  // STATED, NOT LEFT OVER: every page built from here on is the canvas's, and
+  // the canvas is served over https. Sections 6 and 8 read their `· TLS` from
+  // this line and from no check above it.
+  state.origin = 'https://catenary.test'
 
   // 6. CANT-137 — a deactivated member is not one the header claims.
   //
