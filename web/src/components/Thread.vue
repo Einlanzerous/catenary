@@ -25,6 +25,13 @@ interface Row { kind: 'message'; key: string; message: RenderedMessage; previous
 /** App renders this pane only while there is an active conversation. */
 const conversation = computed(() => activeConversation.value!)
 
+/** The header chip: the kind's word, then the transport. See the template. */
+const chip = computed(() =>
+  conversation.value.kind === 'direct'
+    ? `DIRECT · ${transportLabel.value}`
+    : `${conversation.value.memberCount} MEMBERS · ${transportLabel.value}`,
+)
+
 /** The header's title and what Composer's placeholder names (CANT-141): the
  *  other member's live name once it is known, `conversation.name` only as
  *  the fallback until it is. See conversationTitle's own doc for why one
@@ -119,8 +126,14 @@ watch(
            the guarantee that actually holds: encrypted in transit. And TLS
            only where it is (CANT-221): the word is derived from the origin
            the session talks to, and over `http://` it reads CLEARTEXT, the
-           same word the Flutter client shows for the same server. -->
-      <span class="members">{{ conversation.memberCount }} MEMBERS · {{ transportLabel }}</span>
+           same word the Flutter client shows for the same server.
+           The first half branches on kind (CANT-248): a direct reads DIRECT,
+           the rail's own word and the app's, because its count is always two
+           and goes false the moment the other member is deactivated. Any
+           other kind, the wire's `unknown` sentinel included, states the
+           count: that is a fact the server sent, where DIRECT would claim a
+           kind this build did not recognize. -->
+      <span class="members">{{ chip }}</span>
       <nav class="tools">
         <button>SEARCH</button>
         <button>FILES</button>
