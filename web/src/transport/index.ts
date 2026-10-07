@@ -62,7 +62,7 @@ export {
   reenrollCredential,
 } from './credential-store'
 export type { ChainLink, CredentialStore, StoredCredential } from './credential-store'
-export { enrollDevice, EnrollRefused } from './enroll'
+export { EnrollAnswerUnreadable, enrollDevice, EnrollRefused } from './enroll'
 export type { EnrollOptions } from './enroll'
 export { CATENARY_DB, CREDENTIAL_STORE, openCatenaryDb, UPGRADES } from './db'
 export type { OpenCatenaryDbOptions, UpgradeStep } from './db'

@@ -32,6 +32,21 @@ export class EnrollRefused extends Error {
   }
 }
 
+/**
+ * `POST /enroll` answered 200 and the answer could not be read as a pair: the
+ * body broke off, was not JSON, or was not an `EnrollResponse`. NOT a refusal
+ * and NOT an unreachable server — a status arrived. Whether the token is spent
+ * is unknown from here: Catenary's own 200 has spent it, and a 200 from a hop
+ * in front of Catenary (a captive portal's page) has not. `cause` is what
+ * failed, for a log; a screen should not show it.
+ */
+export class EnrollAnswerUnreadable extends Error {
+  constructor(cause: unknown) {
+    super('enroll: HTTP 200 with an answer that could not be read', { cause })
+    this.name = 'EnrollAnswerUnreadable'
+  }
+}
+
 export async function enrollDevice(opts: EnrollOptions, enrollmentToken: string, deviceName: string): Promise<StoredCredential> {
   const fetchFn = opts.fetch ?? ((input, init) => globalThis.fetch(input, init))
   const now = opts.now ?? (() => Date.now())
@@ -41,7 +56,17 @@ export async function enrollDevice(opts: EnrollOptions, enrollmentToken: string,
     body: JSON.stringify(encodeEnrollRequest({ enrollmentToken, deviceName })),
   })
   const arrived = now()
-  const body = await res.text()
-  if (res.status !== 200) throw new EnrollRefused(res.status)
-  return credentialFromEnroll(decodeEnrollResponse(JSON.parse(body)), res.headers.get('Date'), arrived)
+  // THE STATUS IS THE ANSWER. A refusal is a refusal whether or not its body
+  // ever arrives — so the body is let go rather than waited for — and past a
+  // 200 nothing that fails is "the server could not be reached" (CANT-228): it
+  // is typed, so the caller can say which it was.
+  if (res.status !== 200) {
+    void res.body?.cancel().catch(() => undefined)
+    throw new EnrollRefused(res.status)
+  }
+  try {
+    return credentialFromEnroll(decodeEnrollResponse(JSON.parse(await res.text())), res.headers.get('Date'), arrived)
+  } catch (e) {
+    throw new EnrollAnswerUnreadable(e)
+  }
 }

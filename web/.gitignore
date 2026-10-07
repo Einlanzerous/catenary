@@ -1,5 +1,6 @@
 node_modules/
 dist/
 dist-smoke/
+dist-account-test/
 *.local
 .DS_Store
