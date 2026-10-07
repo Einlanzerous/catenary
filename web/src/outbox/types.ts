@@ -1,4 +1,5 @@
-/* The outbox's types and its two seams (CANT-36, built by CANT-161).
+/* The outbox's types and its three seams (CANT-36, built by CANT-161; the
+ * `Uploader` by CANT-162).
  *
  * `docs/decisions/cant-36-outbox.md` is the rule set; the approved CANT-36 plan
  * is the decision of record. Nothing here is a wire type: an `OutboxEntry` is
@@ -38,7 +39,8 @@ export interface OutboxEntry {
   attempts: number
   /** Retryable refusals received — one per refusal, not per tab. */
   internalRetries: number
-  /** Bounded at 1 (CANT-162). */
+  /** Automatic re-uploads after `upload_not_found`. Bounded at 1, and not
+   *  reset by RETRY (§10 item 4). */
   reuploads: number
   /** Earliest resend under backoff / `retryAfterSec`, wall clock. */
   notBefore?: string
@@ -50,9 +52,10 @@ export type OutboxError =
   | { kind: 'bare_1008' }
   | { kind: 'upload'; message: string }
 
-/** An attachment as composed. The upload queue that moves one to `uploaded`
- *  is CANT-162's; until it lands, an entry carrying one is skipped by the
- *  send drain rather than sent without its handle. */
+/** An attachment as composed. Its `Blob` is held with the entry, which is what
+ *  lets it survive a reload and lets a stale handle be re-uploaded rather than
+ *  lost. The `Uploader` moves it to `uploaded`; until then the send drain skips
+ *  the entry rather than sending it without its handle (§10 item 1). */
 export interface OutboundAttachmentDraft {
   kind: 'voice' | 'image'
   /** The media as recorded or chosen; the service decodes. */
@@ -62,7 +65,9 @@ export interface OutboundAttachmentDraft {
   durationMs?: number
   /** Set when the Uploader returns; cleared on `upload_not_found`. */
   uploadId?: Uuid
-  /** 'uploading' reads as 'pending' after a reload. */
+  /** Only `pending` and `uploaded` are ever stored. An offer in flight is
+   *  this context's memory alone, for the reason `sending` is never stored
+   *  (§3): after a reload every unanswered offer reads `pending` again. */
   upload: 'pending' | 'uploading' | 'uploaded'
 }
 
@@ -112,6 +117,12 @@ export interface OutboxStore {
  */
 export interface OutboxTransport {
   isReady(): boolean
+  /** CANT-31 §6's terminal state, as the transport holds it NOW. Asked at
+   *  compose, because a `closed` event is not how every terminal arrives: a
+   *  credential refused at `/refresh` before any socket opened ends no
+   *  session and emits nothing (CANT-220 ruling 2; CANT-162 ruling 2 gave
+   *  the web seam the member the Dart seam already had). */
+  isTerminal(): boolean
   sendFrame(frame: ClientSend): void
   subscribe(listener: (event: OutboxTransportEvent) => void): () => void
 }
@@ -129,6 +140,62 @@ export type OutboxTransportEvent =
   /** CANT-24 obligation 4's discard-and-bootstrap. It wipes server-derived
    *  state, and the outbox is not server-derived. */
   | { type: 'bootstrap' }
+
+/* ── seam 3: the uploader (§10, CANT-162) ────────────────────────────────── */
+
+/**
+ * Uploads one attachment and resolves with its handle.
+ *
+ * EVERY UPLOAD SETTLES — RESOLVES OR REJECTS — WITHIN A BOUND THE UPLOADER
+ * OWNS. The outbox keeps no deadline: it offers an entry once, by the drain
+ * lock's holder on a ready session, and does not offer it again while that
+ * offer is unanswered, across any number of reconnects (ruling 1). Only the
+ * uploader can tell a slow upload from a dead one. A rejection fails the
+ * entry, which is what gives the person RETRY; a promise that never settles
+ * holds it `pending` until a reload.
+ *
+ * It takes the entry and the attachment rather than the blob and the kind
+ * alone, so a presign that needs the conversation, or wants to key an object
+ * by `clientId`, can be served without the seam changing.
+ */
+export interface Uploader {
+  upload(entry: OutboxEntry, attachment: OutboundAttachmentDraft): Promise<Uuid>
+}
+
+export class UploadRefused extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'UploadRefused'
+  }
+}
+
+/** §10's default until a real uploader exists (CANT-247): it rejects at once
+ *  with a clear message, and an attachment entry goes to `failed` with that
+ *  inline error — never a loop. `configureOutbox` builds the shipped app with
+ *  no uploader, so this is what every attachment meets there. */
+export class RefusingUploader implements Uploader {
+  static readonly message = "Attachments can't be sent yet"
+
+  upload(): Promise<Uuid> {
+    return Promise.reject(new UploadRefused(RefusingUploader.message))
+  }
+}
+
+/** `compose` would not take the draft, and wrote nothing. The message is for
+ *  the person who composed it. */
+export class ComposeRefused extends Error {
+  /** CANT-36 ruling 5, enforced in the outbox (CANT-162 ruling 2): a picked
+   *  file is not composed without a ready session. */
+  static readonly pickedFileOffline = "A file can't be attached while offline"
+  /** A terminal client drains nothing, so it takes no new attachment to
+   *  hold. */
+  static readonly terminal = 'This device cannot send'
+
+  constructor(message: string) {
+    super(message)
+    this.name = 'ComposeRefused'
+  }
+}
 
 /* ── the multi-context pieces (ruling 4) ─────────────────────────────────── */
 
@@ -208,6 +275,21 @@ export interface OutboxFaults {
   orderOutsideTxn?: boolean
   everyTabDrains?: boolean
   lockWithoutReady?: boolean
+  /* CANT-162's six, on criteria 13 and 14. */
+  /** The drain stops at the first entry awaiting an upload. */
+  uploadBlocksDrain?: boolean
+  /** An entry joins the drain when its first attachment has a handle, not
+   *  its last. */
+  sendBeforeLastUpload?: boolean
+  /** `upload_not_found` sends the entry to `failed` with no re-upload. */
+  staleHandleFails?: boolean
+  /** Every `upload_not_found` re-uploads, with no bound. */
+  reuploadUnbounded?: boolean
+  /** An `Uploader` rejection leaves the entry `pending`, to be offered
+   *  again, rather than failing it. */
+  refusalLoops?: boolean
+  /** The resend after a re-upload carries a fresh `clientId`. */
+  remintOnReupload?: boolean
 }
 
 /** The store's own two faults, which live below the `Outbox`. */

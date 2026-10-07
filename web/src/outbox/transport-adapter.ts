@@ -22,6 +22,8 @@
  *                    that attaches after some were applied, the records
  *                    `snapshot()` already holds.
  *   bootstrap        `onApply` with `wiped` (CANT-24 obligation 4).
+ *   isTerminal()     `status().terminal.kind`, read on each call (CANT-162
+ *                    ruling 2).
  *
  * Only a record carrying a `clientId` can settle an entry: the server echoes
  * it to its author alone, so every other record is passed over here.
@@ -61,6 +63,13 @@ export class TransportOutbox implements OutboxTransport {
 
   isReady(): boolean {
     return this.ready
+  }
+
+  /** Read from the transport each time, never cached: a terminal reached with
+   *  no session open (a credential refused at `/refresh`) ends no session and
+   *  emits nothing, and `compose` asks at the moment it matters. */
+  isTerminal(): boolean {
+    return this.transport.status().terminal.kind !== 'none'
   }
 
   sendFrame(frame: ClientSend): void {

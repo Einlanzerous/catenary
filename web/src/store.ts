@@ -490,9 +490,10 @@ export async function stopRecording(sendIt: boolean) {
   recordTicker = null
   state.composer.recording = false
   if (!sendIt || cannotSend()) return
-  // There is no recorder yet, so the clip is empty; the entry is real. It is
-  // held rather than sent until an upload handle exists — the upload queue is
-  // CANT-162's, gated on CANT-48.
+  // There is no recorder yet (CANT-247), so the clip is empty; the entry is
+  // real. The outbox offers it to its `Uploader` once a session is ready, and
+  // the shipped app has none, so it fails there with "Attachments can't be
+  // sent yet" and RETRY and DELETE — never a row that reads QUEUED for good.
   const outbox = await outboxReady
   await outbox.compose({
     conversationId: state.activeId,
@@ -736,8 +737,11 @@ function shippedTransport(): Transport {
  * `useTransport` an adapter over a live CANT-35 transport.
  *
  * The defaults are the shipped app's: IndexedDB `catenary-outbox` where it
- * exists, the Web Lock and BroadcastChannel where they exist, and the adapter
- * over the unstarted transport above until `startSession` replaces it.
+ * exists, the Web Lock and BroadcastChannel where they exist, the adapter
+ * over the unstarted transport above until `startSession` replaces it, and
+ * NO UPLOADER — the outbox's own default refuses every attachment with
+ * "Attachments can't be sent yet". `seams.uploader` is the one line CANT-247
+ * uses to pass the real one through.
  */
 export async function configureOutbox(
   seams: Partial<Omit<OutboxOptions, 'onChange' | 'accountId'>> = {},
@@ -776,6 +780,7 @@ export async function configureOutbox(
     storage: seams.storage !== undefined ? seams.storage : durable ? (nav?.storage ?? null) : null,
     ...(seams.clock ? { clock: seams.clock } : {}),
     ...(seams.random ? { random: seams.random } : {}),
+    ...(seams.uploader ? { uploader: seams.uploader } : {}),
     ...(seams.faults ? { faults: seams.faults } : {}),
     onChange: (view) => {
       outboxView.value = view

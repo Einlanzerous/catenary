@@ -411,6 +411,18 @@ test('CANT-163 · a discard-and-bootstrap reaches the outbox as bootstrap, and d
   ctx.close()
 })
 
+test("CANT-162 · isTerminal() is the transport's status, read each time it is asked", async () => {
+  const ctx = await context()
+  assert.equal(ctx.adapter.isTerminal(), false)
+  const s = await ctx.r.connect()
+  assert.equal(ctx.adapter.isTerminal(), false, 'a live session is not terminal')
+  s.serverClose(4001)
+  await flush()
+  assert.equal(ctx.r.t.status().terminal.kind !== 'none', true)
+  assert.equal(ctx.adapter.isTerminal(), true, 'answered from status().terminal, not from a cached close')
+  ctx.close()
+})
+
 test('CANT-163 · close() detaches the adapter from the transport', async () => {
   const ctx = await context()
   const events: OutboxTransportEvent[] = []

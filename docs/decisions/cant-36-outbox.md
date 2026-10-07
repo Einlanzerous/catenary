@@ -90,13 +90,15 @@ Exactly one context drains: the holder of a Web Lock, `catenary.outbox`. A conte
 
 ## 10 · Attachments — the canvas unchanged, a refusing default
 
-**The canvas is unchanged**: `ATTACH` stays dimmed offline, `RECORD` stays allowed. No attach or capture UI exists yet to lift a dim from; the question is revisited once CANT-48 lands a real `Uploader`.
+**The canvas is unchanged**: `ATTACH` stays dimmed offline, `RECORD` stays allowed. No attach or capture UI exists yet to lift a dim from; the question is revisited when `CANT-247` builds a real `Uploader`.
 
-Until CANT-48, the production default is a `RefusingUploader` that rejects at once with a clear message ("Attachments can't be sent yet"), and an attachment entry goes to `failed` with that inline error — never a loop.
+Until `CANT-247` wires a real one, the production default is a `RefusingUploader` that rejects at once with a clear message ("Attachments can't be sent yet"), and an attachment entry goes to `failed` with that inline error — never a loop.
 
 1. **No head-of-line blocking.** The upload queue and the send queue are independent; an entry with any attachment not yet uploaded is skipped by the send drain, not waited on, and joins the drain at its `order` once its last upload completes.
 2. **Order is the cost of 1, accepted explicitly** (§11).
 3. **A stale handle re-uploads once.** `upload_not_found` naming an entry's `clientId` clears the `uploadId`, re-uploads the held Blob, and resends under the same `clientId` — **once**. A second `upload_not_found` for a handle minted since the first goes to `failed`.
+4. **RETRY after an upload failure uploads afresh.** A `failed` entry whose `lastError` is `upload_not_found` or an upload refusal has its `uploadId`s cleared on RETRY and is offered to the `Uploader` again under the same `clientId`. `reuploads` is not reset: the automatic re-upload happens once in an entry's life, and every later attempt is a person's.
+5. **An upload is the drain holder's, on a ready session.** An attachment is offered to the `Uploader` only by the context holding `catenary.outbox` while its session is `ready`, once, and not again while that offer is unanswered; bounding an upload is the `Uploader`'s.
 
 The attachment's Blob is held in the outbox database with the entry, which is what lets an attachment entry survive a reload and lets a stale handle be re-uploaded rather than lost.
 
@@ -107,10 +109,10 @@ Pending text entries are pipelined in `order` over the one socket, without waiti
 ## Stated here, built elsewhere
 
 - **The TypeScript outbox core, rail projection, and `store.ts`/`smoke.ts` rewrite** — CANT-161.
-- **Attachments in the outbox** — CANT-162, gated on CANT-48.
+- **Attachments in the outbox** — CANT-162, built against a fake `Uploader` with the refusing default.
 - **The `OutboxTransport` adapter over CANT-35's `send` / `subscribe()` / `onSessionEnd` / `onApply`** — CANT-163, gated on CANT-35.
 - **The Dart outbox and SQLite local store** — CANT-42, planned from this record.
 - **Cross-client convergence**, the only mechanical check that the two outboxes agree — CANT-46.
 - **CANT-31 §7** (session closed bare `1008` vs. frame-preceded) is consumed here, not reclassified; the classification of a close as bare or frame-preceded is CANT-35's.
 - **A rate limiter** — unowned; `rate_limited` stays unemitted, and §6 only makes the client correct once one appears.
-- **The presigned upload protocol, the uploads table, and an attach or capture UI** — CANT-48/CANT-47.
+- **The presigned upload protocol and the uploads table** — CANT-48/CANT-47. **The real `Uploader` on both clients, the attach picker and voice capture** — `CANT-247`.

@@ -15,29 +15,48 @@
  * record carrying the entry's clientId is held — in ANY status — the entry is
  * deleted, and the server is the truth about that message from then on.
  *
+ * AN UPLOAD WAITS FOR A READY SESSION, AND IS THE LOCK HOLDER'S (CANT-162
+ * ruling 1, as CANT-201 ruling 1 picked for Dart). A recording may be composed
+ * with no session at all: it is held with its Blob, `pending`, and no uploader
+ * is called — one called with no connection could only throw, and a throw
+ * fails the entry. It is offered when this context is `ready` AND holds the
+ * drain lock, which is also how an entry reloaded after a page load, or
+ * composed in another tab, is offered, and why two tabs do not both upload it.
+ * An entry offered and not yet answered is not offered again: bounding an
+ * upload is the `Uploader`'s.
+ *
+ * A TERMINAL CLIENT TAKES NO ATTACHMENT, HOWEVER IT BECAME TERMINAL (CANT-162
+ * ruling 2). `compose` asks the transport, and does not rely on having seen a
+ * terminal close: a credential refused before any session opened closes
+ * nothing.
+ *
  * The rules are `docs/decisions/cant-36-outbox.md`; section numbers below are
  * that file's.
  */
 
 import type { ClientSend, ServerAck, ServerError, Uuid } from '@/wire/generated'
 import { InProcessLockHub } from './coordination'
-import type {
-  ChannelMessage,
-  Clock,
-  DrainLock,
-  OutboxChannel,
-  OutboxDraft,
-  OutboxEntry,
-  OutboxError,
-  OutboxFaults,
-  OutboxItem,
-  OutboxState,
-  OutboxStore,
-  OutboxTransport,
-  OutboxTransportEvent,
-  OutboxView,
-  PersistApi,
-  PersistStatus,
+import {
+  ComposeRefused,
+  RefusingUploader,
+  type ChannelMessage,
+  type Clock,
+  type DrainLock,
+  type OutboxChannel,
+  type OutboxDraft,
+  type OutboxEntry,
+  type OutboxError,
+  type OutboxFaults,
+  type OutboxItem,
+  type OutboxState,
+  type OutboxStore,
+  type OutboxTransport,
+  type OutboxTransportEvent,
+  type OutboxView,
+  type OutboundAttachmentDraft,
+  type PersistApi,
+  type PersistStatus,
+  type Uploader,
 } from './types'
 
 /** §6: after this many retryable refusals a held entry reads RETRYING. */
@@ -70,6 +89,10 @@ export interface OutboxOptions {
   clock?: Clock
   random?: () => number
   mintId?: () => Uuid
+  /** §10: what an attachment is offered to. Default `RefusingUploader`, so
+   *  a composition root that passes none fails every attachment with its
+   *  message rather than holding it QUEUED for good. */
+  uploader?: Uploader
   faults?: OutboxFaults
   onChange?: (view: OutboxView) => void
 }
@@ -98,6 +121,7 @@ export class Outbox {
   private readonly clock: Clock
   private readonly random: () => number
   private readonly mintId: () => Uuid
+  private readonly uploader: Uploader
   private readonly faults: OutboxFaults
   private readonly onChange: ((view: OutboxView) => void) | undefined
 
@@ -111,11 +135,18 @@ export class Outbox {
   private readonly busy = new Set<Uuid>()
   private readonly inFlight = new Set<Uuid>()
   private readonly acks = new Map<Uuid, ServerAck>()
+  /** Entries this context has offered to the uploader and not heard back on.
+   *  Never stored, and `'uploading'` is never written to an attachment: an
+   *  unanswered offer reads `pending` after a reload, as `sending` does. */
+  private readonly uploading = new Set<Uuid>()
   /** What the holder in another tab says is in flight / acked there. */
   private remoteInFlight = new Set<Uuid>()
   private remoteAcks = new Map<Uuid, ServerAck>()
 
   private ready = false
+  /** The last close this context saw was terminal (CANT-31 §6). Not every
+   *  terminal comes with a close, so `compose` also asks the transport. */
+  private terminal = false
   private holding = false
   private releaseLock: (() => void) | null = null
   private persistStatus: PersistStatus = 'unknown'
@@ -134,6 +165,7 @@ export class Outbox {
     this.clock = opts.clock ?? realClock
     this.random = opts.random ?? Math.random
     this.mintId = opts.mintId ?? (() => crypto.randomUUID())
+    this.uploader = opts.uploader ?? new RefusingUploader()
     this.faults = opts.faults ?? {}
     this.onChange = opts.onChange
     this.accountId = opts.accountId
@@ -193,10 +225,22 @@ export class Outbox {
   /**
    * §2: mint the clientId ONCE, allocate `order` and write the entry in one
    * strict transaction — and only when that transaction has completed does
-   * the entry render, or become eligible for a frame.
+   * the entry render, or become eligible for a frame. Resolves with the stored
+   * entry WITHOUT WAITING FOR AN ACK OR AN UPLOAD: with no ready session the
+   * entry is queued and drains when one is.
+   *
+   * AN ATTACHMENT, WITH NO READY SESSION (ruling 2, as CANT-36 ruling 5 drew
+   * the composer): a `voice` one is taken, held with its Blob, and uploaded
+   * when a session is ready; any other kind is a picked file and is refused
+   * with `ComposeRefused`, as is every attachment on a terminal client. A
+   * refusal writes nothing.
    */
   async compose(draft: OutboxDraft): Promise<OutboxEntry> {
     if (!this.accountId) throw new Error('outbox: no enrolled account to compose as')
+    if (draft.attachments?.length && !this.ready) {
+      if (this.terminal || this.transport.isTerminal()) throw new ComposeRefused(ComposeRefused.terminal)
+      if (draft.attachments.some((a) => a.kind !== 'voice')) throw new ComposeRefused(ComposeRefused.pickedFileOffline)
+    }
     const base: Omit<OutboxEntry, 'order'> = {
       v: 1,
       clientId: this.mintId(),
@@ -232,12 +276,22 @@ export class Outbox {
     this.entries.set(entry.clientId, entry)
     this.emit()
     this.post()
+    // Not this context's to upload, or not yet: the entry is held `pending`,
+    // and whoever holds the lock on a ready session is offered it — the post
+    // above is what makes a holder in another tab re-read.
+    if (this.awaitsUpload(entry)) {
+      if (this.mayUpload) void this.upload(entry.clientId)
+      return entry
+    }
     this.drain()
     return entry
   }
 
   /** §7: `failed` back to `pending` under the SAME clientId, at its original
-   *  `order`. */
+   *  `order`. §10 item 4: an entry failed by `upload_not_found` holds handles
+   *  the server has disowned, and one failed by the uploader holds none, so
+   *  RETRY clears them and the entry is offered to the uploader again —
+   *  `reuploads` is not reset, so this is a person's attempt, never a loop. */
   async retry(clientId: Uuid): Promise<void> {
     const e = this.entries.get(clientId)
     if (!e || e.status !== 'failed') return
@@ -248,11 +302,20 @@ export class Outbox {
       const fresh = await this.store.add({ ...rest, clientId: this.mintId(), status: 'pending' })
       this.entries.set(fresh.clientId, fresh)
     } else {
-      await this.mutate(clientId, (x) => {
+      const pending = await this.mutate(clientId, (x) => {
+        const afterUpload =
+          x.lastError?.kind === 'upload' || (x.lastError?.kind === 'server' && x.lastError.code === 'upload_not_found')
         x.status = 'pending'
         delete x.lastError
         delete x.notBefore
+        if (afterUpload) clearHandles(x)
       })
+      if (pending && this.awaitsUpload(pending)) {
+        this.emit()
+        this.post()
+        if (this.mayUpload) void this.upload(clientId)
+        return
+      }
     }
     this.emit()
     this.post()
@@ -354,8 +417,12 @@ export class Outbox {
 
   private onReady() {
     this.ready = true
+    this.terminal = false
     this.requestLock()
     this.drain()
+    // Nothing unless this context already holds the lock; the grant is what
+    // offers a held recording on the first `ready`.
+    this.offerUploads()
   }
 
   /** §5 and §7: a close before the ack leaves an in-flight entry `pending`, to
@@ -363,6 +430,7 @@ export class Outbox {
    *  bare `1008`, which fails it and does not requeue it (CANT-31 §7). */
   private async onClosed(bare1008: boolean, terminal: boolean) {
     this.ready = false
+    this.terminal = terminal
     const flying = [...this.inFlight]
     this.inFlight.clear()
     if (!this.faults.lockWithoutReady) this.dropLock()
@@ -383,13 +451,18 @@ export class Outbox {
   }
 
   /** §6, under ruling 3 C: a retryable refusal holds under capped backoff and
-   *  never reaches `failed`; every other refusal fails at once. */
+   *  never reaches `failed`; every other refusal fails at once — except §10
+   *  item 3's stale handle, ahead of that split: `upload_not_found` naming an
+   *  entry with attachments clears every handle and re-uploads the held Blobs
+   *  under the same `clientId`, ONCE. A second one fails it like any
+   *  non-retryable refusal. */
   private async onError(err: ServerError) {
     const id = err.clientId
     if (!id || !this.entries.has(id)) return
     this.inFlight.delete(id)
     this.busy.add(id)
     try {
+      if (await this.reupload(id, err)) return
       let hold = isHeldRefusal(err)
       if (hold && this.faults.misclassifyRetryable) hold = false
       if (!hold && this.faults.retryNonRetryable) hold = true
@@ -425,6 +498,107 @@ export class Outbox {
     this.post()
   }
 
+  /* ── uploads (§10) ───────────────────────────────────────────────────── */
+
+  private awaitsUpload(e: OutboxEntry): boolean {
+    const atts = e.attachments ?? []
+    if (this.faults.sendBeforeLastUpload) return atts.length > 0 && !uploaded(atts[0])
+    return atts.some((a) => !uploaded(a))
+  }
+
+  /** Ruling 1: an upload is attempted only on a ready session and only by the
+   *  drain lock's holder — §8's one writer, for uploads as for frames. */
+  private get mayUpload(): boolean {
+    return this.ready && this.holding
+  }
+
+  /**
+   * Each attachment not yet uploaded is offered to the `Uploader`, in order:
+   * a handle it returns is persisted on the entry before the next is asked
+   * for, and the entry joins the drain at its `order` once its last one has
+   * (§10 item 1). A rejection fails the entry with the uploader's own message
+   * and nothing further is uploaded — so an attachment entry is never left
+   * `pending` with nothing that will ever send it. An entry offered and not
+   * yet answered is passed over, whatever asks.
+   */
+  private async upload(clientId: Uuid) {
+    if (this.uploading.has(clientId)) return
+    this.uploading.add(clientId)
+    try {
+      const count = this.entries.get(clientId)?.attachments?.length ?? 0
+      for (let i = 0; i < count; i++) {
+        const entry = this.entries.get(clientId)
+        if (!entry || this.closed) return
+        const a = entry.attachments?.[i]
+        if (!a || uploaded(a)) continue
+        let handle: Uuid
+        try {
+          handle = await this.uploader.upload(entry, a)
+        } catch (e) {
+          // The fault: the rejection is dropped, the entry stays `pending`
+          // with its attachment unuploaded, and the next offer asks again.
+          if (this.faults.refusalLoops) return
+          await this.fail(clientId, { kind: 'upload', message: e instanceof Error ? e.message : String(e) })
+          return
+        }
+        // A result for an entry already settled or discarded is dropped by
+        // `store.update`'s no-op.
+        await this.mutate(clientId, (x) => {
+          const b = x.attachments?.[i]
+          if (!b) return
+          b.uploadId = handle
+          b.upload = 'uploaded'
+        })
+        if (this.faults.sendBeforeLastUpload) this.drain()
+      }
+    } finally {
+      this.uploading.delete(clientId)
+    }
+    this.emit()
+    this.post()
+    this.drain()
+  }
+
+  /** Every `pending` entry of this account still awaiting an upload is
+   *  offered, once: `upload` passes over one already offered and unanswered. */
+  private offerUploads() {
+    if (this.closed || !this.mayUpload) return
+    for (const e of this.sorted()) {
+      if (!this.mine(e) || e.status !== 'pending' || !this.awaitsUpload(e)) continue
+      void this.upload(e.clientId)
+    }
+  }
+
+  /** §10 item 3. True when the refusal was taken as a stale handle and the
+   *  entry re-offered; false when it is the caller's to classify. */
+  private async reupload(id: Uuid, err: ServerError): Promise<boolean> {
+    const e = this.entries.get(id)
+    if (!e || err.code !== 'upload_not_found' || !e.attachments?.length) return false
+    if (this.faults.staleHandleFails) return false
+    if (e.reuploads >= 1 && !this.faults.reuploadUnbounded) return false
+    if (this.faults.remintOnReupload) {
+      this.forget(id)
+      await this.store.delete(id)
+      const { order: _order, lastError: _err, ...rest } = structuredClone(e)
+      clearHandles(rest as OutboxEntry)
+      const fresh = await this.store.add({ ...rest, clientId: this.mintId(), reuploads: e.reuploads + 1 })
+      this.entries.set(fresh.clientId, fresh)
+      this.emit()
+      this.post()
+      if (this.mayUpload) void this.upload(fresh.clientId)
+      return true
+    }
+    await this.mutate(id, (x) => {
+      x.reuploads++
+      delete x.notBefore
+      clearHandles(x)
+    })
+    this.emit()
+    this.post()
+    if (this.mayUpload) void this.upload(id)
+    return true
+  }
+
   /* ── the drain ───────────────────────────────────────────────────────── */
 
   /**
@@ -444,9 +618,12 @@ export class Outbox {
       if (e.status !== 'pending' && !this.faults.resendFailedWithoutRetry) continue
       const id = e.clientId
       if (this.inFlight.has(id) || this.acks.has(id) || this.busy.has(id)) continue
-      // An attachment not yet uploaded is skipped, never waited on. The upload
-      // queue that finishes it is CANT-162's.
-      if (e.attachments?.some((a) => a.upload !== 'uploaded' || !a.uploadId)) continue
+      // §10 item 1: an attachment not yet uploaded is skipped, never waited
+      // on, and the entry is overtaken (§11).
+      if (this.awaitsUpload(e)) {
+        if (this.faults.uploadBlocksDrain) break
+        continue
+      }
       if (e.notBefore) {
         const t = Date.parse(e.notBefore)
         if (t > now) {
@@ -498,6 +675,7 @@ export class Outbox {
       this.remoteInFlight = new Set()
       this.remoteAcks = new Map()
       this.drain()
+      this.offerUploads()
       this.emit()
       this.post()
     })
@@ -535,6 +713,8 @@ export class Outbox {
     for (const e of rows) if (!this.gone.has(e.clientId)) this.entries.set(e.clientId, e)
     this.emit()
     this.drain()
+    // An entry composed or retried in another tab is the holder's to upload.
+    this.offerUploads()
   }
 
   /* ── plumbing ────────────────────────────────────────────────────────── */
@@ -587,6 +767,17 @@ export class Outbox {
 
   private emit() {
     if (!this.closed) this.onChange?.(this.view())
+  }
+}
+
+const uploaded = (a: OutboundAttachmentDraft) => a.upload === 'uploaded' && !!a.uploadId
+
+/** Every handle the server has disowned, or that was never minted, goes; the
+ *  Blobs stay, which is what the next offer uploads. */
+function clearHandles(e: OutboxEntry) {
+  for (const a of e.attachments ?? []) {
+    delete a.uploadId
+    a.upload = 'pending'
   }
 }
 
