@@ -88,6 +88,12 @@ const state = reactive({
   conversations: [] as Conversation[],
   messages: [] as Message[],
 
+  /** The origin the session talks to — `startSession`'s `baseUrl`, which is
+   *  `location.origin` in a browser. '' until a session has started, and kept
+   *  when one ends, like everything else it put on screen. The thread
+   *  header's transport word is derived from this and from nothing else. */
+  origin: '',
+
   /** '' until the first projection names a conversation to open on. */
   activeId: '',
   view: 'thread' as View,
@@ -662,6 +668,25 @@ export function jumpTo(messageId: string, seekMs?: number) {
   }, 4000)
 }
 
+/* ── the transport word (CANT-221) ──────────────────────────────────────── */
+
+/**
+ * The last word of the thread header: `TLS` for an `https://` origin and
+ * `CLEARTEXT` for anything else — the Flutter client's two words and its rule
+ * (`addressIsSecure`, app/lib/store/address.dart), so both clients say the
+ * same thing about one server.
+ *
+ * AN UNKNOWN ORIGIN IS NOT A SECURE ONE. '' — no session yet — reads
+ * CLEARTEXT, because TLS is a claim and this is the surface that must not
+ * make one it cannot keep (invariant 3). Never `E2E`: there is no input for
+ * which this returns it.
+ */
+export const transportWord = (origin: string): 'TLS' | 'CLEARTEXT' =>
+  /^https:\/\//i.test(origin) ? 'TLS' : 'CLEARTEXT'
+
+/** `transportWord` over the origin the session actually talks to. */
+export const transportLabel = computed(() => transportWord(state.origin))
+
 /* ── the outbox's wiring ────────────────────────────────────────────────── */
 
 let current: Outbox | null = null
@@ -831,6 +856,9 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
     state.read.clear()
   }
   state.typing = {}
+  // The one place the header's transport word gets its input: the origin
+  // this session's transport and credential are about to be built over.
+  state.origin = seams.baseUrl
 
   const logger = seams.logger ?? consoleLogger
   const transport = createTransport({
