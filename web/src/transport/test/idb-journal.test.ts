@@ -18,7 +18,7 @@ import type { Applied } from '../journal'
 import { browserLock } from '../seams'
 import { enrolled } from './credential-harness'
 import type { Faults } from '../faults'
-import { bootstrapPage, conversation, deferred, flush, message, messageFrame, page, rig, user, uuid } from './harness'
+import { ME, OTHER, bootstrapPage, conversation, deferred, flush, message, messageFrame, page, rig, user, uuid } from './harness'
 import type { SyncResponse } from '@/wire/generated'
 
 /** IndexedDB completes on setImmediate turns of its own; give it enough. */
@@ -492,4 +492,160 @@ test('two tabs · a page refused as stale is a failed catch-up, held on its back
 
   r.t.stop()
   a.close()
+})
+
+/* ── CANT-230 · whose journal it is ───────────────────────────────────────── */
+
+/** The `journal` store's own keys, read through a connection of its own. */
+async function meta(factory: IDBFactory): Promise<Record<string, unknown>> {
+  const db = await openCatenaryDb({ factory })
+  try {
+    return await new Promise((resolve, reject) => {
+      const req = db.transaction(JOURNAL_STORE).objectStore(JOURNAL_STORE).getAll()
+      req.onsuccess = () => resolve(Object.fromEntries((req.result as { key: string; value: unknown }[]).map((r) => [r.key, r.value])))
+      req.onerror = () => reject(req.error)
+    })
+  } finally {
+    db.close()
+  }
+}
+
+test('CANT-230 · the journal records its owner: written, read back by the next page load, and a repeat claim changes nothing', async () => {
+  const factory = new IDBFactory()
+  const journal = await IdbJournal.open({ factory })
+  assert.equal(journal.owner(), null)
+  assert.equal(await journal.claim(ME), null)
+  await journal.applyPage(P1, NO_FAULTS)
+  journal.close()
+
+  let writes = 0
+  const reopened = await IdbJournal.open({ factory, midWrite: () => void writes++ })
+  assert.equal(reopened.owner(), ME)
+  const before = await meta(factory)
+  const snapshot = reopened.snapshot()
+  assert.equal(await reopened.claim(ME), null)
+  assert.equal(writes, 0, 'its own account claiming it again writes nothing')
+  assert.deepEqual(await meta(factory), before, 'the cursor, the wipe count and the generation are what they were')
+  assert.deepEqual(reopened.snapshot(), snapshot)
+  assert.equal(reopened.cursor(), 3)
+  reopened.close()
+})
+
+test('CANT-230 · a journal owned by another account is wiped by the claim, and the credential beside it is not touched', async () => {
+  const factory = new IDBFactory()
+  const creds = await IdbCredentialStore.open({ factory })
+  const cred = enrolled(Date.UTC(2026, 8, 29))
+  await enrollCredential(creds, browserLock(), cred)
+  const journal = await IdbJournal.open({ factory })
+  await journal.claim(ME)
+  await journal.applyPage({ ...P1, hasMore: true }, NO_FAULTS)
+  await journal.applyPage(P2, NO_FAULTS)
+  const before = await meta(factory)
+  assert.equal(before.cursor, 6)
+
+  const applied = await journal.claim(OTHER)
+  assert.equal(applied?.wiped, true)
+  assert.equal(applied?.source, 'wipe')
+  const after = await meta(factory)
+  assert.equal(after.cursor, null)
+  assert.equal(after.wipes, ((before.wipes as number | undefined) ?? 0) + 1)
+  assert.ok(after.generation, 'a generation is stamped')
+  assert.notEqual(after.generation, before.generation)
+  assert.equal(after.owner, OTHER)
+  for (const s of [MESSAGES_STORE, CONVERSATIONS_STORE, USERS_STORE, COUNTED_STORE]) assert.equal(await count(factory, s), 0, s)
+  assert.deepEqual(await creds.read(), cred, 'the credential record is what it was')
+  assert.deepEqual(journal.snapshot(), { cursor: null, messages: [], conversations: [], users: [] })
+  assert.equal(journal.owner(), OTHER)
+  assert.equal(journal.wipes(), after.wipes)
+  journal.close()
+  creds.close()
+})
+
+test('CANT-230 · the claim is one transaction: aborted before it completes, nothing it does has landed', async () => {
+  const factory = new IDBFactory()
+  const first = await IdbJournal.open({ factory })
+  await first.claim(ME)
+  await first.applyPage(P1, NO_FAULTS)
+  first.close()
+  const before = await meta(factory)
+
+  const journal = await IdbJournal.open({
+    factory,
+    midWrite: (_tx, source) => {
+      if (source === 'wipe') throw new Error('killed')
+    },
+  })
+  await assert.rejects(journal.claim(OTHER), /killed/)
+  assert.equal(journal.owner(), ME, 'and the mirror is what it was')
+  assert.equal(journal.cursor(), 3)
+  journal.close()
+
+  assert.deepEqual(await meta(factory), before)
+  assert.equal(await count(factory, MESSAGES_STORE), 3)
+  const reopened = await IdbJournal.open({ factory })
+  assert.equal(reopened.owner(), ME)
+  assert.equal(reopened.cursor(), 3)
+  assert.equal(reopened.messageCount(), 3)
+  reopened.close()
+})
+
+test('CANT-230 · a wipe keeps the owner, so a later claim by another account wipes and does not adopt', async () => {
+  const factory = new IDBFactory()
+  const journal = await IdbJournal.open({ factory })
+  await journal.claim(ME)
+  await journal.applyPage(P1, NO_FAULTS)
+  await journal.wipe()
+  assert.equal((await meta(factory)).owner, ME, 'the wipe cleared the journal store and put the owner back')
+  assert.equal(journal.owner(), ME)
+  // Records gathered since the wipe, as after an obligation-4 bootstrap.
+  await journal.applyPage(P1, NO_FAULTS)
+  journal.close()
+
+  const reopened = await IdbJournal.open({ factory })
+  assert.equal(reopened.owner(), ME)
+  const applied = await reopened.claim(OTHER)
+  assert.equal(applied?.wiped, true, 'not adopted: the journal still said whose it was')
+  assert.equal(reopened.messageCount(), 0)
+  assert.equal(reopened.owner(), OTHER)
+  assert.equal(await count(factory, MESSAGES_STORE), 0)
+  reopened.close()
+})
+
+test('CANT-230 · [ruling 1 → option 0] a journal with no owner is adopted: its records and cursor are kept', async () => {
+  const factory = new IDBFactory()
+  // As a build before this one left it: records, a cursor, and no owner key.
+  const old = await IdbJournal.open({ factory })
+  await old.applyPage(P1, NO_FAULTS)
+  old.close()
+  assert.equal('owner' in (await meta(factory)), false)
+
+  const journal = await IdbJournal.open({ factory })
+  assert.equal(journal.owner(), null)
+  const snapshot = journal.snapshot()
+  assert.equal(await journal.claim(ME), null, 'nothing was wiped')
+  assert.equal((await meta(factory)).owner, ME)
+  assert.deepEqual(journal.snapshot(), snapshot)
+  assert.equal(journal.cursor(), 3)
+  assert.equal(journal.wipes(), 0)
+  assert.equal(await count(factory, MESSAGES_STORE), 3)
+  journal.close()
+})
+
+test('CANT-230 · two tabs · a claim’s wipe is seen by the other tab: its next page write is refused as stale', async () => {
+  const factory = new IDBFactory()
+  const a = await IdbJournal.open({ factory })
+  const b = await IdbJournal.open({ factory })
+  await a.claim(ME)
+  await a.applyPage(P1, NO_FAULTS)
+  await b.applyPage(P1, NO_FAULTS)
+  assert.equal(b.cursor(), 3)
+
+  await a.claim(OTHER)
+  await assert.rejects(b.applyPage(P2, NO_FAULTS), JournalStale)
+  assert.equal(b.cursor(), null, 'it holds what the claim left')
+  assert.equal(b.messageCount(), 0)
+  assert.equal(b.owner(), OTHER)
+  assert.equal(await count(factory, MESSAGES_STORE), 0, 'the refused page landed nothing')
+  a.close()
+  b.close()
 })

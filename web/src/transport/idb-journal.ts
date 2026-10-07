@@ -42,14 +42,14 @@
  */
 
 import {
-  type Conversation, type Message, type User,
+  type Conversation, type Message, type User, type Uuid,
   decodeConversation, decodeMessage, decodeUser, encodeConversation, encodeMessage, encodeUser,
 } from '@/wire/generated'
 import {
   CONVERSATIONS_STORE, COUNTED_STORE, JOURNAL_STORE, JOURNAL_STORES, MESSAGES_STORE, USERS_STORE,
   openCatenaryDb, type OpenCatenaryDbOptions,
 } from './db'
-import { type Applied, type JournalDelta, type JournalState, StagedJournal, emptyState } from './journal'
+import { type Applied, type JournalDelta, type JournalState, StagedJournal, emptyState, wipedApplied } from './journal'
 
 export interface IdbJournalOptions extends OpenCatenaryDbOptions {
   /**
@@ -102,7 +102,7 @@ export class JournalWriteAborted extends Error {
 }
 
 interface JournalRecord {
-  key: 'cursor' | 'wipes' | 'generation'
+  key: 'cursor' | 'wipes' | 'generation' | 'owner'
   value: number | string | null
 }
 
@@ -141,14 +141,17 @@ export class IdbJournal extends StagedJournal {
     this.db.close()
   }
 
-  protected async commit(_next: JournalState, d: JournalDelta): Promise<void> {
+  protected async commit(next: JournalState, d: JournalDelta): Promise<void> {
     const generation = d.wiped ? globalThis.crypto.randomUUID() : this.generation
     try {
       if (this.opts.splitCursor && !d.wiped) {
         await this.write(d, 'records', generation)
         await this.write(d, 'cursor', generation)
       } else {
-        await this.write(d, 'all', generation)
+        // A wipe keeps the STORED owner, read in the wipe's own transaction,
+        // and the mirror takes the same one.
+        const owner = await this.write(d, 'all', generation)
+        if (d.wiped) next.owner = owner
       }
     } catch (e) {
       if (e instanceof JournalStale) {
@@ -162,7 +165,68 @@ export class IdbJournal extends StagedJournal {
     if (this.opts.durable) await this.opts.durable()
   }
 
-  private write(d: JournalDelta, part: 'all' | 'records' | 'cursor', generation: string | null): Promise<void> {
+  /**
+   * CANT-230. Decided against what is STORED, in one transaction over the
+   * journal's stores: nothing another tab commits lands between reading the
+   * owner and acting on it. Another account's journal is wiped in every
+   * respect — the same stores, the stored wipe count plus one, a fresh
+   * generation, so another tab's next write is refused as stale — and the
+   * new owner is put in its place. The mirror is then read back from what is
+   * stored: the claim wrote from the database, not from this tab's copy.
+   */
+  override async claim(accountId: Uuid): Promise<Applied | null> {
+    const wiped = await new Promise<boolean | null>((resolve, reject) => {
+      let tx: IDBTransaction
+      try {
+        tx = this.db.transaction([...JOURNAL_STORES], 'readwrite')
+      } catch (e) {
+        reject(e)
+        return
+      }
+      let outcome: boolean | null = null
+      let thrown: { e: unknown } | null = null
+      tx.oncomplete = () => resolve(outcome)
+      tx.onabort = () => reject(thrown ? thrown.e : (tx.error ?? new JournalWriteAborted('wipe')))
+      const journal = tx.objectStore(JOURNAL_STORE)
+      const heldOwner = journal.get('owner')
+      const heldWipes = journal.get('wipes')
+      heldWipes.onsuccess = () => {
+        try {
+          const owner = ((heldOwner.result as JournalRecord | undefined)?.value ?? null) as Uuid | null
+          if (owner === accountId) return // its own account, again: nothing is written
+          outcome = owner !== null
+          if (outcome) {
+            const wipes = ((heldWipes.result as JournalRecord | undefined)?.value ?? 0) as number
+            for (const name of JOURNAL_STORES) tx.objectStore(name).clear()
+            journal.put({ key: 'generation', value: globalThis.crypto.randomUUID() } satisfies JournalRecord)
+            journal.put({ key: 'cursor', value: null } satisfies JournalRecord)
+            journal.put({ key: 'wipes', value: wipes + 1 } satisfies JournalRecord)
+          }
+          // Nobody's (a journal from before there was an owner) is kept and
+          // adopted: CANT-230 ruling 1.
+          journal.put({ key: 'owner', value: accountId } satisfies JournalRecord)
+          this.opts.midWrite?.(tx, 'wipe')
+        } catch (e) {
+          thrown = { e }
+          try {
+            tx.abort()
+          } catch {
+            // Already aborted by the seam itself; its onabort carries `thrown`.
+          }
+        }
+      }
+    })
+    if (wiped === null) return null
+    const loaded = await load(this.db)
+    this.s = loaded.state
+    this.generation = loaded.generation
+    if (this.opts.durable) await this.opts.durable()
+    return wiped ? wipedApplied() : null
+  }
+
+  /** One transaction. A wipe resolves with the owner it found stored and put
+   *  back; any other write resolves null and reads no owner. */
+  private write(d: JournalDelta, part: 'all' | 'records' | 'cursor', generation: string | null): Promise<Uuid | null> {
     return new Promise((resolve, reject) => {
       let tx: IDBTransaction
       try {
@@ -172,7 +236,8 @@ export class IdbJournal extends StagedJournal {
         return
       }
       let thrown: { e: unknown } | null = null
-      tx.oncomplete = () => resolve()
+      let storedOwner: Uuid | null = null
+      tx.oncomplete = () => resolve(storedOwner)
       tx.onabort = () => reject(thrown ? thrown.e : (tx.error ?? new JournalWriteAborted(d.source)))
       const fail = (e: unknown) => {
         thrown = { e }
@@ -186,14 +251,18 @@ export class IdbJournal extends StagedJournal {
       // nothing another tab commits can land between the check and the write.
       const journal = tx.objectStore(JOURNAL_STORE)
       const heldGeneration = journal.get('generation')
+      // Only a wipe needs the owner, to put it back; a page or a live frame
+      // asks for nothing it did not ask for before.
+      const heldOwner = d.wiped ? journal.get('owner') : null
       const heldCursor = journal.get('cursor')
       heldCursor.onsuccess = () => {
         try {
+          storedOwner = ((heldOwner?.result as JournalRecord | undefined)?.value ?? null) as Uuid | null
           const storedGeneration = ((heldGeneration.result as JournalRecord | undefined)?.value ?? null) as string | null
           const storedCursor = ((heldCursor.result as JournalRecord | undefined)?.value ?? null) as number | null
           if (!d.wiped && !this.opts.ignoreGeneration && storedGeneration !== this.generation) throw new JournalStale(d.source)
           const cursor = d.wiped || storedCursor === null || (d.cursor !== null && d.cursor > storedCursor) ? d.cursor : storedCursor
-          this.puts(tx, d, part, generation, cursor)
+          this.puts(tx, d, part, generation, cursor, storedOwner)
         } catch (e) {
           fail(e)
         }
@@ -201,7 +270,10 @@ export class IdbJournal extends StagedJournal {
     })
   }
 
-  private puts(tx: IDBTransaction, d: JournalDelta, part: 'all' | 'records' | 'cursor', generation: string | null, cursor: number | null): void {
+  private puts(
+    tx: IDBTransaction, d: JournalDelta, part: 'all' | 'records' | 'cursor', generation: string | null, cursor: number | null,
+    owner: Uuid | null,
+  ): void {
     if (part !== 'cursor') {
       // OBLIGATION 4's wipe: the journal's stores, and never `credential`.
       if (d.wiped) for (const name of JOURNAL_STORES) tx.objectStore(name).clear()
@@ -215,7 +287,14 @@ export class IdbJournal extends StagedJournal {
       d.counted.forEach((id, i) => counted.put({ n: d.countedFrom + i, id } satisfies CountedRecord))
     }
     const journal = tx.objectStore(JOURNAL_STORE)
-    if (d.wiped) journal.put({ key: 'generation', value: generation } satisfies JournalRecord)
+    if (d.wiped) {
+      journal.put({ key: 'generation', value: generation } satisfies JournalRecord)
+      // THE OWNER SURVIVES A WIPE (CANT-230). The clear above took the
+      // `journal` store with it, and a wipe is not a change of account: left
+      // out, the next claim would find nobody's journal and adopt whatever
+      // it had gathered since.
+      journal.put({ key: 'owner', value: owner } satisfies JournalRecord)
+    }
     if (part !== 'records') {
       journal.put({ key: 'cursor', value: cursor } satisfies JournalRecord)
       journal.put({ key: 'wipes', value: d.wipes } satisfies JournalRecord)
@@ -258,6 +337,7 @@ function decodeState(reqs: Record<'messages' | 'conversations' | 'users' | 'jour
   const meta = new Map((reqs.journal.result as JournalRecord[]).map((r) => [r.key, r.value]))
   const s = emptyState((meta.get('wipes') as number | null | undefined) ?? 0)
   s.cursor = (meta.get('cursor') as number | null | undefined) ?? null
+  s.owner = (meta.get('owner') as string | null | undefined) ?? null
   for (const raw of reqs.messages.result as unknown[]) {
     const m: Message = decodeMessage(raw)
     s.messages.set(m.id, m)

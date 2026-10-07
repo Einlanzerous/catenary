@@ -417,3 +417,39 @@ test('CANT-46 · negative control keepHeldConversation keeps the held record and
   assert.equal(broken.holdsPageMessage, true, 'the message the page carried is held all the same')
   assert.equal(broken.cursor, 4, 'and the cursor moved, so client.Compare cannot see this fault')
 })
+
+/* ── CANT-230 · whose journal it is, in memory ────────────────────────────── */
+
+test('CANT-230 · [ruling 1 → option 0] MemoryJournal · a journal with no owner is adopted, its own account changes nothing, another wipes', async () => {
+  const faults = { cursorOnLiveFrames: false, dedupeByLogSeq: false, keepHeldConversation: false }
+  const j = new MemoryJournal()
+  await j.applyPage(bootstrapPage(3, [message(1), message(2), message(3)]), faults)
+  assert.equal(j.owner(), null)
+
+  const held = j.snapshot()
+  assert.equal(await j.claim(ME), null, 'adopted: nothing was wiped')
+  assert.equal(j.owner(), ME)
+  assert.deepEqual(j.snapshot(), held)
+  assert.equal(await j.claim(ME), null)
+  assert.deepEqual(j.snapshot(), held)
+  assert.equal(j.wipes(), 0)
+
+  const applied = await j.claim(OTHER)
+  assert.equal(applied?.wiped, true)
+  assert.equal(applied?.source, 'wipe')
+  assert.deepEqual(j.snapshot(), { cursor: null, messages: [], conversations: [], users: [] })
+  assert.deepEqual(j.counted(), [])
+  assert.equal(j.wipes(), 1)
+  assert.equal(j.owner(), OTHER)
+})
+
+test('CANT-230 · MemoryJournal · a wipe keeps the owner, so a later claim by another account wipes and does not adopt', async () => {
+  const faults = { cursorOnLiveFrames: false, dedupeByLogSeq: false, keepHeldConversation: false }
+  const j = new MemoryJournal()
+  await j.claim(ME)
+  await j.wipe()
+  assert.equal(j.owner(), ME)
+  await j.applyPage(bootstrapPage(3, [message(1), message(2), message(3)]), faults)
+  assert.equal((await j.claim(OTHER))?.wiped, true)
+  assert.equal(j.messageCount(), 0)
+})

@@ -862,6 +862,18 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
   const held = await seams.store.read()
   if (run !== sessionRun || !held) return false
 
+  // THE JOURNAL IS CLAIMED BEFORE ANYTHING IS BUILT OVER IT (CANT-230). A
+  // re-enrollment writes the pair and then wipes the journal, as two writes;
+  // a tab closed between them leaves this account's credential over another
+  // account's records and cursor. The claim wipes a journal that is someone
+  // else's, here, whatever was or was not written before. It is a second
+  // await, so the overtake check is made again after it: a start overtaken
+  // while its claim was being written builds no transport.
+  if (seams.journal) {
+    await seams.journal.claim(held.userId)
+    if (run !== sessionRun) return false
+  }
+
   // Another account's records are not this one's, whatever a reused journal
   // says; a fresh start for the same account keeps what is on screen until
   // the journal's own projection replaces it.

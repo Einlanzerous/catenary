@@ -78,8 +78,29 @@ export interface Journal {
   /** A live frame, applied by id. Moves no cursor (unless the fault says so). */
   applyLive(write: LiveWrite, faults: JournalFaults): Promise<Applied>
   /** Obligation 4: messages, conversations, users and the cursor. Never the
-   *  credential, which is not in here at all. */
+   *  credential, which is not in here at all, and never the `owner()`: the
+   *  wipes a transport decides are for the same account. */
   wipe(): Promise<Applied>
+  /** The `user_id` of the account this journal was written for; null until
+   *  one has claimed it. */
+  owner(): Uuid | null
+  /**
+   * Makes this journal `accountId`'s, BEFORE ANYTHING IS BUILT OVER IT
+   * (CANT-230). A cursor is a position in the log as one account can see it,
+   * and the records are that account's: a credential must never run over a
+   * journal written for another. So, in one write:
+   *
+   *  - held by `accountId` already: nothing is written;
+   *  - held by another account: wiped exactly as `wipe()` wipes, and
+   *    `accountId` recorded. Resolves with that wipe's `Applied`;
+   *  - held by nobody (a journal from before there was an owner): kept, and
+   *    `accountId` recorded.
+   *
+   * Resolves null when nothing was wiped. Whoever holds both a credential and
+   * a journal calls this with the credential's `userId` before constructing a
+   * transport; a re-enrollment interrupted before its wipe heals here.
+   */
+  claim(accountId: Uuid): Promise<Applied | null>
   snapshot(): JournalSnapshot
   /** How many messages are held; `snapshot().messages.length` without the copy. */
   messageCount(): number
@@ -101,6 +122,8 @@ export interface JournalState {
   /** R1's evidence log since the last wipe; see `StagedJournal.counted()`. */
   counted: Uuid[]
   wipes: number
+  /** `Journal.owner()`. Not part of what a wipe clears. */
+  owner: Uuid | null
 }
 
 /**
@@ -198,14 +221,31 @@ export abstract class StagedJournal implements Journal {
     }
   }
 
+  owner(): Uuid | null {
+    return this.s.owner
+  }
+
+  /** In memory, where the state is the store. A durable implementation
+   *  decides against what is STORED, in one transaction, and overrides this. */
+  async claim(accountId: Uuid): Promise<Applied | null> {
+    const held = this.s.owner
+    if (held === accountId) return null
+    if (held === null) {
+      this.s = { ...cloneState(this.s), owner: accountId }
+      return null
+    }
+    this.s = { ...emptyState(this.s.wipes + 1), owner: accountId }
+    return wipedApplied()
+  }
+
   async wipe(): Promise<Applied> {
-    const next = emptyState(this.s.wipes + 1)
+    const next = { ...emptyState(this.s.wipes + 1), owner: this.s.owner }
     await this.commit(next, {
       source: 'wipe', wiped: true, messages: [], conversations: [], users: [],
       counted: [], countedFrom: 0, cursor: null, wipes: next.wipes,
     })
     this.s = next
-    return { source: 'wipe', cursor: null, messages: [], conversations: [], users: [], receipts: [], wiped: true }
+    return wipedApplied()
   }
 
   messageCount(): number {
@@ -300,8 +340,12 @@ function hold(s: JournalState, served: readonly Conversation[], faults: JournalF
 }
 
 export function emptyState(wipes: number): JournalState {
-  return { cursor: null, messages: new Map(), conversations: new Map(), users: new Map(), counted: [], wipes }
+  return { cursor: null, messages: new Map(), conversations: new Map(), users: new Map(), counted: [], wipes, owner: null }
 }
+
+/** What a wipe emits, whoever decided it: the transport, or a claim. */
+export const wipedApplied = (): Applied =>
+  ({ source: 'wipe', cursor: null, messages: [], conversations: [], users: [], receipts: [], wiped: true })
 
 function cloneState(s: JournalState): JournalState {
   return {
@@ -311,6 +355,7 @@ function cloneState(s: JournalState): JournalState {
     users: new Map(s.users),
     counted: [...s.counted],
     wipes: s.wipes,
+    owner: s.owner,
   }
 }
 
