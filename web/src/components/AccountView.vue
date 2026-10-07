@@ -98,6 +98,7 @@ onMounted(() => {
         <button class="ghost" @click="beginReenroll">RE-ENROLL</button>
       </div>
 
+      <p v-if="accountState.sessionError" class="error" role="alert">{{ accountState.sessionError }}</p>
       <p v-if="accountState.error" class="error">{{ accountState.error }}</p>
 
       <p v-if="accountState.busy && !devices.length" class="empty">Loading your devices…</p>
