@@ -28,6 +28,7 @@ import (
 	"github.com/magos/catenary/internal/hub"
 	"github.com/magos/catenary/internal/provision"
 	"github.com/magos/catenary/internal/store"
+	"github.com/magos/catenary/internal/webui"
 	"github.com/magos/catenary/internal/wire"
 	"github.com/magos/catenary/internal/wireview"
 )
@@ -236,7 +237,18 @@ type deps struct {
 	// route backed by nothing, and it matters more here than anywhere else in
 	// this file, because the thing behind this one mints credentials.
 	provision http.Handler
+
+	// web is the client the routed listener serves, or nil when this binary
+	// was built without one (CANT-241). Kept here so the second-port test can
+	// name every path the routed listener serves and the provisioning one
+	// must not; it is handed to api.NewRouter and to nothing else.
+	web *webui.Bundle
 }
+
+// webClient is where setup() gets the client: the tree compiled into this
+// binary. A variable so cmd/catenary's boot-line test can hand setup() each
+// state; nothing in a running process reassigns it.
+var webClient = webui.Embedded
 
 // setup is the composition root. Every dependency is constructed here and
 // passed down; nothing below reaches for a global or reads the environment
@@ -371,6 +383,26 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	// predicates that decide who can be enrolled as whom live in CANT-130 and
 	// CANT-134, are read there, and are reachable from here only through these
 	// three names.
+	// CANT-241: the web client, and the ONE line that says whether this
+	// binary has it. Seventeen releases shipped with no client and no line
+	// that could have said so; `docker logs catenary` now answers it.
+	//
+	// A LOAD ERROR PANICS rather than degrading to "absent". It means a client
+	// IS embedded and cannot be served — a file outside the content-type table
+	// or a name that is not a literal pattern — which is a defect in the build
+	// that produced this binary, and verify.sh's real-bundle test exists to
+	// catch it before any image does. Serving no client while the boot line
+	// blamed the build would be the silent failure this ticket closes.
+	web, err := webClient()
+	if err != nil {
+		panic("the embedded web client cannot be served: " + err.Error())
+	}
+	if web != nil {
+		logger.Info("web client embedded", "files", web.Len())
+	} else {
+		logger.Warn("web client absent — GET / is a 404 on this binary")
+	}
+
 	var provisionHandler http.Handler
 	if st != nil && cfg.ProvisioningEnabled() {
 		provisionHandler = provision.New(provision.Deps{
@@ -390,6 +422,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		listener:    listener,
 		revocations: revocations,
 		provision:   provisionHandler,
+		web:         web,
 		router: api.NewRouter(api.Deps{
 			Logger:   logger,
 			DB:       db,
@@ -421,6 +454,10 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			FindOrCreateDirect: findOrCreateDirectFn,
 			MediaURL:           mediaURL,
 			MaxRESTBodyBytes:   maxFrameBytes,
+
+			// The routed listener only. provision.Deps never sees it, so
+			// the second port serves none of the client.
+			Web: web,
 		}),
 	}
 }

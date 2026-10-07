@@ -9,9 +9,12 @@
 .github
 .dockerignore
 
-# Client trees. The server binary links none of them.
+# Client trees. The server binary links none of them — except web/ itself,
+# which the Dockerfile's Node stage builds. A client somebody built LOCALLY
+# (possibly from a dirty tree) is excluded, so that stage is the image's only
+# source of it (CANT-241).
 web/node_modules
-web/dist
+internal/webui/static/dist
 dart
 dart-client
 app

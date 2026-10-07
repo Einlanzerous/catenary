@@ -14,9 +14,23 @@
 # prints one named step per lane with a PASS/FAIL per check, so a failure reads
 # as "R4 · Dart" rather than as a wall of output.
 #
-# What is NOT here: release-please and the GHCR image. CLAUDE.md names both,
-# neither is in this ticket's Done-when, and publishing is CANT-16's deploy
-# path rather than the test matrix.
+# TWO JOBS SIT OUTSIDE verify.sh, and both are deliberate exceptions to the
+# rule above rather than a second list of the same checks. `build` proves what
+# only a clean machine can: that a checkout that never ran `npm` compiles and
+# tests, and that the binary CI hands out is static and carries the client.
+# `image` (CANT-241) builds deploy/Dockerfile and probes the result, because the
+# image is the artefact that ships and CANT-231 is what happens when nothing
+# looks at it before a merge: seventeen releases answered `GET /` with a 404.
+# verify.sh does not build images — it runs on machines without a Docker
+# daemon, and an image build is minutes, not seconds — so `./verify.sh` green
+# and green CI are one claim about the code and one more about the image. The
+# probe itself is one script, deploy/probe-client.sh, that publish.yml's smoke
+# runs too, so the pre-merge and post-publish checks of the image cannot
+# drift into two lists either.
+#
+# What is NOT here: release-please and PUSHING the GHCR image. Publishing is
+# CANT-16's deploy path (publish.yml) rather than the test matrix; `image`
+# builds and probes, and pushes nothing.
 
 name: CI
 
@@ -143,6 +157,31 @@ jobs:
           go-version: "1.26"
           cache-dependency-path: go.sum
 
+      # CANT-241's pristine checkout: BEFORE any Node step, so the tree is
+      # literally one that never ran `npm` — no node_modules, no Vite output.
+      # internal/webui's committed placeholder is what makes the embed compile
+      # here; the binary this builds serves no client and says so at boot.
+      - name: A checkout that never ran npm builds and tests
+        run: go build ./... && go test ./...
+
+      # Then the client, so the binary uploaded below carries it and the
+      # static-link and version assertions apply to the real thing. vite build
+      # alone, as the image runs it; gen:check and vue-tsc are verify.sh's.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the web client into internal/webui
+        working-directory: web
+        run: |
+          npm ci
+          npx --no-install vite build
+
+      - name: The embedded client is servable
+        run: CATENARY_WEB_REQUIRED=1 go test ./internal/webui/
+
       # CGO_ENABLED=0 is the point of "single static Go binary": the image is
       # scratch-adjacent and nothing in it links libc.
       - name: Build
@@ -171,3 +210,65 @@ jobs:
           name: catenary-${{ github.sha }}
           path: catenary
           retention-days: 7
+
+  # CANT-241. The image is the artefact, so the image is what gets probed: build
+  # deploy/Dockerfile exactly as publish.yml does (no push), run it against a
+  # Postgres service the way publish.yml's smoke does — `catenary serve`
+  # connects before it listens — and run deploy/probe-client.sh against it.
+  image:
+    name: build the image and probe the web client
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Same service, same reasoning as `verify` above and publish.yml's smoke.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: catenary
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          push: false
+          load: true
+          tags: catenary:ci
+          build-args: |
+            GIT_SHA=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: run the image
+        run: |
+          set -euo pipefail
+          docker run -d --name catenary-ci --network host \
+            -e CATENARY_PORT=4012 \
+            -e CATENARY_DATABASE_URL="host=127.0.0.1 port=5432 user=postgres dbname=catenary sslmode=disable" \
+            catenary:ci
+          for _ in $(seq 1 30); do
+            if curl -sf http://127.0.0.1:4012/healthz >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::/healthz never answered"; exit 1
+
+      - name: the boot line says the client is embedded
+        run: docker logs catenary-ci 2>&1 | grep '"msg":"web client embedded"'
+
+      - name: deploy/probe-client.sh
+        run: deploy/probe-client.sh http://127.0.0.1:4012
+
+      - name: container logs on failure
+        if: failure()
+        run: docker logs catenary-ci || true

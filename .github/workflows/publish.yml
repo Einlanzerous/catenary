@@ -183,6 +183,10 @@ jobs:
           --health-retries 10
 
     steps:
+      # For deploy/probe-client.sh only (CANT-241): the same script ci.yml's
+      # `image` job runs before the merge, run here against what was pushed.
+      - uses: actions/checkout@v4
+
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -240,6 +244,12 @@ jobs:
             [ "$reported" = "dev" ] || {
               echo "::error::an unstamped build reports '$reported', want 'dev'"; exit 1; }
           fi
+
+      # CANT-231: the published digest serves the web client. After the probes
+      # and the version above, from the runner (the container is on the host
+      # network), with the one script ci.yml's `image` job also runs.
+      - name: the pushed digest serves the web client
+        run: deploy/probe-client.sh http://127.0.0.1:4012
 
       - name: container logs on failure
         if: failure()

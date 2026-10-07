@@ -12,6 +12,7 @@ Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-
 - `internal/store/` — pgx pool, embedded migrator, repo queries, and the domain types themselves. Types sit beside the queries that return them rather than in a separate `internal/model/`.
 - `internal/api/` — the HTTP and WebSocket surface.
 - `internal/wire/` — the generated Go wire package, emitted from `schema/` and never hand-edited. It sits under the service's own `internal/` because Go applies the internal rule to the **import path**: at `server/internal/wire` only the `server` module could reach it, and no `require`/`replace` wiring changes that (`CANT-82`).
+- `internal/webui/` — the web client as the binary carries it. `static/PLACEHOLDER` is committed so the embed compiles on a checkout that never ran `npm`; Vite writes the real client to `static/dist/`, which is ignored and never committed. A binary built without it serves no client and says so at boot, and CI's `image` job is what fails when the image is one of those.
 - `migrations/` — `NNNN_name.up.sql` / `.down.sql`, embedded, auto-applied on boot.
 - `web/` — Vue 3 + TypeScript client, served by the Go binary. `npm run smoke` SSRs the app and asserts the design canvas's landmarks are actually on screen.
 - `dart/` — the generated Dart wire package, `catenary_wire`, and its conformance runner. Nothing else lives here.

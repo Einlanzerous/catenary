@@ -1,14 +1,17 @@
 package main
 
 import (
+	"log/slog"
 	"os"
 	"regexp"
 	"sort"
 	"strings"
 	"testing"
+	"testing/fstest"
 
 	"github.com/magos/catenary/internal/config"
 	"github.com/magos/catenary/internal/store"
+	"github.com/magos/catenary/internal/webui"
 )
 
 func TestRunRejectsUnknownSubcommands(t *testing.T) {
@@ -42,6 +45,58 @@ func TestSetup(t *testing.T) {
 	}
 	if d.store != nil {
 		t.Error("setup invented a store it was not given")
+	}
+}
+
+// CANT-241's boot line: setup() logs exactly one line about the web client, in
+// each of the two states a binary can be in.
+func TestSetupSaysWhetherItHasAWebClient(t *testing.T) {
+	bundle, err := webui.Load(fstest.MapFS{
+		"index.html":               {Data: []byte("<!doctype html>")},
+		"assets/index-AAAAAAAA.js": {Data: []byte("1")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name  string
+		web   *webui.Bundle
+		msg   string
+		level slog.Level
+	}{
+		{"embedded", bundle, "web client embedded", slog.LevelInfo},
+		{"absent", nil, "web client absent — GET / is a 404 on this binary", slog.LevelWarn},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			saved := webClient
+			t.Cleanup(func() { webClient = saved })
+			webClient = func() (*webui.Bundle, error) { return tc.web, nil }
+
+			log := &recorder{}
+			cfg := config.Config{DatabaseURL: "postgres://x/y", Addr: ":4012", LogFormat: "json"}
+			d := setup(cfg, slog.New(log), nil)
+
+			var about []slog.Record
+			for _, rec := range log.recs {
+				if strings.HasPrefix(rec.Message, "web client") {
+					about = append(about, rec)
+				}
+			}
+			if len(about) != 1 {
+				t.Fatalf("setup logged %d lines about the web client, want exactly 1: %v", len(about), about)
+			}
+			if about[0].Message != tc.msg || about[0].Level != tc.level {
+				t.Errorf("boot line = %s %q, want %s %q", about[0].Level, about[0].Message, tc.level, tc.msg)
+			}
+			if tc.web != nil {
+				if got := attrOf(about[0], "files"); got != int64(tc.web.Len()) {
+					t.Errorf("files = %v, want %d", got, tc.web.Len())
+				}
+			}
+			if d.web != tc.web {
+				t.Error("setup did not keep the bundle it loaded")
+			}
+		})
 	}
 }
 

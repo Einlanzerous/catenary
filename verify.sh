@@ -532,6 +532,28 @@ step "R4 · a REAL server response validates against the generated decoder"
 (cd "$ROOT/web" && npm run --silent validate SyncResponse "$ROOT/spike/r1-websocket/captured-sync-response.json") >"$LOGDIR/v-validate.log" 2>&1
 result $? "captured /sync from the Go rig decodes as SyncResponse"
 
+# CANT-241: the production client, built into the package that embeds it, so
+# the root sweep below tests the binary with the client it ships with. This is
+# also the first caller the app's own `vite build` has ever had outside a
+# developer's shell. `vite build` alone: gen:check and vue-tsc are stepped above.
+#
+# THEN ASSERTIONS ON GIT, because ruling 0's placeholder only works while they
+# hold: the one tracked file under internal/webui/static is the placeholder, it
+# is on disk, and the build neither deleted, modified nor added anything git
+# sees under internal/webui — its output is ignored and its emptyOutDir stops at
+# static/dist. Compared BEFORE AND AFTER rather than against empty, so an
+# uncommitted edit to internal/webui's Go source is not reported as the build's.
+step "CANT-241 · the web client builds into internal/webui and git does not see it"
+before="$(cd "$ROOT" && git status --porcelain -- internal/webui)"
+(cd "$ROOT/web" && npx --no-install vite build) >"$LOGDIR/v-vite-build.log" 2>&1
+result $? "vite build ($(find "$ROOT/internal/webui/static/dist" -type f 2>/dev/null | wc -l | tr -d ' ') files in internal/webui/static/dist)"
+tracked="$(cd "$ROOT" && git ls-files internal/webui/static)"
+[ "$tracked" = "internal/webui/static/PLACEHOLDER" ] && [ -f "$ROOT/internal/webui/static/PLACEHOLDER" ]
+result $? "the only tracked file under internal/webui/static is the placeholder, and it is on disk$( [ "$tracked" = "internal/webui/static/PLACEHOLDER" ] || printf ' (%s)' "$(echo $tracked)")"
+after="$(cd "$ROOT" && git status --porcelain -- internal/webui)"
+[ "$before" = "$after" ]
+result $? "the build changed nothing git sees under internal/webui$( [ "$before" = "$after" ] || printf ' (now: %s)' "$(echo $after)")"
+
 step "CANT-17/13 · the service binary — vet, gofmt, test"
 (cd "$ROOT" && gofmt -l ./cmd ./internal ./migrations) >"$LOGDIR/v-fmt.log" 2>&1
 [ ! -s "$LOGDIR/v-fmt.log" ]; result $? "gofmt -l is empty$( [ -s "$LOGDIR/v-fmt.log" ] && printf ' (%s)' "$(tr '\n' ' ' <"$LOGDIR/v-fmt.log")" )"
@@ -553,10 +575,14 @@ if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
   # intermittent, neither about the code.
   #
   # The no-database branch below does not need it: those tests share nothing.
-  (cd "$ROOT" && go test -p 1 ./...) >"$LOGDIR/v-go-svc.log" 2>&1
+  #
+  # CATENARY_WEB_REQUIRED=1 on both branches (CANT-241): the client was built
+  # by the step above, so a binary without one here FAILS the real-bundle and
+  # second-port tests instead of skipping their client halves.
+  (cd "$ROOT" && CATENARY_WEB_REQUIRED=1 go test -p 1 ./...) >"$LOGDIR/v-go-svc.log" 2>&1
   result $? "go test ./... (with a database — includes CANT-19's log_seq commit-ordering property)"
 else
-  (cd "$ROOT" && go test ./...) >"$LOGDIR/v-go-svc.log" 2>&1
+  (cd "$ROOT" && CATENARY_WEB_REQUIRED=1 go test ./...) >"$LOGDIR/v-go-svc.log" 2>&1
   result $? "go test ./... ($(grep -c 'no test files\|^ok' "$LOGDIR/v-go-svc.log") packages)"
   printf '   \033[33mNOTE\033[0m CATENARY_TEST_DATABASE_URL unset — the schema and log_seq ordering tests skipped.\n'
   printf '        docker run -d --name cant-pg -e POSTGRES_HOST_AUTH_METHOD=trust -e POSTGRES_DB=catenary_test -p 55440:5432 postgres:16-alpine\n'
