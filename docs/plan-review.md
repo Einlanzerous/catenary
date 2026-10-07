@@ -181,15 +181,20 @@ A plan moving the peak computation client-side is blocking.
 
 ### 5. The client never claims what the server cannot keep — blocking
 
-D1 declines end-to-end encryption; the header reads `TLS`, never `E2E`.
-`sending`, `queued` and `failed` are `client-local` in `wire-fields.json` and
-not expressible on the wire. A plan putting a delivery, privacy or encryption
-claim on the wire that the server does not back — a third rung on
-`DeliveryState`, an outbox state on a server frame, a badge string asserting
-what `TLS` does not — is blocking. A plan whose client renders a value the
-server has stopped backing (CANT-140's `READ 6/7` for a fully-read message
-after an offboard) must say so against the `Done when`, not only in a ruling's
-consequence line.
+D1 declines end-to-end encryption; the header's transport word is derived by
+the rendering code from the origin the session talks to — `TLS` for an `https`
+origin, `CLEARTEXT` for anything else — and is never `E2E` and never rendered
+from a literal. `sending`, `queued` and `failed` are `client-local` in
+`wire-fields.json` and not expressible on the wire. A plan putting a delivery,
+privacy or encryption claim on the wire that the server does not back — a third
+rung on `DeliveryState`, an outbox state on a server frame, a badge string
+asserting what `TLS` does not, a header that shows `TLS` for an origin that is
+not `https` or renders the word from a literal instead of deriving it — is
+blocking. A plan whose header shows `CLEARTEXT` over `http` is conforming, and
+so is one whose tests assert the rendered word for a stated origin. A plan
+whose client renders a value the server has stopped backing (CANT-140's
+`READ 6/7` for a fully-read message after an offboard) must say so against the
+`Done when`, not only in a ruling's consequence line.
 
 ### 6. Transcription is a client of the estate ASR service — blocking
 
