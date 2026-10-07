@@ -235,10 +235,11 @@ test('a refusal keeps its two texts, with or without a body that arrives', async
   assertNotLoggedIn()
 })
 
-test('a 5xx is not the token being refused', async () => {
-  // Catenary's own 500 (`enrollment failed`) and a proxy's 502 while it
-  // restarts: nobody refused the token, so nobody is told to replace it.
-  for (const status of [500, 502, 503]) {
+test('a status that is not Catenary refusing is not the token being refused', async () => {
+  // Catenary's own 500 (`enrollment failed`), a proxy's 502 while it restarts,
+  // and whatever else a hop in front can answer: nobody refused the token, so
+  // nobody is told to replace it. Only 400 and 401 are refusals.
+  for (const status of [403, 404, 413, 429, 500, 502, 503]) {
     const store = new PlantedStore()
     const s = server(() => new Response('upstream', { status }))
     configureAccount({ baseUrl: BASE, fetch: s.fetch, store })

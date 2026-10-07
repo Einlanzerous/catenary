@@ -263,9 +263,10 @@ export const CREDENTIAL_NOT_STORED_TEXT =
  * TOLD APART BY TYPE, never by matching a message. What is left once the typed
  * cases are gone is a failure before any status arrived — the request itself —
  * and that alone is "could not reach the server". Of the statuses, only 400
- * and 401 are Catenary refusing (internal/api/router.go); a 5xx is the server,
- * or a hop in front of it, failing to answer, and it does not get to tell a
- * person to throw away a token nobody refused.
+ * and 401 are Catenary refusing (internal/api/router.go); any other — its own
+ * 500, or a 502, 404 or 429 from a hop in front of it — is the server failing
+ * to answer, and it does not get to tell a person to throw away a token nobody
+ * refused.
  */
 function enrollErrorText(e: unknown): string {
   if (e instanceof CredentialNotStored) return CREDENTIAL_NOT_STORED_TEXT
@@ -281,8 +282,8 @@ function enrollErrorText(e: unknown): string {
     return 'The server answered, but not with anything this app could read. The token may already be used — if trying again is refused, ask whoever invited you for a fresh one.'
   }
   if (!(e instanceof EnrollRefused)) return 'Could not reach the server — check your connection and try again.'
-  if (e.status >= 500) return 'The server could not answer just now — the token was not refused. Try again in a moment.'
   if (e.status === 400) return 'That does not look like a valid enrollment token or device name.'
+  if (e.status !== 401) return 'The server could not answer just now — the token was not refused. Try again in a moment.'
   // CANT-28's ONE REFUSAL SHAPE: unknown, expired, already-redeemed and
   // deactivated-account tokens all answer identically, on purpose — so this
   // is the one message for all of them too.
