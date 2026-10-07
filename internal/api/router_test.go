@@ -117,7 +117,9 @@ func TestRequestLogIsStructuredJSON(t *testing.T) {
 func TestProbesAreLoggedAtDebug(t *testing.T) {
 	var buf bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	h := NewRouter(Deps{Logger: logger})
+	// With a client loaded (CANT-241), so the static routes are proved to
+	// change neither the probes' level nor a 404's.
+	h := NewRouter(Deps{Logger: logger, Web: fixtureBundle(t)})
 
 	for _, p := range []string{"/healthz", "/readyz"} {
 		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, p, nil))
@@ -155,7 +157,7 @@ func TestFailingProbeIsNotSuppressed(t *testing.T) {
 // patterns give this for free; the test is here so a route rewrite cannot
 // quietly widen the probes into a write surface.
 func TestProbesAreGetOnly(t *testing.T) {
-	h := NewRouter(Deps{Logger: discardLogger()})
+	h := NewRouter(Deps{Logger: discardLogger(), Web: fixtureBundle(t)})
 	for _, p := range []string{"/healthz", "/readyz"} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, p, nil))

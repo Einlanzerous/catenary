@@ -34,4 +34,10 @@ export default defineConfig({
   // data and nothing else; it now fronts a real server and a real credential.
   server: { port: 4009, proxy },
   preview: { proxy },
+  // CANT-241: the production client is written INTO the Go package that embeds
+  // it (internal/webui), because go:embed cannot reach outside its own package
+  // directory. `emptyOutDir` has to be explicit for a directory outside Vite's
+  // root; it empties static/dist only, so the committed static/PLACEHOLDER one
+  // level up is never touched. The `--ssr` scripts pass their own --outDir.
+  build: { outDir: '../internal/webui/static/dist', emptyOutDir: true },
 })

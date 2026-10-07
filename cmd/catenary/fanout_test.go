@@ -818,7 +818,16 @@ func TestACancelledServeClosesEverySessionWith1001(t *testing.T) {
 	case <-time.After(d.cfg.ShutdownGrace + 2*time.Second):
 		t.Fatal("serve did not return within the grace")
 	}
-	if lines := log.atLeast(slog.LevelWarn); len(lines) != 0 {
+	// The boot line about an absent web client (CANT-241) is setup()'s, not the
+	// shutdown's, and a binary built from a checkout that never ran `vite
+	// build` carries it at warn; it says nothing about the drain.
+	var lines []string
+	for _, l := range log.atLeast(slog.LevelWarn) {
+		if l != "web client absent — GET / is a 404 on this binary" {
+			lines = append(lines, l)
+		}
+	}
+	if len(lines) != 0 {
 		t.Errorf("lines at WARN or above on an ordinary shutdown: %v", lines)
 	}
 }

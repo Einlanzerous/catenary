@@ -1,0 +1,7 @@
+This file is committed so that internal/webui's `//go:embed all:static` matches
+on a checkout that never ran `npm`. Do not delete it: without it git never
+creates this directory, and `go build ./...` fails with
+"pattern all:static: no matching files found".
+
+Vite writes the real web client to static/dist/ beside this file. That
+directory is ignored and never committed (CANT-241, ruling 0 of CANT-231).

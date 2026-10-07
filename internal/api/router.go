@@ -4,6 +4,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,11 +13,13 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/magos/catenary/internal/store"
+	"github.com/magos/catenary/internal/webui"
 	"github.com/magos/catenary/internal/wire"
 	"github.com/magos/catenary/internal/wireview"
 )
@@ -217,6 +220,13 @@ type Deps struct {
 	// generated encoder-side peers (every client's decoder) would accept.
 	HeartbeatIntervalSec int
 	MissedPongLimit      int
+
+	// Web is the web client, served from this listener (CANT-241). Nil means
+	// no static route is registered at all — `GET /` stays the mux's own 404,
+	// which is what a binary built without a client answers, and what the
+	// provisioning listener answers always, because the bundle is never handed
+	// to it.
+	Web *webui.Bundle
 }
 
 // NewRouter builds the HTTP handler.
@@ -302,7 +312,77 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("GET /ws", socketHandler(d))
 	}
 
+	if d.Web != nil {
+		registerWebClient(mux, d.Web)
+	}
+
 	return requestLogger(d.Logger, mux)
+}
+
+// The static responses' fixed headers (CANT-231's routes-and-headers section).
+const (
+	// immutableCache is for /assets/*, which Vite content-hashes: a new build
+	// is a new URL, so a cached copy can never be stale.
+	immutableCache = "public, max-age=31536000, immutable"
+
+	// revalidateCache is for the two unhashed files, `/` and `/favicon.svg`:
+	// every load revalidates against the ETag, so a promote is visible on the
+	// next reload with nothing to purge.
+	revalidateCache = "no-cache"
+
+	// documentCSP is the INTERIM policy, ruling 2's option B: the document may
+	// not be framed, and nothing else is restricted yet. The full policy
+	// replaces it one release later, once the client has been seen working
+	// live (CANT-242), so that a page already known to work is what the
+	// policy is checked against.
+	documentCSP = "frame-ancestors 'none'"
+)
+
+// registerWebClient registers ONE EXACT, METHOD-SCOPED PATTERN PER FILE, and no
+// subtree and no catch-all (ruling 1's pick: an unknown path is a 404). A
+// literal `GET` pattern changes no answer the mux gives any other path — a
+// catch-all was measured to turn `GET /enroll`, an unwired `GET /sync` and
+// `POST /nope` into something else — and `GET` also serves `HEAD`.
+//
+// index.html is served at `/` ONLY; `/index.html` stays a 404. A bundle file
+// whose path equals an API route panics here, at boot, as a duplicate pattern —
+// which the image probe reports as a container that never answered.
+func registerWebClient(mux *http.ServeMux, b *webui.Bundle) {
+	for _, f := range b.Files() {
+		pattern := "GET /" + f.Path
+		if f.Path == webui.Index {
+			pattern = "GET /{$}"
+		}
+		mux.Handle(pattern, staticHandler(f))
+	}
+}
+
+// staticHandler serves one file from memory.
+//
+// NOT http.FileServer. It renders directory listings, redirects /index.html,
+// and an embedded file's modification time is zero, so it would emit no
+// validator and a `no-cache` document would be re-downloaded whole on every
+// load. http.ServeContent with the ETag already set answers If-None-Match with
+// a 304, and handles HEAD and ranges.
+func staticHandler(f webui.File) http.Handler {
+	assets := strings.HasPrefix(f.Path, "assets/")
+	doc := f.Path == webui.Index
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("Content-Type", f.ContentType)
+		h.Set("X-Content-Type-Options", "nosniff")
+		if assets {
+			h.Set("Cache-Control", immutableCache)
+		} else {
+			h.Set("Cache-Control", revalidateCache)
+			h.Set("ETag", f.ETag)
+		}
+		if doc {
+			h.Set("Referrer-Policy", "no-referrer")
+			h.Set("Content-Security-Policy", documentCSP)
+		}
+		http.ServeContent(w, r, f.Path, time.Time{}, bytes.NewReader(f.Body))
+	})
 }
 
 // syncHandler serves the reconnect and catch-up read.

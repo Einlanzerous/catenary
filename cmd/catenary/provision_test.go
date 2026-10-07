@@ -29,6 +29,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,7 @@ import (
 
 	"github.com/magos/catenary/internal/config"
 	"github.com/magos/catenary/internal/hub"
+	"github.com/magos/catenary/internal/webui"
 	"github.com/magos/catenary/internal/wire"
 )
 
@@ -446,6 +448,35 @@ func TestTheProvisioningListenerDoesNotServeTheWireRoutes(t *testing.T) {
 	// which is the mux's answer and not a handler's.
 	if code, _ := p.call(http.MethodDelete, "/accounts", "", testProvisionToken); code != http.StatusMethodNotAllowed {
 		t.Errorf("DELETE /accounts = %d, want 405", code)
+	}
+
+	// CANT-241: and none of the web client. Every path the routed listener
+	// serves from the bundle setup() loaded is a 404 here WITH the credential,
+	// while the same process's routed listener answers `/` with the document —
+	// so the 404 is the second port's, not a binary that has no client.
+	if p.d.web == nil {
+		if os.Getenv("CATENARY_WEB_REQUIRED") != "" {
+			t.Fatal("CATENARY_WEB_REQUIRED is set and this binary embeds no web client — the second-port half below would prove nothing")
+		}
+		t.Log("no web client embedded; the client half of this test did not run (CATENARY_WEB_REQUIRED=1 makes this a failure)")
+		return
+	}
+	for _, f := range p.d.web.Files() {
+		path := "/" + f.Path
+		if f.Path == webui.Index {
+			path = "/"
+		}
+		if code, body := p.call(http.MethodGet, path, "", testProvisionToken); code != http.StatusNotFound {
+			t.Errorf("GET %s on the PROVISIONING listener = %d, want 404: %.80s", path, code, body)
+		}
+	}
+	resp, err := provisionClient.Get(p.base + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("GET / on the ROUTED listener of the same process = %d, want 200", resp.StatusCode)
 	}
 }
 
