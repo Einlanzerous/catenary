@@ -4,6 +4,7 @@
 /// contexts over one file. Each with the control that must make it fail.
 library;
 
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:catenary_client/catenary_client.dart';
@@ -341,6 +342,155 @@ void main() {
       await b.wipe();
       expect(stored(path).wipes, 2);
       expect(b.wipes, 2);
+    });
+  });
+
+  group('whose journal it is (CANT-230)', () {
+    final a = uuid(1);
+    final b = uuid(2);
+
+    String? owner(String path) {
+      final db = sqlite3.open(path);
+      try {
+        return db.select('SELECT owner FROM journal_meta').single['owner'] as String?;
+      } finally {
+        db.close();
+      }
+    }
+
+    test('the journal records its owner: written, read back by the next launch, and a repeat claim writes nothing', () async {
+      final path = catenaryDbPath(tempDir());
+      final journal = SqliteJournal.open(path);
+      expect(journal.owner, isNull);
+      expect(await journal.claim(a), isNull);
+      expect(owner(path), a);
+      await journal.applyPage(p1, Faults.none);
+      journal.close();
+
+      var writes = 0;
+      final reopened = SqliteJournal.open(path, SqliteJournalOptions(midWrite: (_, _) => writes++));
+      addTearDown(reopened.close);
+      expect(reopened.owner, a);
+      final before = stored(path);
+      final snapshot = wireShape(reopened.snapshot());
+      expect(await reopened.claim(a), isNull);
+      expect(writes, 0, reason: 'its own account claiming it again writes nothing');
+      expect(stored(path), before, reason: 'the cursor, the wipe count and the generation are what they were');
+      expect(wireShape(reopened.snapshot()), snapshot);
+      expect(reopened.cursor, 3);
+    });
+
+    test('a journal owned by another account is wiped by the claim, and the credential beside it is not touched', () async {
+      final path = catenaryDbPath(tempDir());
+      enroll(path);
+      final journal = SqliteJournal.open(path);
+      addTearDown(journal.close);
+      await journal.claim(a);
+      await journal.applyPage(p1, Faults.none);
+      await journal.applyPage(p2, Faults.none);
+      final before = stored(path);
+      expect((before.cursor, before.messages, before.conversations, before.users), (6, 6, 2, 3));
+
+      final applied = await journal.claim(b);
+      expect(applied!.wiped, isTrue);
+      final after = stored(path);
+      expect(after.generation, isNotNull);
+      expect(after.generation, isNot(before.generation));
+      expect(after, (cursor: null, wipes: before.wipes + 1, generation: after.generation, messages: 0, conversations: 0, users: 0, counted: 0, credential: 1));
+      expect(owner(path), b);
+      expect(credentialRow(path), credentialRecord, reason: 'the credential row is byte for byte what it was');
+      expect(wireShape(journal.snapshot()), {'cursor': null, 'messages': [], 'conversations': [], 'users': []});
+      expect(journal.owner, b);
+      expect(journal.wipes, before.wipes + 1);
+    });
+
+    test('the claim is one transaction: killed before its commit, nothing it does has landed', () async {
+      final path = catenaryDbPath(tempDir());
+      final first = SqliteJournal.open(path);
+      await first.claim(a);
+      await first.applyPage(p1, Faults.none);
+      first.close();
+      final before = stored(path);
+
+      final journal = SqliteJournal.open(
+        path,
+        SqliteJournalOptions(
+          midWrite: (_, source) {
+            if (source == AppliedSource.wipe) throw Killed();
+          },
+        ),
+      );
+      await expectLater(journal.claim(b), throwsA(isA<Killed>()));
+      expect(journal.owner, a, reason: 'and the mirror is what it was');
+      expect(journal.cursor, 3);
+      journal.close();
+
+      expect(stored(path), before);
+      expect(owner(path), a);
+      final reopened = SqliteJournal.open(path);
+      addTearDown(reopened.close);
+      expect(reopened.owner, a);
+      expect(reopened.cursor, 3);
+      expect(reopened.messageCount, 3);
+    });
+
+    test('a wipe keeps the owner, in the file and in the mirror', () async {
+      final path = catenaryDbPath(tempDir());
+      final journal = SqliteJournal.open(path);
+      addTearDown(journal.close);
+      await journal.claim(a);
+      await journal.applyPage(p1, Faults.none);
+      await journal.wipe();
+      expect(owner(path), a);
+      expect(journal.owner, a);
+    });
+
+    test('a claim\'s wipe is seen by a second context: its next page write is refused as stale, and it reads back what is stored', () async {
+      final path = catenaryDbPath(tempDir());
+      final first = SqliteJournal.open(path);
+      final second = SqliteJournal.open(path);
+      addTearDown(first.close);
+      addTearDown(second.close);
+      await first.claim(a);
+      await first.applyPage(p1, Faults.none);
+      await second.applyPage(p1, Faults.none);
+      expect(second.cursor, 3);
+
+      await first.claim(b);
+      await expectLater(second.applyPage(p2, Faults.none), throwsA(isA<JournalStale>()));
+      expect(second.cursor, isNull, reason: 'it holds what the claim left');
+      expect(second.messageCount, 0);
+      expect(second.owner, b);
+      expect(stored(path).messages, 0, reason: 'the refused page landed nothing');
+    });
+
+    test('an existing journal file is brought forward: version 2, its records and cursor intact, and no owner', () async {
+      final path = catenaryDbPath(tempDir());
+      // A file as the build before this one left it: the first step only.
+      final old = openCatenaryDb(path, migrations: [catenaryMigrations.first]);
+      expect(old.userVersion, 1);
+      expect(old.select("SELECT name FROM pragma_table_info('journal_meta')").map((r) => r['name']), isNot(contains('owner')));
+      final m = message(1);
+      old.execute(
+        'INSERT INTO messages (id, conversation_id, seq, log_seq, record) VALUES (?, ?, ?, ?, ?)',
+        [m.id, m.conversationId, m.seq, m.logSeq, jsonEncode(m.toJson())],
+      );
+      old.execute('UPDATE journal_meta SET cursor = 1');
+      old.close();
+
+      final journal = SqliteJournal.open(path);
+      addTearDown(journal.close);
+      expect(journal.database.userVersion, 2);
+      expect(catenaryMigrations, hasLength(2));
+      expect(journal.owner, isNull);
+      expect(journal.cursor, 1);
+      expect(journal.snapshot().messages.single.id, m.id);
+
+      // [ruling 1 → option 0] and its first claim adopts it.
+      expect(await journal.claim(a), isNull);
+      expect(owner(path), a);
+      expect(journal.cursor, 1);
+      expect(journal.messageCount, 1);
     });
   });
 

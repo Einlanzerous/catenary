@@ -108,8 +108,32 @@ abstract interface class Journal {
   Future<Applied> applyLive(LiveWrite write, JournalFaults faults);
 
   /// Obligation 4: messages, conversations, users, the cursor and the counted
-  /// log. Never the credential, and never the outbox.
+  /// log. Never the credential, never the outbox, and never the [owner]: the
+  /// wipes a transport decides are for the same account.
   Future<Applied> wipe();
+
+  /// The `user_id` of the account this journal was written for; null until one
+  /// has claimed it. AS THIS CONTEXT LAST READ IT: another context adopting a
+  /// journal that had no owner stamps no generation, so this stays null here
+  /// until this context's next load or claim. Nothing decides on it; [claim]
+  /// reads what is stored.
+  Uuid? get owner;
+
+  /// Makes this journal [accountId]'s, BEFORE ANYTHING IS BUILT OVER IT
+  /// (CANT-230). A cursor is a position in the log as one account can see it,
+  /// and the records are that account's: a credential must never run over a
+  /// journal written for another. So, in one write:
+  ///
+  /// - held by [accountId] already: nothing is written;
+  /// - held by another account: wiped exactly as [wipe] wipes, and [accountId]
+  ///   recorded. Returns that wipe's `Applied`;
+  /// - held by nobody (a journal from before there was an owner): kept, and
+  ///   [accountId] recorded.
+  ///
+  /// Returns null when nothing was wiped. Whoever holds both a credential and
+  /// a journal calls this with the credential's `userId` before constructing a
+  /// transport; a re-enrollment interrupted before its wipe heals here.
+  Future<Applied?> claim(Uuid accountId);
   JournalSnapshot snapshot();
 
   /// How many messages are held; `snapshot().messages.length` without the copy.
@@ -134,7 +158,8 @@ final class JournalState {
         conversations = Map.of(s.conversations),
         users = Map.of(s.users),
         counted = List.of(s.counted),
-        wipes = s.wipes;
+        wipes = s.wipes,
+        owner = s.owner;
 
   int? cursor;
   final Map<Uuid, Message> messages;
@@ -144,6 +169,9 @@ final class JournalState {
   /// R1's evidence log since the last wipe; see `StagedJournal.counted`.
   final List<Uuid> counted;
   int wipes;
+
+  /// `Journal.owner`. Not part of what a wipe clears.
+  Uuid? owner;
 }
 
 /// What one staged write changes, for an implementation that writes deltas
@@ -256,8 +284,25 @@ abstract class StagedJournal implements Journal {
   }
 
   @override
+  Uuid? get owner => state.owner;
+
+  /// In memory, where the state is the store. A durable implementation
+  /// decides against what is STORED, in one transaction, and overrides this.
+  @override
+  Future<Applied?> claim(Uuid accountId) async {
+    final held = state.owner;
+    if (held == accountId) return null;
+    if (held == null) {
+      state = JournalState.copy(state)..owner = accountId;
+      return null;
+    }
+    state = JournalState.empty(state.wipes + 1)..owner = accountId;
+    return const Applied(source: AppliedSource.wipe, cursor: null, wiped: true);
+  }
+
+  @override
   Future<Applied> wipe() async {
-    final next = JournalState.empty(state.wipes + 1);
+    final next = JournalState.empty(state.wipes + 1)..owner = state.owner;
     await commit(
       next,
       const JournalDelta(
