@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { VoiceAttachment } from '@/wire/generated'
-import type { RenderedMessage } from '@/client-types'
+import { isUnsent, type RenderedMessage } from '@/client-types'
 import { duration } from '@/lib/format'
 import {
   cycleRate,
@@ -43,8 +43,17 @@ const words = computed(() => transcriptWords(props.voice))
  *  hand offers a transcript: a job that failed has none to expand, copy or
  *  report, and a state this build does not know is not claimed to be any of
  *  the others, so it draws no strip at all. The Flutter app's arms, word for
- *  word (CANT-220 rulings 5 and 6, `app/lib/thread.dart`). */
+ *  word (CANT-220 rulings 5 and 6, `app/lib/thread.dart`).
+ *
+ *  A note that has not left this device draws no strip either (CANT-249 ruling
+ *  0, A): the outbox projects it with a `pending` transcript only because the
+ *  wire type demands some state, and nothing is true of its transcript — no
+ *  job exists. The row's footer already states its outbox state, and the strip
+ *  appears honestly once the ack brings the server's own `pending`. The gate
+ *  is on the message, read before the transcript state, so no state the server
+ *  did not send is written anywhere. */
 const strip = computed<'pending' | 'ready' | 'failed' | 'none'>(() => {
+  if (isUnsent(props.message)) return 'none'
   const state = props.voice.transcript.state
   switch (state) {
     case 'pending':

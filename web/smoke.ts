@@ -696,6 +696,15 @@ async function main() {
     check('the rail previews an unsent voice note as `You: voice note · m:ss`, as the app does',
       rail.includes('You: voice note · 0:01'), rail)
     check('and never as transcript pending', !rail.includes('pending'), rail)
+    // CANT-249 ruling 0, A: nothing is drawn under an unsent note's player.
+    // The planted room holds exactly this one message and the rail previews it
+    // as "transcript pending", never TRANSCRIBING, so a whole-page check after
+    // selecting the room is the per-row check. Holds under either footer.
+    const thread = await render()
+    check('the unsent voice note draws no TRANSCRIBING under its player', !thread.includes('TRANSCRIBING'))
+    check('and no skeleton', !thread.includes('class="skeleton"'))
+    check('while its footer states the outbox state: QUEUED or FAILED',
+      thread.includes('QUEUED') || thread.includes('FAILED'))
     // Take it out again: a settle is how an entry leaves the outbox in any
     // status, and later sections count what the outbox holds.
     if (unsent) await (await outboxReady).settle(unsent.id)
