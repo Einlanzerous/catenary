@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Conversation } from '@/wire/generated'
+import { isUnsent } from '@/client-types'
 import { duration, railStamp, sameDay } from '@/lib/format'
 import {
   conversationTitle,
@@ -29,8 +30,12 @@ const preview = computed(() => {
   const voice = voiceOf(m)
   let body: string
   if (voice) {
+    // "Pending" is the server's word for a note it holds and has not
+    // transcribed yet. One of your own that never left this device is not
+    // pending anything, and does not say so — the app's rule (`preview` in
+    // app/lib/store/conversation.dart).
     body =
-      voice.transcript.state === 'pending'
+      voice.transcript.state === 'pending' && !isUnsent(m)
         ? `transcript pending · ${duration(voice.durationMs)}`
         : `voice note · ${duration(voice.durationMs)}`
   } else if (m.attachments?.some((a) => a.kind === 'image')) {

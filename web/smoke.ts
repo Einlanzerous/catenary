@@ -47,8 +47,10 @@ import {
   searchHits,
   select,
   send,
+  startRecording,
   startSession,
   state,
+  stopRecording,
   unreadCount,
   voiceOf,
 } from '@/store'
@@ -661,6 +663,42 @@ async function main() {
       const at = state.messages.findIndex((m) => m.id === id)
       if (at >= 0) state.messages.splice(at, 1)
     }
+    state.conversations.splice(state.conversations.findIndex((c) => c.id === ROOM), 1)
+    if (before) select(before)
+  }
+
+  // 8c. CANT-235 — a voice note that has not left this device is not
+  // "transcript pending": nothing is transcribing it. The rail says what the
+  // app's `preview` says of an unsent note (app/lib/store/conversation.dart,
+  // pinned by app/test/rail_thread_test.dart): `You: voice note · m:ss`.
+  //
+  // THE ENTRY IS REAL: RECORD then SEND, through the outbox, in a room planted
+  // for it and removed again. Whatever the outbox then does with the entry —
+  // hold it QUEUED, or fail it with the refusing uploader's message once
+  // CANT-162 lands — it has not reached the server, and the rail must not say
+  // the server is working on it. What sits UNDER THE PLAYER for the same note
+  // is not checked here: the app draws TRANSCRIBING there too, so what the two
+  // clients should say is a decision the ticket's comments carry, not a line
+  // this smoke can hold.
+  {
+    const ROOM = 'c-unsent-note'
+    const before = state.activeId
+    state.conversations.push({ id: ROOM, kind: 'group', name: 'Platform End', memberCount: 3, headSeq: 0 })
+    select(ROOM)
+    startRecording()
+    await stopRecording(true)
+    await new Promise((r) => setTimeout(r, 0))
+    const unsent = outboxMessages.value.find((m) => m.conversationId === ROOM)
+    check('RECORD then SEND composed one voice entry that has not reached the server',
+      unsent !== undefined && unsent.state !== 'sent' && voiceOf(unsent) !== undefined, unsent?.state)
+    const page = await render()
+    const rail = rowText(elementWithId(page, ROOM))
+    check('the rail previews an unsent voice note as `You: voice note · m:ss`, as the app does',
+      rail.includes('You: voice note · 0:01'), rail)
+    check('and never as transcript pending', !rail.includes('pending'), rail)
+    // Take it out again: a settle is how an entry leaves the outbox in any
+    // status, and later sections count what the outbox holds.
+    if (unsent) await (await outboxReady).settle(unsent.id)
     state.conversations.splice(state.conversations.findIndex((c) => c.id === ROOM), 1)
     if (before) select(before)
   }
