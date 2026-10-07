@@ -10,6 +10,7 @@ import {
   startRecording,
   state,
   stopRecording,
+  transcriptText,
   voiceOf,
 } from '@/store'
 import ReplyStub from './ReplyStub.vue'
@@ -37,7 +38,7 @@ const armed = computed<ReplyRef | null>(() => {
       authorId: source.authorId,
       kind: 'voice',
       durationMs: voice.durationMs,
-      preview: voice.transcript.text ?? '',
+      preview: transcriptText(voice) ?? '',
     }
   }
 

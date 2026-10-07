@@ -284,10 +284,19 @@ export const messageById = (id: string) => state.messages.find((m) => m.id === i
 export const voiceOf = (m: RenderedMessage | undefined): VoiceAttachment | undefined =>
   m?.attachments?.find((a): a is VoiceAttachment => a.kind === 'voice')
 
+/** A transcript's text, held only once it is ready — the one place the state
+ *  is consulted, so no surface quotes text the strip says is not there. A
+ *  failed or unknown transcript has none whatever the record carries, which
+ *  is the Flutter app's rule too (`app/lib/store/app_store.dart`, CANT-227). */
+export const transcriptText = (v: VoiceAttachment | undefined): string | undefined =>
+  v?.transcript.state === 'ready' ? v.transcript.text : undefined
+
 /** Transcript word count, derived rather than stored — "EXPAND · 96 W" has to
  *  agree with the text actually on screen. */
-export const transcriptWords = (v: VoiceAttachment): number =>
-  v.transcript.text ? countWords(v.transcript.text) : 0
+export const transcriptWords = (v: VoiceAttachment): number => {
+  const text = transcriptText(v)
+  return text ? countWords(text) : 0
+}
 
 /* ── actions ───────────────────────────────────────────────────────────── */
 
@@ -416,7 +425,7 @@ function previewOf(m: Message): {
   if (voice) {
     return {
       kind: 'voice',
-      preview: voice.transcript.text ?? '',
+      preview: transcriptText(voice) ?? '',
       durationMs: voice.durationMs,
     }
   }
@@ -576,7 +585,7 @@ export const searchHits = computed<SearchHit[]>(() => {
     }
 
     if (voice) {
-      const text = voice.transcript.text
+      const text = transcriptText(voice)
       if (text && text.toLowerCase().includes(q)) {
         const segment = voice.transcript.segments?.find((s) =>
           s.text.toLowerCase().includes(q),

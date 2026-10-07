@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
-import { jumpTo, messageById, user, voiceOf } from '@/store'
+import { jumpTo, messageById, transcriptText, user, voiceOf } from '@/store'
 
 /**
  * One line, always. Never wraps, never grows — ten replies in a row cost ten
@@ -25,7 +25,7 @@ const pending = computed(
 const preview = computed(() => {
   if (pending.value) return 'transcript pending — no preview text yet'
   if (props.reply.kind === 'voice') {
-    return sourceVoice.value?.transcript.text ?? props.reply.preview
+    return transcriptText(sourceVoice.value) ?? props.reply.preview
   }
   if (props.reply.kind === 'image') return `photo · ${props.reply.preview}`
   return props.reply.preview
