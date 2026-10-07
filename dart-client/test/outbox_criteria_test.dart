@@ -687,14 +687,22 @@ void main() {
   group('the table is the reference\'s', () {
     final reference = File('../web/outbox.test.ts').readAsStringSync();
 
+    // TEMPORARY, until CANT-212. CANT-162 added criteria 13 and 14 and their
+    // six fault rows to the reference, and this suite does not yet hold the
+    // Dart outbox to them (CANT-201 ruling 3): the rows on 13 and 14 are
+    // skipped in the comparison below, and 13 and 14 sit in the excluded
+    // set. CANT-212 removes both and adds the criteria and the rows here,
+    // copied by name from the reference.
+    List<(String, int)> withoutCant162Rows(List<(String, int)> rows) => rows.where((r) => r.$2 != 13 && r.$2 != 14).toList();
+
     test('fault names and the criterion each must fail, row for row', () {
-      final want = referenceFaults(reference);
+      final want = withoutCant162Rows(referenceFaults(reference));
       expect(want.length, greaterThanOrEqualTo(16), reason: 'parsed ${want.length} rows from web/outbox.test.ts');
       expect(faultTable, want);
     });
 
-    test('criterion numbers: the reference\'s, less the two that render the app (5, 6) and the one with no Dart counterpart (16)', () {
-      final want = referenceCriteria(reference).where((n) => !const {5, 6, 16}.contains(n)).toList();
+    test('criterion numbers: the reference\'s, less the two that render the app (5, 6), the one with no Dart counterpart (16) and, until CANT-212, the attachments (13, 14)', () {
+      final want = referenceCriteria(reference).where((n) => !const {5, 6, 13, 14, 16}.contains(n)).toList();
       expect(criteria.keys.toList(), want);
       expect(criteria.keys.toList(), [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 15]);
     });
@@ -702,9 +710,9 @@ void main() {
     test('the comparison fails when the tables differ: a row added to the reference, planted', () {
       final planted = reference.replaceFirst("  ['lockWithoutReady', 15],\n", "  ['lockWithoutReady', 15],\n  ['aFaultFromALaterTicket', 4],\n");
       expect(planted, isNot(reference), reason: 'the plant landed');
-      expect(referenceFaults(planted), isNot(faultTable));
+      expect(withoutCant162Rows(referenceFaults(planted)), isNot(faultTable));
       final moved = reference.replaceFirst("['remintOnRetry', 1]", "['remintOnRetry', 2]");
-      expect(referenceFaults(moved), isNot(faultTable), reason: 'and when a fault\'s criterion number differs');
+      expect(withoutCant162Rows(referenceFaults(moved)), isNot(faultTable), reason: 'and when a fault\'s criterion number differs');
     });
 
     test('every fault named in the table has its switch, and no other name does', () {

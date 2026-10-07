@@ -21,6 +21,11 @@ export class NullTransport implements OutboxTransport {
   isReady(): boolean {
     return false
   }
+  /** No session is not a terminal one: nothing here has refused to
+   *  reconnect, so a recording composed over it is held, not refused. */
+  isTerminal(): boolean {
+    return false
+  }
   sendFrame(): void {
     // Unreachable: the outbox writes only while a session is ready, and this
     // one never is.
@@ -38,6 +43,9 @@ export class ScriptedTransport implements OutboxTransport {
   onFrame: ((frame: ClientSend) => void) | null = null
   /** Ack every frame as it is written. */
   autoAck = false
+  /** Set by a test, with no event: a terminal reached with no session open
+   *  (a credential refused at `/refresh` before any socket, say). */
+  terminal = false
 
   private ready = false
   private readonly listeners = new Set<(e: OutboxTransportEvent) => void>()
@@ -50,6 +58,10 @@ export class ScriptedTransport implements OutboxTransport {
 
   isReady(): boolean {
     return this.ready
+  }
+
+  isTerminal(): boolean {
+    return this.terminal
   }
 
   sendFrame(frame: ClientSend): void {
