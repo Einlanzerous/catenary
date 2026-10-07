@@ -19,7 +19,9 @@
     "decisions": "vite build --ssr decisions.ts --outDir dist-decisions --logLevel warn && node dist-decisions/decisions.js",
     "validate": "vite build --ssr validate.ts --outDir dist-validate --logLevel warn && node dist-validate/validate.js",
     "readstate": "vite build --ssr readstate.ts --outDir dist-readstate --logLevel warn && node dist-readstate/readstate.js",
-    "test:transport": "vite build --ssr transport.test.ts --outDir dist-transport-test --logLevel warn && node --test dist-transport-test/transport.test.js",
+    "test:transport": "vite build --ssr transport.test.ts --outDir dist-transport-test --logLevel warn && npm run --silent build:account-test && node --test dist-transport-test/transport.test.js dist-account-test/account.test.js",
+    "build:account-test": "vite build --ssr account.test.ts --outDir dist-account-test --logLevel warn",
+    "test:account": "npm run --silent build:account-test && node --test dist-account-test/account.test.js",
     "outbox": "vite build --ssr outbox.test.ts --outDir dist-outbox --logLevel warn && node --test dist-outbox/outbox.test.js",
     "build:driver": "vite build --ssr driver.ts --outDir dist-transport-driver --logLevel warn"
   },

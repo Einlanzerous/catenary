@@ -26,6 +26,7 @@ import { reactive } from 'vue'
 import {
   browserLock,
   createRefreshingCredential,
+  EnrollAnswerUnreadable,
   enrollCredential,
   enrollDevice,
   EnrollRefused,
@@ -119,10 +120,49 @@ export function configureAccount(next: AccountSeams = {}): void {
 function openStore(): Promise<CredentialStore> {
   if (seams.store) return Promise.resolve(seams.store)
   if (!storePromise) {
-    storePromise =
+    // A STORE THAT WOULD NOT OPEN IS NOT REMEMBERED. `login()` tells a person
+    // whose storage is blocked to allow it and try again, and a rejection
+    // cached here would answer that second try without ever asking the
+    // browser again.
+    const opening: Promise<CredentialStore> =
       typeof indexedDB === 'undefined' ? Promise.resolve(new MemoryCredentialStore()) : IdbCredentialStore.open()
+    storePromise = opening
+    opening.catch(() => {
+      if (storePromise === opening) storePromise = null
+    })
   }
   return storePromise
+}
+
+/**
+ * The store, opened and read once — `login()`'s question before it spends a
+ * token. Two things here are not "it opened, so it will do":
+ *
+ * NOWHERE DURABLE IS A REFUSAL. `openStore()`'s in-memory fallback is for a
+ * host with no `indexedDB` at all, and a login over it would look signed in
+ * while holding a pair the next reload forgets, with the token gone.
+ *
+ * A HANDLE THAT DIED IS NOT THE BROWSER SAYING NO. The database closes itself
+ * under a tab when another tab upgrades it (db.ts's `onversionchange`), and
+ * every read on the cached handle then throws. So a failed read drops the
+ * cache and asks once more over a fresh open before calling it unavailable.
+ */
+async function readableStore(): Promise<CredentialStore> {
+  if (seams.store) {
+    await seams.store.read()
+    return seams.store
+  }
+  if (typeof indexedDB === 'undefined') throw new Error('account: no IndexedDB in this context')
+  try {
+    const store = await openStore()
+    await store.read()
+    return store
+  } catch {
+    storePromise = null
+    const store = await openStore()
+    await store.read()
+    return store
+  }
 }
 
 /** The credential store these forms write — the one `startSession` must
@@ -188,8 +228,60 @@ export async function checkExistingCredential(): Promise<void> {
   if (held) await loadDevices()
 }
 
+/**
+ * The credential store would not open, or would not be read, BEFORE the token
+ * was sent. Nothing has been spent, which is the whole reason `login()` asks
+ * first: a browser that blocks storage blocks it on every try, and without
+ * this each try would burn one single-use token to learn the same thing.
+ */
+class StorageUnavailable extends Error {
+  constructor(cause: unknown) {
+    super('account: the credential store could not be opened or read', { cause })
+    this.name = 'StorageUnavailable'
+  }
+}
+
+/**
+ * `POST /enroll` answered 200 with a pair, and this device then failed to keep
+ * it (CANT-228, the web's half of CANT-220 ruling 8). The token is spent by
+ * then, so the unreachable text's "try again" would be refused.
+ */
+class CredentialNotStored extends Error {
+  constructor(cause: unknown) {
+    super('account: the server issued a credential and this device could not store it', { cause })
+    this.name = 'CredentialNotStored'
+  }
+}
+
+/** The app's `_notStored` (app/lib/store/enrollment.dart), word for word — one
+ *  event, one sentence, on both clients. `account.test.ts` reads the Dart
+ *  source and fails when either moves alone. */
+export const CREDENTIAL_NOT_STORED_TEXT =
+  'The server accepted that token, but this device could not save the credential. The token is now used — ask whoever invited you for a fresh one.'
+
+/**
+ * TOLD APART BY TYPE, never by matching a message. What is left once the typed
+ * cases are gone is a failure before any status arrived — the request itself —
+ * and that alone is "could not reach the server". Of the statuses, only 400
+ * and 401 are Catenary refusing (internal/api/router.go); a 5xx is the server,
+ * or a hop in front of it, failing to answer, and it does not get to tell a
+ * person to throw away a token nobody refused.
+ */
 function enrollErrorText(e: unknown): string {
+  if (e instanceof CredentialNotStored) return CREDENTIAL_NOT_STORED_TEXT
+  if (e instanceof StorageUnavailable) {
+    return 'This browser would not let Catenary store a credential, so the token was not sent and is still unused. Allow storage for this site — a private window may block it — and try again.'
+  }
+  // A 200 THAT COULD NOT BE READ. Not the storage text — nothing reached the
+  // store — and not a promise that the token is spent either: Catenary's own
+  // 200 has spent it, but a 200 from something in front of Catenary (a captive
+  // portal's page) has not, and from here the two look the same. So it says
+  // what is known and what to do in both cases (invariant 3).
+  if (e instanceof EnrollAnswerUnreadable) {
+    return 'The server answered, but not with anything this app could read. The token may already be used — if trying again is refused, ask whoever invited you for a fresh one.'
+  }
   if (!(e instanceof EnrollRefused)) return 'Could not reach the server — check your connection and try again.'
+  if (e.status >= 500) return 'The server could not answer just now — the token was not refused. Try again in a moment.'
   if (e.status === 400) return 'That does not look like a valid enrollment token or device name.'
   // CANT-28's ONE REFUSAL SHAPE: unknown, expired, already-redeemed and
   // deactivated-account tokens all answer identically, on purpose — so this
@@ -207,16 +299,34 @@ export async function login(enrollmentToken: string, deviceName: string): Promis
   accountState.busy = true
   accountState.error = null
   try {
+    // ASKED BEFORE THE TOKEN IS SPENT (`readableStore`), so that storage this
+    // browser will not give — the common way to fail — costs nothing. It
+    // proves the store opens and reads, not that the write below will land (a
+    // full quota still fails there), and what it reads is discarded: which of
+    // enroll and re-enroll applies is decided on the read after the answer, as
+    // it always was.
+    let store: CredentialStore
+    try {
+      store = await readableStore()
+    } catch (e) {
+      throw new StorageUnavailable(e)
+    }
     const stored = await enrollDevice(
       { baseUrl: seams.baseUrl, ...(seams.fetch ? { fetch: seams.fetch } : {}) },
       enrollmentToken,
       deviceName,
     )
-    const store = await openStore()
-    const lock = seams.lock ?? browserLock()
-    const held = await store.read()
-    if (held) await reenrollCredential(store, lock, stored)
-    else await enrollCredential(store, lock, stored)
+    // Past this line the token is spent, and a failure is this device's. It is
+    // NOT swallowed to let the screen proceed: a session that looks logged in
+    // and holds no durable credential is a worse lie than the error text.
+    try {
+      const lock = seams.lock ?? browserLock()
+      const held = await store.read()
+      if (held) await reenrollCredential(store, lock, stored)
+      else await enrollCredential(store, lock, stored)
+    } catch (e) {
+      throw new CredentialNotStored(e)
+    }
     // The store just changed under whatever seam was built before; a stale
     // one would answer from the OLD pair's cache. Rebuilt lazily, next use.
     cred = null
@@ -233,6 +343,8 @@ export async function login(enrollmentToken: string, deviceName: string): Promis
     await loadDevices()
     return true
   } catch (e) {
+    // The text is all a person sees; the cause is for whoever is asked why.
+    if (e instanceof Error && e.cause !== undefined) console.error(`catenary account: ${e.message}`, e.cause)
     accountState.error = enrollErrorText(e)
     return false
   } finally {
