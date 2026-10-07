@@ -291,6 +291,21 @@ final class StartFailure {
   final bool wipeOwed;
 }
 
+/// Wipes the journal in a directory. The default is [wipeJournalFile]; a test
+/// passes one that throws.
+typedef JournalWipe = Future<void> Function(String directory);
+
+/// Opens `catenary.db`'s journal, wipes it and closes it: the journal's
+/// tables, and never the credential beside them or the outbox's file.
+Future<void> wipeJournalFile(String directory) async {
+  final journal = SqliteJournal.open('$directory/$journalFileName');
+  try {
+    await journal.wipe();
+  } finally {
+    journal.close();
+  }
+}
+
 /// The store the widgets listen to. Built over the platform's seams
 /// (store/platform.dart builds the shipped ones), started once with [start],
 /// and ended with [dispose].
@@ -299,10 +314,11 @@ final class StartFailure {
 /// everything else is empty: there is no fixture corpus behind it.
 final class AppStore extends ChangeNotifier {
   /// [now] is wall-clock ms, which the banner's countdown is measured against.
-  AppStore(this._seams, [this._now = systemClock]);
+  AppStore(this._seams, [this._now = systemClock, this._wipe = wipeJournalFile]);
 
   final SessionSeams _seams;
   final Clock _now;
+  final JournalWipe _wipe;
 
   Session? _session;
   Projection _projection = emptyProjection;
@@ -358,6 +374,20 @@ final class AppStore extends ChangeNotifier {
     _session = null;
     final SessionStart started;
     try {
+      // A wipe a re-enrollment could not make is paid first, and no session
+      // starts until it is: the new credential never runs over the journal
+      // the previous one left.
+      if (_startFailure?.wipeOwed ?? false) {
+        replacing?.end();
+        try {
+          await _wipe(_seams.directory);
+        } on Object catch (e) {
+          if (_disposed) return false;
+          _startFailure = StartFailure('${e.runtimeType}', wipeOwed: true);
+          notifyListeners();
+          return false;
+        }
+      }
       started = await startSession(_seams, replacing: replacing, onOutbox: _onOutbox);
     } on Object catch (e) {
       // `startSession` closed whatever it had opened before it threw.
@@ -452,7 +482,14 @@ final class AppStore extends ChangeNotifier {
     required String deviceName,
     required bool release,
   }) async {
-    final store = openCredentialStore(_seams.directory);
+    // Opened inside the catch: a file that will not open is found out here,
+    // before any request, and is a text on the form and not a throw.
+    final SqliteCredentialStore store;
+    try {
+      store = openCredentialStore(_seams.directory);
+    } on Object {
+      return const EnrollFailed(enrollStorageText);
+    }
     final EnrollOutcome outcome;
     try {
       outcome = await enrollDeviceAt(
@@ -467,6 +504,10 @@ final class AppStore extends ChangeNotifier {
     } finally {
       store.close();
     }
+    // RULING 2 → THE SAME SCREEN AS AT LAUNCH. A session that cannot start
+    // on the credential just stored is `startFailure`, which `start` sets
+    // and does not throw: the outcome is still `Enrolled`, and the shell
+    // draws the failed-start screen in place of the form.
     if (outcome is Enrolled) await start();
     return outcome;
   }
@@ -491,13 +532,22 @@ final class AppStore extends ChangeNotifier {
     );
     if (outcome is Enrolled) {
       // The old session ends first, so no late frame under the old credential
-      // can land after the wipe; `start` ends it again, which is a no-op.
+      // can land after the wipe, and it is let go of: until a new one runs
+      // this store has no session, and says so.
+      _detach();
       session.end();
-      final journal = SqliteJournal.open('${_seams.directory}/$journalFileName');
+      _session = null;
+      _empty();
       try {
-        await journal.wipe();
-      } finally {
-        journal.close();
+        await _wipe(_seams.directory);
+      } on Object catch (e) {
+        // The pair is the new one and the journal is the old one. The wipe
+        // is owed, and `start` pays it before it starts anything.
+        if (!_disposed) {
+          _startFailure = StartFailure('${e.runtimeType}', wipeOwed: true);
+          notifyListeners();
+        }
+        return outcome;
       }
       await start();
     }
