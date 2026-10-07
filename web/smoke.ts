@@ -27,7 +27,7 @@ import { createSSRApp } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import StatusLabel from '@/components/StatusLabel.vue'
-import type { Conversation, User } from '@/wire/generated'
+import { decodeVoiceAttachment, type Conversation, type User } from '@/wire/generated'
 import {
   closeAccount,
   closeSearch,
@@ -35,6 +35,7 @@ import {
   endSession,
   lastMessageOf,
   liveTransport,
+  messageById,
   newCount,
   outboxMessages,
   outboxReady,
@@ -49,6 +50,7 @@ import {
   startSession,
   state,
   unreadCount,
+  voiceOf,
 } from '@/store'
 import {
   accountState,
@@ -515,6 +517,131 @@ async function main() {
   check('a two-member room renders bare READ', dm === 'READ', dm)
   const dmClamped = text(await label(3, 2))
   check('and stays bare even with a numerator above two', dmClamped === 'READ', dmClamped)
+
+  // 8b. CANT-227 — the transcript strip says what the server said, and no more.
+  //
+  // PLANTED, AND THROUGH THE WIRE'S OWN DECODER. The seed cannot serve these:
+  // `transcript_state` is CHECKed to pending/ready/failed, so no row can hold
+  // a state this build does not know, and a failed note seeded into the
+  // canvas's rooms would move the counts every landmark above reads. So each
+  // attachment is the JSON a server would send, decoded by the generated
+  // decoder — which is what turns `superseded` into the sentinel `unknown`.
+  // The failed and unknown ones carry TEXT, which no honest server sends:
+  // it is there so that a surface quoting it regardless of state is caught.
+  // A new conversation, removed again at the end, so nothing else is touched.
+  {
+    const ROOM = 'c-transcripts'
+    const STALE = 'stale words from a job that did not finish'
+    const planted = { ready: 'm-t-ready', unknown: 'm-t-unknown', failed: 'm-t-failed' }
+    const note = (id: string, seq: number, ms: number, transcript: Record<string, unknown>) =>
+      state.messages.push({
+        id, seq, logSeq: 1_000_100 + seq, conversationId: ROOM, authorId: MAREK,
+        at: `2026-09-24T00:0${seq}:00.000Z`, state: 'read',
+        attachments: [decodeVoiceAttachment({
+          kind: 'voice', url: `/media/${id}.opus`, duration_ms: ms,
+          peaks: Array.from({ length: 96 }, (_, i) => 9 + ((i * 37) % 91)), transcript,
+        })],
+      })
+    const before = state.activeId
+    const queryBefore = state.query
+    state.conversations.push({ id: ROOM, kind: 'group', name: 'Signal Box', memberCount: 7, headSeq: 3 })
+    note(planted.ready, 1, 12_000, { state: 'ready', text: 'the gauge is in the blue case' })
+    note(planted.unknown, 2, 23_000, { state: 'superseded', text: STALE })
+    note(planted.failed, 3, 41_000, { state: 'failed', text: STALE })
+    select(ROOM)
+
+    /** The note's own block and nothing of the row around it: from the
+     *  player's button to the row's last whole tag. */
+    const noteOf = (page: string, id: string) => {
+      const row = messageRow(page, id)
+      return row.slice(Math.max(0, row.indexOf('aria-label="Play"')), row.lastIndexOf('<'))
+    }
+    /** Everything under the player: the strip's container, when one is drawn,
+     *  up to its own closing tag — the row's status line follows it. */
+    const stripOf = (noteHtml: string) => {
+      const at = noteHtml.indexOf('<div class="transcript"')
+      if (at < 0) return ''
+      const divs = /<(\/?)div\b/g
+      divs.lastIndex = at
+      let depth = 0
+      for (let m = divs.exec(noteHtml); m; m = divs.exec(noteHtml)) {
+        depth += m[1] ? -1 : 1
+        if (depth === 0) return noteHtml.slice(at, m.index)
+      }
+      return noteHtml.slice(at)
+    }
+    const classesIn = (html: string) =>
+      [...html.matchAll(/class="([^"]*)"/g)].flatMap((m) => m[1].split(/\s+/)).filter(Boolean)
+    const OFFERS = ['EXPAND', 'COLLAPSE', 'COPY', 'REPORT BAD TRANSCRIPT', 'TRANSCRIBING', '<p class="body', STALE]
+    const offers = (html: string) => OFFERS.filter((word) => html.includes(word))
+
+    // Twice: as the thread first draws it, and with EXPAND already pressed —
+    // the fault had both halves, `EXPAND · 0 W` collapsed and an empty body
+    // over COPY and REPORT expanded.
+    for (const pressed of [false, true]) {
+      const when = pressed ? 'expanded' : 'collapsed'
+      for (const id of Object.values(planted)) {
+        if (pressed) state.expandedTranscripts.add(id)
+      }
+      const page = await render()
+      const ready = noteOf(page, planted.ready)
+      const failed = noteOf(page, planted.failed)
+      const unknown = noteOf(page, planted.unknown)
+
+      check(`${when} · control: a ready transcript offers its text`,
+        ready.includes('the gauge is in the blue case') &&
+          (pressed
+            ? ['COLLAPSE', 'COPY', 'REPORT BAD TRANSCRIPT'].every((w) => offers(ready).includes(w))
+            : rowText(ready).includes('EXPAND · 7 W')), rowText(ready))
+      check(`${when} · a failed transcript draws the strip, and it says NO TRANSCRIPT and nothing else`,
+        rowText(stripOf(failed)) === 'NO TRANSCRIPT', rowText(failed))
+      check(`${when} · no EXPAND, no word count, no body, no COPY, no REPORT, no stale text`,
+        offers(failed).length === 0 && !/\d+ W\b/.test(rowText(failed)), offers(failed).join(', '))
+      // `.label` is the meta-color text style (VoiceNote.vue); the pulse, the
+      // accent label and every pressable thing have classes of their own, and
+      // none of them may be here.
+      check(`${when} · in the meta color: the strip holds one label and no pulse, accent or action`,
+        classesIn(stripOf(failed)).sort().join(' ') === 'label strip transcript' &&
+          !stripOf(failed).includes('<button'), classesIn(stripOf(failed)).join(' '))
+      check(`${when} · a failed note is still a note: its player and length are drawn`,
+        failed.includes('aria-label="Play"') && rowText(failed).includes('0:41'), rowText(failed))
+      check(`${when} · an unknown state draws no strip at all`,
+        unknown.includes('aria-label="Play"') && stripOf(unknown) === '' &&
+          !unknown.includes('TRANSCRIPT') && offers(unknown).length === 0, rowText(unknown))
+
+      if (pressed) continue
+      // The rail, for a note the server holds, says what the app's does
+      // (`preview` in app/lib/store/conversation.dart): only a pending note
+      // says "transcript pending". Already true before CANT-227; pinned here.
+      const rail = rowText(elementWithId(page, ROOM))
+      check('the rail previews a failed note as `voice note · m:ss`',
+        rail.includes('Marek: voice note · 0:41') && !rail.includes('pending'), rail)
+    }
+    check('the state this build does not know decoded to the sentinel',
+      voiceOf(messageById(planted.unknown))?.transcript.state === 'unknown')
+
+    // No other surface quotes a transcript the strip says is not there.
+    state.query = 'stale words'
+    check('search finds no transcript in a failed or unknown note', searchHits.value.length === 0,
+      searchHits.value.map((h) => `${h.type} ${h.message.id}`).join(', '))
+    state.query = 'blue case'
+    check('control: and still finds a ready one', searchHits.value.some((h) => h.message.id === planted.ready))
+    state.query = queryBefore
+
+    state.messages.splice(state.messages.findIndex((m) => m.id === planted.failed), 1)
+    const rail = rowText(elementWithId(await render(), ROOM))
+    check('and the rail previews an unknown one the same way',
+      rail.includes('Marek: voice note · 0:23') && !rail.includes('pending'), rail)
+
+    // Take out what was planted: later sections search every held message.
+    for (const id of Object.values(planted)) {
+      state.expandedTranscripts.delete(id)
+      const at = state.messages.findIndex((m) => m.id === id)
+      if (at >= 0) state.messages.splice(at, 1)
+    }
+    state.conversations.splice(state.conversations.findIndex((c) => c.id === ROOM), 1)
+    if (before) select(before)
+  }
 
   // 9. CANT-141 — otherMemberId, not the two guesses it replaces.
   //

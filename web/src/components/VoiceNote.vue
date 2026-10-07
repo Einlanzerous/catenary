@@ -11,12 +11,13 @@ import {
   state,
   toggleTranscript,
   togglePlay,
+  transcriptText,
   transcriptWords,
 } from '@/store'
 import Waveform from './Waveform.vue'
 
 /** The signature object. Audio is playable immediately — transcription never
- *  blocks playback, in any of the three states. */
+ *  blocks playback, whatever state the transcript is in. */
 const props = withDefaults(
   defineProps<{
     message: RenderedMessage
@@ -36,6 +37,32 @@ const playing = computed(
 const position = computed(() => played.value * props.voice.durationMs)
 const expanded = computed(() => isExpanded(props.message.id))
 const words = computed(() => transcriptWords(props.voice))
+
+/** What the strip under the player may say — the server's word for the
+ *  transcript and nothing more (Invariant 3). Only `ready` with its text in
+ *  hand offers a transcript: a job that failed has none to expand, copy or
+ *  report, and a state this build does not know is not claimed to be any of
+ *  the others, so it draws no strip at all. The Flutter app's arms, word for
+ *  word (CANT-220 rulings 5 and 6, `app/lib/thread.dart`). */
+const strip = computed<'pending' | 'ready' | 'failed' | 'none'>(() => {
+  const state = props.voice.transcript.state
+  switch (state) {
+    case 'pending':
+      return 'pending'
+    case 'failed':
+      return 'failed'
+    case 'ready':
+      return transcriptText(props.voice) === undefined ? 'none' : 'ready'
+    case 'unknown':
+      return 'none'
+    default:
+      // The compiler demands an arm for every member; a value that got here
+      // without the decoder is still one this build does not know, and that
+      // draws no strip — a throw here would take the thread down with it.
+      state satisfies never
+      return 'none'
+  }
+})
 
 /** The segment currently under the playhead, highlighted while it plays. */
 const activeSegment = computed(() => {
@@ -86,9 +113,9 @@ const activeSegment = computed(() => {
       </button>
     </div>
 
-    <div v-if="!compact" class="transcript">
+    <div v-if="!compact && strip !== 'none'" class="transcript">
       <!-- A · PENDING ─────────────────────────────────────────────── -->
-      <template v-if="voice.transcript.state === 'pending'">
+      <template v-if="strip === 'pending'">
         <div class="strip">
           <span class="dot pulse" />
           <span class="pending-label"
@@ -104,6 +131,13 @@ const activeSegment = computed(() => {
           <div class="line"><i style="width: 64%; animation-delay: 0.3s" /></div>
         </div>
       </template>
+
+      <!-- FAILED — no canvas frame; the app's words (CANT-220 ruling 5).
+           Meta color, no pulse, no accent, and nothing to press: nothing is
+           running and there is no transcript to open. -->
+      <div v-else-if="strip === 'failed'" class="strip">
+        <span class="label">NO TRANSCRIPT</span>
+      </div>
 
       <!-- C · EXPANDED ────────────────────────────────────────────── -->
       <template v-else-if="expanded">
