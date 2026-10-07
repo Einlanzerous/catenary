@@ -142,6 +142,62 @@ void main() {
         expect(j.counted, [for (final n in [1, 2, 3]) message(n).id]);
         expect(j.cursor, 3);
       });
+
+      // CANT-230: whose journal it is. `me` and `other` are two accounts.
+      test('[ruling 1 → option 0] a journal with no owner is adopted: its records and cursor are kept', () async {
+        final j = open();
+        await j.applyPage(bootstrapPage(3, [message(1), message(2), message(3)]), Faults.none);
+        expect(j.owner, isNull);
+        final before = wireShape(j.snapshot());
+        expect(await j.claim(me), isNull, reason: 'nothing was wiped');
+        expect(j.owner, me);
+        expect(wireShape(j.snapshot()), before);
+        expect(j.cursor, 3);
+        expect(j.wipes, 0);
+        expect(j.counted, hasLength(3));
+      });
+
+      test('its own account claiming it again changes nothing', () async {
+        final j = open();
+        await j.claim(me);
+        await j.applyPage(bootstrapPage(3, [message(1), message(2), message(3)]), Faults.none);
+        final before = wireShape(j.snapshot());
+        expect(await j.claim(me), isNull);
+        expect(j.owner, me);
+        expect(wireShape(j.snapshot()), before);
+        expect(j.wipes, 0);
+      });
+
+      test('another account\'s claim wipes it, and says so', () async {
+        final j = open();
+        await j.claim(me);
+        await j.applyPage(bootstrapPage(3, [message(1), message(2), message(3)]), Faults.none);
+        final a = await j.claim(other);
+        expect(a, isNotNull);
+        expect(a!.source, AppliedSource.wipe);
+        expect(a.wiped, isTrue);
+        expect(a.cursor, isNull);
+        expect(j.owner, other);
+        expect(wireShape(j.snapshot()), {'cursor': null, 'messages': [], 'conversations': [], 'users': []});
+        expect(j.counted, isEmpty);
+        expect(j.wipes, 1);
+        // And it is a journal like any other afterwards.
+        await j.applyPage(bootstrapPage(2, [message(1), message(2)]), Faults.none);
+        expect(j.cursor, 2);
+        expect(await j.claim(other), isNull);
+        expect(j.messageCount, 2);
+      });
+
+      test('a wipe keeps the owner, so a later claim by another account wipes and does not adopt', () async {
+        final j = open();
+        await j.claim(me);
+        await j.wipe();
+        expect(j.owner, me);
+        await j.applyPage(bootstrapPage(3, [message(1), message(2), message(3)]), Faults.none);
+        expect(await j.claim(other), isNotNull, reason: 'not adopted: the journal still said whose it was');
+        expect(j.messageCount, 0);
+        expect(j.owner, other);
+      });
     });
   }
 

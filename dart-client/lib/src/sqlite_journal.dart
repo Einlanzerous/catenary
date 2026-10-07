@@ -8,6 +8,11 @@
 /// `counted`. The credential shares the file and never this code's statements:
 /// a wipe (obligation 4) clears the journal's tables and not `credential`.
 ///
+/// WHOSE IT IS (CANT-230): `journal_meta.owner`, the `user_id` the journal was
+/// written for. A wipe leaves it. `claim` compares it with the account about
+/// to use the journal, inside one transaction, and wipes a journal that is
+/// another account's before anything is built over it.
+///
 /// ONE TRANSACTION PER WRITE. A page's messages, conversations, users, counted
 /// ids and cursor go in one `BEGIN IMMEDIATE … COMMIT`, and the in-memory
 /// mirror — which is what `snapshot()`, `cursor` and the `Applied` the
@@ -73,7 +78,8 @@ final class SqliteJournalOptions {
 
   /// TEST SEAM. Called once every statement of a write has run and before its
   /// `COMMIT` — the moment a process killed mid-page dies at. A test throws
-  /// here, and the write lands nothing.
+  /// here, and the write lands nothing. A claim that writes fires it too, with
+  /// `AppliedSource.wipe`, whether or not it wiped.
   final void Function(Database db, AppliedSource source)? midWrite;
 
   /// NEGATIVE CONTROL for the one-transaction rule, never set outside a test:
@@ -130,9 +136,13 @@ final class SqliteJournal extends StagedJournal {
         _write(delta, _Part.cursor, generation);
       } else {
         // A wipe's count is the STORED count plus one, read in the wipe's own
-        // transaction: two contexts that each wipe once have wiped twice.
-        final wipes = _write(delta, _Part.all, generation);
-        if (delta.wiped) next.wipes = wipes;
+        // transaction: two contexts that each wipe once have wiped twice. The
+        // owner is the stored one too, which a wipe does not write.
+        final (:wipes, :owner) = _write(delta, _Part.all, generation);
+        if (delta.wiped) {
+          next.wipes = wipes;
+          next.owner = owner;
+        }
       }
     } on JournalStale {
       final loaded = _load(_db);
@@ -143,14 +153,68 @@ final class SqliteJournal extends StagedJournal {
     _generation = generation;
   }
 
-  /// One transaction. Returns the wipe count it left stored.
-  int _write(JournalDelta d, _Part part, String? generation) {
+  @override
+  Future<Applied?> claim(Uuid accountId) async {
+    // Read first, outside any write transaction: the journal's own account
+    // claiming it again, which is every ordinary launch, writes nothing and
+    // waits on nobody's lock.
+    if (_storedOwner() == accountId) {
+      state.owner = accountId;
+      return null;
+    }
+    final bool wiped;
+    _db.execute('BEGIN IMMEDIATE');
+    try {
+      // And again inside it, so nothing another context commits lands between
+      // the check and the write.
+      final held = _storedOwner();
+      if (held == accountId) {
+        _db.execute('COMMIT');
+        state.owner = accountId;
+        return null;
+      }
+      wiped = held != null;
+      if (wiped) {
+        // ANOTHER ACCOUNT'S: a wipe in every respect — the same tables, the
+        // count, a fresh generation, so a second context's next write is
+        // refused as stale — and the new owner with it.
+        _db.execute('DELETE FROM messages');
+        _db.execute('DELETE FROM conversations');
+        _db.execute('DELETE FROM users');
+        _db.execute('DELETE FROM counted');
+        _db.execute(
+          'UPDATE journal_meta SET cursor = NULL, wipes = wipes + 1, generation = ?, owner = ? WHERE id = 1',
+          [_newGeneration(), accountId],
+        );
+      } else {
+        // NOBODY'S: a journal from before there was an owner. Kept, and
+        // adopted (CANT-230 ruling 1).
+        _db.execute('UPDATE journal_meta SET owner = ? WHERE id = 1', [accountId]);
+      }
+      _opts.midWrite?.call(_db, AppliedSource.wipe);
+      _db.execute('COMMIT');
+    } catch (_) {
+      if (!_db.autocommit) _db.execute('ROLLBACK');
+      rethrow;
+    }
+    // The mirror is whatever is stored now: the claim wrote from the file,
+    // not from this context's copy of it.
+    final loaded = _load(_db);
+    state = loaded.state;
+    _generation = loaded.generation;
+    return wiped ? const Applied(source: AppliedSource.wipe, cursor: null, wiped: true) : null;
+  }
+
+  String? _storedOwner() => _db.select('SELECT owner FROM journal_meta WHERE id = 1').single['owner'] as String?;
+
+  /// One transaction. Returns the wipe count and the owner it left stored.
+  ({int wipes, String? owner}) _write(JournalDelta d, _Part part, String? generation) {
     _db.execute('BEGIN IMMEDIATE');
     try {
       // THE STORED GENERATION AND CURSOR, read inside this transaction, so
       // nothing another context commits can land between the check and the
       // write.
-      final meta = _db.select('SELECT cursor, wipes, generation FROM journal_meta WHERE id = 1').single;
+      final meta = _db.select('SELECT cursor, wipes, generation, owner FROM journal_meta WHERE id = 1').single;
       final storedCursor = meta['cursor'] as int?;
       var wipes = meta['wipes'] as int;
       if (!d.wiped && !_opts.ignoreGeneration && meta['generation'] != _generation) throw JournalStale(d.source);
@@ -191,7 +255,7 @@ final class SqliteJournal extends StagedJournal {
         _opts.midWrite?.call(_db, d.source);
       }
       _db.execute('COMMIT');
-      return wipes;
+      return (wipes: wipes, owner: meta['owner'] as String?);
     } catch (_) {
       if (!_db.autocommit) _db.execute('ROLLBACK');
       rethrow;
@@ -224,8 +288,10 @@ final class _Loaded {
 _Loaded _load(Database db) {
   db.execute('BEGIN');
   try {
-    final meta = db.select('SELECT cursor, wipes, generation FROM journal_meta WHERE id = 1').single;
-    final s = JournalState.empty(meta['wipes'] as int)..cursor = meta['cursor'] as int?;
+    final meta = db.select('SELECT cursor, wipes, generation, owner FROM journal_meta WHERE id = 1').single;
+    final s = JournalState.empty(meta['wipes'] as int)
+      ..cursor = meta['cursor'] as int?
+      ..owner = meta['owner'] as String?;
     for (final row in db.select('SELECT record FROM messages')) {
       final m = Message.fromJson(jsonDecode(row['record'] as String));
       s.messages[m.id] = m;

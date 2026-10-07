@@ -81,6 +81,15 @@ const catenaryMigrations = <String>[
     record TEXT NOT NULL
   ) STRICT;
   ''',
+  // 2 · whose journal it is (CANT-230).
+  //
+  // The `user_id` of the account the journal was written for, or NULL for a
+  // journal nobody has claimed: one written before this step, which its first
+  // claim adopts. A wipe leaves it; a claim by another account wipes and
+  // replaces it (sqlite_journal.dart).
+  '''
+  ALTER TABLE journal_meta ADD COLUMN owner TEXT;
+  ''',
 ];
 
 /// A file whose `user_version` is above what this build knows: it was written
