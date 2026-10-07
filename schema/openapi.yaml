@@ -366,7 +366,7 @@ components:
           type: "integer"
           minimum: 1
           description: |2-
-            How many people are in this room, as the server counts them at serve time: the thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the numerator over it.
+            How many people are in this room, as the server counts them at serve time: the thread header renders it as the `7` in `7 MEMBERS`, and `Message.read_by` is the numerator over it.
 
             IT IS THE DENOMINATOR AS OF THE PAGE THAT CARRIED IT, AND IT IS FRESHER THAN THE NUMERATOR: this record rides every page on which the room's membership changed, while a held message is never re-served by a catch-up. A client renders `min(read_by, member_count)` over this value — the rule is stated once, on `Message.read_by` — and never a numerator above it.
 

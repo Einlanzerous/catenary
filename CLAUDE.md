@@ -52,7 +52,7 @@ The one deliberate exception is the **frame union**, where the Dart generator's 
 
 ### 3 · The client never claims something the server cannot keep.
 
-The thread header reads `7 MEMBERS · TLS`, not `E2E`. D1 declines end-to-end encryption and names its mitigation as "honesty with users about what the server can see" — a badge asserting the opposite is the one claim this surface must not make.
+The thread header never reads `E2E`, and its last word is derived from the origin the session talks to, never rendered from a literal: `7 MEMBERS · TLS` over `https`, `7 MEMBERS · CLEARTEXT` over anything else. D1 declines end-to-end encryption and names its mitigation as "honesty with users about what the server can see" — a badge asserting the opposite is the one claim this surface must not make.
 
 The wire schema follows the same rule from the other direction: `sending`, `queued` and `failed` are **not expressible on the wire**, because they describe a message's relationship to its own outbox and the server has no opinion on them. That is also why the two client tickets that own them have no oracle.
 

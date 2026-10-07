@@ -164,11 +164,19 @@ Important.
 
 ### 4. The client never claims what the server cannot keep
 
-D1 declines end-to-end encryption and names its mitigation as honesty about what
-the server can see. The thread header reads `7 MEMBERS · TLS`, never `E2E`.
+D1 declines end-to-end encryption and names its mitigation as honesty about
+what the server can see. The thread header's last word is never `E2E`, and the
+code that renders it derives it from the origin the session talks to, not from
+a literal: `TLS` for an `https` origin and `CLEARTEXT` for anything else, so
+`7 MEMBERS · TLS` over https and `7 MEMBERS · CLEARTEXT` over http are both
+correct.
 
 - A badge, string or doc asserting encryption, privacy or delivery the server
   does not provide is Important.
+- `TLS` shown for an origin that is not `https`, or a transport word the header
+  renders from a literal instead of deriving it, is Important. `CLEARTEXT` over
+  `http` is the correct rendering and is not a finding, and neither is a test
+  that asserts the rendered word for a stated origin.
 - `sending`, `queued` and `failed` are **not expressible on the wire** — they
   describe a message's relationship to its own outbox. A PR putting them in the
   schema is Important.

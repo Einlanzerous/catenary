@@ -1462,7 +1462,7 @@ type Conversation struct {
 	// DIRECT BY THE User THIS ID NAMES, read fresh on every render, not by name (above).
 	OtherMemberID *Uuid `json:"other_member_id,omitempty"`
 	// How many people are in this room, as the server counts them at serve time: the
-	// thread header renders it as `7 MEMBERS · TLS`, and `Message.read_by` is the
+	// thread header renders it as the `7` in `7 MEMBERS`, and `Message.read_by` is the
 	// numerator over it.
 	//
 	// IT IS THE DENOMINATOR AS OF THE PAGE THAT CARRIED IT, AND IT IS FRESHER THAN THE
