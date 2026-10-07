@@ -21,6 +21,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { IDBFactory } from 'fake-indexeddb'
+import { restartAfterEnrollment, SESSION_NOT_STARTED_TEXT } from '@/enrolled'
 import { accountState, configureAccount, CREDENTIAL_NOT_STORED_TEXT, credentialStore, login, onEnrolled } from '@/account'
 import {
   enrollCredential, MemoryCredentialStore, type CredentialStore, type IdbCredentialStore, type StoredCredential,
@@ -372,4 +373,54 @@ test('a login that works still works: first enrollment, then re-enrollment over 
   configureAccount({ baseUrl: BASE, fetch: next.fetch, store: held })
   assert.equal(await login('another-token', 'This browser'), true)
   assert.equal((await held.read())?.deviceId, uuid(8))
+})
+
+/** The listener main.ts registers, with the journal and start planted. */
+function restartListener(journal: { wipe(): Promise<unknown> } | undefined, start: () => Promise<unknown>, ended: string[]) {
+  return () => void restartAfterEnrollment({
+    endSession: () => void ended.push('end'),
+    journal: async () => journal,
+    start: async () => { ended.push('start'); return start() },
+  })
+}
+
+test('a journal wipe that rejects after a login is caught, logged and told on the account view (CANT-240)', async () => {
+  const steps: string[] = []
+  const off = onEnrolled(restartListener({ wipe: () => Promise.reject(new Error('IndexedDB refused the write')) }, async () => true, steps))
+  const unhandled: unknown[] = []
+  const onUnhandled = (e: unknown) => void unhandled.push(e)
+  process.on('unhandledRejection', onUnhandled)
+  try {
+    const s = server(accepts())
+    configureAccount({ baseUrl: BASE, fetch: s.fetch, store: new PlantedStore() })
+    assert.equal(await login('a-token', 'This browser'), true)
+    await new Promise((r) => setTimeout(r, 20))
+
+    assert.equal(accountState.mode, 'sessions', 'the account view stays open')
+    assert.equal(accountState.sessionError, SESSION_NOT_STARTED_TEXT)
+    assert.deepEqual(steps, ['end'], 'no session starts over a journal that was not wiped')
+    assert.ok(logged.some((a) => String(a[0]).includes('could not start')), 'the rejection was logged')
+    assert.deepEqual(unhandled, [], 'nothing escaped as an unhandled rejection')
+  } finally {
+    process.off('unhandledRejection', onUnhandled)
+    off()
+  }
+})
+
+test('a start that rejects after the wipe is caught the same way, and a later restart clears the text', async () => {
+  const steps: string[] = []
+  let failing = true
+  const journal = { wipe: async () => {} }
+  const seams = {
+    endSession: () => void steps.push('end'),
+    journal: async () => journal,
+    start: async () => { if (failing) throw new Error('the credential store would not open'); return true },
+  }
+  await restartAfterEnrollment(seams)
+  assert.equal(accountState.sessionError, SESSION_NOT_STARTED_TEXT)
+  assert.ok(logged.length > 0)
+
+  failing = false
+  await restartAfterEnrollment(seams)
+  assert.equal(accountState.sessionError, null)
 })

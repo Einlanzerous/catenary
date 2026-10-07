@@ -1,6 +1,7 @@
 import { createApp } from 'vue'
 import App from './App.vue'
 import { credentialStore, onEnrolled } from './account'
+import { restartAfterEnrollment } from './enrolled'
 import { endSession, liveTransport, openAccount, setTheme, startSession, state } from './store'
 import { IdbJournal, type Journal } from './transport'
 import './styles/base.css'
@@ -42,11 +43,7 @@ const start = async () =>
 // would skip everything below it that this account can see and that one
 // could not. One bootstrap is the price; a wipe never touches the credential.
 onEnrolled(() => {
-  void (async () => {
-    endSession()
-    await (await journal)?.wipe()
-    await start()
-  })()
+  void restartAfterEnrollment({ endSession, journal: () => journal, start })
 })
 
 void start().then(

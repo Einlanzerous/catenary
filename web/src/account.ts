@@ -53,6 +53,10 @@ interface AccountState {
   mode: AccountMode
   busy: boolean
   error: string | null
+  /** Set when a credential was stored and the session over it would not start
+   *  (`restartAfterEnrollment`). Its own field: `error` is cleared and rewritten
+   *  by the device list's loads, which would swallow it (CANT-240). */
+  sessionError: string | null
   /** The caller's own devices, oldest first, revoked ones included — exactly
    *  as `GET /devices` serves them (CANT-117). */
   devices: Device[]
@@ -73,6 +77,7 @@ export const accountState: AccountState = reactive({
   mode: 'login',
   busy: false,
   error: null,
+  sessionError: null,
   devices: [],
   deviceId: null,
   terminal: NOT_TERMINAL,
