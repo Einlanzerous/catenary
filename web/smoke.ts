@@ -439,6 +439,28 @@ async function main() {
   const ilseDm = await render()
   check('an active DM header carries no mark', !ilseDm.includes('DEACTIVATED'))
 
+  // CANT-248 — a direct conversation's chip is the rail's own word and the
+  // app's, `DIRECT · <transport>`, never a count: two is always the answer and
+  // it goes false (`1 MEMBERS`) the moment the other half is deactivated.
+  const chipOf = (html: string) => html.match(/<span class="members"[^>]*>([^<]*)</)?.[1] ?? ''
+  check('a direct header over https reads DIRECT · TLS', chipOf(ilseDm) === 'DIRECT · TLS', chipOf(ilseDm))
+  check('and the page never claims 2 MEMBERS or 1 MEMBERS',
+    !ilseDm.includes('2 MEMBERS') && !ilseDm.includes('1 MEMBERS'))
+  select(TED_DM)
+  const tedDm = await render()
+  check('the other direct reads DIRECT · TLS too', chipOf(tedDm) === 'DIRECT · TLS', chipOf(tedDm))
+  check('and its page has no member count either', !tedDm.includes('2 MEMBERS') && !tedDm.includes('1 MEMBERS'))
+  state.origin = 'http://catenary.test'
+  const tedDmHttp = await render()
+  check('a direct header over http reads DIRECT · CLEARTEXT', chipOf(tedDmHttp) === 'DIRECT · CLEARTEXT',
+    chipOf(tedDmHttp))
+  check('and over http the page still has no member count',
+    !tedDmHttp.includes('2 MEMBERS') && !tedDmHttp.includes('1 MEMBERS'))
+  state.origin = 'https://catenary.test'
+  check('the DM whose other half is deactivated reads DIRECT · TLS beside the tag',
+    chipOf(petraDm) === 'DIRECT · TLS' && petraDm.includes('DEACTIVATED'), chipOf(petraDm))
+  check('and never 1 MEMBERS', !petraDm.includes('1 MEMBERS') && !petraDm.includes('2 MEMBERS'))
+
   // 8. CANT-145 — the read fraction is rendered by the wire's rule:
   //    `min(read_by, member_count)` over `member_count` (CANT-140 ruling 2).
   //
@@ -748,6 +770,15 @@ async function main() {
   check('wren\'s DM is titled by her own live name, not the DM\'s stale name',
     wrenTitle === 'Wren Castellano', wrenTitle)
   check('wren is active, so her DM header carries no mark', !wrenPage.includes('DEACTIVATED'))
+
+  // CANT-248 — a kind this build does not know takes the count, never DIRECT.
+  // Stamped on the held record the way `name` is above, and put back.
+  cWren.kind = 'unknown'
+  const unknownKind = chipOf(await render())
+  check('an unknown kind reads its count, not DIRECT',
+    unknownKind === `${cWren.memberCount} MEMBERS · TLS`, unknownKind)
+  check('and never DIRECT', !unknownKind.includes('DIRECT'))
+  cWren.kind = 'direct'
   const wrenRow = elementWithId(wrenPage, WREN_DM)
   check('wren\'s rail row is titled by her own live name', wrenRow.includes('Wren Castellano'), wrenRow)
   check('and not by the DM\'s stale name', !wrenRow.includes('Petra Lindqvist'), wrenRow)
