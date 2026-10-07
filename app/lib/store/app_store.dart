@@ -276,6 +276,21 @@ List<ConversationView> conversationViews({
   return List.unmodifiable([for (final (_, v) in ordered) v]);
 }
 
+/// Why the last [AppStore.start] ended in neither a session nor "not
+/// enrolled": something this device keeps would not open (CANT-222).
+@immutable
+final class StartFailure {
+  const StartFailure(this.name, {this.wipeOwed = false});
+
+  /// The error's type name, as the transport names a failed journal write.
+  /// Never its message: a `SqliteException` prints its statement's parameters.
+  final String name;
+
+  /// A re-enrollment stored its credential and the journal the previous one
+  /// left has not been wiped. No session starts until it has been.
+  final bool wipeOwed;
+}
+
 /// The store the widgets listen to. Built over the platform's seams
 /// (store/platform.dart builds the shipped ones), started once with [start],
 /// and ended with [dispose].
@@ -300,9 +315,18 @@ final class AppStore extends ChangeNotifier {
   Timer? _ticker;
   var _disposed = false;
 
+  StartFailure? _startFailure;
+
   /// Whether this device holds an address and a credential, and a session is
-  /// running on them. False is the caller's cue for the enrollment screen.
+  /// running on them. False is the caller's cue for the enrollment screen,
+  /// but only once [startFailure] has been asked and is null.
   bool get enrolled => _session != null;
+
+  /// Set when the last [start] could not open what this device keeps. ASK
+  /// THIS BEFORE [enrolled]: a device whose stores will not open has no
+  /// session either, and showing it the enrollment form would spend a token
+  /// against files that still cannot be opened.
+  StartFailure? get startFailure => _startFailure;
 
   /// Rooms and directs, most recent first.
   List<ConversationView> get conversations => _conversations;
@@ -322,14 +346,27 @@ final class AppStore extends ChangeNotifier {
   }
 
   /// Reads the address and the credential and, with both, starts a session and
-  /// projects it. Completes true when one is running and false when this
-  /// device is not enrolled, in which case nothing was constructed. Calling it
-  /// again ends the running session first: the restart a re-enrollment needs.
+  /// projects it. Completes true when one is running and false otherwise:
+  /// when this device is not enrolled, in which case nothing was constructed,
+  /// or when something it keeps would not open, in which case [startFailure]
+  /// says so. It does not throw for either, and deletes nothing. Calling it
+  /// again ends the running session first: the restart a re-enrollment needs,
+  /// and the second attempt TRY AGAIN makes.
   Future<bool> start() async {
     _detach();
     final replacing = _session;
     _session = null;
-    final started = await startSession(_seams, replacing: replacing, onOutbox: _onOutbox);
+    final SessionStart started;
+    try {
+      started = await startSession(_seams, replacing: replacing, onOutbox: _onOutbox);
+    } on Object catch (e) {
+      // `startSession` closed whatever it had opened before it threw.
+      if (_disposed) return false;
+      _empty();
+      _startFailure = StartFailure('${e.runtimeType}');
+      notifyListeners();
+      return false;
+    }
     final session = switch (started) {
       NotEnrolled() => null,
       SessionRunning(:final session) => session,
@@ -338,15 +375,13 @@ final class AppStore extends ChangeNotifier {
       session?.end();
       return false;
     }
-    _typing.clear();
+    _startFailure = null;
     if (session == null) {
-      _projection = emptyProjection;
-      _outbox = const [];
-      _conversations = const [];
-      _connection = const ConnectionView(kind: ConnectionKind.reconnecting);
+      _empty();
       notifyListeners();
       return false;
     }
+    _typing.clear();
     _session = session;
     final transport = session.transport;
     _offs = [
@@ -467,6 +502,15 @@ final class AppStore extends ChangeNotifier {
       await start();
     }
     return outcome;
+  }
+
+  /// What the widgets read when there is no session.
+  void _empty() {
+    _typing.clear();
+    _projection = emptyProjection;
+    _outbox = const [];
+    _conversations = const [];
+    _connection = const ConnectionView(kind: ConnectionKind.reconnecting);
   }
 
   void _onOutbox(List<OutboxItem> items) {

@@ -7,7 +7,9 @@
 // at on a device.
 //
 // A DEVICE THAT IS NOT ENROLLED SHOWS THE ENROLLMENT SCREEN (enroll.dart), and
-// nothing else. The fixtures (fixtures.dart) are what the panes read only when
+// nothing else. One that could not open what it keeps shows the failed-start
+// screen (start_failed.dart), and is never mistaken for one that is not
+// enrolled. The fixtures (fixtures.dart) are what the panes read only when
 // the app is built without a store, which is how the canvas is looked at in a
 // test.
 
@@ -21,6 +23,7 @@ import 'enroll.dart';
 import 'fixtures.dart';
 import 'rail.dart';
 import 'specimen.dart';
+import 'start_failed.dart';
 import 'store/app_store.dart';
 import 'store/connection.dart';
 import 'store/conversation.dart';
@@ -29,18 +32,82 @@ import 'store/platform.dart';
 import 'theme.dart';
 import 'thread.dart';
 
-/// The store is started before the first frame: it reads two local files, and
-/// what the first frame shows depends on whether this device is enrolled. A
-/// database that will not open fails here, loudly, and draws nothing.
+/// The store is opened and started before the first frame: it reads two local
+/// files, and what the first frame shows depends on whether this device is
+/// enrolled. A FRAME IS ALWAYS DRAWN. A database that will not open, or a
+/// directory the platform cannot name, is the failed-start screen
+/// (start_failed.dart) and not an uncaught error with the launch screen left
+/// up (CANT-222).
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  final store = await deviceStore();
+  runApp(await bootApp(deviceStore));
+}
+
+/// What `main` runs: the app over the store [open] builds, started. [open] is
+/// a parameter so that a test can pass one that throws.
+Future<Widget> bootApp(Future<AppStore> Function() open) async {
+  final (store, unopened) = await _open(open);
+  return DeviceApp(open: open, store: store, unopened: unopened);
+}
+
+/// Opens and starts a store. A store that opened and could not start is still
+/// the store: it holds its own `startFailure`. One that could not be opened
+/// at all is the second value.
+Future<(AppStore?, StartFailure?)> _open(Future<AppStore> Function() open) async {
+  final AppStore store;
+  try {
+    store = await open();
+  } on Object catch (e) {
+    return (null, StartFailure('${e.runtimeType}'));
+  }
   await store.start();
-  runApp(CatenaryApp(store: store));
+  return (store, null);
+}
+
+/// The app on a device: [CatenaryApp] over a store, or over the fact that
+/// none could be opened, with TRY AGAIN opening one.
+class DeviceApp extends StatefulWidget {
+  const DeviceApp({super.key, required this.open, this.store, this.unopened, this.initialMode = ThemeMode.system});
+
+  final Future<AppStore> Function() open;
+  final AppStore? store;
+  final StartFailure? unopened;
+  final ThemeMode initialMode;
+
+  @override
+  State<DeviceApp> createState() => _DeviceAppState();
+}
+
+class _DeviceAppState extends State<DeviceApp> {
+  late AppStore? _store = widget.store;
+  late StartFailure? _unopened = widget.unopened;
+
+  Future<void> _retry() async {
+    final (store, unopened) = await _open(widget.open);
+    if (!mounted) {
+      store?.dispose();
+      return;
+    }
+    setState(() {
+      _store = store;
+      _unopened = unopened;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      CatenaryApp(initialMode: widget.initialMode, store: _store, unopened: _unopened, onRetryOpen: _retry);
 }
 
 class CatenaryApp extends StatefulWidget {
-  const CatenaryApp({super.key, this.initialMode = ThemeMode.system, this.clock = DateTime.now, this.store});
+  const CatenaryApp({
+    super.key,
+    this.initialMode = ThemeMode.system,
+    this.clock = DateTime.now,
+    this.store,
+    this.unopened,
+    this.onRetryOpen,
+  });
 
   /// Dark is primary. `system` follows the device, which is what ships; a
   /// test names the theme it wants.
@@ -54,6 +121,11 @@ class CatenaryApp extends StatefulWidget {
   /// the first screen is the enrollment screen; without one, the panes read
   /// the fixtures.
   final AppStore? store;
+
+  /// Set when no store could be opened at all: the failed-start screen, and
+  /// nothing else. [onRetryOpen] is its TRY AGAIN.
+  final StartFailure? unopened;
+  final Future<void> Function()? onRetryOpen;
 
   @override
   State<CatenaryApp> createState() => _CatenaryAppState();
@@ -72,7 +144,13 @@ class _CatenaryAppState extends State<CatenaryApp> {
       themeMode: _mode,
       // A theme change is a swap between two fixed tables (tokens.dart).
       themeAnimationDuration: Duration.zero,
-      home: _Shell(clock: widget.clock, mode: _mode, onMode: (m) => setState(() => _mode = m), store: widget.store),
+      home: widget.unopened != null
+          ? StartFailedScreen(
+              cause: StartFailedCause.directory,
+              name: widget.unopened!.name,
+              onRetry: widget.onRetryOpen ?? () async {},
+            )
+          : _Shell(clock: widget.clock, mode: _mode, onMode: (m) => setState(() => _mode = m), store: widget.store),
     );
   }
 }
@@ -141,7 +219,19 @@ class _ShellState extends State<_Shell> {
     if (store == null) return _fixtureRail(context);
     return ListenableBuilder(
       listenable: store,
-      builder: (context, _) => store.enrolled ? _storeRail(context, store) : _enrollScreen(store),
+      builder: (context, _) {
+        // Asked first: a device whose stores will not open has no session
+        // either, and must not be shown the enrollment form.
+        final failure = store.startFailure;
+        if (failure != null) {
+          return StartFailedScreen(
+            cause: failure.wipeOwed ? StartFailedCause.wipeOwed : StartFailedCause.stores,
+            name: failure.name,
+            onRetry: store.start,
+          );
+        }
+        return store.enrolled ? _storeRail(context, store) : _enrollScreen(store);
+      },
     );
   }
 

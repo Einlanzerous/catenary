@@ -13,6 +13,7 @@ import 'package:catenary/fixtures.dart';
 import 'package:catenary/metrics.dart';
 import 'package:catenary/rail.dart';
 import 'package:catenary/specimen.dart';
+import 'package:catenary/start_failed.dart';
 import 'package:catenary/states.dart';
 import 'package:catenary/store/connection.dart';
 import 'package:catenary/store/conversation.dart';
@@ -146,6 +147,22 @@ void main() {
       ));
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/voice-$name.png'));
+    });
+
+    // The failed-start screen (CANT-222): a device that could not open what
+    // it keeps.
+    testWidgets('render the failed start, $name', (tester) async {
+      await loadFonts();
+      tester.view.physicalSize = const Size(780, 1688);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+        home: StartFailedScreen(cause: StartFailedCause.stores, name: 'SqliteException', onRetry: () async {}),
+      ));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/start-failed-$name.png'));
     });
   }
 }
