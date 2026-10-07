@@ -69,6 +69,14 @@ export type RenderedMessage = Message | OutboxMessage
 export const isOutboxMessage = (m: RenderedMessage): m is OutboxMessage =>
   'pending' in m && m.pending === true
 
+/** One of your own that has not left this device: an outbox entry that is
+ *  queued, sending or failed. Not an acked one — the server holds that, and
+ *  whatever it says of the message is a claim it can keep. The same rule as
+ *  `unsent` in `preview` (app/lib/store/conversation.dart): a note that never
+ *  reached the server is not "transcript pending", because nothing is
+ *  transcribing it (Invariant 3, CANT-235). */
+export const isUnsent = (m: RenderedMessage): boolean => isOutboxMessage(m) && m.state !== 'sent'
+
 /** The reconnect state machine's own labels. No wire equivalent — a session
  *  either is or isn't attached, and everything in between (backing off,
  *  resyncing) is this client's own bookkeeping about getting there.
