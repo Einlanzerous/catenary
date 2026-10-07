@@ -11,6 +11,7 @@ import {
   otherMember,
   persistNotice,
   state,
+  transportLabel,
   typingLabel,
 } from '@/store'
 import Composer from './Composer.vue'
@@ -115,8 +116,11 @@ watch(
       <span v-if="otherDeactivated" class="deactivated-tag">DEACTIVATED</span>
       <!-- TLS, not E2E. D1 declines end-to-end encryption and names honesty
            about what the server can see as the mitigation, so the chip states
-           the guarantee that actually holds: encrypted in transit. -->
-      <span class="members">{{ conversation.memberCount }} MEMBERS · TLS</span>
+           the guarantee that actually holds: encrypted in transit. And TLS
+           only where it is (CANT-221): the word is derived from the origin
+           the session talks to, and over `http://` it reads CLEARTEXT, the
+           same word the Flutter client shows for the same server. -->
+      <span class="members">{{ conversation.memberCount }} MEMBERS · {{ transportLabel }}</span>
       <nav class="tools">
         <button>SEARCH</button>
         <button>FILES</button>

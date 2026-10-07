@@ -41,7 +41,7 @@ There is no mock data (CANT-39). Every record on screen came from a server: `mai
 
 Two things the canvas is specific about and it is easy to get wrong:
 
-- **The header chip reads `TLS`, not `E2E`.** D1 declines end-to-end encryption, so the chip states the guarantee that actually holds.
+- **The header chip never reads `E2E`, and reads `TLS` only where it is.** D1 declines end-to-end encryption, so the chip states the guarantee that actually holds. The word is derived from the origin the session talks to (`transportWord` in `store.ts`): over `http://` — `vite dev`, or any plain deployment — it reads `CLEARTEXT`, the same word the Flutter client shows for the same server, and an origin nobody has stated is never `TLS`.
 - **The search shortcut is `CTRL+K`**, and the keyboard handler binds Ctrl only — no `⌘`. iOS and macOS are out of scope, and a second undocumented binding is how two clients start to disagree.
 - **Typing is the thread's own last row** (call 10a), in the message column, not a strip under the composer — so the composer stays the bottom of the window. Its naming rule lives in `store.ts` because Flutter has to match it: one person is a first name, two or three are comma-separated in the order they started, four or more become "Several people".
 

@@ -184,8 +184,13 @@ async function main() {
   )
   check('rooms + direct headers', main.includes('ROOMS') && main.includes('DIRECT'))
   check('active thread title', main.includes('Kitchen Table'))
-  // The updated canvas states the guarantee that actually holds.
-  check('TLS chip, not E2E', main.includes('7 MEMBERS · TLS') && !main.includes('E2E'))
+  // The chip states the guarantee that actually holds — for THIS server, which
+  // the Go test serves over plain http, so the word is typed here and not
+  // computed. The canvas's `· TLS` is asserted for an https origin in the
+  // CANT-221 block, once the live half has ended.
+  check('the live server is reached over plain http', baseUrl.startsWith('http://'), baseUrl)
+  check('so its header reads CLEARTEXT, and never TLS or E2E',
+    main.includes('7 MEMBERS · CLEARTEXT') && !main.includes('· TLS') && !main.includes('E2E'))
   check('CTRL+K, no Apple key', main.includes('CTRL+K') && !main.includes('⌘'))
 
   // Call 10a: typing is the thread's last row, not a strip under the composer.
@@ -323,6 +328,29 @@ async function main() {
   endSession()
   offEnrolled()
 
+  // CANT-221 — the header's transport word is derived from the origin the
+  // session talks to, and is not a literal. The live session above stated its
+  // origin the way the app does, through `startSession`'s `baseUrl`; it is
+  // over, so from here the origin is stated the way every later section states
+  // a page a server WOULD serve — on `state`. Kitchen Table is still open.
+  {
+    const header = async (origin: string) => {
+      state.origin = origin
+      return (await render()).match(/<span class="members"[^>]*>([^<]*)</)?.[1] ?? ''
+    }
+    check('the session left the origin it talked to on the store', state.origin === baseUrl, state.origin)
+    const cleartext = await header('http://catenary.test')
+    check('an http origin reads CLEARTEXT', cleartext === '7 MEMBERS · CLEARTEXT', cleartext)
+    const unknown = await header('')
+    check('an origin nobody stated does not claim TLS', unknown === '7 MEMBERS · CLEARTEXT', unknown)
+    const tls = await header('https://catenary.test')
+    check('an https origin reads TLS — the canvas\'s chip', tls === '7 MEMBERS · TLS', tls)
+  }
+  // STATED, NOT LEFT OVER: every page built from here on is the canvas's, and
+  // the canvas is served over https. Sections 6 and 8 read their `· TLS` from
+  // this line and from no check above it.
+  state.origin = 'https://catenary.test'
+
   // 6. CANT-137 — a deactivated member is not one the header claims.
   //
   // THE HEADER NEEDS NO CHANGE AND THAT IS THE WHOLE RESULT. `member_count` is
@@ -341,7 +369,7 @@ async function main() {
   // same 6 the `sync_response_with_a_deactivated_member` conformance vector
   // carries.
   //
-  // SECTION 1'S `7 MEMBERS · TLS` LANDMARK IS UNTOUCHED. It asserts against the
+  // SECTION 1'S `7 MEMBERS` LANDMARK IS UNTOUCHED. It asserts against the
   // `main` string captured at the top, and this section adds a NEW conversation
   // rather than editing Kitchen Table — so the shipped corpus, and the canvas's
   // own seven-member room, are exactly what they were.
