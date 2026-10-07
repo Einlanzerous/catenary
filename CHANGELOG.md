@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.17.0](https://github.com/Einlanzerous/catenary/compare/v0.16.0...v0.17.0) (2026-10-07)
+
+
+### Features
+
+* CANT-162 — attachments in the web outbox: the Uploader seam, the refusing default, holder-only uploads, and the one-shot stale-handle re-upload ([#172](https://github.com/Einlanzerous/catenary/issues/172)) ([56d29fc](https://github.com/Einlanzerous/catenary/commit/56d29fc5363a0ca657c8656d9f302bc42edca557))
+* CANT-229 — a pending transcript draws the canvas's pulse, estimate and skeleton lines ([#160](https://github.com/Einlanzerous/catenary/issues/160)) ([deac360](https://github.com/Einlanzerous/catenary/commit/deac3607307b2b998c54a6a0f07e1348a8525c2d))
+* CANT-241 — serve the web client from the binary ([#170](https://github.com/Einlanzerous/catenary/issues/170)) ([08a16a9](https://github.com/Einlanzerous/catenary/commit/08a16a9311dcc92673f3126f2c7dd6b56b06aceb))
+* CANT-244 — the Dart journal records whose it is, and a claim wipes another account's (CANT-230a) ([#167](https://github.com/Einlanzerous/catenary/issues/167)) ([f019b37](https://github.com/Einlanzerous/catenary/commit/f019b37cfdd42fe33f7feab7751b612be84863b3))
+
+
+### Bug Fixes
+
+* CANT-221 — the web thread header derives TLS or CLEARTEXT from the origin the session talks to ([#162](https://github.com/Einlanzerous/catenary/issues/162)) ([be323a1](https://github.com/Einlanzerous/catenary/commit/be323a15125751ce0a3ded9aa5e4cfc48e40122c))
+* CANT-227 — a failed transcript says NO TRANSCRIPT, and a state this build does not know draws no strip ([#164](https://github.com/Einlanzerous/catenary/issues/164)) ([30e4458](https://github.com/Einlanzerous/catenary/commit/30e44587fe35e84dfd9423d872a842c1f726e08d))
+* CANT-228 — a credential the web could not store is not "could not reach the server" ([#163](https://github.com/Einlanzerous/catenary/issues/163)) ([c05edd6](https://github.com/Einlanzerous/catenary/commit/c05edd6a31e2622ca046ba2f7404e8fca77f6cdf))
+* CANT-235 — the rail previews an unsent voice note as "voice note", never "transcript pending" ([#175](https://github.com/Einlanzerous/catenary/issues/175)) ([8162d64](https://github.com/Einlanzerous/catenary/commit/8162d641e2248f8cbac39472d9391aba703c2068))
+* CANT-237 — a start that fails is a screen, and never the enrollment form (CANT-222a) ([#165](https://github.com/Einlanzerous/catenary/issues/165)) ([9477c5e](https://github.com/Einlanzerous/catenary/commit/9477c5e2b09f381eacea7a7404415f8e701f6142))
+* CANT-238 — enrollment always ends in a text, and a failed journal wipe is owed (CANT-222b) ([#166](https://github.com/Einlanzerous/catenary/issues/166)) ([9aff271](https://github.com/Einlanzerous/catenary/commit/9aff271a53d1a80cfd9f37eecab170f735b1d5ed))
+* CANT-240 — a wipe or start that rejects after enrollment is caught and told on the account view ([#171](https://github.com/Einlanzerous/catenary/issues/171)) ([32259bc](https://github.com/Einlanzerous/catenary/commit/32259bcd246ed3560d59c4b7315bad6d16091585))
+* CANT-245 — the app never builds a transport over another account's journal (CANT-230b) ([#173](https://github.com/Einlanzerous/catenary/issues/173)) ([8ce80c6](https://github.com/Einlanzerous/catenary/commit/8ce80c659fd9550e430a1f7add6f764f6fc15ee8))
+* CANT-246 — the web never builds a transport over another account's journal (CANT-230c) ([#169](https://github.com/Einlanzerous/catenary/issues/169)) ([3e4495e](https://github.com/Einlanzerous/catenary/commit/3e4495e0778819386b1ec5066d0e21f11476be8c))
+* CANT-248 — a direct conversation's web header reads DIRECT · &lt;transport&gt;, not a member count (CANT-233a) ([#174](https://github.com/Einlanzerous/catenary/issues/174)) ([68da7ce](https://github.com/Einlanzerous/catenary/commit/68da7ceaeb4f593ffb4da572e5da68101f9778b0))
+
 ## [0.16.0](https://github.com/Einlanzerous/catenary/compare/v0.15.0...v0.16.0) (2026-10-06)
 
 
