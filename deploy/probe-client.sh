@@ -40,7 +40,9 @@ pass() { echo "ok    $*"; }
 # $work/<name>.head, and prints the status code.
 fetch() {
   local name="$1" path="$2"; shift 2
-  curl -sS -o "$work/$name.body" -D "$work/$name.head" -w '%{http_code}' "$@" "$base$path"
+  # --max-time: a container that accepts and never answers must fail this
+  # probe, not hold the job until GitHub kills it.
+  curl -sS --max-time 10 -o "$work/$name.body" -D "$work/$name.head" -w '%{http_code}' "$@" "$base$path"
 }
 
 # header <name> <Header-Name> — the header's value, CR stripped, or empty.

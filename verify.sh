@@ -542,17 +542,24 @@ result $? "captured /sync from the Go rig decodes as SyncResponse"
 # is on disk, and the build neither deleted, modified nor added anything git
 # sees under internal/webui — its output is ignored and its emptyOutDir stops at
 # static/dist. Compared BEFORE AND AFTER rather than against empty, so an
-# uncommitted edit to internal/webui's Go source is not reported as the build's.
+# uncommitted edit to internal/webui's Go source is not reported as the build's;
+# on a clean tree (CI's) that is exactly "empty after". The snapshot is the
+# status AND a checksum of every tracked file there, so a file that was already
+# dirty and that the build changed again still shows as a difference.
+webui_snapshot() {
+  (cd "$ROOT" && git status --porcelain -- internal/webui &&
+    git ls-files -z internal/webui | xargs -0 sha256sum 2>&1)
+}
 step "CANT-241 · the web client builds into internal/webui and git does not see it"
-before="$(cd "$ROOT" && git status --porcelain -- internal/webui)"
+before="$(webui_snapshot)"
 (cd "$ROOT/web" && npx --no-install vite build) >"$LOGDIR/v-vite-build.log" 2>&1
 result $? "vite build ($(find "$ROOT/internal/webui/static/dist" -type f 2>/dev/null | wc -l | tr -d ' ') files in internal/webui/static/dist)"
 tracked="$(cd "$ROOT" && git ls-files internal/webui/static)"
 [ "$tracked" = "internal/webui/static/PLACEHOLDER" ] && [ -f "$ROOT/internal/webui/static/PLACEHOLDER" ]
 result $? "the only tracked file under internal/webui/static is the placeholder, and it is on disk$( [ "$tracked" = "internal/webui/static/PLACEHOLDER" ] || printf ' (%s)' "$(echo $tracked)")"
-after="$(cd "$ROOT" && git status --porcelain -- internal/webui)"
+after="$(webui_snapshot)"
 [ "$before" = "$after" ]
-result $? "the build changed nothing git sees under internal/webui$( [ "$before" = "$after" ] || printf ' (now: %s)' "$(echo $after)")"
+result $? "the build changed nothing git sees under internal/webui$( [ "$before" = "$after" ] || printf ' (now: %s)' "$(cd "$ROOT" && git status --porcelain -- internal/webui | tr '\n' ' ')")"
 
 step "CANT-17/13 · the service binary — vet, gofmt, test"
 (cd "$ROOT" && gofmt -l ./cmd ./internal ./migrations) >"$LOGDIR/v-fmt.log" 2>&1
