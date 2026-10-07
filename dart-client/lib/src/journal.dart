@@ -113,7 +113,10 @@ abstract interface class Journal {
   Future<Applied> wipe();
 
   /// The `user_id` of the account this journal was written for; null until one
-  /// has claimed it.
+  /// has claimed it. AS THIS CONTEXT LAST READ IT: another context adopting a
+  /// journal that had no owner stamps no generation, so this stays null here
+  /// until this context's next load or claim. Nothing decides on it; [claim]
+  /// reads what is stored.
   Uuid? get owner;
 
   /// Makes this journal [accountId]'s, BEFORE ANYTHING IS BUILT OVER IT
