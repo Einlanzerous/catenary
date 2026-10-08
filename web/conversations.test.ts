@@ -122,6 +122,7 @@ beforeEach(async () => {
   pickerState.selected = []
   pickerState.groupName = ''
   pickerState.groupRequestId = ''
+  pickerState.groupRequestKey = ''
   pickerState.failedGroup = false
   ;(globalThis as { __store?: MemoryCredentialStore }).__store = store
 })
@@ -393,10 +394,33 @@ test('RETRY after a failure reuses the request_id; a changed selection or a succ
   s.groupPosts[2].answer(new Response('nope', { status: 502 }))
   await next
 
-  // A changed selection after a failure is a new attempt too.
-  assert.notEqual(pickerState.groupRequestId, '')
+  // Un-ticking and re-ticking the same person is the same set: the same id,
+  // so a lost answer cannot become a second room by fiddling with the ticks.
+  const failedId = s.groupPosts[2].body.request_id
   toggleSelected(roster[1])
-  assert.equal(pickerState.groupRequestId, '', 'dropping someone drops the id')
+  toggleSelected(roster[1])
+  const again = createGroup()
+  await settle()
+  assert.equal(s.groupPosts[3].body.request_id, failedId, 'the same set replays the same id')
+  s.groupPosts[3].answer(new Response('nope', { status: 502 }))
+  await again
+
+  // A different set is a different group: a new id.
+  toggleSelected(roster[1])
+  toggleSelected({ id: uuid(4), name: 'Marek Dubois', initials: 'MD', handle: 'marek' })
+  const other = createGroup()
+  await settle()
+  assert.notEqual(s.groupPosts[4].body.request_id, failedId, 'a different set mints a new id')
+  s.groupPosts[4].answer(new Response('nope', { status: 502 }))
+  await other
+})
+
+test('a group name longer than the server accepts cannot be typed into the field', async () => {
+  const s = server()
+  await openPicker(s)
+  toggleSelected(roster[0])
+  toggleSelected(roster[1])
+  assert.ok((await render()).includes('maxlength="80"'))
 })
 
 test('conversation_not_found on a group is a visible, retryable refusal over a refreshed roster', async () => {

@@ -53,6 +53,8 @@ interface PickerState {
    *  second room; it is dropped when the attempt succeeds or the selection
    *  changes, so the next attempt is a new one. */
   groupRequestId: string
+  /** The sorted handles `groupRequestId` was minted for. */
+  groupRequestKey: string
   /** The failed create was a group's, so RETRY repeats `createGroup`. */
   failedGroup: boolean
 }
@@ -67,6 +69,7 @@ export const pickerState: PickerState = reactive({
   selected: [],
   groupName: '',
   groupRequestId: '',
+  groupRequestKey: '',
   failedGroup: false,
 })
 
@@ -106,11 +109,12 @@ export async function loadRoster(): Promise<void> {
     pickerState.roster = decodeRosterResponse(JSON.parse(res.body)).users
     res.answered()
     // Someone chosen may have been deactivated since the list was read: they
-    // leave the selection, and the selection having changed is a new attempt.
+    // leave the selection, and a failure about the old set has nothing left to
+    // retry (the request id is keyed to the set, so a new set mints a new one).
     const still = pickerState.selected.filter((s) => pickerState.roster!.some((r) => r.id === s.id))
     if (still.length !== pickerState.selected.length) {
       pickerState.selected = still
-      pickerState.groupRequestId = ''
+      pickerState.failedGroup = false
     }
     if (pickerState.error === UNREACHABLE) pickerState.error = null
   } catch (e) {
@@ -175,15 +179,15 @@ export function pick(entry: RosterEntry): Promise<boolean> {
   return startDirect(entry)
 }
 
-/** Add a person to, or remove them from, the people chosen for a group. A
- *  changed selection is a new attempt: it drops the request id and the last
- *  failure, which was about a different set of people. */
+/** Add a person to, or remove them from, the people chosen for a group. The
+ *  last failure was about a different set of people, so it goes; the request
+ *  id stays and is compared by set at the next create, so un-ticking and
+ *  re-ticking someone after a lost answer still replays the same id. */
 export function toggleSelected(entry: RosterEntry): void {
   if (pickerState.busy || pickerState.opening !== '') return
   const at = pickerState.selected.findIndex((s) => s.id === entry.id)
   if (at >= 0) pickerState.selected.splice(at, 1)
   else if (pickerState.selected.length < GROUP_MEMBERS_MAX) pickerState.selected.push(entry)
-  pickerState.groupRequestId = ''
   pickerState.error = null
   pickerState.failedFor = null
   pickerState.failedGroup = false
@@ -192,7 +196,6 @@ export function toggleSelected(entry: RosterEntry): void {
 export function clearSelection(): void {
   if (pickerState.busy || pickerState.opening !== '') return
   pickerState.selected = []
-  pickerState.groupRequestId = ''
   pickerState.error = null
   pickerState.failedGroup = false
 }
@@ -238,7 +241,13 @@ export async function createGroup(): Promise<boolean> {
   pickerState.error = null
   pickerState.failedFor = null
   pickerState.failedGroup = false
-  if (pickerState.groupRequestId === '') pickerState.groupRequestId = crypto.randomUUID()
+  // The id belongs to a SET of people: the same set (however it was reached)
+  // replays the same id, a different set is a different group and a new one.
+  const key = pickerState.selected.map((s) => s.handle).sort().join(',')
+  if (pickerState.groupRequestId === '' || pickerState.groupRequestKey !== key) {
+    pickerState.groupRequestId = crypto.randomUUID()
+    pickerState.groupRequestKey = key
+  }
   try {
     const res = await authedRequest('/conversations', {
       method: 'POST',

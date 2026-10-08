@@ -5,6 +5,7 @@ import {
   canCreateGroup,
   clearSelection,
   createGroup,
+  GROUP_NAME_MAX,
   groupNameShown,
   pick,
   pickerState,
@@ -48,8 +49,8 @@ onMounted(resetPicker)
     <!-- A refusal is a message with a way forward, not an empty list. -->
     <div v-if="pickerState.error" class="error" role="alert">
       <span class="error-text">{{ pickerState.error }}</span>
-      <button v-if="pickerState.failedFor || pickerState.failedGroup" class="retry" :disabled="locked" @click="retryPick">RETRY</button>
-      <button v-else class="retry" :disabled="pickerState.loading" @click="resetPicker">RETRY</button>
+      <button v-if="pickerState.failedFor || (pickerState.failedGroup && canCreateGroup())" class="retry" :disabled="locked" @click="retryPick">RETRY</button>
+      <button v-else-if="!pickerState.failedGroup" class="retry" :disabled="pickerState.loading" @click="resetPicker">RETRY</button>
     </div>
 
     <p v-if="pickerState.busy" class="status">Starting the conversation…</p>
@@ -94,7 +95,7 @@ onMounted(resetPicker)
             v-model="pickerState.groupName"
             class="group-name"
             type="text"
-            maxlength="200"
+            :maxlength="GROUP_NAME_MAX"
             autocomplete="off"
             :disabled="locked"
             data-group-name
