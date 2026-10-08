@@ -296,6 +296,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var callerFn func(*http.Request) (store.Caller, bool)
 	var messageForFanoutFn func(context.Context, uuid.UUID, int64) (store.FanoutMessage, error)
 	var findOrCreateDirectFn func(context.Context, uuid.UUID, string) (store.ConversationRow, error)
+	var createGroupFn func(context.Context, uuid.UUID, string, []string, *uuid.UUID) (store.ConversationRow, bool, error)
 	var rosterFn func(context.Context, uuid.UUID) ([]store.RosterRow, error)
 	var maxFrameBytes int64
 	var attachFn func(*api.Session) func()
@@ -331,6 +332,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		messageForFanoutFn = st.MessageForFanout
 		findOrCreateDirectFn = st.FindOrCreateDirect
 		rosterFn = st.Roster
+		createGroupFn = st.CreateGroup
 		// The frame bound follows the message bound, MULTIPLICATIVELY. The
 		// store bounds the UTF-8 bytes of `text`; the socket sees that text
 		// JSON-encoded, and encoding is not free: a control character
@@ -455,6 +457,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			MessageForFanout:   messageForFanoutFn,
 			FindOrCreateDirect: findOrCreateDirectFn,
 			Roster:             rosterFn,
+			CreateGroup:        createGroupFn,
 			MediaURL:           mediaURL,
 			MaxRESTBodyBytes:   maxFrameBytes,
 

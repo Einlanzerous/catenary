@@ -198,6 +198,62 @@ func directConversationHandler(d Deps) http.HandlerFunc {
 	}
 }
 
+// createGroupHandler serves POST /conversations (CANT-268): create a group
+// containing the caller and the named members, atomically. 201 with the
+// Conversation as the caller would see it on /sync; 200 and the first room for
+// a replayed request_id. Membership is fixed at creation.
+//
+// A handle naming nobody or a deactivated account is the direct path's
+// conversation_not_found (the store's table decides the code); every other
+// violation of the request is a 400.
+func createGroupHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller, ok := d.Caller(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		}
+
+		var req wire.CreateGroupRequest
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, restBodyLimit(d))).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request body is not a valid CreateGroupRequest"})
+			return
+		}
+		var requestID *uuid.UUID
+		if req.RequestID != nil {
+			id, err := uuid.Parse(string(*req.RequestID))
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "request_id is not a uuid"})
+				return
+			}
+			requestID = &id
+		}
+
+		c, created, err := d.CreateGroup(r.Context(), caller.UserID, req.Name, req.MemberHandles, requestID)
+		if err != nil {
+			if errors.Is(err, store.ErrInvalidGroup) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if errors.Is(err, store.ErrBotCannotCreateGroup) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+				return
+			}
+			var se *store.SendError
+			_ = errors.As(store.SendErrorFor(err), &se)
+			d.Logger.Log(r.Context(), se.Level(), "create group refused",
+				append([]any{"creator_id", caller.UserID}, se.LogAttrs()...)...)
+			writeJSON(w, se.HTTPStatus(), se.Wire("create group failed"))
+			return
+		}
+		status := http.StatusCreated
+		if !created {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, wireview.Conversation(c))
+	}
+}
+
 // rosterHandler serves GET /users: every active person other than the caller,
 // with the handle POST /conversations/direct takes (CANT-267). Every
 // authenticated caller can read every listed handle; that is CANT-253 ruling 1.

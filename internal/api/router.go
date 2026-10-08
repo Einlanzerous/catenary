@@ -157,6 +157,10 @@ type Deps struct {
 	// store.Store.FindOrCreateDirect.
 	FindOrCreateDirect func(ctx context.Context, viewer uuid.UUID, handle string) (store.ConversationRow, error)
 
+	// CreateGroup serves POST /conversations (CANT-268) —
+	// store.Store.CreateGroup. created is false for a replayed request_id.
+	CreateGroup func(ctx context.Context, creator uuid.UUID, name string, memberHandles []string, requestID *uuid.UUID) (c store.ConversationRow, created bool, err error)
+
 	// Roster serves GET /users (CANT-267) — store.Store.Roster. Registered
 	// only with Caller, so the safe absence is a route that does not exist.
 	Roster func(ctx context.Context, viewer uuid.UUID) ([]store.RosterRow, error)
@@ -311,6 +315,9 @@ func NewRouter(d Deps) http.Handler {
 		mux.HandleFunc("POST /conversations/direct", directConversationHandler(d))
 	}
 
+	if d.CreateGroup != nil && d.Caller != nil {
+		mux.HandleFunc("POST /conversations", createGroupHandler(d))
+	}
 	if d.Roster != nil && d.Caller != nil {
 		mux.HandleFunc("GET /users", rosterHandler(d))
 	}

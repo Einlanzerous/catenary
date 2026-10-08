@@ -78,7 +78,9 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -716,4 +718,223 @@ func (s *Store) findOrCreateDirect(ctx context.Context, viewer uuid.UUID, target
 		return ConversationRow{}, fmt.Errorf("store: find-or-create direct: commit: %w", err)
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// CANT-268 — creating a group.
+// ---------------------------------------------------------------------------
+
+// Limits of CreateGroupRequest (CANT-253). They live in the wire schema too;
+// the store re-checks them because a store function is callable without the
+// decoder in front of it, and the name limit is on the TRIMMED name, which no
+// schema keyword can say.
+const (
+	maxGroupNameRunes = 80
+	maxGroupMembers   = 49
+)
+
+// ErrInvalidGroup is a CreateGroup request that is wrong in a way the sender
+// can fix and retry: an empty or over-long name, an empty or oversized handle
+// list, or a duplicate, own or bot handle. It is a 400 and carries no wire
+// ErrorCode of its own — the handler answers it the way it answers an
+// undecodable body. An unknown or deactivated handle is NOT this: it reuses
+// ErrTargetNotFound and ErrTargetDeactivated, the direct path's
+// conversation_not_found.
+var ErrInvalidGroup = errors.New("store: create group: invalid request")
+
+// ErrBotCannotCreateGroup is a bot credential asking to create a group. Any
+// active PERSON creates one (CANT-253 ruling 0); a bot is not a person, and a
+// bot is refused as a member for the same reason. The handler answers 403.
+var ErrBotCannotCreateGroup = errors.New("store: create group: a bot cannot create a group")
+
+// CreateGroup creates a `group` conversation containing the creator and the
+// people named by handle, atomically, and returns it as the creator would see
+// it on /sync. Membership is fixed at creation.
+//
+// created is false only when requestID is non-nil and this creator already made
+// a room with it: the first room comes back and nothing is written (CANT-253
+// ruling 2). The key is `<creator>|<request id>`, so the same request id from
+// another creator is a different key.
+//
+// NO MESSAGE ORDINAL IS DRAWN. conversations.last_seq stays 0 and log_counter
+// moves by exactly the one draw the metadata bump makes, LAST before Commit —
+// the same shape findOrCreateDirect has. Without that draw the row sits at the
+// DEFAULT 0 marker and is invisible to every cursor.
+func (s *Store) CreateGroup(ctx context.Context, creator uuid.UUID, name string, memberHandles []string, requestID *uuid.UUID) (c ConversationRow, created bool, err error) {
+	c, created, err = s.createGroup(ctx, creator, name, memberHandles, requestID)
+	if err == nil {
+		return c, created, nil
+	}
+	if errors.Is(err, ErrInvalidGroup) || errors.Is(err, ErrBotCannotCreateGroup) {
+		s.logger.Info("create group refused", "creator_id", creator, "error", err.Error())
+		return ConversationRow{}, false, err
+	}
+	se := sendErrorFor(err)
+	s.logger.Log(ctx, se.Level(), "create group refused", append([]any{"creator_id", creator}, se.LogAttrs()...)...)
+	return ConversationRow{}, false, se
+}
+
+// validateGroupRequest trims the name and checks everything about the request
+// that needs no database.
+func validateGroupRequest(name string, memberHandles []string) (string, error) {
+	name = strings.TrimSpace(name)
+	if n := utf8.RuneCountInString(name); n < 1 || n > maxGroupNameRunes {
+		return "", fmt.Errorf("%w: name must be 1 to %d characters after trimming", ErrInvalidGroup, maxGroupNameRunes)
+	}
+	if n := len(memberHandles); n < 1 || n > maxGroupMembers {
+		return "", fmt.Errorf("%w: member_handles must hold 1 to %d handles", ErrInvalidGroup, maxGroupMembers)
+	}
+	seen := make(map[string]bool, len(memberHandles))
+	for _, h := range memberHandles {
+		if h == "" {
+			return "", fmt.Errorf("%w: empty handle", ErrInvalidGroup)
+		}
+		if seen[h] {
+			return "", fmt.Errorf("%w: duplicate handle", ErrInvalidGroup)
+		}
+		seen[h] = true
+	}
+	return name, nil
+}
+
+func (s *Store) createGroup(ctx context.Context, creator uuid.UUID, name string, memberHandles []string, requestID *uuid.UUID) (ConversationRow, bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ConversationRow{}, false, fmt.Errorf("store: create group: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var key *string
+	if requestID != nil {
+		k := creator.String() + "|" + requestID.String()
+		key = &k
+		// A replay is answered before the body is validated or the handles
+		// are looked at: the first request already decided both, so the key
+		// alone is the identity, and a member deactivated since must not turn
+		// a retry of a room that exists into a refusal.
+		var existing uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT id FROM conversations WHERE create_key = $1`, k).Scan(&existing)
+		switch {
+		case err == nil:
+			out, err := s.conversationRowOne(ctx, tx, existing, creator)
+			if err != nil {
+				return ConversationRow{}, false, err
+			}
+			return out, false, nil
+		case !errors.Is(err, pgx.ErrNoRows):
+			return ConversationRow{}, false, fmt.Errorf("store: create group: replay lookup: %w", err)
+		}
+	}
+
+	name, err = validateGroupRequest(name, memberHandles)
+	if err != nil {
+		return ConversationRow{}, false, err
+	}
+
+	// Only a person creates a group (CANT-253 ruling 0): Deps.Caller also
+	// resolves a bot credential. Read, unlocked, for the reason below.
+	var creatorKind string
+	if err := tx.QueryRow(ctx, `SELECT kind FROM users WHERE id = $1`, creator).Scan(&creatorKind); err != nil {
+		return ConversationRow{}, false, fmt.Errorf("store: create group: resolve creator: %w", err)
+	}
+	if creatorKind != "person" {
+		return ConversationRow{}, false, ErrBotCannotCreateGroup
+	}
+
+	// Resolve every handle. Unlocked, for the reason findOrCreateDirect gives:
+	// a deactivation committing a moment later is closed at Authenticate on the
+	// target's own next request.
+	rows, err := tx.Query(ctx, `SELECT handle, id, kind, deactivated_at IS NOT NULL FROM users WHERE handle = ANY($1)`, memberHandles)
+	if err != nil {
+		return ConversationRow{}, false, fmt.Errorf("store: create group: resolve handles: %w", err)
+	}
+	ids := make([]uuid.UUID, 0, len(memberHandles))
+	found := 0
+	var refusal error
+	for rows.Next() {
+		var handle, kind string
+		var id uuid.UUID
+		var deactivated bool
+		if err := rows.Scan(&handle, &id, &kind, &deactivated); err != nil {
+			rows.Close()
+			return ConversationRow{}, false, fmt.Errorf("store: create group: scan handle: %w", err)
+		}
+		found++
+		switch {
+		case deactivated:
+			refusal = ErrTargetDeactivated
+		case id == creator:
+			if refusal == nil {
+				refusal = fmt.Errorf("%w: the creator's own handle", ErrInvalidGroup)
+			}
+		case kind != "person":
+			if refusal == nil {
+				refusal = fmt.Errorf("%w: a bot cannot be a member", ErrInvalidGroup)
+			}
+		default:
+			ids = append(ids, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return ConversationRow{}, false, fmt.Errorf("store: create group: resolve handles: %w", err)
+	}
+	// Not-found outranks the 400s: it is the one with a wire code, and a
+	// handle that names nobody is the more informative refusal.
+	if found < len(memberHandles) {
+		return ConversationRow{}, false, ErrTargetNotFound
+	}
+	if refusal != nil {
+		return ConversationRow{}, false, refusal
+	}
+	sort.Slice(ids, func(i, j int) bool { return bytes.Compare(ids[i][:], ids[j][:]) < 0 })
+
+	id := uuid.New()
+	err = tx.QueryRow(ctx, `
+		INSERT INTO conversations (id, kind, name, create_key) VALUES ($1, 'group', $2, $3)
+		ON CONFLICT DO NOTHING
+		RETURNING id`, id, name, key).Scan(&id)
+	switch {
+	case err == nil:
+	case errors.Is(err, pgx.ErrNoRows) && key != nil:
+		// A concurrent twin of this request committed first (the replay lookup
+		// above ran before it was visible). Its room is the answer; this
+		// transaction wrote nothing and draws nothing.
+		if err := tx.QueryRow(ctx, `SELECT id FROM conversations WHERE create_key = $1`, *key).Scan(&id); err != nil {
+			return ConversationRow{}, false, fmt.Errorf("store: create group: find winner: %w", err)
+		}
+		out, err := s.conversationRowOne(ctx, tx, id, creator)
+		if err != nil {
+			return ConversationRow{}, false, err
+		}
+		return out, false, nil
+	default:
+		return ConversationRow{}, false, fmt.Errorf("store: create group: insert: %w", err)
+	}
+
+	members := append([]uuid.UUID{creator}, ids...)
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO conversation_members (conversation_id, user_id)
+		SELECT $1, unnest($2::uuid[])`, id, members); err != nil {
+		return ConversationRow{}, false, fmt.Errorf("store: create group: insert members: %w", err)
+	}
+
+	// Before the bump, as findOrCreateDirect does: nothing conversationRowOne
+	// selects is written by it, and the counter draw stays last.
+	out, err := s.conversationRowOne(ctx, tx, id, creator)
+	if err != nil {
+		return ConversationRow{}, false, err
+	}
+
+	bump := newMetadataBump().conversation(id)
+	for _, m := range members {
+		bump.member(id, m)
+	}
+	if _, err := bump.apply(ctx, tx); err != nil {
+		return ConversationRow{}, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return ConversationRow{}, false, fmt.Errorf("store: create group: commit: %w", err)
+	}
+	return out, true, nil
 }
