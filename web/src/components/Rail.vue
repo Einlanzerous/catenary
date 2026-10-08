@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { directs, openAccount, openSearch, rooms, state, totalUnread, user } from '@/store'
+import { pickerState } from '@/conversations'
+import { directs, openAccount, openNew, openSearch, rooms, state, totalUnread, user } from '@/store'
 import Avatar from './Avatar.vue'
 import ConversationRow from './ConversationRow.vue'
 import Logomark from './Logomark.vue'
@@ -23,6 +24,9 @@ const me = computed(() => user(state.me))
       <span class="who">
         {{ me?.name.split(' ')[0].toUpperCase() }} · {{ totalUnread }}
       </span>
+      <!-- CANT-270: the one control for starting a conversation. Disabled
+           while a create is in flight, and before a device is enrolled. -->
+      <button class="new" :disabled="!state.me || pickerState.busy" @click="openNew">+ NEW</button>
     </header>
 
     <div class="search-slot">
@@ -101,6 +105,23 @@ const me = computed(() => user(state.me))
   font: var(--type-label);
   letter-spacing: 0.1em;
   color: var(--text-meta);
+}
+
+.new {
+  flex: none;
+  padding: 1px 5px;
+  font: var(--type-label);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-secondary);
+  border: 1px solid var(--line-edge);
+}
+.new:hover:not(:disabled) {
+  color: var(--text-primary);
+}
+.new:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
 }
 
 .search-slot {

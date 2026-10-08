@@ -62,7 +62,7 @@ import {
   type WebSocketCtor,
 } from '@/transport'
 
-export type View = 'thread' | 'search' | 'account'
+export type View = 'thread' | 'search' | 'account' | 'new'
 export type Theme = 'dark' | 'light'
 
 interface Playback {
@@ -96,6 +96,10 @@ const state = reactive({
 
   /** '' until the first projection names a conversation to open on. */
   activeId: '',
+  /** A conversation this device has just been told exists (CANT-270) and has
+   *  not yet received through the journal. Opened the moment its record
+   *  lands; '' when nothing is waiting. */
+  pendingOpenId: '',
   view: 'thread' as View,
   theme: 'dark' as Theme,
 
@@ -650,6 +654,36 @@ export function closeSearch() {
   state.view = 'thread'
 }
 
+/** CANT-270 — the new-conversation picker takes the main pane. */
+export function openNew() {
+  state.view = 'new'
+}
+
+export function closeNew() {
+  state.pendingOpenId = ''
+  if (state.view === 'new') state.view = 'thread'
+}
+
+/**
+ * Open a conversation the server has just returned from a create (CANT-270).
+ * Nothing is written to the journal from here: a conversation enters `state`
+ * only through the transport's projection, so that one holding is the only
+ * holding. A conversation the journal already holds (a second pick of the same
+ * person) opens at once. One it does not hold yet is the server's to deliver —
+ * creating it moved a metadata marker, so a catch-up carries it — and it opens
+ * when `showProjection` sees it land. Resolves true when it opened at once.
+ */
+export function openConversation(c: Conversation): boolean {
+  if (state.conversations.some((x) => x.id === c.id)) {
+    state.pendingOpenId = ''
+    select(c.id)
+    return true
+  }
+  state.pendingOpenId = c.id
+  live?.transport.catchUp()
+  return false
+}
+
 /** CANT-38 — login, device naming and the session list. */
 export function openAccount() {
   state.view = 'account'
@@ -888,6 +922,7 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
     state.conversations = []
     state.messages = []
     state.activeId = ''
+    state.pendingOpenId = ''
     state.read.clear()
   }
   state.typing = {}
@@ -962,6 +997,12 @@ function showProjection(p: Projection) {
   state.messages = p.messages
   state.conversations = p.conversations
   state.users = p.users
+  if (state.pendingOpenId && state.conversations.some((c) => c.id === state.pendingOpenId)) {
+    const id = state.pendingOpenId
+    state.pendingOpenId = ''
+    select(id)
+    return
+  }
   if (!state.conversations.some((c) => c.id === state.activeId)) {
     const first = rooms.value[0] ?? directs.value[0]
     state.activeId = first?.id ?? ''

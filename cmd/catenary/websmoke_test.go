@@ -195,6 +195,10 @@ func seedCanvas(t *testing.T, r *rig) canvas {
 		{"hollis", "Hollis Byrne"}, {"ilse", "Ilse Marchetti"}, {"nadia", "Nadia Okonkwo"},
 		{"marek", "Marek Dubois"}, {"ted", "Ted Almasy"}, {"rosa", "Rosa Whitfield"},
 		{"petra", "Petra Lindqvist"}, {"oskar", "Oskar Lindgren"}, {"wren", "Wren Castellano"},
+		// Ines shares no room and no direct with Hollis: the one person on the
+		// roster (GET /users) the new-conversation picker can CREATE a direct
+		// with (CANT-270). Every other person already has one.
+		{"ines", "Ines Calloway"},
 	} {
 		e, err := st.EnsurePerson(ctx, p.key+"@canvas.test", p.name)
 		if err != nil {

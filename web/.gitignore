@@ -3,5 +3,6 @@ dist/
 dist-smoke/
 dist-account-test/
 dist-session-test/
+dist-conversations-test/
 *.local
 .DS_Store

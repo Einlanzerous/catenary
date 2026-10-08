@@ -28,7 +28,9 @@ import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import StatusLabel from '@/components/StatusLabel.vue'
 import { decodeVoiceAttachment, type Conversation, type User } from '@/wire/generated'
+import { pickerState, resetPicker, startDirect } from '@/conversations'
 import {
+  activeConversation,
   closeAccount,
   closeSearch,
   conversationTitle,
@@ -43,6 +45,7 @@ import {
   typingIn,
   typingLabel,
   openAccount,
+  openNew,
   openSearch,
   searchHits,
   select,
@@ -327,6 +330,69 @@ async function main() {
     state.messages.some((m) => m.clientId === keptId))
   check('the server stored it under the clientId the entry was minted with',
     state.messages.filter((m) => m.clientId === keptId).length === 1)
+
+  // 5b. CANT-270 — start a direct conversation from the rail, over the live
+  // server's own `GET /users` and `POST /conversations/direct`.
+  //
+  // INES SHARES NOTHING WITH THE ENROLLED ACCOUNT (the harness seeds her with
+  // no room and no direct), so she is on the roster and in no conversation:
+  // the picker CREATES a direct with her. The conversation arrives the way any
+  // does, through the journal, and the rail row appears with no reload.
+  {
+    const rowsFor = (html: string, id: string) => html.split(`data-conversation-id="${id}"`).length - 1
+    const textOf = (html: string) => html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+    const home = state.activeId
+    check('the rail carries one control for starting a conversation', (await render()).includes('>+ NEW<'))
+
+    openNew()
+    resetPicker()
+    await until('the roster to load from GET /users', () => pickerState.roster !== null)
+    const roster = pickerState.roster!
+    const page = await render()
+    // The rail beside it lists every direct, Petra's included; the picker is
+    // the main pane alone.
+    const picker = page.slice(page.indexOf('class="new-conversation'))
+    check('the picker opens in the main pane', picker.includes('NEW CONVERSATION'))
+    check('and lists the roster: Ines, Nadia, Ted',
+      ['Ines Calloway', 'Nadia Okonkwo', 'Ted Almasy'].every((n) => picker.includes(n)))
+    check('but never the caller, and never a deactivated account',
+      !roster.some((r) => r.id === state.me) && !roster.some((r) => r.name === 'Petra Lindqvist') &&
+        !picker.includes('Petra Lindqvist'))
+    const ines = roster.find((r) => r.name === 'Ines Calloway')!
+    check('Ines is on the roster and in no conversation',
+      !!ines && !state.conversations.some((c) => c.kind === 'direct' && c.otherMemberId === ines.id))
+
+    const directsBefore = state.conversations.filter((c) => c.kind === 'direct').length
+    check('the pick succeeds', await startDirect(ines))
+    await until('the new direct to arrive through the journal and open',
+      () => state.view === 'thread' && state.conversations.some((c) => c.kind === 'direct' && c.otherMemberId === ines.id) &&
+        activeConversation.value?.otherMemberId === ines.id)
+    const made = activeConversation.value!
+    const thread = await render()
+    check('it lands in an open thread titled for her', tagText(thread, '<h1 class="title"', '</h1>') === 'Ines Calloway')
+    check('whose rail row appeared without a reload', rowsFor(thread, made.id) === 1)
+    check('and which is empty: head_seq 0, no message rows', made.headSeq === 0 && !thread.includes('data-message='))
+    check('an empty thread claims nothing: no TRANSCRIBING, no delivery state',
+      !['TRANSCRIBING', 'QUEUED', 'SENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED']
+        .some((w) => textOf(thread.slice(thread.indexOf('class="stream'))).includes(w)))
+    check('and its rail row is the name alone — no preview, no marker',
+      textOf(elementWithId(thread, made.id)) === 'Ines Calloway', textOf(elementWithId(thread, made.id)))
+    check('one direct more than before', state.conversations.filter((c) => c.kind === 'direct').length === directsBefore + 1)
+
+    // Pick her again, from somewhere else: the same conversation, one row.
+    select(KITCHEN)
+    openNew()
+    resetPicker()
+    await until('the roster to load again', () => pickerState.roster !== null && !pickerState.loading)
+    check('picking her a second time succeeds', await startDirect(ines))
+    check('and opens the same conversation', state.activeId === made.id && state.view === 'thread', state.activeId)
+    const again = await render()
+    check('the rail still has one row for it', rowsFor(again, made.id) === 1)
+    check('and the store holds it once', state.conversations.filter((c) => c.id === made.id).length === 1)
+
+    select(KITCHEN)
+    check('Kitchen Table is open again for what follows', state.activeId === KITCHEN && home === KITCHEN)
+  }
 
   // The live half ends here; see the header. What it projected stays.
   endSession()

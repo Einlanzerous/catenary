@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { activeConversation, closeSearch, openSearch, state } from '@/store'
 import AccountView from './components/AccountView.vue'
+import NewConversation from './components/NewConversation.vue'
 import Rail from './components/Rail.vue'
 import SearchView from './components/SearchView.vue'
 import Thread from './components/Thread.vue'
@@ -12,6 +13,14 @@ const railOpen = ref(true)
 watch(
   () => state.activeId,
   () => (railOpen.value = false),
+)
+
+/** The picker is a main-pane view; below 900px that means leaving the rail. */
+watch(
+  () => state.view,
+  (view) => {
+    if (view === 'new') railOpen.value = false
+  },
 )
 
 /** Ctrl+K, and only Ctrl+K — the key cap in the rail says so, and a second
@@ -32,6 +41,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
     <Rail class="pane-rail" />
     <SearchView v-if="state.view === 'search'" class="pane-main" />
     <AccountView v-else-if="state.view === 'account'" class="pane-main" />
+    <NewConversation v-else-if="state.view === 'new'" class="pane-main" />
     <Thread v-else-if="activeConversation" class="pane-main" />
     <!-- Nothing to open yet: no device enrolled, or the first page has not
          landed. An empty pane rather than an invented conversation. -->
