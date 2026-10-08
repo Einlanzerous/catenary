@@ -723,6 +723,47 @@
       "table": "users",
       "column": "handle",
       "note": "Inbound: resolved to the target's user id by lookup, never written. users.handle is NOT NULL UNIQUE, so the lookup is exact — an unresolved or deactivated target is refused as conversation_not_found rather than silently creating a conversation with nobody in it."
+    },
+    "RosterEntry.id": {
+      "kind": "column",
+      "table": "users",
+      "column": "id",
+      "note": ""
+    },
+    "RosterEntry.name": {
+      "kind": "column",
+      "table": "users",
+      "column": "display_name",
+      "note": "Served live so a rename propagates."
+    },
+    "RosterEntry.initials": {
+      "kind": "derived",
+      "note": "Computed from display_name at serve time by the same rule as User.initials."
+    },
+    "RosterEntry.handle": {
+      "kind": "column",
+      "table": "users",
+      "column": "handle",
+      "note": "users.handle is NOT NULL UNIQUE. Served to every signed-in person on purpose (CANT-253 ruling 1)."
+    },
+    "RosterResponse.users": {
+      "kind": "derived",
+      "note": "The active persons other than the caller, read per request and assembled at serve time; not a stored array."
+    },
+    "CreateGroupRequest.name": {
+      "kind": "column",
+      "table": "conversations",
+      "column": "name",
+      "note": "Inbound: trimmed and length-checked before it is written.",
+      "nullable_because": "The wire makes name required on a create-group request, and the column is nullable only because a direct conversation has none; a group created through this request always writes it, so every group row carries a name."
+    },
+    "CreateGroupRequest.member_handles": {
+      "kind": "derived",
+      "note": "Inbound: each handle is resolved to a users row and written as a conversation_members row; the list itself is never stored."
+    },
+    "CreateGroupRequest.request_id": {
+      "kind": "derived",
+      "note": "Client-authored. Stored only inside conversations.create_key as `<creator id>|<request id>`. Not a `column` entry because the wire field is a Uuid and create_key is a TEXT composite, and the DB-backed guard accepts only a uuid column for a uuid-kind field."
     }
   }
 }

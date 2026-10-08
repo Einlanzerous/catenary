@@ -1492,6 +1492,78 @@
           }
         ]
       }
+    },
+    {
+      "name": "roster_response",
+      "kind": "RosterResponse",
+      "expect": "roundtrip",
+      "why": "CANT-253. The picker's list: one entry with `initials` present and one without, since `initials` is optional. `handle` is required on every entry because it is the only thing a create request can name a person by.",
+      "json": {
+        "users": [
+          {
+            "id": "3f9c1a2b-5d6e-4f70-8a91-b2c3d4e5f607",
+            "name": "Ines Okafor",
+            "initials": "IO",
+            "handle": "ines"
+          },
+          {
+            "id": "4a0d2b3c-6e7f-4081-9ba2-c3d4e5f60718",
+            "name": "Theo Almasy",
+            "handle": "theo"
+          }
+        ]
+      }
+    },
+    {
+      "name": "reject_roster_entry_empty_handle",
+      "kind": "RosterResponse",
+      "expect": "reject",
+      "why": "An entry with an empty handle cannot be named in a create request, so minLength: 1 refuses it as a decode failure rather than rendering a person nobody can start a conversation with.",
+      "json": {
+        "users": [
+          {
+            "id": "3f9c1a2b-5d6e-4f70-8a91-b2c3d4e5f607",
+            "name": "Ines Okafor",
+            "handle": ""
+          }
+        ]
+      }
+    },
+    {
+      "name": "create_group_request",
+      "kind": "CreateGroupRequest",
+      "expect": "roundtrip",
+      "why": "CANT-253. Every field present, including the optional `request_id` that makes a retried create return the first room instead of a second.",
+      "json": {
+        "name": "Night shift",
+        "member_handles": [
+          "ines",
+          "theo"
+        ],
+        "request_id": "5b1e3c4d-7f80-4192-8cb3-d4e5f6071829"
+      }
+    },
+    {
+      "name": "reject_create_group_request_empty_name",
+      "kind": "CreateGroupRequest",
+      "expect": "reject",
+      "why": "A room needs a name; minLength: 1 refuses an empty one at decode rather than leaving each server to decide what an unnamed group looks like.",
+      "json": {
+        "name": "",
+        "member_handles": [
+          "ines"
+        ]
+      }
+    },
+    {
+      "name": "reject_create_group_request_no_members",
+      "kind": "CreateGroupRequest",
+      "expect": "reject",
+      "why": "A group of one is a direct conversation with nobody; minItems: 1 refuses an empty member list at decode.",
+      "json": {
+        "name": "Night shift",
+        "member_handles": []
+      }
     }
   ]
 }

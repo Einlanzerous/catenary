@@ -36,7 +36,12 @@ int _int(Object? v, String p) {
   if (v > 9007199254740991 || v < -9007199254740991) _bad(p, 'integer $v exceeds the range JavaScript can represent exactly');
   return v;
 }
-List<Object?> _arr(Object? v, String p) => v is List ? v : _bad(p, 'expected List, got ${v.runtimeType}');
+List<Object?> _arr(Object? v, String p, [int? min, int? max]) {
+  if (v is! List) return _bad(p, 'expected List, got ${v.runtimeType}');
+  if (min != null && v.length < min) _bad(p, 'must have at least $min items, got ${v.length}');
+  if (max != null && v.length > max) _bad(p, 'must have at most $max items, got ${v.length}');
+  return v;
+}
 String _oneOf(Object? v, List<String> allowed, String p) {
   final s = _str(v, p);
   return allowed.contains(s) ? s : _bad(p, 'expected one of ${allowed.join('|')}, got "$s"');
@@ -731,7 +736,7 @@ final class VoiceAttachment implements Attachment {
     return VoiceAttachment(
       url: o["url"] == null ? _bad('${p}.url', 'required field is missing') : _str(o["url"], '${p}.url'),
       durationMs: o["duration_ms"] == null ? _bad('${p}.duration_ms', 'required field is missing') : _asDurationMs(o["duration_ms"], '${p}.duration_ms'),
-      peaks: o["peaks"] == null ? _bad('${p}.peaks', 'required field is missing') : [for (final (i, x) in _arr(o["peaks"], '${p}.peaks').indexed) ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'peaks must be >= 0, got $x'); if (x > 100) _bad(p, 'peaks must be <= 100, got $x'); return x; })(x, '${p}.peaks[${i}]')],
+      peaks: o["peaks"] == null ? _bad('${p}.peaks', 'required field is missing') : [for (final (i, x) in _arr(o["peaks"], '${p}.peaks', null, 512).indexed) ((Object? v, String p) { final x = _int(v, p); if (x < 0) _bad(p, 'peaks must be >= 0, got $x'); if (x > 100) _bad(p, 'peaks must be <= 100, got $x'); return x; })(x, '${p}.peaks[${i}]')],
       transcript: o["transcript"] == null ? _bad('${p}.transcript', 'required field is missing') : Transcript.fromJson(o["transcript"], '${p}.transcript'),
     );
   }
@@ -2284,6 +2289,115 @@ final class DirectConversationRequest {
   });
 }
 
+/// One person the caller may start a conversation with. Listed by `GET /users`, which
+/// returns active persons other than the caller; a bot and a deactivated account are
+/// never listed.
+final class RosterEntry {
+  const RosterEntry({
+    required this.id,
+    required this.name,
+    this.initials,
+    required this.handle,
+  });
+
+  /// The person's id; the same id their `User` record carries on `/sync`.
+  final Uuid id;
+
+  /// Display name as of this response.
+  final String name;
+
+  /// Two letters for the avatar tile, derived on the server by the same rule as
+  /// `User.initials`.
+  final String? initials;
+
+  /// The handle `POST /conversations/direct` and `POST /conversations` take to name this
+  /// person. Every signed-in person can read every listed handle; that is deliberate
+  /// (CANT-253 ruling 1) and is why this type exists apart from `User`, which carries
+  /// none.
+  final String handle;
+
+  factory RosterEntry.fromJson(Object? v, [String p = "RosterEntry"]) {
+    final o = _obj(v, p);
+    return RosterEntry(
+      id: o["id"] == null ? _bad('${p}.id', 'required field is missing') : _asUuid(o["id"], '${p}.id'),
+      name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'name must be at least 1 characters, got ${x.runes.length}'); return x; })(o["name"], '${p}.name'),
+      initials: o["initials"] == null ? null : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'initials must be at least 1 characters, got ${x.runes.length}'); if (x.runes.length > 2) _bad(p, 'initials must be at most 2 characters, got ${x.runes.length}'); return x; })(o["initials"], '${p}.initials'),
+      handle: o["handle"] == null ? _bad('${p}.handle', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'handle must be at least 1 characters, got ${x.runes.length}'); return x; })(o["handle"], '${p}.handle'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "id": id,
+    "name": name,
+    "initials": initials == null ? null : initials!,
+    "handle": handle,
+  });
+}
+
+/// `GET /users`: every active person other than the caller, ordered by display name and
+/// then id. Unpaged: its size is bounded by the number of accounts, which is a small
+/// trusted group.
+final class RosterResponse {
+  const RosterResponse({
+    required this.users,
+  });
+
+  final List<RosterEntry> users;
+
+  factory RosterResponse.fromJson(Object? v, [String p = "RosterResponse"]) {
+    final o = _obj(v, p);
+    return RosterResponse(
+      users: o["users"] == null ? _bad('${p}.users', 'required field is missing') : [for (final (i, x) in _arr(o["users"], '${p}.users').indexed) RosterEntry.fromJson(x, '${p}.users[${i}]')],
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "users": [for (final x in users) x.toJson()],
+  });
+}
+
+/// `POST /conversations`: create a group conversation containing the caller and the
+/// named members, atomically, and return the `Conversation` as the caller would see it
+/// on `/sync` (201). Membership is fixed at creation; nothing adds or removes a member
+/// afterwards. The caller is a member without being listed.
+final class CreateGroupRequest {
+  const CreateGroupRequest({
+    required this.name,
+    required this.memberHandles,
+    this.requestId,
+  });
+
+  /// The room's name: 1 to 80 characters after trimming surrounding whitespace. Not
+  /// unique; two rooms may share a name.
+  final String name;
+
+  /// The handles of the other members: 1 to 49 entries, no duplicates, none the caller's
+  /// own and none a bot. A handle that names nobody or a deactivated account refuses the
+  /// whole request with `conversation_not_found` and creates nothing; any other violation
+  /// is a 400.
+  final List<String> memberHandles;
+
+  /// Optional. A client-minted id for this create. A replay of the same `request_id` by
+  /// the same caller returns the room the first request made (200) instead of making a
+  /// second.
+  final Uuid? requestId;
+
+  factory CreateGroupRequest.fromJson(Object? v, [String p = "CreateGroupRequest"]) {
+    final o = _obj(v, p);
+    return CreateGroupRequest(
+      name: o["name"] == null ? _bad('${p}.name', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'name must be at least 1 characters, got ${x.runes.length}'); if (x.runes.length > 80) _bad(p, 'name must be at most 80 characters, got ${x.runes.length}'); return x; })(o["name"], '${p}.name'),
+      memberHandles: o["member_handles"] == null ? _bad('${p}.member_handles', 'required field is missing') : [for (final (i, x) in _arr(o["member_handles"], '${p}.member_handles', 1, 49).indexed) ((Object? v, String p) { final x = _str(v, p); if (x.runes.length < 1) _bad(p, 'member_handles must be at least 1 characters, got ${x.runes.length}'); return x; })(x, '${p}.member_handles[${i}]')],
+      requestId: o["request_id"] == null ? null : _asUuid(o["request_id"], '${p}.request_id'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "name": name,
+    "member_handles": memberHandles,
+    "request_id": requestId == null ? null : requestId!,
+  });
+}
+
 /// A decode/encode pair for one named wire type.
 class WireCodec {
   const WireCodec(this.decode, this.encode);
@@ -2328,6 +2442,9 @@ const Map<String, WireCodec> codecs = {
   "DeviceListResponse": WireCodec(DeviceListResponse.fromJson, _encDeviceListResponse),
   "MessageSendRequest": WireCodec(MessageSendRequest.fromJson, _encMessageSendRequest),
   "DirectConversationRequest": WireCodec(DirectConversationRequest.fromJson, _encDirectConversationRequest),
+  "RosterEntry": WireCodec(RosterEntry.fromJson, _encRosterEntry),
+  "RosterResponse": WireCodec(RosterResponse.fromJson, _encRosterResponse),
+  "CreateGroupRequest": WireCodec(CreateGroupRequest.fromJson, _encCreateGroupRequest),
 };
 
 Map<String, dynamic> _encUser(Object v) => (v as User).toJson();
@@ -2366,4 +2483,7 @@ Map<String, dynamic> _encDevice(Object v) => (v as Device).toJson();
 Map<String, dynamic> _encDeviceListResponse(Object v) => (v as DeviceListResponse).toJson();
 Map<String, dynamic> _encMessageSendRequest(Object v) => (v as MessageSendRequest).toJson();
 Map<String, dynamic> _encDirectConversationRequest(Object v) => (v as DirectConversationRequest).toJson();
+Map<String, dynamic> _encRosterEntry(Object v) => (v as RosterEntry).toJson();
+Map<String, dynamic> _encRosterResponse(Object v) => (v as RosterResponse).toJson();
+Map<String, dynamic> _encCreateGroupRequest(Object v) => (v as CreateGroupRequest).toJson();
 

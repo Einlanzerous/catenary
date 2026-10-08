@@ -95,8 +95,8 @@ const byName = new Map(model.map((d) => [d.name, d]))
  * last. Non-enum types shared by both sides — Uuid, Timestamp, the ordinals,
  * Token, Ping, Pong — are normal and neither rule touches them.
  * ------------------------------------------------------------------ */
-const SERVER_ROOTS = ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse']
-const CLIENT_ROOTS = ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest']
+const SERVER_ROOTS = ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse', 'RosterResponse']
+const CLIENT_ROOTS = ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest', 'CreateGroupRequest']
 
 /** Every $defs name a node references, at any depth. */
 function refsIn(node, out = new Set()) {
@@ -222,7 +222,17 @@ if (process.argv.includes('--classify')) {
 function typeRef(prop, ctx) {
   if (prop.$ref) return { kind: 'named', name: refName(prop.$ref) }
   if (prop.const !== undefined) return { kind: 'const', value: prop.const }
-  if (prop.type === 'array') return { kind: 'list', item: typeRef(prop.items, ctx) }
+  if (prop.type === 'array') {
+    /* CANT-265. `minItems`/`maxItems` on an array property used to reach the
+     * schema and openapi.yaml and be checked by nobody (`peaks` has carried a
+     * `maxItems` since CANT-13). They are carried through here so all three
+     * decoders enforce them, which `reject_create_group_request_no_members`
+     * needs: an empty member list must fail to decode, not reach a handler. */
+    const ref = { kind: 'list', item: typeRef(prop.items, ctx) }
+    if (prop.minItems !== undefined) ref.minItems = prop.minItems
+    if (prop.maxItems !== undefined) ref.maxItems = prop.maxItems
+    return ref
+  }
   if (prop.enum) return { kind: 'inlineEnum', values: prop.enum }
   if (prop.type) {
     const ref = { kind: 'prim', prim: prop.type }
@@ -400,7 +410,9 @@ function tsDecode(ref, src, path, depth = 0) {
     case 'list': {
       const iv = `i${depth || ''}`
       const itemPath = path + '[${' + iv + '}]'
-      const mapped = `asArray(${src}, ${tsPath(path)}).map((x, ${iv}) => ${tsDecode(ref.item, 'x', itemPath, depth + 1)})`
+      const bounds = [ref.minItems, ref.maxItems].map((b) => (b === undefined ? 'undefined' : b))
+      const boundArgs = ref.minItems === undefined && ref.maxItems === undefined ? '' : `, ${bounds.join(', ')}`
+      const mapped = `asArray(${src}, ${tsPath(path)}${boundArgs}).map((x, ${iv}) => ${tsDecode(ref.item, 'x', itemPath, depth + 1)})`
       /* A union decodes to null on an unrecognised tag — "ignore this element",
        * not "fail the message". Dropping the nulls here is what makes that
        * promise true for a list, and it is the reason the item type stays
@@ -477,7 +489,12 @@ function emitTS() {
     '  if (!Number.isSafeInteger(n)) bad(p, `integer ${n} exceeds the safe range and has already lost precision`)',
     '  return n',
     '}',
-    "const asArray = (v: unknown, p: string): unknown[] => Array.isArray(v) ? v : bad(p, `expected array, got ${typeof v}`)",
+    "const asArray = (v: unknown, p: string, min?: number, max?: number): unknown[] => {",
+    "  if (!Array.isArray(v)) return bad(p, `expected array, got ${typeof v}`)",
+    "  if (min !== undefined && v.length < min) bad(p, `must have at least ${min} items, got ${v.length}`)",
+    "  if (max !== undefined && v.length > max) bad(p, `must have at most ${max} items, got ${v.length}`)",
+    "  return v",
+    "}",
     "const asObj = (v: unknown, p: string): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v)) ? v as Record<string, unknown> : bad(p, `expected object, got ${v === null ? 'null' : typeof v}`)",
     'const asOneOf = <T extends string>(v: unknown, allowed: readonly T[], p: string): T => {',
     '  const s = asStr(v, p)',
@@ -705,7 +722,9 @@ function dartDecode(ref, src, path, depth = 0) {
       const iv = `i${depth || ''}`
       const xv = `x${depth || ''}`
       const itemPath = path + '[${' + iv + '}]'
-      const mapped = `[for (final (${iv}, ${xv}) in _arr(${src}, ${dartPath(path)}).indexed) ${dartDecode(ref.item, xv, itemPath, depth + 1)}]`
+      const dartBounds = ref.minItems === undefined && ref.maxItems === undefined ? ''
+        : `, ${ref.minItems ?? 'null'}, ${ref.maxItems ?? 'null'}`
+      const mapped = `[for (final (${iv}, ${xv}) in _arr(${src}, ${dartPath(path)}${dartBounds}).indexed) ${dartDecode(ref.item, xv, itemPath, depth + 1)}]`
       /* See the TypeScript half: an unrecognised union tag is an element to
        * skip, so the list type stays non-nullable for every consumer. */
       if (isUnionRef(ref.item)) return `${mapped}.whereType<${dartType(ref.item, false)}>().toList()`
@@ -792,7 +811,12 @@ function emitDart() {
       "  return _bad(p, 'expected num, got \${v.runtimeType}');",
       '}',
     ] : []),
-    "List<Object?> _arr(Object? v, String p) => v is List ? v : _bad(p, 'expected List, got \${v.runtimeType}');",
+    "List<Object?> _arr(Object? v, String p, [int? min, int? max]) {",
+    "  if (v is! List) return _bad(p, 'expected List, got \${v.runtimeType}');",
+    "  if (min != null && v.length < min) _bad(p, 'must have at least \$min items, got \${v.length}');",
+    "  if (max != null && v.length > max) _bad(p, 'must have at most \$max items, got \${v.length}');",
+    "  return v;",
+    "}",
     'String _oneOf(Object? v, List<String> allowed, String p) {',
     '  final s = _str(v, p);',
     "  return allowed.contains(s) ? s : _bad(p, 'expected one of \${allowed.join('|')}, got \"\$s\"');",
@@ -1074,7 +1098,18 @@ function goCheck(ref, expr, path, depth = 0) {
     }
     case 'list': {
       const inner = goCheck(ref.item, `v${depth}`, `${path}[]`, depth + 1)
-      if (!inner.length) return []
+      const lenChecks = []
+      if (ref.minItems !== undefined) {
+        lenChecks.push(`\tif len(${expr}) < ${ref.minItems} {`,
+          `\t\treturn badf(${JSON.stringify(path)}, "must have at least ${ref.minItems} items, got %d", len(${expr}))`,
+          '\t}')
+      }
+      if (ref.maxItems !== undefined) {
+        lenChecks.push(`\tif len(${expr}) > ${ref.maxItems} {`,
+          `\t\treturn badf(${JSON.stringify(path)}, "must have at most ${ref.maxItems} items, got %d", len(${expr}))`,
+          '\t}')
+      }
+      if (!inner.length) return lenChecks
       /* PATH_EXPR is a placeholder the object emitter substitutes, so a nested
        * list's path is built from the PARENT's runtime path rather than from
        * the type name baked in here. The first version embedded the type name
@@ -1082,7 +1117,7 @@ function goCheck(ref, expr, path, depth = 0) {
        * literal the line no longer contained — the substitution no-opped in
        * silence, and one frame reported ServerTyping.user_ids[0] while every
        * sibling field on it reported ServerFrame[typing].… */
-      return [`\tfor i${depth}, v${depth} := range ${expr} {`,
+      return [...lenChecks, `\tfor i${depth}, v${depth} := range ${expr} {`,
         `\t\t_ = i${depth}`,
         ...inner.map((l) => '\t' + l.replace(JSON.stringify(`${path}[]`),
           `fmt.Sprintf("%s[%d]", PATH_EXPR, i${depth})`)),
@@ -1785,7 +1820,7 @@ function yamlEmit(node, indent = 0) {
  * not an entry in this set. */
 const OPENAPI_PASSTHROUGH_KEYWORDS = new Set([
   'type', 'description', 'format', 'pattern',
-  'minimum', 'maximum', 'minLength', 'maxLength', 'maxItems',
+  'minimum', 'maximum', 'minLength', 'maxLength', 'minItems', 'maxItems',
   'enum', 'required',
 ])
 

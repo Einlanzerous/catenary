@@ -53,9 +53,9 @@ const classify = () => JSON.parse(execFileSync(process.execPath, [GEN, '--classi
 test('today\'s schema classifies exactly as the CANT-74 plan says', () => {
   const c = classify()
   assert.deepEqual(c.serverRoots,
-    ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse'])
+    ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse', 'RosterResponse'])
   assert.deepEqual(c.clientRoots,
-    ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest'])
+    ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest', 'CreateGroupRequest'])
   // Every unreferenced $defs entry is a root, and every root is unreferenced.
   assert.deepEqual([...c.unreferenced].sort(), [...c.serverRoots, ...c.clientRoots].sort())
   assert.deepEqual([...c.clientOpen].sort(),
