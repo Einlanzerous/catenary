@@ -38,6 +38,7 @@ class RailScreen extends StatelessWidget {
     this.onRetry,
     this.onReenroll,
     this.onYou,
+    this.onNew,
   });
 
   final List<ConversationView> conversations;
@@ -53,6 +54,10 @@ class RailScreen extends StatelessWidget {
   final VoidCallback? onRetry;
   final VoidCallback? onReenroll;
   final VoidCallback? onYou;
+
+  /// The new-conversation control (CANT-273). Absent on the fixture rail,
+  /// which has no server to ask.
+  final VoidCallback? onNew;
 
   @override
   Widget build(BuildContext context) {
@@ -78,7 +83,19 @@ class RailScreen extends StatelessWidget {
                   const Spacer(),
                   // Drawn disabled: search is not built in this epic.
                   GlyphIcon(Glyph.search, color: t.textDisabled),
-                  const SizedBox(width: CatenaryMetrics.s4),
+                  if (onNew != null)
+                    GestureDetector(
+                      key: const ValueKey('rail-new'),
+                      behavior: HitTestBehavior.opaque,
+                      onTap: onNew,
+                      child: SizedBox(
+                        width: 44,
+                        height: 48,
+                        child: Center(child: Text('+', style: mono.copyWith(fontSize: 16, color: t.textPrimary))),
+                      ),
+                    )
+                  else
+                    const SizedBox(width: CatenaryMetrics.s4),
                   Text(myInitials, style: mono.copyWith(fontSize: 11, letterSpacing: 1.32)),
                 ],
               ),

@@ -40,6 +40,7 @@ import 'connection.dart';
 import 'conversation.dart';
 import 'enrollment.dart';
 import 'session.dart';
+import 'start.dart';
 import 'status.dart';
 
 /// What the banner reads, from what the transport knows. Pure: [now]
@@ -466,6 +467,71 @@ final class AppStore extends ChangeNotifier {
   /// The banner's RETRY: `Transport.retryNow`, which dials now instead of
   /// waiting out the backoff. The banner follows the transport's own status.
   Future<void> retryNow() async => _running.transport.retryNow();
+
+  /// The roster a person picks from (`GET /users`): active persons other than
+  /// you. Null when it could not be had, which the picker says and offers to
+  /// try again; an empty list is a roster with nobody else in it.
+  Future<List<RosterPerson>?> roster() async {
+    final r = await _running.conversations.roster();
+    return switch (r) {
+      Started(:final value) => [
+          for (final e in value) RosterPerson(id: e.id, name: e.name, handle: e.handle, initials: e.initials),
+        ],
+      _ => null,
+    };
+  }
+
+  /// A direct with [handle], found or made (`POST /conversations/direct`).
+  Future<StartOutcome> startDirect(String handle) async => _started(await _running.conversations.startDirect(handle));
+
+  /// A group of you and [handles] (`POST /conversations`). [requestId] is the
+  /// form's own, so asking again after an unreachable answer is a replay.
+  Future<StartOutcome> startGroup(String name, List<String> handles, {required String requestId}) async =>
+      _started(await _running.conversations.createGroup(name.trim(), handles, requestId: requestId));
+
+  /// THE CONVERSATION COMES BACK THROUGH THE JOURNAL, NOT AROUND IT. The
+  /// response names the id; a catch-up is triggered so `/sync` serves the row
+  /// (the server draws its metadata marker in the creating transaction), and
+  /// the id is waited for there, bounded, so the caller can open what the
+  /// journal holds rather than a record this device invented.
+  Future<StartOutcome> _started(StartResult<dynamic> r) async {
+    switch (r) {
+      case Started(:final value):
+        final id = (value as wire.Conversation).id;
+        final session = _session;
+        if (session == null) return const StartUnreachableNow();
+        if (conversation(id) == null) {
+          session.transport.catchUp();
+          await _held(id);
+        }
+        return StartDone(id, held: conversation(id) != null);
+      case StartRefused(:final code):
+        return StartRefusedBy(code);
+      case StartUnreachable():
+        return const StartUnreachableNow();
+    }
+  }
+
+  /// Completes when [id] is in [conversations], or after [startWait].
+  Future<void> _held(String id) {
+    final done = Completer<void>();
+    late final VoidCallback listener;
+    final timer = Timer(startWait, () {
+      if (!done.isCompleted) done.complete();
+    });
+    listener = () {
+      if (conversation(id) != null && !done.isCompleted) done.complete();
+    };
+    addListener(listener);
+    return done.future.whenComplete(() {
+      timer.cancel();
+      removeListener(listener);
+    });
+  }
+
+  /// How long a start waits for the journal to hold what the server made.
+  @visibleForTesting
+  Duration startWait = const Duration(seconds: 8);
 
   Session get _running => _session ?? (throw StateError('store: this device is not enrolled'));
 

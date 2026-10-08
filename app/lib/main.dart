@@ -21,6 +21,7 @@ import 'package:flutter/material.dart';
 
 import 'enroll.dart';
 import 'fixtures.dart';
+import 'new_conversation.dart';
 import 'rail.dart';
 import 'specimen.dart';
 import 'start_failed.dart';
@@ -254,28 +255,51 @@ class _ShellState extends State<_Shell> {
       openId: _openId,
       onRetry: _onRetry,
       onReenroll: _onReenroll,
-      onOpen: (c) {
-        setState(() => _openId = c.id);
-        Navigator.of(context).push(MaterialPageRoute<void>(
-          // The thread is its own route, so it listens for itself. A
-          // conversation the journal has since dropped keeps what was on
-          // screen when it was opened.
-          builder: (_) => ListenableBuilder(
-            listenable: store,
-            builder: (_, _) => ThreadScreen(
-              conversation: store.conversation(c.id) ?? c,
-              connection: store.connection,
-              onRetry: _onRetry,
-              onReenroll: _onReenroll,
-              onSend: (text) => store.send(c.id, text),
-              onRetryMessage: store.retry,
-              onDiscardMessage: store.discard,
-            ),
-          ),
-        ));
-      },
+      onOpen: (c) => _openThread(store, c),
       onYou: _openSpecimens,
+      onNew: () => _startConversation(context, store),
     );
+  }
+
+  void _openThread(AppStore store, ConversationView c) {
+    setState(() => _openId = c.id);
+    Navigator.of(context).push(MaterialPageRoute<void>(
+      // The thread is its own route, so it listens for itself. A
+      // conversation the journal has since dropped keeps what was on
+      // screen when it was opened.
+      builder: (_) => ListenableBuilder(
+        listenable: store,
+        builder: (_, _) => ThreadScreen(
+          conversation: store.conversation(c.id) ?? c,
+          connection: store.connection,
+          onRetry: _onRetry,
+          onReenroll: _onReenroll,
+          onSend: (text) => store.send(c.id, text),
+          onRetryMessage: store.retry,
+          onDiscardMessage: store.discard,
+        ),
+      ),
+    ));
+  }
+
+  /// The new-conversation flow over the rail: the roster, a direct or a room,
+  /// and on success the thread the journal now holds. A conversation the
+  /// journal has not caught up with yet is not opened: the screen closes and
+  /// the rail gets it when `/sync` serves it.
+  void _startConversation(BuildContext context, AppStore store) {
+    final nav = Navigator.of(context);
+    nav.push(MaterialPageRoute<void>(
+      builder: (ctx) => NewConversationScreen(
+        loadRoster: store.roster,
+        onDirect: (p) => store.startDirect(p.handle),
+        onGroup: (name, people, requestId) => store.startGroup(name, [for (final p in people) p.handle], requestId: requestId),
+        onDone: (id, held) {
+          nav.pop();
+          final c = store.conversation(id);
+          if (held && c != null && mounted) _openThread(store, c);
+        },
+      ),
+    ));
   }
 
   Widget _fixtureRail(BuildContext context) {

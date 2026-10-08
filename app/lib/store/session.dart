@@ -89,6 +89,7 @@ final class Session {
     required this.outbox,
     required this.journal,
     required this.credentials,
+    required this.conversations,
     required this._close,
   });
 
@@ -102,6 +103,10 @@ final class Session {
   /// The credential's store, which `enrollCredential` and `reenrollCredential`
   /// write through: the same file the transport's refreshing credential reads.
   final SqliteCredentialStore credentials;
+
+  /// The REST calls that start a conversation, over the credential the
+  /// transport refreshes: one pair, one refresh.
+  final ConversationsApi conversations;
   final void Function() _close;
   var _ended = false;
 
@@ -150,6 +155,7 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing, void 
   }
 
   final Transport transport;
+  final RefreshingCredential refreshing;
   final TransportOutbox adapter;
   final Outbox outbox;
   final SqliteJournal journal;
@@ -168,15 +174,16 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing, void 
     await journal.claim(held.userId);
     final outboxStore = SqliteOutboxStore.open('$dir/$outboxFileName');
     cleanup.add(outboxStore.close);
+    refreshing = RefreshingCredential(
+      baseUrl: address,
+      store: credentials,
+      lock: locks.call,
+      logger: logger,
+      fetch: seams.fetch,
+    );
     transport = seams.transportFactory(TransportConfig(
       baseUrl: address,
-      credential: RefreshingCredential(
-        baseUrl: address,
-        store: credentials,
-        lock: locks.call,
-        logger: logger,
-        fetch: seams.fetch,
-      ),
+      credential: refreshing,
       journal: journal,
       clientVersion: 'catenary-app',
       connect: seams.connect,
@@ -207,6 +214,7 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing, void 
     outbox: outbox,
     journal: journal,
     credentials: credentials,
+    conversations: ConversationsApi(baseUrl: address, credential: refreshing, fetch: seams.fetch),
     close: () {
       transport.stop();
       outbox.close();
