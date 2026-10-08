@@ -375,6 +375,62 @@ async function devicesOnce(c: CredentialSeam, presented: Credential): Promise<De
   return decodeDeviceListResponse(JSON.parse(body)).devices
 }
 
+/** What `authedRequest` answers: the status and the unread body of a genuine
+ *  answer from Catenary (anything but its own 401). */
+export interface AuthedResponse {
+  status: number
+  body: string
+  /** Mark the answer genuine (CANT-127's hold). The CALLER does it, once it
+   *  has decoded a body that is Catenary's: a proxy's 502 or a captive
+   *  portal's 200 is not an answer from Catenary, exactly as `devicesOnce`
+   *  and `syncOnce` treat them. */
+  answered(): void
+}
+
+/** A Catenary 401 the credential layer could not repair. */
+export class AuthedUnauthorized extends Error {
+  constructor(path: string) {
+    super(`${path}: 401 unauthorized`)
+    this.name = 'AuthedUnauthorized'
+  }
+}
+
+/**
+ * One authenticated request through the credential layer (CANT-270): the same
+ * shape `devicesOnce` has — refresh when due, one call, Catenary's own 401 read
+ * from the BODY, one retry through `onSyncUnauthorized`, `answered()` on every
+ * genuine answer — for callers that need more than `GET /devices`. A status
+ * other than 401 is the caller's to read; a request that never got a status
+ * rejects, and a 401 the refresh could not repair throws.
+ */
+export async function authedRequest(path: string, init: { method?: string; json?: unknown } = {}): Promise<AuthedResponse> {
+  const c = await credential()
+  await c.refreshIfDue()
+  const once = async (presented: Credential): Promise<AuthedResponse | null> => {
+    const res = await httpFetch(`${seams.baseUrl}${path}`, {
+      method: init.method ?? 'GET',
+      headers: {
+        Authorization: `Bearer ${presented.accessToken}`,
+        ...(init.json !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(init.json !== undefined ? { body: JSON.stringify(init.json) } : {}),
+    })
+    const body = await res.text()
+    if (isCatenaryUnauthorized(res.status, body)) {
+      c.answered()
+      return null
+    }
+    return { status: res.status, body, answered: () => c.answered() }
+  }
+  const presented = await c.current()
+  let out = await once(presented)
+  if (out === null) {
+    out = (await c.onSyncUnauthorized(presented)) ? await once(await c.current()) : null
+    if (out === null) throw new AuthedUnauthorized(path)
+  }
+  return out
+}
+
 /** `GET /devices` — the caller's own devices, as the generated wire type. */
 export async function loadDevices(): Promise<void> {
   accountState.busy = true
