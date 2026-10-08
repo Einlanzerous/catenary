@@ -313,6 +313,20 @@ func User(u store.UserRow) wire.User {
 	return out
 }
 
+// RosterEntry maps one roster row to the wire type (CANT-267). Initials are
+// derived by the same rule as User's, and absent rather than empty.
+func RosterEntry(r store.RosterRow) wire.RosterEntry {
+	out := wire.RosterEntry{
+		ID:     wire.Uuid(r.ID.String()),
+		Name:   r.DisplayName,
+		Handle: r.Handle,
+	}
+	if init := initials(r.DisplayName); init != "" {
+		out.Initials = &init
+	}
+	return out
+}
+
 // initials is the avatar tile's two letters, DERIVED server-side so web and
 // Flutter cannot disagree — the same reason peaks are computed once.
 //

@@ -197,3 +197,27 @@ func directConversationHandler(d Deps) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, wireview.Conversation(c))
 	}
 }
+
+// rosterHandler serves GET /users: every active person other than the caller,
+// with the handle POST /conversations/direct takes (CANT-267). Every signed-in
+// person can read every listed handle; that is CANT-253 ruling 1.
+func rosterHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller, ok := d.Caller(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		}
+		rows, err := d.Roster(r.Context(), caller.UserID)
+		if err != nil {
+			d.Logger.Error("roster failed", "viewer_id", caller.UserID, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "roster failed"})
+			return
+		}
+		out := wire.RosterResponse{Users: make([]wire.RosterEntry, 0, len(rows))}
+		for _, row := range rows {
+			out.Users = append(out.Users, wireview.RosterEntry(row))
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
