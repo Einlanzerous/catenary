@@ -591,15 +591,20 @@ async function main() {
       const afterHeader = ids(railHtml.slice(directHeader))
       check('Notes is the first row of the DIRECT section', afterHeader[0] === selfConv.id, afterHeader.join(','))
       const directsNow = state.conversations.filter((x) => x.kind === 'direct')
+      // Independent of the store's own sort: the directs ordered here by their
+      // newest message, descending, which is the order they had before Notes.
+      const byNewest = (list: Conversation[]) =>
+        [...list].sort((a, b) => (lastMessageOf(b.id)?.at ?? '').localeCompare(lastMessageOf(a.id)?.at ?? '')).map((x) => x.id)
       check('the DIRECT section is Notes then the directs, by recency, and nothing else',
-        afterHeader.length === 1 + directsNow.length, `${afterHeader.length} rows for ${directsNow.length} directs`)
+        afterHeader.join(',') === [selfConv.id, ...byNewest(directsNow)].join(','),
+        `${afterHeader.length} rows for ${directsNow.length} directs: ${afterHeader.join(',')}`)
       const newerDirect = directsNow.some((d) => (lastMessageOf(d.id)?.at ?? '') > (lastMessageOf(selfConv.id)?.at ?? ''))
       check('Notes stays first although a direct holds a newer message', newerDirect)
       const count = railHtml.slice(directHeader).match(/class="count meta tnum"[^>]*>(\d+)</)?.[1]
       check('and the section count includes it', count === String(1 + directsNow.length), String(count))
       const roomIds = ids(railHtml.slice(0, directHeader))
-      check('no room is displaced by it',
-        roomIds.length === state.conversations.filter((x) => x.kind === 'group').length, roomIds.join(','))
+      check('no room is displaced by it: the rooms keep their recency order',
+        roomIds.join(',') === byNewest(state.conversations.filter((x) => x.kind === 'group')).join(','), roomIds.join(','))
       const row = (() => {
         const at = railHtml.indexOf(`data-conversation-id="${selfConv.id}"`)
         return railHtml.slice(railHtml.lastIndexOf('<button', at), railHtml.indexOf('</button>', at))
@@ -615,6 +620,18 @@ async function main() {
       check('its marker is the server\'s SENT, never READ',
         row.includes('SENT') && !row.includes('READ'), row)
       check('and it never carries an unread count', newCount(selfConv) === 0 && unreadCount(selfConv) === 0)
+
+      // The wording that is not the bare body survives it: with only the voice
+      // note held (the text after it set aside), the row still previews the
+      // note, with no `You:` in front.
+      const heldMessages = state.messages
+      state.messages = heldMessages.filter((m) => !(m.conversationId === selfConv.id && m.text))
+      const voiceHtml = await render()
+      state.messages = heldMessages
+      const voiceAt = voiceHtml.indexOf(`data-conversation-id="${selfConv.id}"`)
+      const voiceRow = voiceHtml.slice(voiceHtml.lastIndexOf('<button', voiceAt), voiceHtml.indexOf('</button>', voiceAt))
+      check('a voice note in Notes still previews as a note, with no You:',
+        /(transcript pending|voice note) · 0:06/.test(voiceRow) && !voiceRow.includes('You:'), voiceRow)
 
       // Header: JUST YOU, then the transport word derived from the origin.
       select(selfConv.id)
