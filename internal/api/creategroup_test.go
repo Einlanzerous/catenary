@@ -72,6 +72,7 @@ func TestCreateGroupMapsItsRefusals(t *testing.T) {
 		want int
 	}{
 		{"an invalid request", fmt.Errorf("%w: duplicate handle", store.ErrInvalidGroup), groupBody, http.StatusBadRequest},
+		{"a bot creator", store.ErrBotCannotCreateGroup, groupBody, http.StatusForbidden},
 		{"an unknown handle", store.ErrTargetNotFound, groupBody, http.StatusNotFound},
 		{"a deactivated handle", store.ErrTargetDeactivated, groupBody, http.StatusNotFound},
 		{"a body that is not a CreateGroupRequest", nil, map[string]any{"name": "x"}, http.StatusBadRequest},

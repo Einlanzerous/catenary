@@ -742,6 +742,11 @@ const (
 // conversation_not_found.
 var ErrInvalidGroup = errors.New("store: create group: invalid request")
 
+// ErrBotCannotCreateGroup is a bot credential asking to create a group. Any
+// active PERSON creates one (CANT-253 ruling 0); a bot is not a person, and a
+// bot is refused as a member for the same reason. The handler answers 403.
+var ErrBotCannotCreateGroup = errors.New("store: create group: a bot cannot create a group")
+
 // CreateGroup creates a `group` conversation containing the creator and the
 // people named by handle, atomically, and returns it as the creator would see
 // it on /sync. Membership is fixed at creation.
@@ -760,7 +765,7 @@ func (s *Store) CreateGroup(ctx context.Context, creator uuid.UUID, name string,
 	if err == nil {
 		return c, created, nil
 	}
-	if errors.Is(err, ErrInvalidGroup) {
+	if errors.Is(err, ErrInvalidGroup) || errors.Is(err, ErrBotCannotCreateGroup) {
 		s.logger.Info("create group refused", "creator_id", creator, "error", err.Error())
 		return ConversationRow{}, false, err
 	}
@@ -769,25 +774,30 @@ func (s *Store) CreateGroup(ctx context.Context, creator uuid.UUID, name string,
 	return ConversationRow{}, false, se
 }
 
-func (s *Store) createGroup(ctx context.Context, creator uuid.UUID, name string, memberHandles []string, requestID *uuid.UUID) (ConversationRow, bool, error) {
+// validateGroupRequest trims the name and checks everything about the request
+// that needs no database.
+func validateGroupRequest(name string, memberHandles []string) (string, error) {
 	name = strings.TrimSpace(name)
 	if n := utf8.RuneCountInString(name); n < 1 || n > maxGroupNameRunes {
-		return ConversationRow{}, false, fmt.Errorf("%w: name must be 1 to %d characters after trimming", ErrInvalidGroup, maxGroupNameRunes)
+		return "", fmt.Errorf("%w: name must be 1 to %d characters after trimming", ErrInvalidGroup, maxGroupNameRunes)
 	}
 	if n := len(memberHandles); n < 1 || n > maxGroupMembers {
-		return ConversationRow{}, false, fmt.Errorf("%w: member_handles must hold 1 to %d handles", ErrInvalidGroup, maxGroupMembers)
+		return "", fmt.Errorf("%w: member_handles must hold 1 to %d handles", ErrInvalidGroup, maxGroupMembers)
 	}
 	seen := make(map[string]bool, len(memberHandles))
 	for _, h := range memberHandles {
 		if h == "" {
-			return ConversationRow{}, false, fmt.Errorf("%w: empty handle", ErrInvalidGroup)
+			return "", fmt.Errorf("%w: empty handle", ErrInvalidGroup)
 		}
 		if seen[h] {
-			return ConversationRow{}, false, fmt.Errorf("%w: duplicate handle", ErrInvalidGroup)
+			return "", fmt.Errorf("%w: duplicate handle", ErrInvalidGroup)
 		}
 		seen[h] = true
 	}
+	return name, nil
+}
 
+func (s *Store) createGroup(ctx context.Context, creator uuid.UUID, name string, memberHandles []string, requestID *uuid.UUID) (ConversationRow, bool, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return ConversationRow{}, false, fmt.Errorf("store: create group: begin: %w", err)
@@ -798,9 +808,10 @@ func (s *Store) createGroup(ctx context.Context, creator uuid.UUID, name string,
 	if requestID != nil {
 		k := creator.String() + "|" + requestID.String()
 		key = &k
-		// A replay is answered before the handles are looked at: the first
-		// request already decided them, and a member deactivated since must
-		// not turn a retry of a room that exists into a refusal.
+		// A replay is answered before the body is validated or the handles
+		// are looked at: the first request already decided both, so the key
+		// alone is the identity, and a member deactivated since must not turn
+		// a retry of a room that exists into a refusal.
 		var existing uuid.UUID
 		err := tx.QueryRow(ctx, `SELECT id FROM conversations WHERE create_key = $1`, k).Scan(&existing)
 		switch {
@@ -813,6 +824,21 @@ func (s *Store) createGroup(ctx context.Context, creator uuid.UUID, name string,
 		case !errors.Is(err, pgx.ErrNoRows):
 			return ConversationRow{}, false, fmt.Errorf("store: create group: replay lookup: %w", err)
 		}
+	}
+
+	name, err = validateGroupRequest(name, memberHandles)
+	if err != nil {
+		return ConversationRow{}, false, err
+	}
+
+	// Only a person creates a group (CANT-253 ruling 0): Deps.Caller also
+	// resolves a bot credential. Read, unlocked, for the reason below.
+	var creatorKind string
+	if err := tx.QueryRow(ctx, `SELECT kind FROM users WHERE id = $1`, creator).Scan(&creatorKind); err != nil {
+		return ConversationRow{}, false, fmt.Errorf("store: create group: resolve creator: %w", err)
+	}
+	if creatorKind != "person" {
+		return ConversationRow{}, false, ErrBotCannotCreateGroup
 	}
 
 	// Resolve every handle. Unlocked, for the reason findOrCreateDirect gives:

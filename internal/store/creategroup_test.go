@@ -124,6 +124,26 @@ func TestCreateGroupRefusesAtomically(t *testing.T) {
 	}
 }
 
+func TestABotCannotCreateAGroup(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := New(pool, DefaultLimits(), discardLogger())
+	bot := mkUser(ctx, t, pool, "robot")
+	mkUser(ctx, t, pool, "theo")
+	if _, err := pool.Exec(ctx, `UPDATE users SET kind = 'bot' WHERE id = $1`, bot); err != nil {
+		t.Fatal(err)
+	}
+	counter := head(ctx, t, pool)
+	if _, _, err := st.CreateGroup(ctx, bot, "x", []string{"theo"}, nil); !errors.Is(err, ErrBotCannotCreateGroup) {
+		t.Fatalf("err = %v, want ErrBotCannotCreateGroup", err)
+	}
+	if n := countTableRows(ctx, t, pool, "conversations"); n != 0 {
+		t.Errorf("%d conversations, want none", n)
+	}
+	if got := head(ctx, t, pool); got != counter {
+		t.Errorf("log_counter %d -> %d", counter, got)
+	}
+}
+
 func TestCreatingAGroupMovesTheMetadataMarkerAndDrawsNoMessageOrdinal(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := New(pool, DefaultLimits(), discardLogger())
@@ -247,6 +267,11 @@ func TestAReplayedRequestIDReturnsTheFirstRoom(t *testing.T) {
 	other, created, err := st.CreateGroup(ctx, ada, "different", []string{"mal"}, &rid)
 	if err != nil || created || other.ID != first.ID {
 		t.Fatalf("replay with a different body = %v created=%v id %s", err, created, other.ID)
+	}
+	// Even a body that would now be refused: the key is the identity.
+	invalid, created, err := st.CreateGroup(ctx, ada, "  ", nil, &rid)
+	if err != nil || created || invalid.ID != first.ID {
+		t.Fatalf("replay with an invalid body = %v created=%v id %s, want the first room", err, created, invalid.ID)
 	}
 	if n := countTableRows(ctx, t, pool, "conversations"); n != 1 {
 		t.Errorf("%d conversations after replays, want 1", n)

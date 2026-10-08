@@ -235,6 +235,10 @@ func createGroupHandler(d Deps) http.HandlerFunc {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
+			if errors.Is(err, store.ErrBotCannotCreateGroup) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+				return
+			}
 			var se *store.SendError
 			_ = errors.As(store.SendErrorFor(err), &se)
 			d.Logger.Log(r.Context(), se.Level(), "create group refused",
