@@ -24,10 +24,29 @@ import (
 func freshDBAt0009(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
 	ctx, pool := freshDB(t)
-	if err := MigrateDown(ctx, pool, 1); err != nil {
+	if err := MigrateDown(ctx, pool, migrationsAfter(t, "0009")); err != nil {
 		t.Fatalf("roll back to 0009: %v", err)
 	}
 	return ctx, pool
+}
+
+// migrationsAfter counts the embedded migrations numbered above version, so a
+// test that needs "the schema as of 0009" rolls back exactly that many however
+// many migrations later work adds, instead of a literal that every new
+// migration silently invalidates.
+func migrationsAfter(t *testing.T, version string) int {
+	t.Helper()
+	migs, err := loadMigrations()
+	if err != nil {
+		t.Fatalf("loadMigrations: %v", err)
+	}
+	n := 0
+	for _, m := range migs {
+		if m.version > version {
+			n++
+		}
+	}
+	return n
 }
 
 func TestMigration0010AppliesToADatabaseHoldingEmaillessPersons(t *testing.T) {
@@ -103,7 +122,7 @@ func TestEmailIsUniqueCaseInsensitively(t *testing.T) {
 func TestMigration0010DownRemovesTheColumnIndexAndCheck(t *testing.T) {
 	ctx, pool := freshDB(t)
 
-	if err := MigrateDown(ctx, pool, 1); err != nil {
+	if err := MigrateDown(ctx, pool, migrationsAfter(t, "0009")); err != nil {
 		t.Fatalf("down: %v", err)
 	}
 	var exists bool
