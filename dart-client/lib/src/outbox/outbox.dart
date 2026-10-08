@@ -18,6 +18,12 @@
 /// The rules are `docs/decisions/cant-36-outbox.md`; section numbers below are
 /// that file's.
 ///
+/// THE UPLOAD QUEUE IS NOT THE SEND QUEUE (§10, CANT-212). `compose` and
+/// `retry` complete without waiting for an upload; an entry awaiting one is
+/// passed over by the drain and joins it at its `order` when its last handle
+/// is stored. `upload_not_found` clears an entry's handles and uploads its held
+/// media again under the same `clientId`, once in the entry's life.
+///
 /// AN UPLOAD WAITS FOR A READY SESSION, AND IS THE LOCK HOLDER'S (CANT-201
 /// ruling 1). A recording may be composed with no session at all: it is held
 /// with its media, `pending`, and no uploader is called — one called with no
@@ -241,7 +247,8 @@ final class Outbox {
   /// transaction — and only when that transaction has committed does the entry
   /// render, or become eligible for a frame. Completes with the stored entry,
   /// whose `clientId` is the wire's idempotency key, WITHOUT WAITING FOR AN
-  /// ACK: with no ready session the entry is queued and drains when one is.
+  /// ACK OR AN UPLOAD: with no ready session the entry is queued and drains
+  /// when one is.
   ///
   /// AN ATTACHMENT, WITH NO READY SESSION (CANT-201 ruling 1): a `voice` one is
   /// taken, held with its media, and uploaded when a session is ready; any
@@ -298,29 +305,34 @@ final class Outbox {
     _emit();
     if (_awaitsUpload(entry)) {
       // Not this context's to upload, or not yet: the entry is held `pending`
-      // and whoever holds the lock on a ready session is offered it.
-      if (!_mayUpload) return entry;
-      await _upload(entry.clientId);
-      return _entries[entry.clientId] ?? entry;
+      // and whoever holds the lock on a ready session is offered it. Offered
+      // here, it is not waited for.
+      if (_mayUpload) unawaited(_upload(entry.clientId));
+      return entry;
     }
     _drain();
     return entry;
   }
 
-  bool _awaitsUpload(OutboxEntry e) => e.attachments.any((a) => a.upload != UploadState.uploaded || a.uploadId == null);
+  bool _awaitsUpload(OutboxEntry e) {
+    if (_faults.sendBeforeLastUpload) return e.attachments.isNotEmpty && !_uploaded(e.attachments.first);
+    return e.attachments.any((a) => !_uploaded(a));
+  }
 
   /// An upload is attempted only on a ready session and only by the drain
   /// lock's holder — §8's one writer, for uploads as for frames.
   bool get _mayUpload => _ready && _holding;
 
-  /// §10, with no upload queue: each attachment not yet uploaded is offered to
-  /// the `Uploader` — on compose, on every RETRY, and whenever the holder
-  /// reads the store on a ready session, which is what offers an entry that
-  /// was composed offline, in another context, or before a relaunch. A handle
-  /// it returns is persisted on the entry before the next is asked for, and
-  /// the entry joins the drain once its last one has; a refusal fails the
-  /// entry with the uploader's own message — so an attachment entry is never
-  /// left `pending` with nothing that will ever send it.
+  /// §10 item 1: each attachment not yet uploaded is offered to the `Uploader`,
+  /// in order — on compose, on every RETRY, on a stale handle, and whenever
+  /// the holder reads the store on a ready session, which is what offers an
+  /// entry that was composed offline, in another context, or before a
+  /// relaunch. A handle it returns is persisted on the entry before the next
+  /// is asked for, and the entry joins the drain at its `order` once its last
+  /// one has; a refusal fails the entry with the uploader's own message and
+  /// nothing further is uploaded — so an attachment entry is never left
+  /// `pending` with nothing that will ever send it. Nothing waits on this: the
+  /// drain passes over the entry until it is done.
   Future<void> _upload(Uuid clientId) async {
     if (!_uploading.add(clientId)) return;
     try {
@@ -329,11 +341,14 @@ final class Outbox {
         final entry = _entries[clientId];
         if (entry == null || _closed) return;
         final a = entry.attachments[i];
-        if (a.upload == UploadState.uploaded && a.uploadId != null) continue;
+        if (_uploaded(a)) continue;
         final Uuid handle;
         try {
           handle = await _uploader.upload(entry, a);
         } catch (e) {
+          // The fault: the throw is dropped, the entry stays `pending` with
+          // its attachment unuploaded, and the next offer asks again.
+          if (_faults.refusalLoops) return;
           await _fail(clientId, UploadFailure('$e'));
           return;
         }
@@ -343,6 +358,7 @@ final class Outbox {
               if (j == i) b.uploadedAs(handle) else b,
           ];
         });
+        if (_faults.sendBeforeLastUpload) _drain();
       }
     } finally {
       _uploading.remove(clientId);
@@ -361,8 +377,49 @@ final class Outbox {
     }
   }
 
+  /// §10 item 3: `upload_not_found` naming an entry with attachments clears
+  /// every handle and uploads the held media again under the same `clientId` —
+  /// ONCE in the entry's life. True when the refusal was taken as a stale
+  /// handle and the entry re-offered; false when it is the caller's to
+  /// classify, as a second one is.
+  Future<bool> _reupload(Uuid id, ServerError err) async {
+    final e = _entries[id];
+    if (e == null || err.code != ErrorCode.uploadNotFound || e.attachments.isEmpty) return false;
+    if (_faults.staleHandleFails) return false;
+    if (e.reuploads >= 1 && !_faults.reuploadUnbounded) return false;
+    if (_faults.remintOnReupload) {
+      final media = [for (var i = 0; i < e.attachments.length; i++) await _store.media(id, i)];
+      _forget(id);
+      await _store.delete(id);
+      final fresh = await _store.add(
+        e.copy()
+          ..clientId = _mintId()
+          ..lastError = null
+          ..reuploads = e.reuploads + 1
+          ..attachments = [for (final a in e.attachments) a.cleared()],
+        media,
+      );
+      _entries[fresh.clientId] = fresh;
+      _emit();
+      if (_mayUpload) unawaited(_upload(fresh.clientId));
+      return true;
+    }
+    await _mutate(id, (x) {
+      x.reuploads++;
+      x.notBefore = null;
+      x.attachments = [for (final a in x.attachments) a.cleared()];
+    });
+    _emit();
+    if (_mayUpload) unawaited(_upload(id));
+    return true;
+  }
+
   /// §7: `failed` back to `pending` under the SAME clientId, at its original
-  /// `order`.
+  /// `order`. §10 item 4: an entry failed by `upload_not_found` holds handles
+  /// the server has disowned, and one failed by the uploader is uploaded
+  /// afresh, so RETRY clears them and the entry is offered to the uploader
+  /// again — `reuploads` is not reset, so this is a person's attempt, never a
+  /// loop. Completes without waiting for that upload.
   Future<void> retry(Uuid clientId) async {
     final e = _entries[clientId];
     if (e == null || e.status != OutboxStatus.failed) return;
@@ -376,17 +433,20 @@ final class Outbox {
       _entries[fresh.clientId] = fresh;
     } else {
       final pending = await _mutate(clientId, (x) {
+        final error = x.lastError;
+        final afterUpload = error is UploadFailure || (error is ServerRefusal && error.code == ErrorCode.uploadNotFound.wire);
         x.status = OutboxStatus.pending;
         x.lastError = null;
         x.notBefore = null;
+        if (afterUpload) x.attachments = [for (final a in x.attachments) a.cleared()];
       });
-      // An attachment that never uploaded is offered again, so the entry
-      // either joins the drain or fails again with the uploader's message —
-      // or, with no ready session to upload on, waits for one as it would
-      // have at compose.
+      // An attachment with no handle is offered again, so the entry either
+      // joins the drain or fails again with the uploader's message — or, with
+      // no ready session to upload on, waits for one as it would have at
+      // compose.
       if (pending != null && _awaitsUpload(pending)) {
         _emit();
-        if (_mayUpload) await _upload(clientId);
+        if (_mayUpload) unawaited(_upload(clientId));
         return;
       }
     }
@@ -535,13 +595,15 @@ final class Outbox {
   }
 
   /// §6: a retryable refusal holds under capped backoff and never reaches
-  /// `failed`; every other refusal fails at once.
+  /// `failed`; every other refusal fails at once — except §10 item 3's stale
+  /// handle, ahead of that split, which re-uploads once.
   Future<void> _onError(ServerError err) async {
     final id = err.clientId;
     if (id == null || !_entries.containsKey(id)) return;
     _inFlight.remove(id);
     _busy.add(id);
     try {
+      if (await _reupload(id, err)) return;
       var hold = isHeldRefusal(err);
       if (hold && _faults.misclassifyRetryable) hold = false;
       if (!hold && _faults.retryNonRetryable) hold = true;
@@ -592,8 +654,12 @@ final class Outbox {
       if (e.status != OutboxStatus.pending && !_faults.resendFailedWithoutRetry) continue;
       final id = e.clientId;
       if (_inFlight.contains(id) || _acks.containsKey(id) || _busy.contains(id)) continue;
-      // An attachment not yet uploaded is skipped, never waited on.
-      if (_awaitsUpload(e)) continue;
+      // §10 item 1: an attachment not yet uploaded is skipped, never waited
+      // on, and the entry is overtaken (§11).
+      if (_awaitsUpload(e)) {
+        if (_faults.uploadBlocksDrain) break;
+        continue;
+      }
       final notBefore = e.notBefore;
       if (notBefore != null) {
         final t = DateTime.parse(notBefore).millisecondsSinceEpoch;
@@ -603,7 +669,7 @@ final class Outbox {
         }
       }
 
-      _transport.sendFrame(frameOf(e));
+      _transport.sendFrame(frameOf(e, unuploaded: _faults.sendBeforeLastUpload));
       _inFlight.add(id);
       wrote = true;
       unawaited(_mutate(id, (x) {
@@ -706,12 +772,19 @@ final class Outbox {
   }
 }
 
+bool _uploaded(OutboundAttachmentDraft a) => a.upload == UploadState.uploaded && a.uploadId != null;
+
 /// The only path from an entry to the wire. `replyPreview`, `composedAt` and
 /// every counter stay behind.
-ClientSend frameOf(OutboxEntry e) => ClientSend(
+///
+/// Every attachment has its handle by the time the drain builds a frame, and
+/// one without is an error here. `unuploaded` is the `sendBeforeLastUpload`
+/// fault's alone: it writes the frame that fault sends, with an empty handle
+/// where none is held, so the criterion can see it written.
+ClientSend frameOf(OutboxEntry e, {bool unuploaded = false}) => ClientSend(
       clientId: e.clientId,
       conversationId: e.conversationId,
       text: e.text,
-      attachments: e.attachments.isEmpty ? null : [for (final a in e.attachments) OutboundAttachment(kind: a.kind, uploadId: a.uploadId!)],
+      attachments: e.attachments.isEmpty ? null : [for (final a in e.attachments) OutboundAttachment(kind: a.kind, uploadId: unuploaded ? a.uploadId ?? '' : a.uploadId!)],
       replyToMessageId: e.replyToMessageId,
     );

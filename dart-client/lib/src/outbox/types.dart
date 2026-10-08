@@ -67,9 +67,11 @@ final class UploadFailure extends OutboxError {
 
 enum UploadState { pending, uploaded }
 
-/// An attachment as composed. There is no upload queue here: the default
-/// `Uploader` refuses (§10), and the queue that would move one to `uploaded`
-/// is CANT-212's.
+/// An attachment as composed. `upload` and `uploadId` are stored with the
+/// entry: the upload queue (§10, CANT-212) writes a handle the moment an
+/// `Uploader` returns it, and clears every one of an entry's when the server
+/// disowns them. That an offer is in flight is never stored — it reads
+/// `pending` after a relaunch, as `sending` reads `queued`.
 ///
 /// THE MEDIA IS NOT ON THIS OBJECT ONCE IT IS STORED. A draft names a `source`;
 /// `compose` reads it once and the store holds the bytes beside the entry, in
@@ -106,6 +108,11 @@ final class OutboundAttachmentDraft {
   /// This attachment, uploaded under `handle`.
   OutboundAttachmentDraft uploadedAs(Uuid handle) =>
       OutboundAttachmentDraft(kind: kind, filename: filename, durationMs: durationMs, uploadId: handle, upload: UploadState.uploaded);
+
+  /// This attachment with no handle: one the server disowned, or one cleared
+  /// with it. The media stays where the store holds it, which is what the next
+  /// offer uploads.
+  OutboundAttachmentDraft cleared() => OutboundAttachmentDraft(kind: kind, filename: filename, durationMs: durationMs);
 
   /// This attachment as an entry holds it: without its `source`.
   OutboundAttachmentDraft held() => OutboundAttachmentDraft(kind: kind, filename: filename, durationMs: durationMs, uploadId: uploadId, upload: upload);
@@ -482,6 +489,12 @@ final class OutboxFaults {
     this.orderOutsideTxn = false,
     this.everyTabDrains = false,
     this.lockWithoutReady = false,
+    this.uploadBlocksDrain = false,
+    this.sendBeforeLastUpload = false,
+    this.staleHandleFails = false,
+    this.reuploadUnbounded = false,
+    this.refusalLoops = false,
+    this.remintOnReupload = false,
   });
 
   static const none = OutboxFaults();
@@ -504,6 +517,24 @@ final class OutboxFaults {
 
   /// A context takes the lock while its session is not `ready`.
   final bool lockWithoutReady;
+
+  /// The send drain stops at an entry awaiting an upload instead of passing it.
+  final bool uploadBlocksDrain;
+
+  /// An entry joins the drain once its FIRST attachment has a handle.
+  final bool sendBeforeLastUpload;
+
+  /// `upload_not_found` fails the entry at once, with no re-upload.
+  final bool staleHandleFails;
+
+  /// The re-upload is taken on every `upload_not_found`, not once.
+  final bool reuploadUnbounded;
+
+  /// An uploader's throw is dropped: the entry stays `pending`, unuploaded.
+  final bool refusalLoops;
+
+  /// The re-upload sends under a fresh `clientId`.
+  final bool remintOnReupload;
 }
 
 /// The store's own two faults, which live below the `Outbox`.
