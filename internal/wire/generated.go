@@ -1055,6 +1055,9 @@ func (v *VoiceAttachment) decode(b []byte, p string, side decodeSide) error {
 	if err := checkDurationMs(out.DurationMs, p+".duration_ms"); err != nil {
 		return err
 	}
+	if len(out.Peaks) > 512 {
+		return badf(p+".peaks", "must have at most 512 items, got %d", len(out.Peaks))
+	}
 	for i0, v0 := range out.Peaks {
 		_ = i0
 		if v0 < 0 {
@@ -3443,6 +3446,190 @@ func (v *DirectConversationRequest) decode(b []byte, p string, side decodeSide) 
 	return nil
 }
 
+// One person the caller may start a conversation with. Listed by `GET /users`, which
+// returns active persons other than the caller; a bot and a deactivated account are
+// never listed.
+type RosterEntry struct {
+	// The person's id; the same id their `User` record carries on `/sync`.
+	ID Uuid `json:"id"`
+	// Display name as of this response.
+	Name string `json:"name"`
+	// Two letters for the avatar tile, derived on the server by the same rule as
+	// `User.initials`.
+	Initials *string `json:"initials,omitempty"`
+	// The handle `POST /conversations/direct` and `POST /conversations` take to name this
+	// person. Every signed-in person can read every listed handle; that is deliberate
+	// (CANT-253 ruling 1) and is why this type exists apart from `User`, which carries
+	// none.
+	Handle string `json:"handle"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a RosterEntry: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *RosterEntry) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "RosterEntry", sideServer)
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *RosterEntry) decode(b []byte, p string, side decodeSide) error {
+	var s struct {
+		ID       *Uuid   `json:"id"`
+		Name     *string `json:"name"`
+		Initials *string `json:"initials"`
+		Handle   *string `json:"handle"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out RosterEntry
+	if s.ID == nil {
+		return badf(p+".id", "required field is missing")
+	}
+	out.ID = *s.ID
+	if s.Name == nil {
+		return badf(p+".name", "required field is missing")
+	}
+	out.Name = *s.Name
+	if s.Initials != nil {
+		out.Initials = s.Initials
+	}
+	if s.Handle == nil {
+		return badf(p+".handle", "required field is missing")
+	}
+	out.Handle = *s.Handle
+	if err := checkUuid(out.ID, p+".id"); err != nil {
+		return err
+	}
+	if utf8.RuneCountInString(out.Name) < 1 {
+		return badf(p+".name", "name must be at least 1 characters, got %d", utf8.RuneCountInString(out.Name))
+	}
+	if out.Initials != nil {
+		if utf8.RuneCountInString(*out.Initials) < 1 {
+			return badf(p+".initials", "initials must be at least 1 characters, got %d", utf8.RuneCountInString(*out.Initials))
+		}
+		if utf8.RuneCountInString(*out.Initials) > 2 {
+			return badf(p+".initials", "initials must be at most 2 characters, got %d", utf8.RuneCountInString(*out.Initials))
+		}
+	}
+	if utf8.RuneCountInString(out.Handle) < 1 {
+		return badf(p+".handle", "handle must be at least 1 characters, got %d", utf8.RuneCountInString(out.Handle))
+	}
+	*v = out
+	return nil
+}
+
+// `GET /users`: every active person other than the caller, ordered by display name and
+// then id. Unpaged: its size is bounded by the number of accounts, which is a small
+// trusted group.
+type RosterResponse struct {
+	Users []RosterEntry `json:"users"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a RosterResponse: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *RosterResponse) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "RosterResponse", sideServer)
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *RosterResponse) decode(b []byte, p string, side decodeSide) error {
+	var s struct {
+		Users *[]json.RawMessage `json:"users"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out RosterResponse
+	if s.Users == nil {
+		return badf(p+".users", "required field is missing")
+	}
+	out.Users = make([]RosterEntry, len(*s.Users))
+	for i, raw := range *s.Users {
+		if err := out.Users[i].decode(raw, fmt.Sprintf("%s[%d]", p+".users", i), side); err != nil {
+			return err
+		}
+	}
+	*v = out
+	return nil
+}
+
+// `POST /conversations`: create a group conversation containing the caller and the
+// named members, atomically, and return the `Conversation` as the caller would see it
+// on `/sync` (201). Membership is fixed at creation; nothing adds or removes a member
+// afterwards. The caller is a member without being listed.
+type CreateGroupRequest struct {
+	// The room's name: 1 to 80 characters after trimming surrounding whitespace. Not
+	// unique; two rooms may share a name.
+	Name string `json:"name"`
+	// The handles of the other members: 1 to 49 entries, no duplicates, none the caller's
+	// own and none a bot. A handle that names nobody or a deactivated account refuses the
+	// whole request with `conversation_not_found` and creates nothing; any other violation
+	// is a 400.
+	MemberHandles []string `json:"member_handles"`
+	// Optional. A client-minted id for this create. A replay of the same `request_id` by
+	// the same caller returns the room the first request made (200) instead of making a
+	// second.
+	RequestID *Uuid `json:"request_id,omitempty"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a CreateGroupRequest: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *CreateGroupRequest) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "CreateGroupRequest", sideServer)
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *CreateGroupRequest) decode(b []byte, p string, side decodeSide) error {
+	var s struct {
+		Name          *string   `json:"name"`
+		MemberHandles *[]string `json:"member_handles"`
+		RequestID     *Uuid     `json:"request_id"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out CreateGroupRequest
+	if s.Name == nil {
+		return badf(p+".name", "required field is missing")
+	}
+	out.Name = *s.Name
+	if s.MemberHandles == nil {
+		return badf(p+".member_handles", "required field is missing")
+	}
+	out.MemberHandles = *s.MemberHandles
+	if s.RequestID != nil {
+		out.RequestID = s.RequestID
+	}
+	if utf8.RuneCountInString(out.Name) < 1 {
+		return badf(p+".name", "name must be at least 1 characters, got %d", utf8.RuneCountInString(out.Name))
+	}
+	if utf8.RuneCountInString(out.Name) > 80 {
+		return badf(p+".name", "name must be at most 80 characters, got %d", utf8.RuneCountInString(out.Name))
+	}
+	if len(out.MemberHandles) < 1 {
+		return badf(p+".member_handles", "must have at least 1 items, got %d", len(out.MemberHandles))
+	}
+	if len(out.MemberHandles) > 49 {
+		return badf(p+".member_handles", "must have at most 49 items, got %d", len(out.MemberHandles))
+	}
+	for i0, v0 := range out.MemberHandles {
+		_ = i0
+		if utf8.RuneCountInString(v0) < 1 {
+			return badf(fmt.Sprintf("%s[%d]", p+".member_handles", i0), "member_handles must be at least 1 characters, got %d", utf8.RuneCountInString(v0))
+		}
+	}
+	if out.RequestID != nil {
+		if err := checkUuid(*out.RequestID, p+".request_id"); err != nil {
+			return err
+		}
+	}
+	*v = out
+	return nil
+}
+
 // DecodeAttachment dispatches on "kind". A nil result with a nil error
 // means an unrecognised tag, which callers MUST treat as "ignore and carry on".
 func DecodeAttachment(b []byte) (Attachment, error) {
@@ -3868,6 +4055,24 @@ func decodeNamed(name string, b []byte, side decodeSide) (any, error) {
 	case "DirectConversationRequest":
 		var v DirectConversationRequest
 		if err := v.decode(b, "DirectConversationRequest", side); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "RosterEntry":
+		var v RosterEntry
+		if err := v.decode(b, "RosterEntry", side); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "RosterResponse":
+		var v RosterResponse
+		if err := v.decode(b, "RosterResponse", side); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "CreateGroupRequest":
+		var v CreateGroupRequest
+		if err := v.decode(b, "CreateGroupRequest", side); err != nil {
 			return nil, err
 		}
 		return v, nil

@@ -29,7 +29,12 @@ const asInt = (v: unknown, p: string): number => {
   if (!Number.isSafeInteger(n)) bad(p, `integer ${n} exceeds the safe range and has already lost precision`)
   return n
 }
-const asArray = (v: unknown, p: string): unknown[] => Array.isArray(v) ? v : bad(p, `expected array, got ${typeof v}`)
+const asArray = (v: unknown, p: string, min?: number, max?: number): unknown[] => {
+  if (!Array.isArray(v)) return bad(p, `expected array, got ${typeof v}`)
+  if (min !== undefined && v.length < min) bad(p, `must have at least ${min} items, got ${v.length}`)
+  if (max !== undefined && v.length > max) bad(p, `must have at most ${max} items, got ${v.length}`)
+  return v
+}
 const asObj = (v: unknown, p: string): Record<string, unknown> => (typeof v === 'object' && v !== null && !Array.isArray(v)) ? v as Record<string, unknown> : bad(p, `expected object, got ${v === null ? 'null' : typeof v}`)
 const asOneOf = <T extends string>(v: unknown, allowed: readonly T[], p: string): T => {
   const s = asStr(v, p)
@@ -529,7 +534,7 @@ export function decodeVoiceAttachment(v: unknown, p = "VoiceAttachment"): VoiceA
     kind: "voice",
     url: o["url"] === undefined || o["url"] === null ? bad(`${p}.url`, 'required field is missing') : asStr(o["url"], `${p}.url`),
     durationMs: o["duration_ms"] === undefined || o["duration_ms"] === null ? bad(`${p}.duration_ms`, 'required field is missing') : asDurationMs(o["duration_ms"], `${p}.duration_ms`),
-    peaks: o["peaks"] === undefined || o["peaks"] === null ? bad(`${p}.peaks`, 'required field is missing') : asArray(o["peaks"], `${p}.peaks`).map((x, i) => ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `peaks must be >= 0, got ${x}`); if (x > 100) bad(p, `peaks must be <= 100, got ${x}`); return x })(x, `${p}.peaks[${i}]`)),
+    peaks: o["peaks"] === undefined || o["peaks"] === null ? bad(`${p}.peaks`, 'required field is missing') : asArray(o["peaks"], `${p}.peaks`, undefined, 512).map((x, i) => ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 0) bad(p, `peaks must be >= 0, got ${x}`); if (x > 100) bad(p, `peaks must be <= 100, got ${x}`); return x })(x, `${p}.peaks[${i}]`)),
     transcript: o["transcript"] === undefined || o["transcript"] === null ? bad(`${p}.transcript`, 'required field is missing') : decodeTranscript(o["transcript"], `${p}.transcript`),
   }
 }
@@ -1824,6 +1829,99 @@ export function encodeDirectConversationRequest(v: DirectConversationRequest): R
   })
 }
 
+// One person the caller may start a conversation with. Listed by `GET /users`, which
+// returns active persons other than the caller; a bot and a deactivated account are
+// never listed.
+export interface RosterEntry {
+  // The person's id; the same id their `User` record carries on `/sync`.
+  id: Uuid
+  // Display name as of this response.
+  name: string
+  // Two letters for the avatar tile, derived on the server by the same rule as
+  // `User.initials`.
+  initials?: string
+  // The handle `POST /conversations/direct` and `POST /conversations` take to name this
+  // person. Every signed-in person can read every listed handle; that is deliberate
+  // (CANT-253 ruling 1) and is why this type exists apart from `User`, which carries
+  // none.
+  handle: string
+}
+
+export function decodeRosterEntry(v: unknown, p = "RosterEntry"): RosterEntry {
+  const o = asObj(v, p)
+  return {
+    id: o["id"] === undefined || o["id"] === null ? bad(`${p}.id`, 'required field is missing') : asUuid(o["id"], `${p}.id`),
+    name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `name must be at least 1 characters, got ${[...x].length}`); return x })(o["name"], `${p}.name`),
+    initials: o["initials"] === undefined || o["initials"] === null ? undefined : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `initials must be at least 1 characters, got ${[...x].length}`); if ([...x].length > 2) bad(p, `initials must be at most 2 characters, got ${[...x].length}`); return x })(o["initials"], `${p}.initials`),
+    handle: o["handle"] === undefined || o["handle"] === null ? bad(`${p}.handle`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `handle must be at least 1 characters, got ${[...x].length}`); return x })(o["handle"], `${p}.handle`),
+  }
+}
+
+export function encodeRosterEntry(v: RosterEntry): Record<string, unknown> {
+  return compact({
+    "id": v.id,
+    "name": v.name,
+    "initials": v.initials === undefined ? undefined : v.initials,
+    "handle": v.handle,
+  })
+}
+
+// `GET /users`: every active person other than the caller, ordered by display name and
+// then id. Unpaged: its size is bounded by the number of accounts, which is a small
+// trusted group.
+export interface RosterResponse {
+  users: RosterEntry[]
+}
+
+export function decodeRosterResponse(v: unknown, p = "RosterResponse"): RosterResponse {
+  const o = asObj(v, p)
+  return {
+    users: o["users"] === undefined || o["users"] === null ? bad(`${p}.users`, 'required field is missing') : asArray(o["users"], `${p}.users`).map((x, i) => decodeRosterEntry(x, `${p}.users[${i}]`)),
+  }
+}
+
+export function encodeRosterResponse(v: RosterResponse): Record<string, unknown> {
+  return compact({
+    "users": v.users.map((x) => encodeRosterEntry(x)),
+  })
+}
+
+// `POST /conversations`: create a group conversation containing the caller and the
+// named members, atomically, and return the `Conversation` as the caller would see it
+// on `/sync` (201). Membership is fixed at creation; nothing adds or removes a member
+// afterwards. The caller is a member without being listed.
+export interface CreateGroupRequest {
+  // The room's name: 1 to 80 characters after trimming surrounding whitespace. Not
+  // unique; two rooms may share a name.
+  name: string
+  // The handles of the other members: 1 to 49 entries, no duplicates, none the caller's
+  // own and none a bot. A handle that names nobody or a deactivated account refuses the
+  // whole request with `conversation_not_found` and creates nothing; any other violation
+  // is a 400.
+  memberHandles: string[]
+  // Optional. A client-minted id for this create. A replay of the same `request_id` by
+  // the same caller returns the room the first request made (200) instead of making a
+  // second.
+  requestId?: Uuid
+}
+
+export function decodeCreateGroupRequest(v: unknown, p = "CreateGroupRequest"): CreateGroupRequest {
+  const o = asObj(v, p)
+  return {
+    name: o["name"] === undefined || o["name"] === null ? bad(`${p}.name`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `name must be at least 1 characters, got ${[...x].length}`); if ([...x].length > 80) bad(p, `name must be at most 80 characters, got ${[...x].length}`); return x })(o["name"], `${p}.name`),
+    memberHandles: o["member_handles"] === undefined || o["member_handles"] === null ? bad(`${p}.member_handles`, 'required field is missing') : asArray(o["member_handles"], `${p}.member_handles`, 1, 49).map((x, i) => ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length < 1) bad(p, `member_handles must be at least 1 characters, got ${[...x].length}`); return x })(x, `${p}.member_handles[${i}]`)),
+    requestId: o["request_id"] === undefined || o["request_id"] === null ? undefined : asUuid(o["request_id"], `${p}.request_id`),
+  }
+}
+
+export function encodeCreateGroupRequest(v: CreateGroupRequest): Record<string, unknown> {
+  return compact({
+    "name": v.name,
+    "member_handles": v.memberHandles.map((x) => x),
+    "request_id": v.requestId === undefined ? undefined : v.requestId,
+  })
+}
+
 // Tagged union on `kind`. Decoders MUST ignore an attachment whose `kind` they do not
 // know rather than failing the whole message — a client that hard-errors on an unknown
 // attachment type cannot be shipped ahead of a server that adds one.
@@ -1972,5 +2070,8 @@ export const codecs: Record<string, WireCodec> = {
   DeviceListResponse: { decode: (v) => decodeDeviceListResponse(v), encode: (v) => encodeDeviceListResponse(v as DeviceListResponse) },
   MessageSendRequest: { decode: (v) => decodeMessageSendRequest(v), encode: (v) => encodeMessageSendRequest(v as MessageSendRequest) },
   DirectConversationRequest: { decode: (v) => decodeDirectConversationRequest(v), encode: (v) => encodeDirectConversationRequest(v as DirectConversationRequest) },
+  RosterEntry: { decode: (v) => decodeRosterEntry(v), encode: (v) => encodeRosterEntry(v as RosterEntry) },
+  RosterResponse: { decode: (v) => decodeRosterResponse(v), encode: (v) => encodeRosterResponse(v as RosterResponse) },
+  CreateGroupRequest: { decode: (v) => decodeCreateGroupRequest(v), encode: (v) => encodeCreateGroupRequest(v as CreateGroupRequest) },
 }
 

@@ -1150,6 +1150,85 @@
         }
       },
       "description": "`POST /conversations/direct` — find-or-create the direct conversation with a handle, so a bot can message someone it has never spoken to without already knowing a conversation id. Returns the same Conversation either way (CANT-75); the caller cannot tell from the response alone whether this call created it."
+    },
+    "RosterEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "handle"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "The person's id; the same id their `User` record carries on `/sync`."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Display name as of this response."
+        },
+        "initials": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2,
+          "description": "Two letters for the avatar tile, derived on the server by the same rule as `User.initials`."
+        },
+        "handle": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The handle `POST /conversations/direct` and `POST /conversations` take to name this person. Every signed-in person can read every listed handle; that is deliberate (CANT-253 ruling 1) and is why this type exists apart from `User`, which carries none."
+        }
+      },
+      "description": "One person the caller may start a conversation with. Listed by `GET /users`, which returns active persons other than the caller; a bot and a deactivated account are never listed."
+    },
+    "RosterResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "users"
+      ],
+      "properties": {
+        "users": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/RosterEntry"
+          }
+        }
+      },
+      "description": "`GET /users`: every active person other than the caller, ordered by display name and then id. Unpaged: its size is bounded by the number of accounts, which is a small trusted group."
+    },
+    "CreateGroupRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "member_handles"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "description": "The room's name: 1 to 80 characters after trimming surrounding whitespace. Not unique; two rooms may share a name."
+        },
+        "member_handles": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 49,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "The handles of the other members: 1 to 49 entries, no duplicates, none the caller's own and none a bot. A handle that names nobody or a deactivated account refuses the whole request with `conversation_not_found` and creates nothing; any other violation is a 400."
+        },
+        "request_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "Optional. A client-minted id for this create. A replay of the same `request_id` by the same caller returns the room the first request made (200) instead of making a second."
+        }
+      },
+      "description": "`POST /conversations`: create a group conversation containing the caller and the named members, atomically, and return the `Conversation` as the caller would see it on `/sync` (201). Membership is fixed at creation; nothing adds or removes a member afterwards. The caller is a member without being listed."
     }
   },
   "oneOf": [
