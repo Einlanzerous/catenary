@@ -32,8 +32,10 @@ final class EnrollOptions {
   final Clock? now;
 }
 
-/// `POST /enroll` answered with something other than a pair. Every refusal
-/// answers identically by design (CANT-28), so there is nothing finer to say.
+/// `POST /enroll` answered with a status other than 200. Only 400 and 401 are
+/// Catenary refusing (internal/api/router.go), and every 401 answers
+/// identically by design (CANT-28); any other status is the server, or a hop
+/// in front of it, failing to answer.
 final class EnrollRefused implements Exception {
   const EnrollRefused(this.status);
 
@@ -41,6 +43,21 @@ final class EnrollRefused implements Exception {
 
   @override
   String toString() => 'enroll: HTTP $status';
+}
+
+/// `POST /enroll` answered 200 and the answer could not be read as a pair: the
+/// body was not JSON, or was not an `EnrollResponse`. NOT a refusal and NOT an
+/// unreachable server: a status arrived. Whether the token is spent is unknown
+/// from here: Catenary's own 200 has spent it, and a 200 from a hop in front
+/// of Catenary (a captive portal's page) has not. [cause] is what failed, for
+/// a log; a screen should not show it.
+final class EnrollAnswerUnreadable implements Exception {
+  const EnrollAnswerUnreadable(this.cause);
+
+  final Object cause;
+
+  @override
+  String toString() => 'enroll: HTTP 200 with an answer that could not be read';
 }
 
 Future<StoredCredential> enrollDevice(EnrollOptions opts, String enrollmentToken, String deviceName) async {
@@ -56,6 +73,13 @@ Future<StoredCredential> enrollDevice(EnrollOptions opts, String enrollmentToken
     ),
   );
   final arrived = now();
+  // THE STATUS IS THE ANSWER. Past a 200 nothing that fails is "the server
+  // could not be reached" (CANT-228): it is typed, an `Error` from the decode
+  // included, so the caller can say which it was.
   if (res.status != 200) throw EnrollRefused(res.status);
-  return credentialFromEnroll(EnrollResponse.fromJson(jsonDecode(res.body)), res.headers['date'], arrived);
+  try {
+    return credentialFromEnroll(EnrollResponse.fromJson(jsonDecode(res.body)), res.headers['date'], arrived);
+  } on Object catch (e) {
+    throw EnrollAnswerUnreadable(e);
+  }
 }

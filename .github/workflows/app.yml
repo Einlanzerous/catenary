@@ -12,6 +12,8 @@ name: app
 #
 # web/smoke.ts and server/spec/testdata/read-fraction.json are in for the same
 # reason: app/test/typing_test.dart and app/test/states_test.dart read them.
+# web/src/account.ts likewise: app/test/enroll_failures_test.dart reads the
+# web's enrollment sentences out of it.
 # app/test/pins_test.dart derives that list from what app/test opens and fails
 # when either list here misses one (CANT-203 ruling 2).
 #
@@ -26,6 +28,7 @@ on:
       - "app/**"
       - "web/src/styles/tokens.css"
       - "web/smoke.ts"
+      - "web/src/account.ts"
       - "server/spec/testdata/read-fraction.json"
       - "dart/**"
       - "dart-client/**"
@@ -36,6 +39,7 @@ on:
       - "app/**"
       - "web/src/styles/tokens.css"
       - "web/smoke.ts"
+      - "web/src/account.ts"
       - "server/spec/testdata/read-fraction.json"
       - "dart/**"
       - "dart-client/**"
