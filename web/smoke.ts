@@ -28,7 +28,7 @@ import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import StatusLabel from '@/components/StatusLabel.vue'
 import { decodeVoiceAttachment, type Conversation, type User } from '@/wire/generated'
-import { pickerState, resetPicker, startDirect } from '@/conversations'
+import { canCreateGroup, createGroup, pickerState, resetPicker, startDirect, toggleSelected } from '@/conversations'
 import {
   activeConversation,
   closeAccount,
@@ -54,6 +54,7 @@ import {
   startSession,
   state,
   stopRecording,
+  transportWord,
   unreadCount,
   voiceOf,
 } from '@/store'
@@ -392,6 +393,46 @@ async function main() {
 
     select(KITCHEN)
     check('Kitchen Table is open again for what follows', state.activeId === KITCHEN && home === KITCHEN)
+
+    // 5c. CANT-271 — start a GROUP from the same picker. Two people chosen
+    // (Ines and Nadia) plus the enrolled account make exactly three members.
+    // Nadia is also the harness's second attached session: cmd/catenary/
+    // websmoke_test.go reads her next /sync after this bundle exits and
+    // asserts the room reached her with the same count.
+    openNew()
+    resetPicker()
+    await until('the roster to load for the group', () => pickerState.roster !== null && !pickerState.loading)
+    const nadiaEntry = pickerState.roster!.find((r) => r.name === 'Nadia Okonkwo')!
+    toggleSelected(ines)
+    check('one person chosen is a direct: no name field', !(await render()).includes('data-group-name'))
+    toggleSelected(nadiaEntry)
+    const naming = await render()
+    check('two people chosen reveal the name field', naming.includes('data-group-name') && naming.includes('CREATE GROUP'))
+    check('and CREATE GROUP waits for a name', canCreateGroup() === false)
+    pickerState.groupName = '  Weekend Crew  '
+    const groupsBefore = state.conversations.filter((c) => c.kind === 'group').length
+    check('the group is created', await createGroup())
+    await until('the new group to arrive through the journal and open',
+      () => state.view === 'thread' && activeConversation.value?.kind === 'group' && activeConversation.value.name === 'Weekend Crew')
+    const room = activeConversation.value!
+    const groupPage = await render()
+    check('the rail row appeared without a reload', rowsFor(groupPage, room.id) === 1)
+    check('one group more than before', state.conversations.filter((c) => c.kind === 'group').length === groupsBefore + 1)
+    check('it counts three members: the caller and the two chosen', room.memberCount === 3, String(room.memberCount))
+    const word = transportWord(state.origin)
+    const groupHeader = groupPage.match(/<span class="members"[^>]*>([^<]*)</)?.[1] ?? ''
+    check('its thread header reads 3 MEMBERS with the word derived from the origin',
+      groupHeader === `3 MEMBERS · ${word}`, groupHeader)
+    check('and that word is the one the harness origin earns, never E2E',
+      word === (baseUrl.startsWith('https:') ? 'TLS' : 'CLEARTEXT') && !groupPage.includes('E2E'), word)
+    check('the new room is empty: head_seq 0, no message rows', room.headSeq === 0 && !groupPage.includes('data-message='))
+    check('and claims nothing: no TRANSCRIBING, no delivery state',
+      !['TRANSCRIBING', 'QUEUED', 'SENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED']
+        .some((w) => textOf(groupPage.slice(groupPage.indexOf('class="stream'))).includes(w)))
+    check('its rail row is the name alone', textOf(elementWithId(groupPage, room.id)) === 'Weekend Crew',
+      textOf(elementWithId(groupPage, room.id)))
+
+    select(KITCHEN)
   }
 
   // The live half ends here; see the header. What it projected stays.

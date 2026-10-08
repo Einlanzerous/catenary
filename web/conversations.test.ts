@@ -21,8 +21,10 @@ import { createSSRApp } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import { configureAccount } from '@/account'
-import { pickerState, retryPick, resetPicker, startDirect } from '@/conversations'
-import { closeNew, openNew, select, state } from '@/store'
+import {
+  canCreateGroup, createGroup, pickerState, retryPick, resetPicker, startDirect, toggleSelected,
+} from '@/conversations'
+import { closeNew, openNew, select, state, transportWord } from '@/store'
 import { enrollCredential, MemoryCredentialStore, type StoredCredential } from '@/transport'
 import { browserLock } from '@/transport/seams'
 import type { Conversation, RosterEntry } from '@/wire/generated'
@@ -65,10 +67,17 @@ interface Posted {
   answer: (r: Response) => void
 }
 
+interface PostedGroup {
+  body: { name: string; member_handles: string[]; request_id?: string }
+  answer: (r: Response) => void
+}
+
 /** A server: `/users` answers the roster; each `POST /conversations/direct`
- *  waits for the test to answer it, so "in flight" is something to look at. */
+ *  and each `POST /conversations` (a group) waits for the test to answer it,
+ *  so "in flight" is something to look at. */
 function server() {
   const posts: Posted[] = []
+  const groupPosts: PostedGroup[] = []
   let users = roster
   const fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = String(input)
@@ -77,9 +86,13 @@ function server() {
       const handle = JSON.parse(String(init?.body)).handle as string
       return new Promise<Response>((resolve) => posts.push({ handle, answer: resolve }))
     }
+    if (url.endsWith('/conversations') && init?.method === 'POST') {
+      const body = JSON.parse(String(init.body))
+      return new Promise<Response>((resolve) => groupPosts.push({ body, answer: resolve }))
+    }
     return new Response('not found', { status: 404 })
   }) as typeof globalThis.fetch
-  return { fetch, posts, setUsers: (u: RosterEntry[]) => (users = u) }
+  return { fetch, posts, groupPosts, setUsers: (u: RosterEntry[]) => (users = u) }
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 0))
@@ -106,6 +119,10 @@ beforeEach(async () => {
   pickerState.failedFor = null
   pickerState.busy = false
   pickerState.opening = ''
+  pickerState.selected = []
+  pickerState.groupName = ''
+  pickerState.groupRequestId = ''
+  pickerState.failedGroup = false
   ;(globalThis as { __store?: MemoryCredentialStore }).__store = store
 })
 
@@ -231,4 +248,195 @@ test('a conversation already held opens at once and is held once', async () => {
   assert.equal(state.pendingOpenId, '')
   assert.equal(state.conversations.filter((c) => c.id === DM).length, 1)
   assert.equal((await render()).split(`data-conversation-id="${DM}"`).length - 1, 1, 'one rail row')
+})
+
+// ---- CANT-271 — a group from the same picker ------------------------------
+
+const GROUP = uuid(20)
+const group = (over: Partial<Conversation> = {}): Conversation => ({
+  id: GROUP, kind: 'group', name: 'Weekend Crew', memberCount: 3, headSeq: 0, ...over,
+})
+
+async function openPicker(s: ReturnType<typeof server>) {
+  useServer(s)
+  openNew()
+  resetPicker()
+  await settle()
+}
+
+test('the name field appears only when two or more people are chosen', async () => {
+  const s = server()
+  await openPicker(s)
+  assert.ok(!(await render()).includes('data-group-name'), 'nobody chosen: no name field')
+
+  toggleSelected(roster[0])
+  const one = await render()
+  assert.ok(one.includes('1 CHOSEN'), 'one chosen is shown')
+  assert.ok(!one.includes('data-group-name'), 'one person is a direct: still no name field')
+  assert.ok(!one.includes('data-group-create'), 'and no CREATE GROUP')
+
+  toggleSelected(roster[1])
+  const two = await render()
+  assert.ok(two.includes('data-group-name'), 'two chosen: the name field')
+  assert.ok(two.includes('CREATE GROUP'))
+
+  toggleSelected(roster[1])
+  assert.ok(!(await render()).includes('data-group-name'), 'back to one: the field goes again')
+})
+
+test('CREATE GROUP is disabled for an empty or whitespace name and enabled for a real one', async () => {
+  const s = server()
+  await openPicker(s)
+  toggleSelected(roster[0])
+  toggleSelected(roster[1])
+  const disabled = (html: string) => /disabled[^>]*data-group-create|data-group-create[^>]*disabled/.test(html)
+  assert.ok(disabled(await render()), 'empty name: disabled')
+  pickerState.groupName = '   \t '
+  assert.equal(canCreateGroup(), false)
+  assert.ok(disabled(await render()), 'whitespace name: disabled')
+  assert.equal(await createGroup(), false, 'and a forced submit sends nothing')
+  assert.equal(s.groupPosts.length, 0)
+  pickerState.groupName = ' Weekend Crew '
+  assert.equal(canCreateGroup(), true)
+  assert.ok(!disabled(await render()), 'a name: enabled')
+  pickerState.groupName = 'x'.repeat(81)
+  assert.equal(canCreateGroup(), false, 'over 80 characters is not offered')
+})
+
+test('a group is created with the chosen handles, a trimmed name and a request_id; the control is locked while in flight', async () => {
+  const s = server()
+  await openPicker(s)
+  toggleSelected(roster[0])
+  toggleSelected(roster[1])
+  pickerState.groupName = '  Weekend Crew  '
+  const made = createGroup()
+  await settle()
+  assert.equal(pickerState.busy, true)
+  assert.equal(s.groupPosts.length, 1)
+  const body = s.groupPosts[0].body
+  assert.equal(body.name, 'Weekend Crew')
+  assert.deepEqual(body.member_handles, ['ines', 'rosa'], 'the caller is not listed')
+  assert.match(body.request_id ?? '', /^[0-9a-f-]{36}$/)
+
+  const busy = await render()
+  assert.ok(/class="new"[^>]*disabled/.test(busy) || /disabled[^>]*class="new"/.test(busy), 'the rail control is disabled')
+  assert.ok(/disabled[^>]*data-group-create|data-group-create[^>]*disabled/.test(busy), 'so is CREATE GROUP')
+  assert.ok(/disabled[^>]*data-group-name|data-group-name[^>]*disabled/.test(busy), 'and the name field')
+  assert.ok(/disabled[^>]*data-roster-choose="ines"|data-roster-choose="ines"[^>]*disabled/.test(busy), 'and the choosers')
+  assert.equal(await createGroup(), false, 'a second create is refused')
+  assert.equal(s.groupPosts.length, 1, 'and never reaches the server')
+
+  s.groupPosts[0].answer(new Response(JSON.stringify(wireConversation(group())), { status: 201 }))
+  assert.equal(await made, true)
+  assert.equal(state.conversations.length, 0, 'nothing is written into the store from here')
+  assert.equal(state.pendingOpenId, GROUP, 'it opens when the journal delivers it')
+  assert.equal(pickerState.groupRequestId, '', 'the attempt is over')
+  assert.deepEqual(pickerState.selected, [])
+})
+
+test('an empty group claims nothing: no preview, TRANSCRIBING or delivery state', async () => {
+  state.conversations = [group()]
+  select(GROUP)
+  const html = await render()
+  assert.equal(text(row(html, GROUP)), 'Weekend Crew', 'the rail row is the name alone')
+  assert.ok(!html.includes('data-message='))
+  assert.deepEqual(CLAIMS.filter((w) => html.includes(w)), [])
+})
+
+test('the group header counts the members and derives its transport word from the origin', async () => {
+  state.conversations = [group()]
+  select(GROUP)
+  const header = async (origin: string) => {
+    state.origin = origin
+    return (await render()).match(/<span class="members"[^>]*>([^<]*)</)?.[1] ?? ''
+  }
+  assert.equal(await header('https://catenary.test'), `3 MEMBERS · ${transportWord('https://catenary.test')}`)
+  assert.equal(await header('https://catenary.test'), '3 MEMBERS · TLS')
+  assert.equal(await header('http://catenary.test'), `3 MEMBERS · ${transportWord('http://catenary.test')}`)
+  assert.equal(await header('http://catenary.test'), '3 MEMBERS · CLEARTEXT')
+  assert.equal(await header(''), '3 MEMBERS · CLEARTEXT', 'an origin nobody stated does not claim TLS')
+  state.origin = BASE
+})
+
+test('RETRY after a failure reuses the request_id; a changed selection or a success mints a new one', async () => {
+  const s = server()
+  await openPicker(s)
+  toggleSelected(roster[0])
+  toggleSelected(roster[1])
+  pickerState.groupName = 'Weekend Crew'
+
+  const first = createGroup()
+  await settle()
+  s.groupPosts[0].answer(new Response('bad gateway', { status: 502 }))
+  assert.equal(await first, false)
+  await settle()
+  assert.ok(text(await render()).includes('The server could not answer just now'), 'a visible message')
+  assert.ok((await render()).includes('>RETRY<'))
+
+  const retry = retryPick()
+  await settle()
+  assert.equal(s.groupPosts.length, 2)
+  assert.equal(s.groupPosts[1].body.request_id, s.groupPosts[0].body.request_id, 'the same id: a retry cannot make a second room')
+  s.groupPosts[1].answer(new Response(JSON.stringify(wireConversation(group())), { status: 200 }))
+  assert.equal(await retry, true)
+  assert.equal(pickerState.error, null)
+
+  // A new attempt after the success gets a new id.
+  resetPicker()
+  await settle()
+  toggleSelected(roster[0])
+  toggleSelected(roster[1])
+  pickerState.groupName = 'Weekend Crew'
+  const next = createGroup()
+  await settle()
+  assert.notEqual(s.groupPosts[2].body.request_id, s.groupPosts[0].body.request_id)
+  s.groupPosts[2].answer(new Response('nope', { status: 502 }))
+  await next
+
+  // A changed selection after a failure is a new attempt too.
+  assert.notEqual(pickerState.groupRequestId, '')
+  toggleSelected(roster[1])
+  assert.equal(pickerState.groupRequestId, '', 'dropping someone drops the id')
+})
+
+test('conversation_not_found on a group is a visible, retryable refusal over a refreshed roster', async () => {
+  const s = server()
+  await openPicker(s)
+  toggleSelected(roster[0])
+  toggleSelected(roster[1])
+  pickerState.groupName = 'Weekend Crew'
+  const made = createGroup()
+  await settle()
+  s.setUsers([roster[0]])
+  s.groupPosts[0].answer(new Response(
+    JSON.stringify({ type: 'error', code: 'conversation_not_found', message: 'no such member', retryable: false }),
+    { status: 404 },
+  ))
+  assert.equal(await made, false)
+  await settle()
+  const html = await render()
+  assert.ok(html.includes('role="alert"'))
+  assert.ok(text(html).includes('The group could not be created'), 'in words, not a code')
+  assert.ok(html.includes('>RETRY<'))
+  assert.equal(state.conversations.length, 0, 'no conversation was invented')
+  assert.deepEqual(pickerState.roster, [roster[0]], 'the roster was refreshed')
+  assert.deepEqual(pickerState.selected.map((x) => x.handle), ['ines'], 'and the person who is gone is no longer chosen')
+})
+
+test('a 400 on a group shows a visible message', async () => {
+  const s = server()
+  await openPicker(s)
+  toggleSelected(roster[0])
+  toggleSelected(roster[1])
+  pickerState.groupName = 'Weekend Crew'
+  const made = createGroup()
+  await settle()
+  s.groupPosts[0].answer(new Response(JSON.stringify({ error: 'duplicate handle' }), { status: 400 }))
+  assert.equal(await made, false)
+  await settle()
+  const html = await render()
+  assert.ok(html.includes('role="alert"'))
+  assert.ok(text(html).includes('The server refused that group'))
+  assert.ok(html.includes('Ines Calloway') && html.includes('Rosa Whitfield'), 'the roster is still listed')
+  assert.ok(!/disabled[^>]*data-roster-handle|data-roster-handle[^>]*disabled/.test(html), 'nothing stays disabled')
 })
