@@ -152,8 +152,6 @@ void main() {
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/voice-$name.png'));
     });
 
-    // The failed-start screen (CANT-222): a device that could not open what
-    // it keeps, and one whose re-enrollment could not clear the old journal.
     // The enrollment form saying what the server did (CANT-234): a 200 it
     // could not read, and a status that is not Catenary refusing.
     for (final (file, error) in <(String, Object)>[
@@ -183,6 +181,8 @@ void main() {
       });
     }
 
+    // The failed-start screen (CANT-222): a device that could not open what
+    // it keeps, and one whose re-enrollment could not clear the old journal.
     for (final (cause, file) in [(StartFailedCause.stores, 'start-failed'), (StartFailedCause.wipeOwed, 'wipe-owed')]) {
       testWidgets('render the failed start, $file, $name', (tester) async {
         await loadFonts();
