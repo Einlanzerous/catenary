@@ -71,7 +71,8 @@ final class Enrolled extends EnrollOutcome {
   final StoredCredential credential;
 }
 
-/// The address was refused, the probe failed or `/enroll` did not answer 200.
+/// The address was refused, the probe failed, `/enroll` did not answer with a
+/// pair, or this device could not keep the one it was given.
 /// [text] is what the screen shows.
 final class EnrollFailed extends EnrollOutcome {
   const EnrollFailed(this.text);
@@ -91,9 +92,19 @@ const _notStored =
 /// is made (CANT-222).
 const enrollStorageText = 'This device could not open its own storage, so the token was not sent.';
 
+/// The server answered 200 and the answer was not a pair. It does not claim
+/// the token is spent: Catenary's own 200 has spent it, a 200 from a hop in
+/// front of Catenary has not, and from here the two look the same.
+const _unreadable =
+    'The server answered, but not with anything this app could read. The token may already be used — if trying again is refused, ask whoever invited you for a fresh one.';
+
+/// A status that is neither 200 nor Catenary refusing: its own 500, or a 502,
+/// 404 or 429 from a hop in front of it. Nobody refused the token.
+const _couldNotAnswer = 'The server could not answer just now — the token was not refused. Try again in a moment.';
+
 /// Something on this device threw that is not a refusal and not the network:
 /// an `Error`. It does not say whether the token was spent, because the app
-/// does not know: one thrown while decoding the server's 200 comes after.
+/// does not know: the request may or may not have left.
 const enrollDeviceFaultText =
     'This device hit an error while enrolling. Try again — if the token is then refused, it was used, and you need a fresh one from whoever invited you.';
 
@@ -108,15 +119,20 @@ String _refusalText(AddressRefusal r) => switch (r) {
       AddressRefusal.cleartextToPublicHost => 'A plain http:// address is only accepted for this machine or a private network.',
     };
 
-/// The web's two texts, `enrollErrorText`: a 400 is a malformed token or
-/// name; every other refusal answers identically on purpose (CANT-28), so it
-/// is one message. And two the web does not have: a credential the server
-/// issued and this device could not store, and an `Error` on this device.
+/// The web's texts, `enrollErrorText` in web/src/account.ts, told apart by
+/// type and never by matching a message. Of the statuses only 400 and 401 are
+/// Catenary refusing (internal/api/router.go): a 400 is a malformed token or
+/// name, and every 401 answers identically on purpose (CANT-28), so it is one
+/// message. Any other status is the server failing to answer, and does not get
+/// to tell a person to throw away a token nobody refused. And one the web does
+/// not have: an `Error` on this device.
 String enrollErrorText(Object e) {
   if (e is _NotStored) return _notStored;
+  if (e is EnrollAnswerUnreadable) return _unreadable;
   if (e is Error) return enrollDeviceFaultText;
   if (e is! EnrollRefused) return _unreachable;
   if (e.status == 400) return 'That does not look like a valid enrollment token or device name.';
+  if (e.status != 401) return _couldNotAnswer;
   return 'That enrollment token was not accepted — it may be wrong, expired or already used. Ask whoever invited you for a fresh one.';
 }
 
@@ -162,9 +178,9 @@ Future<EnrollOutcome> enrollDeviceAt({
       AddressAccepted(:final value) => Enrolled(value),
     };
   } on Object catch (e) {
-    // The web rule: anything that is not a refusal reads as unreachable —
-    // except a failure after the server's 200, which is not the network's,
-    // and an `Error`, which is this device's.
+    // The web rule: what is left once the typed cases are gone is a failure
+    // before any status arrived, and that alone reads as unreachable. An
+    // `Error` is this device's.
     return EnrollFailed(enrollErrorText(e));
   }
 }

@@ -9,6 +9,7 @@
 
 import 'dart:io';
 
+import 'package:catenary/enroll.dart';
 import 'package:catenary/fixtures.dart';
 import 'package:catenary/metrics.dart';
 import 'package:catenary/rail.dart';
@@ -17,9 +18,11 @@ import 'package:catenary/start_failed.dart';
 import 'package:catenary/states.dart';
 import 'package:catenary/store/connection.dart';
 import 'package:catenary/store/conversation.dart';
+import 'package:catenary/store/enrollment.dart';
 import 'package:catenary/theme.dart';
 import 'package:catenary/thread.dart';
 import 'package:catenary/tokens.dart';
+import 'package:catenary_client/catenary_client.dart' show EnrollAnswerUnreadable, EnrollRefused;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -148,6 +151,35 @@ void main() {
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/voice-$name.png'));
     });
+
+    // The enrollment form saying what the server did (CANT-234): a 200 it
+    // could not read, and a status that is not Catenary refusing.
+    for (final (file, error) in <(String, Object)>[
+      ('unreadable', const EnrollAnswerUnreadable('not a pair')),
+      ('could-not-answer', const EnrollRefused(502)),
+    ]) {
+      testWidgets('render the enrollment form, $file, $name', (tester) async {
+        await loadFonts();
+        tester.view.physicalSize = const Size(780, 1688);
+        tester.view.devicePixelRatio = 2;
+        addTearDown(tester.view.reset);
+        await tester.pumpWidget(MaterialApp(
+          debugShowCheckedModeBanner: false,
+          theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+          home: TickerMode(
+            enabled: false,
+            child: EnrollScreen(deviceName: 'Android phone', onSubmit: (_, _, _) async => EnrollFailed(enrollErrorText(error))),
+          ),
+        ));
+        await tester.enterText(find.byKey(const Key('enroll-address')), 'chat.example.com');
+        await tester.enterText(find.byKey(const Key('enroll-token')), 'A' * 43);
+        await tester.pump();
+        await tester.tap(find.byKey(const Key('enroll-submit')));
+        await tester.pump();
+        await tester.pump();
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/enroll-$file-$name.png'));
+      });
+    }
 
     // The failed-start screen (CANT-222): a device that could not open what
     // it keeps, and one whose re-enrollment could not clear the old journal.

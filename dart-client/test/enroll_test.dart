@@ -1,7 +1,8 @@
 /// `enrollDevice` against a scripted `HttpFetch`: the twin of what
 /// web/src/transport/enroll.ts does, held to the three behaviors the plan names
 /// (CANT-200 criterion 1): the request, the clock offset learned from the
-/// response's `Date`, and a refusal that carries its status.
+/// response's `Date`, and a refusal that carries its status. And a 200 that
+/// cannot be read, which is typed (CANT-234).
 library;
 
 import 'dart:convert';
@@ -94,11 +95,28 @@ void main() {
     }
   });
 
-  test('criterion 1 · a 200 that is not a pair is a decode failure, not a credential', () async {
-    final server = ScriptedEnroll((_) => HttpAnswer(200, '{"user_id":"nope"}'));
+  test('a 200 that is not a pair is EnrollAnswerUnreadable, whatever the decode threw', () async {
+    // Not an `EnrollResponse`, not JSON, nothing at all, and JSON that is not
+    // an object: the decode throws an `Error` for some and an `Exception` for
+    // others, and all of them are the one typed answer (CANT-234).
+    for (final body in ['{"user_id":"nope"}', '<html>Sign in to this network</html>', '', '[]', 'null']) {
+      final server = ScriptedEnroll((_) => HttpAnswer(200, body));
+      await expectLater(
+        enrollDevice(EnrollOptions(baseUrl: Rig.baseUrl, fetch: server.fetch, now: () => epoch), enrollmentToken, 'x'),
+        throwsA(isA<EnrollAnswerUnreadable>()),
+        reason: body,
+      );
+    }
+  });
+
+  test('a fetch that throws is not typed: no status arrived', () async {
     await expectLater(
-      enrollDevice(EnrollOptions(baseUrl: Rig.baseUrl, fetch: server.fetch, now: () => epoch), enrollmentToken, 'x'),
-      throwsA(isNot(isA<EnrollRefused>())),
+      enrollDevice(
+        EnrollOptions(baseUrl: Rig.baseUrl, fetch: (_) async => throw const SocketException('no route'), now: () => epoch),
+        enrollmentToken,
+        'x',
+      ),
+      throwsA(isA<SocketException>()),
     );
   });
 }

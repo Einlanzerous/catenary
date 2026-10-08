@@ -158,6 +158,56 @@ void main() {
     });
   });
 
+  group('an answer that is neither a pair nor Catenary refusing (CANT-234)', () {
+    // The web's two sentences, read out of its source: one event, one
+    // sentence, on both clients, and this fails when either moves alone.
+    final web = File('../web/src/account.ts').readAsStringSync();
+    const unreadable =
+        'The server answered, but not with anything this app could read. The token may already be used — if trying again is refused, ask whoever invited you for a fresh one.';
+    const couldNotAnswer = 'The server could not answer just now — the token was not refused. Try again in a moment.';
+
+    Future<EnrollOutcome> enrollAgainst(HttpFetch fetch) {
+      final credentials = openCredentialStore(dir.path);
+      addTearDown(credentials.close);
+      return enrollDeviceAt(
+        directory: dir.path,
+        store: credentials,
+        typedAddress: 'chat.example.com',
+        token: token,
+        deviceName: 'Android phone',
+        release: true,
+        fetch: fetch,
+      );
+    }
+
+    test('the two texts are the web\'s, word for word', () {
+      expect(web, contains("'$unreadable'"));
+      expect(web, contains("'$couldNotAnswer'"));
+    });
+
+    test('a 200 whose body cannot be read says so, and does not say the server was unreachable', () async {
+      for (final body in ['<html>Sign in to this network</html>', '{"user_id":"nope"}', '']) {
+        final outcome = await enrollAgainst((x) async => x.url.path == '/enroll' ? HttpAnswer(200, body) : server.call(x));
+        expect(outcome, isA<EnrollFailed>(), reason: body);
+        expect((outcome as EnrollFailed).text, unreadable, reason: body);
+      }
+      expect(readAddress(dir.path), isNull, reason: 'a failed attempt leaves no address');
+    });
+
+    test('a 5xx, and any status a hop in front of Catenary answers with, is not a refused token', () async {
+      for (final status in [500, 502, 503, 404, 429, 403]) {
+        server.enrollStatus = status;
+        final outcome = await enrollAgainst(server.call);
+        expect(outcome, isA<EnrollFailed>(), reason: 'HTTP $status');
+        expect((outcome as EnrollFailed).text, couldNotAnswer, reason: 'HTTP $status');
+      }
+      server.enrollStatus = 401;
+      final refused = await enrollAgainst(server.call);
+      expect((refused as EnrollFailed).text, startsWith('That enrollment token was not accepted'));
+      expect(readAddress(dir.path), isNull);
+    });
+  });
+
   group('[ruling 2 → option 0] a session that cannot start after a successful enrollment', () {
     testWidgets('is the failed-start screen, and the outcome is still Enrolled', (tester) async {
       transportFails = true;
