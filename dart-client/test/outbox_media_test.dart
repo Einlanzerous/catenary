@@ -98,7 +98,8 @@ void main() {
       transport.open();
       await flush();
 
-      // Not awaited: compose awaits an upload that never answers.
+      // Not awaited, and the write is waited for through onChange, as the
+      // criterion says. compose no longer waits for an upload (CANT-212).
       unawaited(ctx.outbox.compose(voiceDraft(bytes, text: 'a voice note')));
       final clientId = await within('the write, through onChange', written.future);
       await flush();
@@ -369,6 +370,7 @@ void main() {
       transport.open();
       await flush();
       final entry = await ctx.outbox.compose(voiceDraft(recording()));
+      await flush();
       expect(ctx.item(entry.clientId)!.state, OutboxState.failed);
       transport.close();
       await flush();

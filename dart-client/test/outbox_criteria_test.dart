@@ -12,9 +12,17 @@
 /// CRITERIA ARE NUMBERED AS web/outbox.test.ts NUMBERS THEM, and a test reads
 /// that file's table and fails when this one's fault names or criterion
 /// numbers differ. The ones a headless outbox can be held to are 0, 1, 2, 3, 4,
-/// 7, 8, 9, 10, 11, 12 and 15: 5, 6 and 16 render the app, and 13 and 14 are
-/// attachments. What holds an attachment's media, and the offline rule, are
-/// test/outbox_media_test.dart.
+/// 7, 8, 9, 10, 11, 12, 13, 14 and 15: 5 and 6 render the app, and 16 is the
+/// refused-`persist()` line, which has no counterpart here. 13 and 14 are
+/// attachments (CANT-212), against a scripted `Uploader`, with the six faults
+/// the reference names for them. What holds an attachment's media, and the
+/// offline rule, are test/outbox_media_test.dart.
+///
+/// WHERE THE REFERENCE READS AN OFFERED ATTACHMENT'S BLOB, THIS READS THE
+/// STORE. A stored attachment carries no media here (CANT-201 ruling 0): an
+/// uploader is handed the entry and the attachment, and reads the bytes with
+/// `OutboxStore.media`. So criterion 14's "the same bytes" is what the store
+/// held for that entry and index at the moment of the second offer.
 ///
 /// WHERE THE REFERENCE CHECKS ANOTHER TAB'S RENDER, THIS CHECKS ANOTHER
 /// CONTEXT'S NEXT READ. There is no `BroadcastChannel` here (types.dart): a
@@ -22,6 +30,7 @@
 /// holder re-reads on a timer.
 library;
 
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -57,6 +66,12 @@ const faultTable = <(String, int)>[
   ('orderOutsideTxn', 12),
   ('everyTabDrains', 15),
   ('lockWithoutReady', 15),
+  ('uploadBlocksDrain', 13),
+  ('sendBeforeLastUpload', 13),
+  ('staleHandleFails', 14),
+  ('reuploadUnbounded', 14),
+  ('refusalLoops', 14),
+  ('remintOnReupload', 14),
 ];
 
 /// The named fault, on. A name with no arm here is an error, so a row added to
@@ -78,6 +93,12 @@ F fault(String name) => switch (name) {
       'orderOutsideTxn' => (outbox: const OutboxFaults(orderOutsideTxn: true), store: StoreFaults.none),
       'everyTabDrains' => (outbox: const OutboxFaults(everyTabDrains: true), store: StoreFaults.none),
       'lockWithoutReady' => (outbox: const OutboxFaults(lockWithoutReady: true), store: StoreFaults.none),
+      'uploadBlocksDrain' => (outbox: const OutboxFaults(uploadBlocksDrain: true), store: StoreFaults.none),
+      'sendBeforeLastUpload' => (outbox: const OutboxFaults(sendBeforeLastUpload: true), store: StoreFaults.none),
+      'staleHandleFails' => (outbox: const OutboxFaults(staleHandleFails: true), store: StoreFaults.none),
+      'reuploadUnbounded' => (outbox: const OutboxFaults(reuploadUnbounded: true), store: StoreFaults.none),
+      'refusalLoops' => (outbox: const OutboxFaults(refusalLoops: true), store: StoreFaults.none),
+      'remintOnReupload' => (outbox: const OutboxFaults(remintOnReupload: true), store: StoreFaults.none),
       _ => throw ArgumentError('no fault named $name'),
     };
 
@@ -93,6 +114,55 @@ SqliteOutboxStore openStore(String dir, [StoreFaults faults = StoreFaults.none])
   addTearDown(store.close);
   return store;
 }
+
+// ── attachments (CANT-212) ──────────────────────────────────────────────────
+
+/// One offer to the uploader: whose entry, the entry's handles as it was
+/// handed over, and the media the store held for that attachment then.
+typedef Offer = ({Uuid clientId, String handles, Future<Uint8List?> media});
+
+/// The criteria's uploader: it records every call and answers each with what
+/// `answer` returns — a handle, a future held open, or a throw. It is not the
+/// oracle; the faults on criteria 13 and 14 are what keep those honest.
+final class ScriptedUploader implements Uploader {
+  ScriptedUploader(this.store, this.answer);
+
+  /// Where an uploader reads its bytes from: the entry holds none.
+  final OutboxStore store;
+
+  /// `n` is this call's number, from 1.
+  final Future<Uuid> Function(int n) answer;
+  final calls = <Offer>[];
+
+  @override
+  Future<Uuid> upload(OutboxEntry entry, OutboundAttachmentDraft attachment) {
+    calls.add((clientId: entry.clientId, handles: handlesOf(entry), media: store.media(entry.clientId, entry.attachments.indexOf(attachment))));
+    return answer(calls.length);
+  }
+}
+
+/// The nth handle an uploader mints.
+Uuid handle(int n) => uuid(7000 + n);
+
+/// Each attachment's upload state and handle, as one comparable line.
+String handlesOf(OutboxEntry? e) => [for (final a in e?.attachments ?? const <OutboundAttachmentDraft>[]) '${a.upload.name}:${a.uploadId}'].join(' ');
+
+/// A frame's attachments as the wire carries them.
+String attachmentsOf(ClientSend frame) => jsonEncode(frame.toJson()['attachments']);
+
+String sent(List<Uuid> handles) => jsonEncode([
+      for (final h in handles) {'kind': 'voice', 'upload_id': h},
+    ]);
+
+/// Not text, not short, and not the same at every index.
+Uint8List recording(int seed) => Uint8List.fromList([for (var i = 0; i < 4096; i++) (i * 31 + seed) & 0xff]);
+
+OutboundAttachmentDraft voiceAttachment(Uint8List bytes) => OutboundAttachmentDraft(kind: 'voice', source: MediaBytes(bytes), durationMs: 1700);
+
+Future<OutboxEntry> composeVoice(Ctx ctx, Uint8List bytes) =>
+    within('compose voice', ctx.outbox.compose(OutboxDraft(conversationId: conv, attachments: [voiceAttachment(bytes)])));
+
+void refuseUpload(ScriptedTransport transport, Uuid clientId) => transport.refuse(clientId, ErrorCode.uploadNotFound, 'unknown upload', retryable: false);
 
 // ── criterion 0 · durable before render and before any frame ────────────────
 
@@ -567,6 +637,140 @@ Future<void> c12(F f) async {
   same(jsonEncode([for (final fr in transport.frames) fr.clientId]), jsonEncode(expected), 'drained in allocation order');
 }
 
+// ── criterion 13 · no head-of-line blocking ─────────────────────────────────
+
+Future<void> c13(F f) async {
+  final transport = ScriptedTransport();
+  final store = MemoryOutboxStore();
+  // Every upload is held open until the test completes it.
+  final answers = <Completer<Uuid>>[];
+  final uploader = ScriptedUploader(store, (_) {
+    final answer = Completer<Uuid>();
+    answers.add(answer);
+    return answer.future;
+  });
+  final ctx = await context(store: store, transport: transport, faults: f.outbox, uploader: uploader);
+  transport.open();
+  await flush();
+
+  // An attachment entry, then a text, in one conversation on a ready session:
+  // the text is written and acked while the upload is still open.
+  final att = await composeVoice(ctx, recording(1));
+  final text = await ctx.composeText('overtakes the upload');
+  await flush();
+  same(answers.length, 1, 'the attachment was offered once');
+  same(transport.framesFor(att.clientId).length, 0, 'no frame for the attachment while its upload is open');
+  same(transport.framesFor(text.clientId).length, 1, 'the text is written past it');
+  transport.ack(text.clientId);
+  await flush();
+  same(ctx.item(text.clientId)?.state, OutboxState.sent, 'and acked');
+  same(ctx.item(att.clientId)?.state, OutboxState.queued, 'the attachment entry waits');
+
+  // When the upload completes, the frame carries the handle under the
+  // ORIGINAL clientId — and at the moment it is written the stored entry
+  // already carries that handle (read in onFrame, as criterion 0 does).
+  final atFrame = <Future<OutboxEntry?>>[];
+  transport.onFrame = (frame) {
+    if (frame.clientId == att.clientId) atFrame.add(ctx.stored(att.clientId));
+  };
+  answers[0].complete(handle(1));
+  await flush();
+  final frames = transport.framesFor(att.clientId);
+  same(frames.length, 1, 'sent once its upload landed, under its original clientId');
+  same(attachmentsOf(frames[0]), sent([handle(1)]), 'with the handle the uploader returned');
+  same(handlesOf(await atFrame[0]), 'uploaded:${handle(1)}', 'the stored entry carried the handle when the frame was written');
+  transport.ack(att.clientId);
+  await flush();
+  same(ctx.item(att.clientId)?.state, OutboxState.sent, 'the attachment entry is acked');
+
+  // Two attachments on one entry: offered in order, each handle stored before
+  // the next is asked for, and no frame until the second completes.
+  final two = await within(
+    'compose two',
+    ctx.outbox.compose(OutboxDraft(conversationId: conv, attachments: [voiceAttachment(recording(2)), voiceAttachment(recording(3))])),
+  );
+  await flush();
+  same(answers.length, 2, 'the first of the two is offered');
+  answers[1].complete(handle(2));
+  await flush();
+  same(answers.length, 3, 'then the second, once the first\'s handle is stored');
+  same(handlesOf(await ctx.stored(two.clientId)), 'uploaded:${handle(2)} pending:null', 'the first handle is stored and the second is not');
+  // A text composed between the two uploads drains past the entry.
+  final between = await ctx.composeText('between the two uploads');
+  await flush();
+  same(transport.framesFor(two.clientId).length, 0, 'no frame until the last upload completes');
+  same(transport.framesFor(between.clientId).length, 1, 'the entry is overtaken (§11)');
+  answers[2].complete(handle(3));
+  await flush();
+  same(jsonEncode([for (final fr in transport.framesFor(two.clientId)) attachmentsOf(fr)]), jsonEncode([sent([handle(2), handle(3)])]), 'one frame, with both handles in order');
+}
+
+// ── criterion 14 · a stale handle re-uploads, once ──────────────────────────
+
+Future<void> c14(F f) async {
+  final transport = ScriptedTransport();
+  final store = MemoryOutboxStore();
+  final uploader = ScriptedUploader(store, (n) async => handle(n));
+  final ctx = await context(store: store, transport: transport, faults: f.outbox, uploader: uploader);
+  transport.open();
+  await flush();
+  final bytes = recording(4);
+  final e = await composeVoice(ctx, bytes);
+  await flush();
+  same(uploader.calls.length, 1, 'uploaded once');
+  same(jsonEncode([for (final fr in transport.framesFor(e.clientId)) attachmentsOf(fr)]), jsonEncode([sent([handle(1)])]), 'sent with the first handle');
+
+  // The server disowns the handle: the entry stays pending, the held media is
+  // uploaded again, and the resend carries the SAME clientId — which is also
+  // the evidence for criterion 1's "resend after a stale-upload re-upload".
+  refuseUpload(transport, e.clientId);
+  await flush();
+  final after = await ctx.stored(e.clientId);
+  same(after?.status, OutboxStatus.pending, 'pending after the first upload_not_found');
+  check(ctx.item(e.clientId)?.state != OutboxState.failed, 'not failed after the first upload_not_found');
+  same(uploader.calls.length, 2, 'uploaded a second time');
+  same(uploader.calls[1].clientId, e.clientId, 'the same entry');
+  same(jsonEncode(await uploader.calls[1].media), jsonEncode(bytes), 'with the same bytes held for it');
+  same(uploader.calls[1].handles, 'pending:null', 'the stale handle was cleared before the offer');
+  final frames = transport.framesFor(e.clientId);
+  same(frames.length, 2, 'resent under the same clientId');
+  same(attachmentsOf(frames[1]), sent([handle(2)]), 'with the second handle');
+  same(after?.reuploads, 1, 'reuploads is 1');
+
+  // A second upload_not_found: failed, with the server's code, and no third
+  // upload.
+  refuseUpload(transport, e.clientId);
+  await flush();
+  final item = ctx.item(e.clientId);
+  same(item?.state, OutboxState.failed, 'a second upload_not_found fails it');
+  final error = item?.entry.lastError;
+  same(error is ServerRefusal ? error.code : error.runtimeType, 'upload_not_found', 'with the server\'s code');
+  same(uploader.calls.length, 2, 'no third upload');
+  same(transport.framesFor(e.clientId).length, 2, 'and no third frame');
+  await ctx.clock.advance(outboxBackoffCapMs * 2);
+  same(uploader.calls.length, 2, 'no upload after the backoff cap has passed twice');
+  same(transport.framesFor(e.clientId).length, 2, 'and no frame');
+
+  // An Uploader that throws: failed with the uploader's message after exactly
+  // one call, and no frame — never a loop.
+  final t2 = ScriptedTransport();
+  final store2 = MemoryOutboxStore();
+  final refusing = ScriptedUploader(store2, (_) => Future.error(const UploadRefused('would not go')));
+  final ctx2 = await context(store: store2, transport: t2, faults: f.outbox, uploader: refusing);
+  t2.open();
+  await flush();
+  final r = await composeVoice(ctx2, recording(5));
+  await flush();
+  final ri = ctx2.item(r.clientId);
+  same(ri?.state, OutboxState.failed, 'a throw fails the entry');
+  check(ri!.entry.lastError is UploadFailure, 'as an upload failure');
+  same(projectOutbox(ri).error, 'would not go', 'with the uploader\'s message inline');
+  same(refusing.calls.length, 1, 'after exactly one call');
+  same(t2.frames.length, 0, 'and no frame');
+  await ctx2.clock.advance(outboxBackoffCapMs * 2);
+  same(refusing.calls.length, 1, 'and it is not offered again by itself');
+}
+
 // ── criterion 15 · one drainer, held only while ready ───────────────────────
 
 Future<void> c15(F f) async {
@@ -645,7 +849,7 @@ Future<void> c15(F f) async {
   same(violations.join('; '), '', 'no frame was written by a context without the lock');
 }
 
-final criteria = <int, Future<void> Function(F f)>{0: c0, 1: c1, 2: c2, 3: c3, 4: c4, 7: c7, 8: c8, 9: c9, 10: c10, 11: c11, 12: c12, 15: c15};
+final criteria = <int, Future<void> Function(F f)>{0: c0, 1: c1, 2: c2, 3: c3, 4: c4, 7: c7, 8: c8, 9: c9, 10: c10, 11: c11, 12: c12, 13: c13, 14: c14, 15: c15};
 
 /// The fault table of web/outbox.test.ts: `['name', n],` rows inside
 /// `const FAULTS … = [ … ]`.
@@ -687,32 +891,24 @@ void main() {
   group('the table is the reference\'s', () {
     final reference = File('../web/outbox.test.ts').readAsStringSync();
 
-    // TEMPORARY, until CANT-212. CANT-162 added criteria 13 and 14 and their
-    // six fault rows to the reference, and this suite does not yet hold the
-    // Dart outbox to them (CANT-201 ruling 3): the rows on 13 and 14 are
-    // skipped in the comparison below, and 13 and 14 sit in the excluded
-    // set. CANT-212 removes both and adds the criteria and the rows here,
-    // copied by name from the reference.
-    List<(String, int)> withoutCant162Rows(List<(String, int)> rows) => rows.where((r) => r.$2 != 13 && r.$2 != 14).toList();
-
     test('fault names and the criterion each must fail, row for row', () {
-      final want = withoutCant162Rows(referenceFaults(reference));
-      expect(want.length, greaterThanOrEqualTo(16), reason: 'parsed ${want.length} rows from web/outbox.test.ts');
+      final want = referenceFaults(reference);
+      expect(want.length, greaterThanOrEqualTo(22), reason: 'parsed ${want.length} rows from web/outbox.test.ts');
       expect(faultTable, want);
     });
 
-    test('criterion numbers: the reference\'s, less the two that render the app (5, 6), the one with no Dart counterpart (16) and, until CANT-212, the attachments (13, 14)', () {
-      final want = referenceCriteria(reference).where((n) => !const {5, 6, 13, 14, 16}.contains(n)).toList();
+    test('criterion numbers: the reference\'s, less the two that render the app (5, 6) and the one with no Dart counterpart (16)', () {
+      final want = referenceCriteria(reference).where((n) => !const {5, 6, 16}.contains(n)).toList();
       expect(criteria.keys.toList(), want);
-      expect(criteria.keys.toList(), [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 15]);
+      expect(criteria.keys.toList(), [0, 1, 2, 3, 4, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
     });
 
     test('the comparison fails when the tables differ: a row added to the reference, planted', () {
       final planted = reference.replaceFirst("  ['lockWithoutReady', 15],\n", "  ['lockWithoutReady', 15],\n  ['aFaultFromALaterTicket', 4],\n");
       expect(planted, isNot(reference), reason: 'the plant landed');
-      expect(withoutCant162Rows(referenceFaults(planted)), isNot(faultTable));
+      expect(referenceFaults(planted), isNot(faultTable));
       final moved = reference.replaceFirst("['remintOnRetry', 1]", "['remintOnRetry', 2]");
-      expect(withoutCant162Rows(referenceFaults(moved)), isNot(faultTable), reason: 'and when a fault\'s criterion number differs');
+      expect(referenceFaults(moved), isNot(faultTable), reason: 'and when a fault\'s criterion number differs');
     });
 
     test('every fault named in the table has its switch, and no other name does', () {
@@ -871,7 +1067,9 @@ void main() {
       expect(ctx.item(entry.clientId)!.state, OutboxState.sending);
     });
 
-    test('an upload that fails part-way keeps the handles it had, and RETRY asks only for the rest', () async {
+    // §10 item 4, which CANT-162 added to the record after this test was first
+    // written to the opposite: RETRY after an upload failure uploads afresh.
+    test('an upload that fails part-way stores the handle it had, and RETRY clears it and uploads both afresh (§10 item 4)', () async {
       final transport = ScriptedTransport();
       final offered = <String?>[];
       var refuseSecond = true;
@@ -898,11 +1096,72 @@ void main() {
       await flush();
       expect(projectOutbox(ctx.item(entry.clientId)!).error, 'the second one would not go');
       expect(transport.frames, isEmpty);
+      expect(handlesOf(await ctx.stored(entry.clientId)), 'uploaded:${uuid(4101)} pending:null', reason: 'the first handle was stored before the second was asked for');
       refuseSecond = false;
       await ctx.outbox.retry(entry.clientId);
       await flush();
-      expect(offered, ['a.png', 'b.png', 'b.png'], reason: 'the first was not uploaded twice');
-      expect(transport.framesFor(entry.clientId), hasLength(1));
+      expect(offered, ['a.png', 'b.png', 'a.png', 'b.png'], reason: 'both are uploaded again');
+      final frame = transport.framesFor(entry.clientId).single;
+      expect(frame.clientId, entry.clientId);
+      expect(frame.toJson()['attachments'], [
+        {'kind': 'image', 'upload_id': uuid(4103)},
+        {'kind': 'image', 'upload_id': uuid(4104)},
+      ], reason: 'with the handles of the second attempt');
+    });
+
+    test('RETRY after a second upload_not_found uploads afresh, under the same clientId, and reuploads stays 1 (§10 item 4)', () async {
+      final transport = ScriptedTransport();
+      final store = MemoryOutboxStore();
+      final uploader = ScriptedUploader(store, (n) async => handle(n));
+      final ctx = await context(store: store, transport: transport, uploader: uploader);
+      transport.open();
+      await flush();
+
+      // An entry failed by a second `upload_not_found`.
+      Future<OutboxEntry> failedTwice(int seed) async {
+        final e = await composeVoice(ctx, recording(seed));
+        await flush();
+        for (var i = 0; i < 2; i++) {
+          refuseUpload(transport, e.clientId);
+          await flush();
+        }
+        final held = (await ctx.stored(e.clientId))!;
+        expect(held.status, OutboxStatus.failed);
+        expect(held.reuploads, 1);
+        expect(transport.framesFor(e.clientId), hasLength(2));
+        return e;
+      }
+
+      final acked = await failedTwice(1);
+      final refused = await failedTwice(2);
+      final calls = uploader.calls.length;
+
+      // RETRY: no handle on any attachment, offered exactly once more, one
+      // frame under the same clientId with the new handle — and SENT on the ack.
+      await ctx.outbox.retry(acked.clientId);
+      await flush();
+      expect(uploader.calls, hasLength(calls + 1), reason: 'offered to the uploader exactly once more');
+      expect(uploader.calls.last.handles, 'pending:null', reason: 'with no handle on any attachment');
+      final frames = transport.framesFor(acked.clientId);
+      expect(frames, hasLength(3), reason: 'one frame more, under the same clientId');
+      expect(attachmentsOf(frames[2]), sent([handle(calls + 1)]), reason: 'with the new handle');
+      transport.ack(acked.clientId);
+      await flush();
+      expect(ctx.item(acked.clientId)?.state, OutboxState.sent);
+
+      // Refused upload_not_found again after a RETRY: failed, with no further
+      // upload call, and reuploads still 1 — the automatic re-upload happens
+      // once in an entry's life.
+      await ctx.outbox.retry(refused.clientId);
+      await flush();
+      expect(uploader.calls, hasLength(calls + 2));
+      expect(transport.framesFor(refused.clientId), hasLength(3));
+      refuseUpload(transport, refused.clientId);
+      await flush();
+      final again = (await ctx.stored(refused.clientId))!;
+      expect(again.status, OutboxStatus.failed, reason: 'failed again');
+      expect(uploader.calls, hasLength(calls + 2), reason: 'with no further upload call');
+      expect(again.reuploads, 1, reason: 'and reuploads is still 1');
     });
 
     test('a non-holder\'s refresh announces a status another context changed, not only a count', () async {
