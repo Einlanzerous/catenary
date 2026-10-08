@@ -10,7 +10,7 @@
 #
 # It asserts, from outside the container, with curl:
 #   - GET / is 200, text/html, the app's mount point, `no-cache` with an ETag,
-#     nosniff, and the interim Content-Security-Policy (ruling 2 → B);
+#     nosniff, and the full Content-Security-Policy (ruling 2 → B);
 #   - GET / with If-None-Match set to that ETag is 304;
 #   - the /assets/*.js and /assets/*.css the document names are each 200,
 #     non-empty, text/javascript and text/css, and immutable;
@@ -26,9 +26,8 @@ set -euo pipefail
 base="${1:?usage: probe-client.sh <base-url>}"
 base="${base%/}"
 
-# The interim policy. CANT-242 replaces it with the full one, in the same
-# change that replaces internal/api's documentCSP.
-want_csp="frame-ancestors 'none'"
+# The full policy; it must stay byte-equal to internal/api's documentCSP.
+want_csp="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
