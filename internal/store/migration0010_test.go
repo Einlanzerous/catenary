@@ -46,6 +46,11 @@ func migrationsAfter(t *testing.T, version string) int {
 			n++
 		}
 	}
+	// MigrateDown reads 0 as "roll back everything", so a version that is
+	// already the newest must fail loudly here instead of wiping the schema.
+	if n == 0 {
+		t.Fatalf("no embedded migration is numbered above %s; the test needs one to roll back", version)
+	}
 	return n
 }
 

@@ -9,7 +9,7 @@
 ALTER TABLE conversations ADD COLUMN create_key TEXT;
 
 COMMENT ON COLUMN conversations.create_key IS
-    'CANT-253 ruling 2. "<creator id>|<request id>" for a group made with a request_id, NULL otherwise. Stored rather than derived: it records an idempotency fact the server cannot recompute from any other column. Never on the wire as its own field; CreateGroupRequest.request_id is mapped as derived for that reason. Mirrors direct_key''s idiom: INSERT ... ON CONFLICT DO NOTHING, then read the winner back inside the same transaction.';
+    'CANT-253 ruling 2. "<creator id>|<request id>" for a group made with a request_id, NULL otherwise. Stored rather than derived: it records an idempotency fact the server cannot recompute from any other column. Never on the wire as its own field; CreateGroupRequest.request_id (CANT-265) is mapped as derived for that reason. Mirrors direct_key''s idiom: INSERT ... ON CONFLICT DO NOTHING, then read the winner back inside the same transaction.';
 
 -- Partial, so conversations without a key never contend for the index: this is
 -- a uniqueness rule, not a presence rule. The creator's id is inside the key,
