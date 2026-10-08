@@ -10,6 +10,7 @@ library;
 
 export 'src/backoff.dart';
 export 'src/closes.dart';
+export 'src/conversations_api.dart';
 export 'src/credential.dart';
 export 'src/credential_store.dart';
 export 'src/db.dart';
