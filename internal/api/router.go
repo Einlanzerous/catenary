@@ -330,12 +330,12 @@ const (
 	// next reload with nothing to purge.
 	revalidateCache = "no-cache"
 
-	// documentCSP is the INTERIM policy, ruling 2's option B: the document may
-	// not be framed, and nothing else is restricted yet. The full policy
-	// replaces it one release later, once the client has been seen working
-	// live (CANT-242), so that a page already known to work is what the
-	// policy is checked against.
-	documentCSP = "frame-ancestors 'none'"
+	// documentCSP is the full policy, ruling 2's option B, landed one release
+	// after the client first served (CANT-242) so that a page already known to
+	// work is what it was checked against. Scripts come from this origin
+	// only; styles allow inline (the Vue runtime sets style attributes) and
+	// the Google Fonts stylesheet; nothing may frame the document.
+	documentCSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 )
 
 // registerWebClient registers ONE EXACT, METHOD-SCOPED PATTERN PER FILE, and no

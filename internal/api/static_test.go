@@ -206,11 +206,11 @@ func TestAnUnknownPathIsA404AndNeverTheDocument(t *testing.T) {
 	}
 }
 
-// documentCSPWant is the row-0 policy, ruling 2 → B. CANT-242 replaces this
-// constant with the full string from CANT-231's routes-and-headers section.
-const documentCSPWant = "frame-ancestors 'none'"
+// documentCSPWant is the full policy from CANT-231's routes-and-headers
+// section, spelled out here so that editing router.go alone fails the test.
+const documentCSPWant = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'"
 
-// Baseline headers, and the interim policy on the document only.
+// Baseline headers, and the policy on the document only.
 func TestStaticResponsesCarryTheBaselineHeaders(t *testing.T) {
 	h := NewRouter(everySeam(fixtureBundle(t)))
 	for p := range fixtureFiles {
