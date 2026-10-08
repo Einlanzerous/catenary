@@ -210,9 +210,34 @@ export const lastMessageOf = (conversationId: string): RenderedMessage | undefin
   return entry.at >= record.at ? entry : record
 }
 
-/** Rooms above DMs, both in one column with the same row anatomy. */
-export const rooms = computed(() => byRecency(state.conversations.filter((c) => c.kind === 'group')))
-export const directs = computed(() => byRecency(state.conversations.filter((c) => c.kind === 'direct')))
+/**
+ * A conversation with only yourself (CANT-254): the wire's `self` kind. The
+ * server keeps the one fact this stands on, that it has exactly one member.
+ */
+export const isSelf = (c: Conversation): boolean => c.kind === 'self'
+
+/**
+ * Rooms above DMs, both in one column with the same row anatomy.
+ *
+ * A ROOM IS EVERYTHING THAT IS NOT A DIRECT OR A SELF, which is CANT-74's
+ * policy for a kind this build does not know: the `unknown` sentinel (what a
+ * build without `self` decodes it to) renders as a group. It used to be
+ * `kind === 'group'`, which dropped an unknown kind from the rail altogether.
+ */
+export const rooms = computed(() =>
+  byRecency(state.conversations.filter((c) => c.kind !== 'direct' && !isSelf(c))),
+)
+
+/**
+ * The DIRECT section: the self conversation first, then the directs by
+ * recency (CANT-254 ruling 1, A). `Notes` is pinned rather than ordered by its
+ * last message, so it is where you left it however busy a direct is; it is
+ * counted in the section like any other row.
+ */
+export const directs = computed(() => [
+  ...state.conversations.filter(isSelf),
+  ...byRecency(state.conversations.filter((c) => c.kind === 'direct')),
+])
 
 /**
  * The other party in a direct conversation, by identity rather than guess

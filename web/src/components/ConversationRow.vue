@@ -6,6 +6,7 @@ import { duration, railStamp, sameDay } from '@/lib/format'
 import {
   conversationTitle,
   isMine,
+  isSelf,
   lastMessageOf,
   select,
   state,
@@ -44,9 +45,15 @@ const preview = computed(() => {
     body = m.text ?? ''
   }
 
+  // The self conversation's preview is the bare body (CANT-254 ruling 2, A):
+  // every message in it is yours, so `You:` would be a prefix on every row of
+  // a column that says nothing else. A pending transcript and an unsent note
+  // still read as above.
+  if (isSelf(props.conversation)) return body
   if (isMine(m)) return `You: ${body}`
-  // A DM's preview needs no name — the row is already the person.
-  return props.conversation.kind === 'group'
+  // A DM's preview needs no name — the row is already the person. Any kind
+  // that is not a direct is drawn as a group, an unknown one included.
+  return props.conversation.kind !== 'direct'
     ? `${user(m.authorId)?.name.split(' ')[0]}: ${body}`
     : body
 })

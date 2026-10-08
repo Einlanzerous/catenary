@@ -317,6 +317,16 @@ func seedCanvas(t *testing.T, r *rig) canvas {
 	shed := room("Shed Projects", "marek", "ted")
 	kitchen := room("Kitchen Table", "ilse", "nadia", "marek", "ted", "rosa", "wren")
 
+	// ── Notes: hollis's conversation with himself (CANT-254) ───────────────
+	// Written BEFORE every direct, so each direct's last message is newer and
+	// the rail's pin is what keeps Notes first, not its recency.
+	notes, err := st.FindOrCreateSelf(ctx, me)
+	if err != nil {
+		t.Fatalf("FindOrCreateSelf: %v", err)
+	}
+	say(notes.ID, "hollis", "", uuid.Nil, voice(5599, 6_000, ""))
+	say(notes.ID, "hollis", "ring the plumber about the shed tap", uuid.Nil)
+
 	// ── the directs ─────────────────────────────────────────────────────────
 	petraDM := direct("petra")
 	say(petraDM, "petra", "sent the last invoice through Ilse, easier that way", uuid.Nil)

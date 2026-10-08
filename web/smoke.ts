@@ -570,6 +570,88 @@ async function main() {
     chipOf(petraDm) === 'DIRECT · TLS' && petraDm.includes('DEACTIVATED'), chipOf(petraDm))
   check('and never 1 MEMBERS', !petraDm.includes('1 MEMBERS') && !petraDm.includes('2 MEMBERS'))
 
+  // CANT-254 / CANT-260 — a conversation with only yourself. The canvas has no
+  // frame for it, so every claim here is about what the rail and header state
+  // from what the server served, not a likeness.
+  {
+    const selfConv = state.conversations.find((x) => x.kind === 'self')
+    check('the server served a self conversation', !!selfConv)
+    if (selfConv) {
+      check('served as stored: name Notes, one member, no other member',
+        selfConv.name === 'Notes' && selfConv.memberCount === 1 && selfConv.otherMemberId === undefined,
+        JSON.stringify(selfConv))
+
+      // The rail: first in the DIRECT section, titled Notes, counted, and the
+      // rooms and the directs around it unchanged — even though every direct
+      // holds a newer message than Notes does (the seed wrote Notes first).
+      select(KITCHEN)
+      const railHtml = await render()
+      const ids = (html: string) => [...html.matchAll(/data-conversation-id="([^"]+)"/g)].map((m) => m[1])
+      const directHeader = railHtml.indexOf('>DIRECT<')
+      const afterHeader = ids(railHtml.slice(directHeader))
+      check('Notes is the first row of the DIRECT section', afterHeader[0] === selfConv.id, afterHeader.join(','))
+      const directsNow = state.conversations.filter((x) => x.kind === 'direct')
+      check('the DIRECT section is Notes then the directs, by recency, and nothing else',
+        afterHeader.length === 1 + directsNow.length, `${afterHeader.length} rows for ${directsNow.length} directs`)
+      const newerDirect = directsNow.some((d) => (lastMessageOf(d.id)?.at ?? '') > (lastMessageOf(selfConv.id)?.at ?? ''))
+      check('Notes stays first although a direct holds a newer message', newerDirect)
+      const count = railHtml.slice(directHeader).match(/class="count meta tnum"[^>]*>(\d+)</)?.[1]
+      check('and the section count includes it', count === String(1 + directsNow.length), String(count))
+      const roomIds = ids(railHtml.slice(0, directHeader))
+      check('no room is displaced by it',
+        roomIds.length === state.conversations.filter((x) => x.kind === 'group').length, roomIds.join(','))
+      const row = (() => {
+        const at = railHtml.indexOf(`data-conversation-id="${selfConv.id}"`)
+        return railHtml.slice(railHtml.lastIndexOf('<button', at), railHtml.indexOf('</button>', at))
+      })()
+      check('its row is titled Notes', row.includes('Notes'), row)
+
+      // Preview: the bare body, no `You:`; the marker is the server's SENT.
+      const last = lastMessageOf(selfConv.id)
+      check('the self conversation holds only my messages', !!last && state.messages
+        .filter((m) => m.conversationId === selfConv.id).every((m) => m.authorId === state.me))
+      check('its preview is the bare body, with no You: prefix',
+        !!last?.text && row.includes(last.text) && !row.includes('You:'), row)
+      check('its marker is the server\'s SENT, never READ',
+        row.includes('SENT') && !row.includes('READ'), row)
+      check('and it never carries an unread count', newCount(selfConv) === 0 && unreadCount(selfConv) === 0)
+
+      // Header: JUST YOU, then the transport word derived from the origin.
+      select(selfConv.id)
+      const selfPageTls = await render()
+      check('the self header over https reads JUST YOU · TLS', chipOf(selfPageTls) === 'JUST YOU · TLS',
+        chipOf(selfPageTls))
+      check('and is titled Notes', tagText(selfPageTls, '<h1 class="title"', '</h1>') === 'Notes')
+      state.origin = 'http://catenary.test'
+      const selfPageHttp = await render()
+      check('over http it reads JUST YOU · CLEARTEXT', chipOf(selfPageHttp) === 'JUST YOU · CLEARTEXT',
+        chipOf(selfPageHttp))
+      state.origin = 'https://catenary.test'
+      check('never E2E, and never a member count',
+        !selfPageTls.includes('E2E') && !selfPageHttp.includes('E2E') &&
+          !selfPageTls.includes('1 MEMBERS') && !selfPageTls.includes('MEMBERS ·'))
+      check('no message of the self thread renders READ',
+        !messageRow(selfPageTls, state.messages.filter((m) => m.conversationId === selfConv.id)[0].id).includes('READ'))
+    }
+
+    // The CANT-74 arm: a kind this build does not know (what a build without
+    // `self` decodes it to) is drawn as a group row, and its thread opens.
+    const stray = state.conversations.find((x) => x.kind === 'group' && x.id !== KITCHEN)
+    if (stray) {
+      stray.kind = 'unknown'
+      select(KITCHEN)
+      const unknownRail = await render()
+      const before = unknownRail.indexOf('>DIRECT<')
+      check('an unknown kind is a row in the rooms, above DIRECT',
+        unknownRail.slice(0, before).includes(`data-conversation-id="${stray.id}"`))
+      select(stray.id)
+      const unknownThread = await render()
+      check('and its thread opens', chipOf(unknownThread) === `${stray.memberCount} MEMBERS · TLS`, chipOf(unknownThread))
+      stray.kind = 'group'
+    }
+    select(directWith('Ilse Marchetti').id)
+  }
+
   // 8. CANT-145 — the read fraction is rendered by the wire's rule:
   //    `min(read_by, member_count)` over `member_count` (CANT-140 ruling 2).
   //
