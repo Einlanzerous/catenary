@@ -1,7 +1,18 @@
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
 import { closeNew } from '@/store'
-import { pick, pickerState, resetPicker, retryPick } from '@/conversations'
+import {
+  canCreateGroup,
+  clearSelection,
+  createGroup,
+  GROUP_NAME_MAX,
+  groupNameShown,
+  pick,
+  pickerState,
+  resetPicker,
+  retryPick,
+  toggleSelected,
+} from '@/conversations'
 
 /**
  * CANT-270 — the new-conversation picker, in the main pane the way search and
@@ -20,6 +31,8 @@ import { pick, pickerState, resetPicker, retryPick } from '@/conversations'
  *  way from the journal: nothing else may be started meanwhile. */
 const locked = computed(() => pickerState.busy || pickerState.opening !== '')
 
+const isChosen = (id: string): boolean => pickerState.selected.some((s) => s.id === id)
+
 // Never during SSR (onMounted does not run under renderToString), so the
 // smoke drives `resetPicker` itself, as it drives the account view's checks.
 onMounted(resetPicker)
@@ -31,13 +44,13 @@ onMounted(resetPicker)
       <h1 class="title">NEW CONVERSATION</h1>
       <button class="close" @click="closeNew">CLOSE</button>
     </header>
-    <p class="lede">Pick someone to start a direct conversation with. If you already have one, it opens.</p>
+    <p class="lede">Pick someone to start a direct conversation with. If you already have one, it opens. To start a group, mark two or more people with + and name it.</p>
 
     <!-- A refusal is a message with a way forward, not an empty list. -->
     <div v-if="pickerState.error" class="error" role="alert">
       <span class="error-text">{{ pickerState.error }}</span>
-      <button v-if="pickerState.failedFor" class="retry" :disabled="locked" @click="retryPick">RETRY</button>
-      <button v-else class="retry" :disabled="pickerState.loading" @click="resetPicker">RETRY</button>
+      <button v-if="pickerState.failedFor || (pickerState.failedGroup && canCreateGroup())" class="retry" :disabled="locked" @click="retryPick">RETRY</button>
+      <button v-else-if="!pickerState.failedGroup" class="retry" :disabled="pickerState.loading" @click="resetPicker">RETRY</button>
     </div>
 
     <p v-if="pickerState.busy" class="status">Starting the conversation…</p>
@@ -50,6 +63,14 @@ onMounted(resetPicker)
 
     <ul v-if="pickerState.roster && pickerState.roster.length > 0" class="roster">
       <li v-for="entry in pickerState.roster" :key="entry.id">
+        <button
+          class="choose"
+          :disabled="locked"
+          :aria-pressed="isChosen(entry.id)"
+          :aria-label="`${isChosen(entry.id) ? 'Remove' : 'Add'} ${entry.name} ${isChosen(entry.id) ? 'from' : 'to'} a group`"
+          :data-roster-choose="entry.handle"
+          @click="toggleSelected(entry)"
+        >{{ isChosen(entry.id) ? '✓' : '+' }}</button>
         <button class="person" :disabled="locked" :data-roster-handle="entry.handle" @click="pick(entry)">
           <span class="tile">{{ entry.initials }}</span>
           <span class="name">{{ entry.name }}</span>
@@ -57,6 +78,32 @@ onMounted(resetPicker)
         </button>
       </li>
     </ul>
+
+    <!-- CANT-271: the group half. Appears once someone is chosen; the name
+         field only at two or more, because one person is a direct. -->
+    <form v-if="pickerState.selected.length > 0" class="group" data-group-form @submit.prevent="createGroup">
+      <p class="chosen">
+        <span class="meta">{{ pickerState.selected.length }} CHOSEN</span>
+        {{ pickerState.selected.map((s) => s.name).join(', ') }}
+        <button type="button" class="clear" :disabled="locked" @click="clearSelection">CLEAR</button>
+      </p>
+      <p v-if="!groupNameShown()" class="status">Choose one more person to start a group. One person alone is a direct: click their name.</p>
+      <template v-else>
+        <label class="field">
+          <span class="meta">GROUP NAME</span>
+          <input
+            v-model="pickerState.groupName"
+            class="group-name"
+            type="text"
+            :maxlength="GROUP_NAME_MAX"
+            autocomplete="off"
+            :disabled="locked"
+            data-group-name
+          />
+        </label>
+        <button class="create" type="submit" :disabled="locked || !canCreateGroup()" data-group-create>CREATE GROUP</button>
+      </template>
+    </form>
   </section>
 </template>
 
@@ -134,14 +181,88 @@ onMounted(resetPicker)
 }
 
 .roster li {
+  display: flex;
+  align-items: center;
   border-bottom: 1px solid var(--line-faint);
+}
+
+.choose {
+  flex: none;
+  width: 28px;
+  height: 28px;
+  margin-right: var(--s2);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-meta);
+  border: 1px solid var(--line-edge);
+}
+.choose[aria-pressed='true'] {
+  color: var(--text-primary);
+  background: var(--surface-lift);
+}
+.choose:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.group {
+  margin-top: var(--s6);
+}
+
+.chosen {
+  margin-bottom: var(--s3);
+  font: var(--type-secondary);
+  color: var(--text-secondary);
+}
+
+.clear {
+  margin-left: var(--s3);
+  font: var(--type-label);
+  letter-spacing: var(--track-label);
+  color: var(--text-meta);
+}
+.clear:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
+}
+
+.field {
+  display: block;
+  margin-bottom: var(--s3);
+}
+
+.group-name {
+  display: block;
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  margin-top: var(--s2);
+  font: var(--type-secondary);
+  color: var(--text-primary);
+  background: var(--surface-base);
+  border: 1px solid var(--line-edge);
+}
+.group-name:disabled {
+  opacity: 0.55;
+}
+
+.create {
+  font: var(--type-label);
+  letter-spacing: var(--track-label);
+  color: var(--text-primary);
+  border: 1px solid var(--line-edge);
+  padding: var(--s2) var(--s4);
+}
+.create:disabled {
+  color: var(--text-disabled);
+  cursor: not-allowed;
 }
 
 .person {
   display: flex;
+  flex: 1;
   gap: 10px;
   align-items: center;
-  width: 100%;
+  min-width: 0;
   padding: 9px 4px;
   text-align: left;
 }

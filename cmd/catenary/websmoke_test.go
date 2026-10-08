@@ -76,7 +76,17 @@ func TestTheWebSmokeRendersTheCanvasFromALiveServer(t *testing.T) {
 	// Kitchen Table. The hub relays a `typing` list only to sessions attached
 	// when it changes, and the app attaches whenever the bundle gets there, so
 	// she re-announces until the test ends — each `start` re-emits the list.
-	nadia := openAt(t, r.ctx, r.base, r.enroll(c.nadia, "Nadia's phone"), c.nadia)
+	nadiaDevice := r.enroll(c.nadia, "Nadia's phone")
+	nadia := openAt(t, r.ctx, r.base, nadiaDevice, c.nadia)
+	// CANT-271: Nadia is also the SECOND ATTACHED SESSION of the group the
+	// bundle creates — the smoke picks her and Ines. Her cursor before the run
+	// is what her next catch-up is taken from afterwards.
+	nadiaBefore := r.syncAfter(string(nadiaDevice.AccessToken), 0)
+	for _, held := range nadiaBefore.Conversations {
+		if held.Kind == wire.ConversationKindGroup && held.Name == smokeGroupName {
+			t.Fatalf("Nadia held %q before the bundle created it", smokeGroupName)
+		}
+	}
 	peer, stopPeer := context.WithCancel(r.ctx)
 	defer stopPeer()
 	go func() {
@@ -120,7 +130,26 @@ func TestTheWebSmokeRendersTheCanvasFromALiveServer(t *testing.T) {
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("node %s against %s: %v — the assertions above say which", bundle, r.base, err)
 	}
+
+	// CANT-271: the room the bundle created reaches a second member at her
+	// next catch-up — Nadia's /sync from the cursor she held before the run.
+	page := r.syncAfter(string(nadiaDevice.AccessToken), int64(nadiaBefore.LogSeq))
+	var got *wire.Conversation
+	for i := range page.Conversations {
+		if page.Conversations[i].Kind == wire.ConversationKindGroup && page.Conversations[i].Name == smokeGroupName {
+			got = &page.Conversations[i]
+		}
+	}
+	if got == nil {
+		t.Fatalf("Nadia's next catch-up carried no %q room: %+v", smokeGroupName, page.Conversations)
+	}
+	if got.MemberCount != 3 {
+		t.Errorf("Nadia's copy of %q counts %d members, want 3", smokeGroupName, got.MemberCount)
+	}
 }
+
+// smokeGroupName is the name web/smoke.ts gives the group it creates (CANT-271).
+const smokeGroupName = "Weekend Crew"
 
 // canvas is what the bundle is handed and what the peer needs: Hollis's
 // invitation, and the two ids Nadia's typing names.
