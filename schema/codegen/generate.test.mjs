@@ -234,10 +234,17 @@ test('Go enum blocks and inline oneOf guards are byte-identical to origin/main, 
   // sets below are simply empty differences, and any LATER change to what the
   // Go emitter produces for an enum fails here until a person names it.
   const ALLOWED_ADDED = new Set(['ResyncReason'])
+  // CANT-255: `ConversationKind` gains `self`. Its block is asserted to carry
+  // exactly that one value more than main's; every other block is byte-identical.
+  const ALLOWED_CHANGED = new Set(['ConversationKind'])
   const ALLOWED_REMOVED_GUARDS = ['"cursor_too_old", "membership_changed", "retention_purge"']
 
   for (const [name, block] of bb) {
     assert.ok(hb.has(name), `enum block ${name} is on main and missing at HEAD`)
+    if (ALLOWED_CHANGED.has(name) && !block.includes('ConversationKindSelf')) {
+      assert.match(hb.get(name), /ConversationKindSelf\s+ConversationKind = "self"/)
+      continue
+    }
     assert.equal(hb.get(name), block, `enum block ${name} differs from main`)
   }
   for (const name of hb.keys()) {
@@ -309,4 +316,47 @@ test('array bounds are emitted into all three decoders, in the right positions',
   const dart = readFileSync(join(ROOT, 'dart', 'lib', 'src', 'generated.dart'), 'utf8')
   assert.match(dart, /_arr\(o\["member_handles"\], '\$\{p\}\.member_handles', 1, 49\)/)
   assert.match(dart, /_arr\(o\["peaks"\], '\$\{p\}\.peaks', null, 512\)/)
+})
+
+/* ------------------------------------------------------------------ *
+ * The `self` conversation's contract text — CANT-254 / CANT-255.
+ *
+ * The sentences a client reads to learn what `self` promises are asserted
+ * literally against the EMITTED openapi.yaml, so a reworded description is a
+ * failing test rather than a drift nobody notices. Descriptions are emitted as
+ * double-quoted YAML scalars, so backticks survive as written.
+ * ------------------------------------------------------------------ */
+
+test('the self conversation\'s contract text is in the emitted openapi.yaml, word for word', () => {
+  const yaml = readFileSync(join(ROOT, 'schema', 'openapi.yaml'), 'utf8')
+  const block = (name) => {
+    const at = yaml.indexOf(`\n    ${name}:\n`)
+    assert.notEqual(at, -1, `${name} is in openapi.yaml`)
+    const rest = yaml.slice(at + 1)
+    const next = rest.slice(1).search(/\n    [A-Za-z]+:\n/)
+    return next === -1 ? rest : rest.slice(0, next + 1)
+  }
+  const kind = block('ConversationKind')
+  assert.match(kind, /- "self"/)
+  assert.ok(kind.includes('`self` is exactly one: the person it belongs to'))
+  assert.ok(kind.includes('A `self` conversation never gains a member and is never promoted'))
+  assert.ok(kind.includes('THIS ENUM STAYS CLIENT-OPEN'))
+  assert.ok(kind.includes('x-catenary-client-open: true'))
+
+  const conv = block('Conversation')
+  const field = (name) => {
+    const at = conv.indexOf(`\n        ${name}:\n`)
+    assert.notEqual(at, -1, `Conversation.${name} is in openapi.yaml`)
+    const rest = conv.slice(at + 1)
+    const next = rest.slice(1).search(/\n        [a-z_]+:\n/)
+    return next === -1 ? rest : rest.slice(0, next + 1)
+  }
+  assert.ok(field('name').trimEnd().replace(/"$/, '').endsWith(
+    'For kind: self, the stored name `Notes`, served as stored and the same for every reader because a self conversation has exactly one.'))
+  // `other_member_id` is a `$ref` with a sibling description, and the OpenAPI
+  // emitter drops siblings of a `$ref`; its sentence is asserted on the source.
+  assert.ok(loadSchema().$defs.Conversation.properties.other_member_id.description.includes(
+    'absent for kind: group and for kind: self, which has no other member'))
+  assert.ok(field('member_count').trimEnd().replace(/"$/, '').endsWith(
+    'For kind: self it is 1: the owner, counted by the same active-member predicate as every other room. A client does not render it for a self conversation.'))
 })
