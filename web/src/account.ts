@@ -499,6 +499,60 @@ export async function revokeDevice(id: string): Promise<void> {
   }
 }
 
+/** What `requestSelfConversation` needs: the session's own seams, so the call
+ *  speaks as the credential the session holds and not as whatever this module
+ *  was last configured with. */
+export interface SelfRequestSeams {
+  baseUrl: string
+  store: CredentialStore
+  fetch?: typeof globalThis.fetch
+  lock?: Lock
+}
+
+/**
+ * `POST /conversations/self` (CANT-254): find-or-create the caller's
+ * conversation with only themselves. No body, idempotent. Resolves true on a
+ * 200 and rejects on anything else.
+ *
+ * UNLIKE EVERY OTHER CALL IN THIS FILE IT TOUCHES NO `accountState` and takes
+ * its seams as an argument: it is the ensure-once call (`ensure-self.ts`),
+ * made without a person asking, so a failure has nowhere to be shown and must
+ * not borrow `error` or `busy` from the views that do ask. The credential is a
+ * second instance over the session's own store and lock, which is how this file
+ * already holds one beside the transport's.
+ */
+export async function requestSelfConversation(s: SelfRequestSeams): Promise<boolean> {
+  const c = createRefreshingCredential({
+    baseUrl: s.baseUrl,
+    store: s.store,
+    ...(s.fetch ? { fetch: s.fetch } : {}),
+    ...(s.lock ? { lock: s.lock } : {}),
+  })
+  const once = async (presented: Credential): Promise<'ok' | 'unauthorized'> => {
+    const res = await (s.fetch ?? globalThis.fetch)(`${s.baseUrl}/conversations/self`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${presented.accessToken}` },
+    })
+    const body = await res.text()
+    if (res.status === 200) {
+      c.answered()
+      return 'ok'
+    }
+    if (isCatenaryUnauthorized(res.status, body)) {
+      c.answered()
+      return 'unauthorized'
+    }
+    throw new Error(`self conversation: HTTP ${res.status}`)
+  }
+  const presented = await c.current()
+  let outcome = await once(presented)
+  if (outcome === 'unauthorized') {
+    outcome = (await c.onSyncUnauthorized(presented)) ? await once(await c.current()) : 'unauthorized'
+    if (outcome === 'unauthorized') throw new Error('self conversation: 401 unauthorized')
+  }
+  return true
+}
+
 /** Back to the login form after a credential terminal — AccountView's own
  *  RE-ENROLL banner, called on an already-mounted view. Nothing is cleared:
  *  `reenrollCredential` is the only thing that ever replaces a held pair
