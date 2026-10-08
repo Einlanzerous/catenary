@@ -285,3 +285,28 @@ test('a client-open enum inside a list fails the build, naming the field', () =>
   assert.notEqual(r.status, 0)
   assert.match(r.out, /ServerAck\.states\[\]: a client-open enum \(DeliveryState\) inside a list/)
 })
+
+/* ------------------------------------------------------------------ *
+ * Array bounds — CANT-265.
+ *
+ * `minItems` is exercised by a conformance vector in all three languages;
+ * `maxItems` is not, because the vector count is fixed by the plan. So the
+ * emitted checks are asserted directly: member_handles is 1..49 and peaks is
+ * at most 512, and each language must carry the bound in the right position.
+ * ------------------------------------------------------------------ */
+
+test('array bounds are emitted into all three decoders, in the right positions', () => {
+  const go = readFileSync(join(ROOT, GO), 'utf8')
+  assert.match(go, /if len\(out\.MemberHandles\) < 1 \{\n\t\treturn badf\(p\+"\.member_handles", "must have at least 1 items/)
+  assert.match(go, /if len\(out\.MemberHandles\) > 49 \{\n\t\treturn badf\(p\+"\.member_handles", "must have at most 49 items/)
+  assert.match(go, /if len\(out\.Peaks\) > 512 \{/)
+  assert.doesNotMatch(go, /len\(out\.Peaks\) </, 'peaks has no minItems')
+
+  const ts = readFileSync(join(ROOT, 'web', 'src', 'wire', 'generated.ts'), 'utf8')
+  assert.match(ts, /asArray\(o\["member_handles"\], `\$\{p\}\.member_handles`, 1, 49\)/)
+  assert.match(ts, /asArray\(o\["peaks"\], `\$\{p\}\.peaks`, undefined, 512\)/)
+
+  const dart = readFileSync(join(ROOT, 'dart', 'lib', 'src', 'generated.dart'), 'utf8')
+  assert.match(dart, /_arr\(o\["member_handles"\], '\$\{p\}\.member_handles', 1, 49\)/)
+  assert.match(dart, /_arr\(o\["peaks"\], '\$\{p\}\.peaks', null, 512\)/)
+})
