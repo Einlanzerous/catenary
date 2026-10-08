@@ -197,3 +197,31 @@ func directConversationHandler(d Deps) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, wireview.Conversation(c))
 	}
 }
+
+// rosterHandler serves GET /users: every active person other than the caller,
+// with the handle POST /conversations/direct takes (CANT-267). Every
+// authenticated caller can read every listed handle; that is CANT-253 ruling 1.
+// d.Caller resolves a bot credential as well as a device, and this handler does
+// not refuse a bot: the plan names d.Caller and a bot can already address a
+// person by handle on POST /conversations/direct. Restricting it would be a new
+// decision, not an oversight here.
+func rosterHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller, ok := d.Caller(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		}
+		rows, err := d.Roster(r.Context(), caller.UserID)
+		if err != nil {
+			d.Logger.Error("roster failed", "viewer_id", caller.UserID, "error", err)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "roster failed"})
+			return
+		}
+		out := wire.RosterResponse{Users: make([]wire.RosterEntry, 0, len(rows))}
+		for _, row := range rows {
+			out.Users = append(out.Users, wireview.RosterEntry(row))
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}

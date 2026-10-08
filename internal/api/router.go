@@ -157,6 +157,10 @@ type Deps struct {
 	// store.Store.FindOrCreateDirect.
 	FindOrCreateDirect func(ctx context.Context, viewer uuid.UUID, handle string) (store.ConversationRow, error)
 
+	// Roster serves GET /users (CANT-267) — store.Store.Roster. Registered
+	// only with Caller, so the safe absence is a route that does not exist.
+	Roster func(ctx context.Context, viewer uuid.UUID) ([]store.RosterRow, error)
+
 	// MediaURL derives a served URL from an opaque storage key. The same
 	// deriver /sync and the hub use (CANT-84): two derivers here would be the
 	// one way a REST-sent message's attachments could render a different URL
@@ -305,6 +309,10 @@ func NewRouter(d Deps) http.Handler {
 	}
 	if d.FindOrCreateDirect != nil && d.Caller != nil {
 		mux.HandleFunc("POST /conversations/direct", directConversationHandler(d))
+	}
+
+	if d.Roster != nil && d.Caller != nil {
+		mux.HandleFunc("GET /users", rosterHandler(d))
 	}
 
 	// All three or nothing. See Deps.Authenticate.
