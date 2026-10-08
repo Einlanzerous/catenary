@@ -234,15 +234,24 @@ test('Go enum blocks and inline oneOf guards are byte-identical to origin/main, 
   // sets below are simply empty differences, and any LATER change to what the
   // Go emitter produces for an enum fails here until a person names it.
   const ALLOWED_ADDED = new Set(['ResyncReason'])
-  // CANT-255: `ConversationKind` gains `self`. Its block is asserted to carry
-  // exactly that one value more than main's; every other block is byte-identical.
+  // CANT-255: `ConversationKind` gains `self`. Its block is compared with main's
+  // block plus exactly the three insertions that value makes; every other block
+  // is byte-identical. Once this is on main the block matches main's and the
+  // exemption falls through to plain equality.
   const ALLOWED_CHANGED = new Set(['ConversationKind'])
   const ALLOWED_REMOVED_GUARDS = ['"cursor_too_old", "membership_changed", "retention_purge"']
 
   for (const [name, block] of bb) {
     assert.ok(hb.has(name), `enum block ${name} is on main and missing at HEAD`)
     if (ALLOWED_CHANGED.has(name) && !block.includes('ConversationKindSelf')) {
-      assert.match(hb.get(name), /ConversationKindSelf\s+ConversationKind = "self"/)
+      // Main's block with exactly the three insertions `self` makes spliced in:
+      // the constant, its case in Valid(), and its spelling in the check's message.
+      const spliced = block
+        .replace(/(\tConversationKindGroup +ConversationKind = "group"\n)/, '$1\tConversationKindSelf   ConversationKind = "self"\n')
+        .replace('case ConversationKindDirect, ConversationKindGroup:', 'case ConversationKindDirect, ConversationKindGroup, ConversationKindSelf:')
+        .replace('"direct|group"', '"direct|group|self"')
+      assert.notEqual(spliced, block, 'the splice found nothing to insert into')
+      assert.equal(hb.get(name), spliced, `enum block ${name} differs from main by more than the self value`)
       continue
     }
     assert.equal(hb.get(name), block, `enum block ${name} differs from main`)
