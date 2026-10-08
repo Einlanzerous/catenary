@@ -1494,6 +1494,28 @@
       }
     },
     {
+      "name": "conversation_kind_self",
+      "kind": "SyncResponse",
+      "expect": "roundtrip",
+      "why": "CANT-254 ruling 0 (B). A conversation with only yourself: `kind: self`, the stored name `Notes`, `member_count` 1 and no `other_member_id`, because there is no other member. `ConversationKind` stays client-open, so a build that predates `self` decodes this to the `unknown` sentinel and the Go server pass refuses it; that is why this vector fails before the enum value exists and passes after. `tolerate_unknown_conversation_kind` (kind `channel`) is unchanged.",
+      "json": {
+        "log_seq": 61004,
+        "has_more": false,
+        "server_time": "2026-10-08T03:10:00.000Z",
+        "messages": [],
+        "conversations": [
+          {
+            "id": "cc33dd44-ee55-4f66-9a77-bb88cc99dd00",
+            "kind": "self",
+            "name": "Notes",
+            "member_count": 1,
+            "head_seq": 0
+          }
+        ],
+        "users": []
+      }
+    },
+    {
       "name": "roster_response",
       "kind": "RosterResponse",
       "expect": "roundtrip",

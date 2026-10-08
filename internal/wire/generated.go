@@ -271,21 +271,26 @@ func checkToken(v string, p string) error {
 	return nil
 }
 
-// D4: everything is a conversation. `direct` is two members, `group` is any number;
-// neither is a distinct entity. Adding a third member to a direct conversation
-// promotes it to `group` and is a row insert plus this field changing, never a
-// migration.
+// D4: everything is a conversation. `direct` is two members, `group` is any number,
+// and `self` is exactly one: the person it belongs to. None of them is a distinct
+// entity. Adding a third member to a direct conversation promotes it to `group` and is
+// a row insert plus this field changing, never a migration. A `self` conversation
+// never gains a member and is never promoted: nothing in the server adds one. THIS
+// ENUM STAYS CLIENT-OPEN (`x-catenary-client-open: true`): a client that does not know
+// a value decodes it to the `unknown` sentinel and renders it as `group`, which is how
+// a build that predates `self` draws one, and `x-wire-version` stays 1 (CANT-74).
 type ConversationKind string
 
 const (
 	ConversationKindDirect ConversationKind = "direct"
 	ConversationKindGroup  ConversationKind = "group"
+	ConversationKindSelf   ConversationKind = "self"
 )
 
 // Valid reports whether v is a value this schema version defines.
 func (v ConversationKind) Valid() bool {
 	switch v {
-	case ConversationKindDirect, ConversationKindGroup:
+	case ConversationKindDirect, ConversationKindGroup, ConversationKindSelf:
 		return true
 	}
 	return false
@@ -294,7 +299,7 @@ func (v ConversationKind) Valid() bool {
 // checkConversationKind rejects a value this schema version does not define.
 func checkConversationKind(v ConversationKind, p string) error {
 	if !v.Valid() {
-		return badf(p, "expected one of %s, got %q", "direct|group", string(v))
+		return badf(p, "expected one of %s, got %q", "direct|group|self", string(v))
 	}
 	return nil
 }
@@ -1453,16 +1458,19 @@ type Conversation struct {
 	// triggers on head_seq, first_unread_seq and membership only) while the renamed User
 	// record IS ('send the full record whenever … their name … changed'), so a client that
 	// cached this string instead would show a name the server has already corrected
-	// everywhere else; a full bootstrap serves this fresh regardless.
+	// everywhere else; a full bootstrap serves this fresh regardless. For kind: self, the
+	// stored name `Notes`, served as stored and the same for every reader because a self
+	// conversation has exactly one.
 	Name string `json:"name"`
-	// OPTIONAL. Present iff kind is direct; absent for kind: group. Names the other member
-	// of a direct conversation, resolved the same way name is. An id with no matching User
-	// yet means NOT YET KNOWN, never NO SUCH PERSON: on /sync and on a socket introduction
-	// this always rides the same page or frame as the User it names; the one exception is
-	// POST /conversations/direct's response, closed on the caller's own next /sync page.
-	// KIND IS MUTABLE — a third member promotes a direct to a group — so a later record
-	// REPLACES this field rather than merging with one already held. A CLIENT TITLES A
-	// DIRECT BY THE User THIS ID NAMES, read fresh on every render, not by name (above).
+	// OPTIONAL. Present iff kind is direct; absent for kind: group and for kind: self,
+	// which has no other member. Names the other member of a direct conversation, resolved
+	// the same way name is. An id with no matching User yet means NOT YET KNOWN, never NO
+	// SUCH PERSON: on /sync and on a socket introduction this always rides the same page
+	// or frame as the User it names; the one exception is POST /conversations/direct's
+	// response, closed on the caller's own next /sync page. KIND IS MUTABLE — a third
+	// member promotes a direct to a group — so a later record REPLACES this field rather
+	// than merging with one already held. A CLIENT TITLES A DIRECT BY THE User THIS ID
+	// NAMES, read fresh on every render, not by name (above).
 	OtherMemberID *Uuid `json:"other_member_id,omitempty"`
 	// How many people are in this room, as the server counts them at serve time: the
 	// thread header renders it as the `7` in `7 MEMBERS`, and `Message.read_by` is the
@@ -1496,7 +1504,9 @@ type Conversation struct {
 	// deactivated account holds no live socket, because deactivating one severs every
 	// session it has. So the constraint holds on what can be DELIVERED, which is a weaker
 	// guarantee than the count itself and is stated that way here because a decoder
-	// enforces the bound.
+	// enforces the bound. For kind: self it is 1: the owner, counted by the same
+	// active-member predicate as every other room. A client does not render it for a self
+	// conversation.
 	MemberCount int64 `json:"member_count"`
 	Muted       *bool `json:"muted,omitempty"`
 	// The first seq the reader has not seen; absent means fully read. Both the rail's
