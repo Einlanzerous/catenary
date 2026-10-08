@@ -17,7 +17,7 @@
  */
 
 import { reactive } from 'vue'
-import { authedRequest } from '@/account'
+import { AuthedUnauthorized, authedRequest } from '@/account'
 import { openConversation } from '@/store'
 import {
   decodeConversation,
@@ -80,9 +80,14 @@ export async function loadRoster(): Promise<void> {
     const res = await authedRequest('/users')
     if (res.status !== 200) throw new Error(`users: HTTP ${res.status}`)
     pickerState.roster = decodeRosterResponse(JSON.parse(res.body)).users
+    res.answered()
     if (pickerState.error === UNREACHABLE) pickerState.error = null
-  } catch {
-    pickerState.error = pickerState.roster === null ? 'Could not load the list of people — check your connection and try again.' : pickerState.error
+  } catch (e) {
+    if (pickerState.roster === null) {
+      pickerState.error = e instanceof AuthedUnauthorized
+        ? refusalText('unauthorized', 401)
+        : 'Could not load the list of people — check your connection and try again.'
+    }
   } finally {
     pickerState.loading = false
   }
@@ -108,6 +113,8 @@ export async function startDirect(entry: RosterEntry): Promise<boolean> {
       let code: string | undefined
       try {
         code = decodeServerError({ type: 'error', ...JSON.parse(res.body) }).code
+        // A body Catenary wrote is an answer; a proxy's page is not.
+        res.answered()
       } catch {
         code = undefined
       }
@@ -118,11 +125,12 @@ export async function startDirect(entry: RosterEntry): Promise<boolean> {
       return false
     }
     const conversation = decodeConversation(JSON.parse(res.body))
+    res.answered()
     if (!openConversation(conversation)) pickerState.opening = conversation.id
     else pickerState.opening = ''
     return true
-  } catch {
-    pickerState.error = UNREACHABLE
+  } catch (e) {
+    pickerState.error = e instanceof AuthedUnauthorized ? refusalText('unauthorized', 401) : UNREACHABLE
     pickerState.failedFor = entry
     return false
   } finally {

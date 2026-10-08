@@ -206,6 +206,13 @@ test('a conversation the server returns that is not held yet waits for the journ
   assert.ok(text(await render()).includes('Waiting for the server to deliver it'))
 })
 
+test('choosing another conversation abandons one still on its way', () => {
+  state.conversations = [direct({ id: uuid(11), name: 'Rosa Whitfield', otherMemberId: ROSA })]
+  state.pendingOpenId = DM
+  select(uuid(11))
+  assert.equal(state.pendingOpenId, '', 'it will not pull the reader away when it lands')
+})
+
 test('a conversation already held opens at once and is held once', async () => {
   const s = server()
   useServer(s)

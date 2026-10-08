@@ -305,6 +305,9 @@ export const transcriptWords = (v: VoiceAttachment): number => {
 /* ── actions ───────────────────────────────────────────────────────────── */
 
 export function select(id: string) {
+  // Going somewhere else abandons a conversation still on its way: it must
+  // not pull the reader out of what they chose when it lands.
+  if (state.pendingOpenId && state.pendingOpenId !== id) state.pendingOpenId = ''
   state.activeId = id
   state.view = 'thread'
   state.composer.replyToId = null

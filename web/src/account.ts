@@ -380,6 +380,19 @@ async function devicesOnce(c: CredentialSeam, presented: Credential): Promise<De
 export interface AuthedResponse {
   status: number
   body: string
+  /** Mark the answer genuine (CANT-127's hold). The CALLER does it, once it
+   *  has decoded a body that is Catenary's: a proxy's 502 or a captive
+   *  portal's 200 is not an answer from Catenary, exactly as `devicesOnce`
+   *  and `syncOnce` treat them. */
+  answered(): void
+}
+
+/** A Catenary 401 the credential layer could not repair. */
+export class AuthedUnauthorized extends Error {
+  constructor(path: string) {
+    super(`${path}: 401 unauthorized`)
+    this.name = 'AuthedUnauthorized'
+  }
 }
 
 /**
@@ -403,14 +416,17 @@ export async function authedRequest(path: string, init: { method?: string; json?
       ...(init.json !== undefined ? { body: JSON.stringify(init.json) } : {}),
     })
     const body = await res.text()
-    c.answered()
-    return isCatenaryUnauthorized(res.status, body) ? null : { status: res.status, body }
+    if (isCatenaryUnauthorized(res.status, body)) {
+      c.answered()
+      return null
+    }
+    return { status: res.status, body, answered: () => c.answered() }
   }
   const presented = await c.current()
   let out = await once(presented)
   if (out === null) {
     out = (await c.onSyncUnauthorized(presented)) ? await once(await c.current()) : null
-    if (out === null) throw new Error(`${path}: 401 unauthorized`)
+    if (out === null) throw new AuthedUnauthorized(path)
   }
   return out
 }
