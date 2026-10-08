@@ -199,8 +199,12 @@ func directConversationHandler(d Deps) http.HandlerFunc {
 }
 
 // rosterHandler serves GET /users: every active person other than the caller,
-// with the handle POST /conversations/direct takes (CANT-267). Every signed-in
-// person can read every listed handle; that is CANT-253 ruling 1.
+// with the handle POST /conversations/direct takes (CANT-267). Every
+// authenticated caller can read every listed handle; that is CANT-253 ruling 1.
+// d.Caller resolves a bot credential as well as a device, and this handler does
+// not refuse a bot: the plan names d.Caller and a bot can already address a
+// person by handle on POST /conversations/direct. Restricting it would be a new
+// decision, not an oversight here.
 func rosterHandler(d Deps) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		caller, ok := d.Caller(r)
