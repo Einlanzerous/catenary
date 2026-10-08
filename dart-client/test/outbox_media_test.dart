@@ -433,7 +433,8 @@ void main() {
       final ctx = await context(transport: transport, clock: clock, uploader: uploader, rereadMs: holderRereadMs);
       transport.open();
       await flush();
-      // Not awaited: `compose` completes with the upload, and this one never does.
+      // The upload never completes. `compose` does not wait for it (CANT-212),
+      // so this would return either way; the entry is read after the flush.
       unawaited(ctx.outbox.compose(voiceDraft(recording())));
       await flush();
       final entry = (await ctx.store.list()).single;
