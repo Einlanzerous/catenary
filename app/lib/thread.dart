@@ -350,7 +350,13 @@ class MessageGroup extends StatelessWidget {
       if (voice != null)
         Padding(
           padding: const EdgeInsets.only(top: 8),
-          child: VoiceNoteBlock(voice: voice),
+          child: VoiceNoteBlock(
+            voice: voice,
+            // Nothing is transcribing a note the server has not been sent
+            // (CANT-252, the conversation.dart preview rule).
+            unsent: m.mine &&
+                (m.status == MessageStatus.failed || m.status == MessageStatus.queued || m.status == MessageStatus.sending),
+          ),
         ),
       if (text != null && text.isNotEmpty)
         Padding(
@@ -434,9 +440,13 @@ class _FailedActions extends StatelessWidget {
 /// `EXPAND · 96 W` is counted from the transcript's own text, so it cannot
 /// lie.
 class VoiceNoteBlock extends StatefulWidget {
-  const VoiceNoteBlock({super.key, required this.voice});
+  const VoiceNoteBlock({super.key, required this.voice, this.unsent = false});
 
   final VoiceNote voice;
+
+  /// One of your own that has not reached the server: no transcription job
+  /// exists, so no strip is drawn under the player.
+  final bool unsent;
 
   @override
   State<VoiceNoteBlock> createState() => _VoiceNoteBlockState();
@@ -451,7 +461,7 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
     final v = widget.voice;
     final transcript = v.transcript;
     final small = TextStyle(fontFamily: fontMono, fontSize: 9, height: 12 / 9);
-    final Widget? strip = switch (v.status) {
+    final Widget? strip = widget.unsent ? null : switch (v.status) {
       TranscriptStatus.pending => _pending(t, small, v.eta),
       // No pulse and no accent: nothing is running, and nothing here is tappable.
       TranscriptStatus.failed => Text('NO TRANSCRIPT', style: small.copyWith(letterSpacing: 1.26, color: t.textMeta)),
