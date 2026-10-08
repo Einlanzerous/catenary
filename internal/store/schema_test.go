@@ -904,6 +904,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"retention_days", "integer", true},
 			{"created_at", "timestamp with time zone", false},
 			{"metadata_log_seq", "bigint", false},
+			{"create_key", "text", true}, // 0011, CANT-266
 		},
 		"conversation_members": {
 			{"conversation_id", "uuid", false},
