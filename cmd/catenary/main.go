@@ -298,6 +298,8 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var findOrCreateDirectFn func(context.Context, uuid.UUID, string) (store.ConversationRow, error)
 	var createGroupFn func(context.Context, uuid.UUID, string, []string, *uuid.UUID) (store.ConversationRow, bool, error)
 	var rosterFn func(context.Context, uuid.UUID) ([]store.RosterRow, error)
+
+	var findOrCreateSelfFn func(context.Context, uuid.UUID) (store.ConversationRow, error)
 	var maxFrameBytes int64
 	var attachFn func(*api.Session) func()
 	var handleFn func(context.Context, *api.Session, wire.ClientFrame)
@@ -333,6 +335,8 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		findOrCreateDirectFn = st.FindOrCreateDirect
 		rosterFn = st.Roster
 		createGroupFn = st.CreateGroup
+
+		findOrCreateSelfFn = st.FindOrCreateSelf
 		// The frame bound follows the message bound, MULTIPLICATIVELY. The
 		// store bounds the UTF-8 bytes of `text`; the socket sees that text
 		// JSON-encoded, and encoding is not free: a control character
@@ -458,8 +462,10 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			FindOrCreateDirect: findOrCreateDirectFn,
 			Roster:             rosterFn,
 			CreateGroup:        createGroupFn,
-			MediaURL:           mediaURL,
-			MaxRESTBodyBytes:   maxFrameBytes,
+
+			FindOrCreateSelf: findOrCreateSelfFn,
+			MediaURL:         mediaURL,
+			MaxRESTBodyBytes: maxFrameBytes,
 
 			// The routed listener only. provision.Deps never sees it, so
 			// the second port serves none of the client.
