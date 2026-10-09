@@ -114,6 +114,7 @@ onMounted(resetPicker)
   min-width: 0;
   padding: var(--s8) var(--s6);
   overflow: auto;
+  overscroll-behavior: none;
   background: var(--surface-base);
 }
 

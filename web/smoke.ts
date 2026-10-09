@@ -210,6 +210,34 @@ async function main() {
     'typing sits below the last message and above the composer',
     iLastMessage > 0 && iLastMessage < iTyping && iTyping < iComposer,
   )
+  // CANT-280: the composer is the thread's LAST row in every connection state.
+  // The server render has no layout engine, so this asserts the two halves a
+  // layout can fail on: the DOM order (this page is connected, so the banner
+  // renders nothing and the thread has exactly three children) and the CSS
+  // that places them — a flex column whose stream is the `flex: 1` scroller,
+  // not a fixed-row grid that assumes a fourth child. The measured half (the
+  // composer's bottom edge equal to the thread's, banner absent and present, at
+  // desktop and phone width) is the headless-browser run recorded on CANT-280.
+  const threadHtml = main.slice(main.indexOf('<section class="thread'))
+  const iHead = threadHtml.indexOf('<header class="head"')
+  const iStream = threadHtml.indexOf('class="stream scroll"')
+  const iLastRow = threadHtml.indexOf('class="composer"')
+  check('the banner renders nothing while connected', !threadHtml.includes('class="banner'))
+  check('the composer is the thread\'s last row: header, stream, composer',
+    iHead >= 0 && iHead < iStream && iStream < iLastRow)
+  check('and nothing follows the composer inside the thread',
+    threadHtml.slice(iLastRow).split('</section>')[0].match(/<(header|footer|nav|aside)\b/) === null)
+  const threadSrc = readFileSync(resolve(process.cwd(), 'src/components/Thread.vue'), 'utf8')
+  check('the thread is a flex column, not a fixed-row grid',
+    /\.thread \{[^}]*display: flex;[^}]*flex-direction: column;/.test(threadSrc) &&
+      !/grid-template-rows/.test(threadSrc.slice(threadSrc.indexOf('<style'), threadSrc.indexOf('.head {'))))
+  check('the stream is the flex:1 scroller that may shrink to nothing',
+    /\.stream \{[^}]*flex: 1 1 0;[^}]*min-height: 0;/.test(threadSrc))
+  const baseCss = readFileSync(resolve(process.cwd(), 'src/styles/base.css'), 'utf8')
+  check('no overscroll bounce on the page or the stream',
+    /html,\s*body \{[^}]*overscroll-behavior: none;/.test(baseCss) &&
+      /\.scroll \{[^}]*overscroll-behavior: none;/.test(baseCss))
+
   const kitchen = state.conversations.find((c) => c.id === KITCHEN)!
   const expectedNew = newCount(kitchen)
   check('unread rule drawn', main.includes(`${expectedNew} NEW`), `${expectedNew} NEW`)

@@ -199,14 +199,23 @@ watch(
 
 <style scoped>
 .thread {
-  display: grid;
-  grid-template-rows: 52px auto 1fr auto;
+  /* CANT-280: a flex column, not a grid of four rows. The grid was written for
+   * four children (header, banner, stream, composer) and ConnectionBanner
+   * renders nothing while the connection is healthy, so auto-placement handed
+   * the stream the `auto` row and the composer the `1fr` one: the composer
+   * floated under the last message and moved as messages arrived. Here the
+   * stream is `flex: 1` whatever else is present, so the composer is the last
+   * thing in the column in every connection state. */
+  display: flex;
+  flex-direction: column;
   min-width: 0;
   overflow: hidden;
   background: var(--surface-base);
 }
 
 .head {
+  flex: none;
+  height: 52px;
   display: flex;
   gap: 14px;
   align-items: center;
@@ -252,7 +261,13 @@ watch(
   color: var(--text-primary);
 }
 
+.thread > :deep(.banner),
+.thread > :deep(.composer) {
+  flex: none;
+}
+
 .stream {
+  flex: 1 1 0;
   min-height: 0;
   padding: 10px 0 0;
 }
