@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.18.0](https://github.com/Einlanzerous/catenary/compare/v0.17.0...v0.18.0) (2026-10-09)
+
+
+### Features
+
+* CANT-212 — the Dart outbox uploads independently of the send queue, and re-uploads a stale handle once (CANT-201b) ([#191](https://github.com/Einlanzerous/catenary/issues/191)) ([ed5cf81](https://github.com/Einlanzerous/catenary/commit/ed5cf811e2d94d320cd928d4627f33fc28425b1b))
+* CANT-242 — the full Content-Security-Policy on the web client's document ([#178](https://github.com/Einlanzerous/catenary/issues/178)) ([9277bcb](https://github.com/Einlanzerous/catenary/commit/9277bcbe9542b2996a1aea1eadc688de4c31294e))
+* CANT-255 — wire: ConversationKind gains self, with the contract text and one vector ([#182](https://github.com/Einlanzerous/catenary/issues/182)) ([e1b9171](https://github.com/Einlanzerous/catenary/commit/e1b91712ff0ea8d25d4e59387846cf7a98e820d1))
+* CANT-256 — migration 0012: admit the self kind, one self per person, and a bounded down ([#184](https://github.com/Einlanzerous/catenary/issues/184)) ([5f9a378](https://github.com/Einlanzerous/catenary/commit/5f9a37869abc288208aa958f89ceb2608d5d1c9f))
+* CANT-257 — FindOrCreateSelf, POST /conversations/self, and the add-member guard ([#186](https://github.com/Einlanzerous/catenary/issues/186)) ([af3c4d5](https://github.com/Einlanzerous/catenary/commit/af3c4d501b26358c53c26f9277d0189ef827100d))
+* CANT-260 — web: render a conversation with only yourself, and the unknown-kind arm ([#187](https://github.com/Einlanzerous/catenary/issues/187)) ([bf7884e](https://github.com/Einlanzerous/catenary/commit/bf7884e2f063a9fcc4e57f3f77937a10948ca004))
+* CANT-261 — app: render a conversation with only yourself, and the receipt as served ([#196](https://github.com/Einlanzerous/catenary/issues/196)) ([5abd0ca](https://github.com/Einlanzerous/catenary/commit/5abd0ca13bc522c997d182ff3f631058e9f4b7d0))
+* CANT-262 — web: ensure the self conversation once after the first catch-up ([#188](https://github.com/Einlanzerous/catenary/issues/188)) ([30035ef](https://github.com/Einlanzerous/catenary/commit/30035ef22fea744b345abc44771debb110ea1233))
+* CANT-263 — app: ensure the self conversation once after the first catch-up ([#197](https://github.com/Einlanzerous/catenary/issues/197)) ([340d202](https://github.com/Einlanzerous/catenary/commit/340d20223c8bc1c4072d7b826ed22ee1f2db5d21))
+* CANT-265 — wire: RosterEntry, RosterResponse and CreateGroupRequest ([#179](https://github.com/Einlanzerous/catenary/issues/179)) ([a2c9404](https://github.com/Einlanzerous/catenary/commit/a2c94047505931c552011828436a2d83e68fa123))
+* CANT-266 — migration 0011: conversations.create_key and its partial unique index ([#180](https://github.com/Einlanzerous/catenary/issues/180)) ([9b5860d](https://github.com/Einlanzerous/catenary/commit/9b5860d801f27611c16b3e85e2cd1b76350e76a2))
+* CANT-267 — GET /users roster of active persons other than the caller ([#183](https://github.com/Einlanzerous/catenary/issues/183)) ([0d1788b](https://github.com/Einlanzerous/catenary/commit/0d1788bb1230e319861615d2291eaab0b2aa59df))
+* CANT-268 — POST /conversations creates a group (CreateGroup in metadata.go) ([#189](https://github.com/Einlanzerous/catenary/issues/189)) ([a617cbc](https://github.com/Einlanzerous/catenary/commit/a617cbc729a3b07e36b04d5afd4bd78c89797a35))
+* CANT-270 — web: start a direct conversation from the rail ([#193](https://github.com/Einlanzerous/catenary/issues/193)) ([b7dbe49](https://github.com/Einlanzerous/catenary/commit/b7dbe496e7dd26969a1d1e01bcd1db13cc12e750))
+* CANT-271 — web: start a group from the same picker ([#194](https://github.com/Einlanzerous/catenary/issues/194)) ([ab3ee8f](https://github.com/Einlanzerous/catenary/commit/ab3ee8fe83918a24f4c860456f10d8e912a8f393))
+* CANT-273 — the app's rail starts a direct and a group against the real transport ([#185](https://github.com/Einlanzerous/catenary/issues/185)) ([b58e041](https://github.com/Einlanzerous/catenary/commit/b58e04186eeeab7dc0b50154550bc5dc885f046b))
+
+
+### Bug Fixes
+
+* CANT-234 — the app tells an unreadable 200 and a 5xx apart from a refused token ([#190](https://github.com/Einlanzerous/catenary/issues/190)) ([5bbfae1](https://github.com/Einlanzerous/catenary/commit/5bbfae1680846cc2c2645a68b58a768527bcd338))
+* CANT-250 — an unsent voice note draws no strip under its player on the web (CANT-249a) ([#176](https://github.com/Einlanzerous/catenary/issues/176)) ([d96a831](https://github.com/Einlanzerous/catenary/commit/d96a83183238d945977e097ab54ecf635e4787a1))
+* CANT-252 — the app draws nothing under an unsent voice note's player (CANT-249's app half) ([#181](https://github.com/Einlanzerous/catenary/issues/181)) ([5bf87bf](https://github.com/Einlanzerous/catenary/commit/5bf87bf38d4fe98e1a0b9e5dd12eec9248d49da6))
+
 ## [0.17.0](https://github.com/Einlanzerous/catenary/compare/v0.16.0...v0.17.0) (2026-10-07)
 
 
