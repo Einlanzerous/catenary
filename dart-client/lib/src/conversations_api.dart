@@ -80,6 +80,17 @@ final class ConversationsApi {
         (status, json) => status == 200 || status == 201 ? Started(Conversation.fromJson(json), created: status == 201) : null,
       );
 
+  /// `POST /conversations/self` (CANT-254): the caller's conversation with only
+  /// themselves, found or made. No body, idempotent. A bot is refused with 403
+  /// and a server that predates the route answers 404; both are
+  /// [StartRefused], and the caller that asks unprompted keeps them quiet.
+  Future<StartResult<Conversation>> ensureSelf() => _call(
+        'POST',
+        '/conversations/self',
+        null,
+        (status, json) => status == 200 || status == 201 ? Started(Conversation.fromJson(json), created: status == 201) : null,
+      );
+
   /// `POST /conversations`: a group of the caller and [memberHandles].
   /// [requestId] makes a replay safe (CANT-253 ruling 2 → option 1): the same
   /// id from the same caller returns the first room with 200.

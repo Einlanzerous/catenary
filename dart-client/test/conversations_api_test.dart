@@ -65,6 +65,22 @@ void main() {
     expect(found.created, isFalse);
   });
 
+  test('ensureSelf is a bodiless POST /conversations/self; a 404 and a bot\'s 403 are refusals', () async {
+    final self = const Conversation(id: _room, kind: ConversationKind.self, name: 'Notes', memberCount: 1, headSeq: 0).toJson();
+    final server = _Server((_, _) => HttpAnswer(200, jsonEncode(self)));
+    final r = await server.api().ensureSelf() as Started<Conversation>;
+    final x = server.requests.single;
+    expect(x.method, 'POST');
+    expect(x.url.toString(), 'https://catenary.test/conversations/self');
+    expect(x.body, isNull);
+    expect(x.headers['Authorization'], 'Bearer tok-1');
+    expect(r.value.kind, ConversationKind.self);
+    final missing = await _Server((_, _) => const HttpAnswer(404, '{"code":"not_found","error":"x"}')).api().ensureSelf();
+    expect((missing as StartRefused<Conversation>).status, 404);
+    final bot = await _Server((_, _) => const HttpAnswer(403, '{"code":"forbidden","error":"x"}')).api().ensureSelf();
+    expect((bot as StartRefused<Conversation>).status, 403);
+  });
+
   test('a group posts CreateGroupRequest to /conversations, with the request_id when there is one', () async {
     final server = _Server((_, _) => HttpAnswer(201, jsonEncode(_conversation())));
     final r = await server.api().createGroup('Kitchen', ['nadia', 'ilse'], requestId: '00000000-0000-4000-8000-0000000000a1') as Started<Conversation>;
