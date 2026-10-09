@@ -18,7 +18,7 @@ import 'package:flutter/foundation.dart';
 import 'status.dart';
 import 'when.dart';
 
-enum ConversationKind { group, direct }
+enum ConversationKind { group, direct, self }
 
 /// Where a voice note's transcript stands, as the server last said. The
 /// wire's `TranscriptState`, kept apart from the text so that "no text" is not
@@ -172,7 +172,13 @@ class ConversationView {
   /// address the last word is CLEARTEXT, because that is what the link is.
   String get subtitle {
     final transport = secure ? 'TLS' : 'CLEARTEXT';
-    return kind == ConversationKind.group ? '$memberCount MEMBERS · $transport' : 'DIRECT · $transport';
+    return switch (kind) {
+      // A conversation with only yourself states the one membership fact the
+      // server keeps; its last word is derived like every other (CANT-254).
+      ConversationKind.self => 'JUST YOU · $transport',
+      ConversationKind.group => '$memberCount MEMBERS · $transport',
+      ConversationKind.direct => 'DIRECT · $transport',
+    };
   }
 }
 
@@ -209,6 +215,9 @@ String preview(ConversationView c) {
   } else {
     body = m.text ?? '';
   }
+  // Every message in a conversation with yourself is yours, so `You:` would
+  // prefix every row: its preview is the bare body (CANT-254 ruling 2, A).
+  if (c.kind == ConversationKind.self) return body;
   if (m.mine) return 'You: $body';
   return c.kind == ConversationKind.group ? '${m.authorName.split(' ').first}: $body' : body;
 }

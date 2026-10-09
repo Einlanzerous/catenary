@@ -63,7 +63,12 @@ class RailScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final t = CatenaryTokens.of(context);
     final rooms = conversations.where((c) => c.kind == ConversationKind.group).toList();
-    final directs = conversations.where((c) => c.kind == ConversationKind.direct).toList();
+    // Notes, the conversation with yourself, is pinned first in DIRECT
+    // (CANT-254 ruling 1, A); the directs keep their recency order.
+    final directs = [
+      ...conversations.where((c) => c.kind == ConversationKind.self),
+      ...conversations.where((c) => c.kind == ConversationKind.direct),
+    ];
     final mono = TextStyle(fontFamily: fontMono, color: t.textMeta);
     return Scaffold(
       backgroundColor: t.surfaceRail,

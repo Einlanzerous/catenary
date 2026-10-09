@@ -247,7 +247,11 @@ List<ConversationView> conversationViews({
       id: c.id,
       // A kind this build does not know is listed with the rooms: `group` is
       // any number of members, which is the claim that cannot be wrong.
-      kind: c.kind == wire.ConversationKind.direct ? ConversationKind.direct : ConversationKind.group,
+      kind: switch (c.kind) {
+        wire.ConversationKind.direct => ConversationKind.direct,
+        wire.ConversationKind.self => ConversationKind.self,
+        _ => ConversationKind.group,
+      },
       // A direct is titled by the other member's live name, and by the
       // record's own only until that `User` is held (CANT-141).
       name: other?.name ?? c.name,
