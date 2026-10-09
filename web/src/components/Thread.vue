@@ -7,6 +7,7 @@ import {
   activeLog,
   activeTail,
   conversationTitle,
+  isSelf,
   newCount,
   otherMember,
   persistNotice,
@@ -26,11 +27,16 @@ interface Row { kind: 'message'; key: string; message: RenderedMessage; previous
 const conversation = computed(() => activeConversation.value!)
 
 /** The header chip: the kind's word, then the transport. See the template. */
-const chip = computed(() =>
-  conversation.value.kind === 'direct'
+const chip = computed(() => {
+  const c = conversation.value
+  // JUST YOU states the one membership fact the server keeps for a `self`
+  // conversation (exactly one member), and its last word is derived from the
+  // origin like every other chip's, never a literal (CANT-254, Invariant 3).
+  if (isSelf(c)) return `JUST YOU · ${transportLabel.value}`
+  return c.kind === 'direct'
     ? `DIRECT · ${transportLabel.value}`
-    : `${conversation.value.memberCount} MEMBERS · ${transportLabel.value}`,
-)
+    : `${c.memberCount} MEMBERS · ${transportLabel.value}`
+})
 
 /** The header's title and what Composer's placeholder names (CANT-141): the
  *  other member's live name once it is known, `conversation.name` only as
@@ -132,7 +138,9 @@ watch(
            and goes false the moment the other member is deactivated. Any
            other kind, the wire's `unknown` sentinel included, states the
            count: that is a fact the server sent, where DIRECT would claim a
-           kind this build did not recognize. -->
+           kind this build did not recognize. A `self` conversation reads
+           JUST YOU (CANT-254): one member, which the server keeps; never
+           E2E, and its last word is derived from the origin. -->
       <span class="members">{{ chip }}</span>
       <nav class="tools">
         <button>SEARCH</button>
