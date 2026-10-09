@@ -39,6 +39,7 @@ import 'address.dart';
 import 'connection.dart';
 import 'conversation.dart';
 import 'enrollment.dart';
+import 'ensure_self.dart';
 import 'session.dart';
 import 'start.dart';
 import 'status.dart';
@@ -419,12 +420,24 @@ final class AppStore extends ChangeNotifier {
     _typing.clear();
     _session = session;
     final transport = session.transport;
+    // Once per session, after the first completed catch-up (CANT-254 ruling 3,
+    // B). A failure is quiet; the next launch asks again.
+    final ensure = EnsureSelfOnce(
+      holdsSelf: () => _projection.conversations.any((c) => c.kind == wire.ConversationKind.self),
+      request: () async => await session.conversations.ensureSelf() is Started,
+      afterCreated: () {
+        if (_session == session && !_disposed) transport.catchUp();
+      },
+    );
     _offs = [
       transport.onApply((applied) {
         _projection = projectApplied(_projection, applied);
         _show();
       }),
-      transport.subscribe((_) => _showStatus()),
+      transport.subscribe((s) {
+        ensure.observe(ready: s.ready, caughtUp: s.caughtUp);
+        _showStatus();
+      }),
       // The server's list, verbatim: the order is the order they started.
       transport.onTyping((f) {
         _typing[f.conversationId] = List.of(f.userIds);
