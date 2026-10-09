@@ -16,6 +16,9 @@ html,
 body {
   margin: 0;
   padding: 0;
+  /* CANT-280: no rubber-band anywhere. The page never scrolls (the app is
+   * `height: 100%` and clips), and every scroller says so below. */
+  overscroll-behavior: none;
   background: var(--surface-base);
 }
 
@@ -77,6 +80,7 @@ button {
 
 .scroll {
   overflow-y: auto;
+  overscroll-behavior: none;
   scrollbar-width: thin;
   scrollbar-color: var(--surface-raised) transparent;
 }
