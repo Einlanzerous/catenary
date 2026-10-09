@@ -938,3 +938,118 @@ func (s *Store) createGroup(ctx context.Context, creator uuid.UUID, name string,
 	}
 	return out, true, nil
 }
+
+// selfConversationName is the stored name of every self conversation. The
+// conversations name CHECK requires a name for every non-direct kind and the
+// wire requires one for every Conversation, so it is stored rather than derived
+// (CANT-254). It is the same for every reader, because a self conversation has
+// exactly one.
+const selfConversationName = "Notes"
+
+// ErrBotCannotCreateSelf is a bot credential asking for a Notes conversation.
+// A bot is not a person and CreateGroup refuses it for the same reason
+// (ErrBotCannotCreateGroup); the handler answers 403.
+var ErrBotCannotCreateSelf = errors.New("store: find-or-create self: a bot cannot have a self conversation")
+
+// FindOrCreateSelf finds or creates viewer's conversation with only themselves
+// and returns it exactly as viewer would see it on /sync (CANT-254 ruling 0, B).
+//
+// ONE PER PERSON, KEYED BY THEIR OWN ID. direct_key holds viewer's user id and
+// conversations_self_key_idx (0012) is unique over it where kind = 'self', so the
+// idiom is findOrCreateDirect's: attempt the insert, ON CONFLICT DO NOTHING, and
+// read the winner back inside the SAME transaction. One conversations row and
+// one conversation_members row, however many callers race.
+//
+// IT IS NOT A DIRECT. FindOrCreateDirect still refuses the caller's own handle
+// (ErrSelfDirect) because a direct is two members and every reader downstream of
+// that kind assumes two. A self conversation is its own kind precisely so that
+// no reader has to guess: member_count is 1 by the ordinary active-member
+// predicate, other_member_id is absent, and name is the stored "Notes".
+//
+// A deactivated viewer never reaches this: Authenticate refuses them first.
+func (s *Store) FindOrCreateSelf(ctx context.Context, viewer uuid.UUID) (ConversationRow, error) {
+	c, err := s.findOrCreateSelf(ctx, viewer)
+	if err == nil {
+		return c, nil
+	}
+	if errors.Is(err, ErrBotCannotCreateSelf) {
+		s.logger.Info("find-or-create self refused", "viewer_id", viewer, "error", err.Error())
+		return ConversationRow{}, err
+	}
+	se := sendErrorFor(err)
+	s.logger.Log(ctx, se.Level(), "find-or-create self refused", append([]any{
+		"viewer_id", viewer,
+	}, se.LogAttrs()...)...)
+	return ConversationRow{}, se
+}
+
+func (s *Store) findOrCreateSelf(ctx context.Context, viewer uuid.UUID) (ConversationRow, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return ConversationRow{}, fmt.Errorf("store: find-or-create self: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// Only a person has a Notes (the same rule as CreateGroup, CANT-253 ruling
+	// 0): Deps.Caller also resolves a bot credential, and a bot has no rail to
+	// pin it in. Read, unlocked, as createGroup reads its creator's kind.
+	var kind string
+	if err := tx.QueryRow(ctx, `SELECT kind FROM users WHERE id = $1`, viewer).Scan(&kind); err != nil {
+		return ConversationRow{}, fmt.Errorf("store: find-or-create self: resolve viewer: %w", err)
+	}
+	if kind != "person" {
+		return ConversationRow{}, ErrBotCannotCreateSelf
+	}
+
+	key := viewer.String()
+
+	id := uuid.New()
+	created := false
+	err = tx.QueryRow(ctx, `
+		INSERT INTO conversations (id, kind, name, direct_key) VALUES ($1, 'self', $2, $3)
+		ON CONFLICT DO NOTHING
+		RETURNING id`, id, selfConversationName, key).Scan(&id)
+	switch {
+	case err == nil:
+		created = true
+	case errors.Is(err, pgx.ErrNoRows):
+		// AND kind = 'self', for findOrCreateDirect's reason: the index is
+		// partial, and restating its predicate is what lets this read use it.
+		if err := tx.QueryRow(ctx,
+			`SELECT id FROM conversations WHERE direct_key = $1 AND kind = 'self'`, key).Scan(&id); err != nil {
+			return ConversationRow{}, fmt.Errorf("store: find-or-create self: find existing: %w", err)
+		}
+	default:
+		return ConversationRow{}, fmt.Errorf("store: find-or-create self: insert: %w", err)
+	}
+
+	if created {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO conversation_members (conversation_id, user_id) VALUES ($1, $2)`,
+			id, viewer); err != nil {
+			return ConversationRow{}, fmt.Errorf("store: find-or-create self: insert member: %w", err)
+		}
+	}
+
+	// Read back on tx and BEFORE the bump, for findOrCreateDirect's reason: the
+	// counter draw stays last so the deployment-wide serialized section is
+	// draw-insert-commit and not the whole transaction.
+	out, err := s.conversationRowOne(ctx, tx, id, viewer)
+	if err != nil {
+		return ConversationRow{}, err
+	}
+
+	if created {
+		// One bump for the conversation and its one member row, LAST, right
+		// before Commit. Without it the row sits at DEFAULT 0, below every
+		// cursor, and is invisible to every client (CANT-89).
+		if _, err := newMetadataBump().conversation(id).member(id, viewer).apply(ctx, tx); err != nil {
+			return ConversationRow{}, err
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return ConversationRow{}, fmt.Errorf("store: find-or-create self: commit: %w", err)
+	}
+	return out, nil
+}

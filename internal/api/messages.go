@@ -166,6 +166,36 @@ func messagesHandler(d Deps) http.HandlerFunc {
 	}
 }
 
+// selfConversationHandler serves POST /conversations/self: find-or-create the
+// caller's conversation with only themselves (CANT-254). There is no request
+// body: the conversation is the caller's own, so there is nothing to name.
+// Returns the same wire.Conversation either way, exactly as /sync would, so a
+// client that calls it more than once is idempotent by construction.
+func selfConversationHandler(d Deps) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		caller, ok := d.Caller(r)
+		if !ok {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			return
+		}
+
+		c, err := d.FindOrCreateSelf(r.Context(), caller.UserID)
+		if err != nil {
+			if errors.Is(err, store.ErrBotCannotCreateSelf) {
+				writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+				return
+			}
+			var se *store.SendError
+			_ = errors.As(store.SendErrorFor(err), &se)
+			d.Logger.Log(r.Context(), se.Level(), "find-or-create self refused",
+				append([]any{"viewer_id", caller.UserID}, se.LogAttrs()...)...)
+			writeJSON(w, se.HTTPStatus(), se.Wire("find-or-create self failed"))
+			return
+		}
+		writeJSON(w, http.StatusOK, wireview.Conversation(c))
+	}
+}
+
 // directConversationHandler serves POST /conversations/direct: find-or-create
 // the direct conversation with a handle, so a bot can message someone it has
 // never spoken to without already knowing a conversation id. Returns the

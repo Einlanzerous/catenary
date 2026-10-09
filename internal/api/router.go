@@ -165,6 +165,11 @@ type Deps struct {
 	// only with Caller, so the safe absence is a route that does not exist.
 	Roster func(ctx context.Context, viewer uuid.UUID) ([]store.RosterRow, error)
 
+	// FindOrCreateSelf serves POST /conversations/self —
+	// store.Store.FindOrCreateSelf (CANT-254). Nil means the route is not
+	// registered, the same safe absence as FindOrCreateDirect.
+	FindOrCreateSelf func(ctx context.Context, viewer uuid.UUID) (store.ConversationRow, error)
+
 	// MediaURL derives a served URL from an opaque storage key. The same
 	// deriver /sync and the hub use (CANT-84): two derivers here would be the
 	// one way a REST-sent message's attachments could render a different URL
@@ -313,6 +318,9 @@ func NewRouter(d Deps) http.Handler {
 	}
 	if d.FindOrCreateDirect != nil && d.Caller != nil {
 		mux.HandleFunc("POST /conversations/direct", directConversationHandler(d))
+	}
+	if d.FindOrCreateSelf != nil && d.Caller != nil {
+		mux.HandleFunc("POST /conversations/self", selfConversationHandler(d))
 	}
 
 	if d.CreateGroup != nil && d.Caller != nil {
