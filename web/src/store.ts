@@ -29,6 +29,8 @@ import {
   type OutboxMessage,
   type RenderedMessage,
 } from '@/client-types'
+import { requestSelfConversation } from '@/account'
+import { createEnsureSelf } from '@/ensure-self'
 import { countWords } from '@/lib/format'
 import {
   BroadcastOutboxChannel,
@@ -985,9 +987,24 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
   // The countdown the banner reads ticks between status changes, so the
   // status is re-read once a second while nothing else moves it.
   const ticker = setInterval(() => showStatus(transport.status()), 1000)
+  // CANT-262: the self conversation is ensured once, after this session's first
+  // completed catch-up, and only when the journal holds none (CANT-254 ruling
+  // 3 → B). Nothing a person reads is written on failure.
+  const ensureSelf = createEnsureSelf({
+    holdsSelf: () => state.conversations.some(isSelf),
+    request: () =>
+      requestSelfConversation({
+        baseUrl: seams.baseUrl,
+        store: seams.store,
+        ...(seams.lock ? { lock: seams.lock } : {}),
+        ...(seams.fetch ? { fetch: seams.fetch } : {}),
+      }),
+    afterCreated: () => transport.catchUp(),
+  })
   const offs = [
     transport.onApply((applied) => show(projectApplied(projection, applied))),
     transport.subscribe(showStatus),
+    transport.subscribe((s) => ensureSelf.observe(s)),
     transport.onTyping((f) => {
       state.typing[f.conversationId] = [...f.userIds]
     }),
