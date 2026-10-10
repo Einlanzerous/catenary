@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/Einlanzerous/catenary/compare/v0.18.0...v0.18.1) (2026-10-10)
+
+
+### Bug Fixes
+
+* CANT-280 — web: pin the composer to the bottom and remove overscroll bounce ([#198](https://github.com/Einlanzerous/catenary/issues/198)) ([3458fa3](https://github.com/Einlanzerous/catenary/commit/3458fa3ba187b7d72d22533e8d9854986a60b950))
+* CANT-281 — web: a signed-out visitor at phone width lands on the sign-in form ([#200](https://github.com/Einlanzerous/catenary/issues/200)) ([b2c3adb](https://github.com/Einlanzerous/catenary/commit/b2c3adb5dffc2e25340e407c7e6bd7a5dad98e3e))
+
 ## [0.18.0](https://github.com/Einlanzerous/catenary/compare/v0.17.0...v0.18.0) (2026-10-09)
 
 
