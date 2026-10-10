@@ -8,18 +8,22 @@ import SearchView from './components/SearchView.vue'
 import Thread from './components/Thread.vue'
 
 /** Below 900px the rail is a full-screen first pane rather than a column. */
-const railOpen = ref(true)
+const railOpen = ref(state.view !== 'account' && state.view !== 'new')
 
 watch(
   () => state.activeId,
   () => (railOpen.value = false),
 )
 
-/** The picker is a main-pane view; below 900px that means leaving the rail. */
+/** The picker and the account view are main-pane views; below 900px that means
+ *  leaving the rail. For the account view this is also the sign-in form
+ *  (CANT-281): a visitor with no credential has no conversation to open and
+ *  nothing in the rail to tap, so the form has to be what is on screen, not
+ *  a pane hidden behind a rail with nothing in it. */
 watch(
   () => state.view,
   (view) => {
-    if (view === 'new') railOpen.value = false
+    if (view === 'new' || view === 'account') railOpen.value = false
   },
 )
 
@@ -38,7 +42,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="app" :class="{ 'rail-open': railOpen }">
-    <Rail class="pane-rail" />
+    <Rail class="pane-rail" @devices="railOpen = false" />
     <SearchView v-if="state.view === 'search'" class="pane-main" />
     <AccountView v-else-if="state.view === 'account'" class="pane-main" />
     <NewConversation v-else-if="state.view === 'new'" class="pane-main" />

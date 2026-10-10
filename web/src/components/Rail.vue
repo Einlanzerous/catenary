@@ -13,6 +13,15 @@ import Logomark from './Logomark.vue'
  */
 /** Computed: `state.me` is '' until a credential has been read. */
 const me = computed(() => user(state.me))
+
+/** DEVICES opens the account view, and below 900px the rail has to step aside
+ *  for it even when that view is already the current one (CANT-281) — a
+ *  watcher on `state.view` sees no change then, so the click says so itself. */
+const emit = defineEmits<{ devices: [] }>()
+function devices() {
+  openAccount()
+  emit('devices')
+}
 </script>
 
 <template>
@@ -65,7 +74,7 @@ const me = computed(() => user(state.me))
       <Avatar :user-id="state.me" :size="22" />
       <span class="name">{{ me?.name }}</span>
       <!-- CANT-38: log in, name a device, see sessions, revoke one. -->
-      <button class="devices-link" @click="openAccount">DEVICES</button>
+      <button class="devices-link" @click="devices">DEVICES</button>
       <!-- Only for an enrolled device: before one, nothing is linked and
            nothing is dialling, and a lamp would claim both. -->
       <template v-if="state.me">

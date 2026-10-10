@@ -1294,6 +1294,13 @@ async function main() {
     check('enrollment token field', loginPage.includes('ENROLLMENT TOKEN'))
     check('device name field', loginPage.includes('DEVICE NAME'))
     check('enroll submit button', loginPage.includes('ENROLL DEVICE'))
+    // CANT-281, the phone-width landmark. The server render has no layout
+    // engine, so it cannot see the 900px query; it asserts the half that is
+    // ours: with the account view up, the root is NOT `rail-open`, which is
+    // the class that hides the main pane (and the sign-in form in it) below
+    // 900px. A signed-out visitor at 390px lands on the form because of this.
+    const appRoot = loginPage.match(/<div class="app[^"]*"/)?.[0] ?? ''
+    check('the sign-in view is not behind an open rail (phone width)', appRoot !== '' && !appRoot.includes('rail-open'), appRoot)
     closeAccount()
 
     // 12b. CANT-28's one refusal shape: a bad token gets one message, and the
