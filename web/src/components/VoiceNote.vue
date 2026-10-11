@@ -6,6 +6,8 @@ import { duration } from '@/lib/format'
 import {
   cycleRate,
   isExpanded,
+  isSilent,
+  NO_SPEECH_LABEL,
   progressFor,
   seek,
   state,
@@ -45,6 +47,11 @@ const words = computed(() => transcriptWords(props.voice))
  *  the others, so it draws no strip at all. The Flutter app's arms, word for
  *  word (CANT-220 rulings 5 and 6, `app/lib/thread.dart`).
  *
+ *  A `ready` transcript with no words in it is `silent` (CANT-236 ruling 0,
+ *  A): the job finished and found no speech, so there is a label of its own
+ *  in the failed strip's shape and nothing to expand, copy or report. It is
+ *  tested before `ready`, so `EXPAND · 0 W` is never drawn.
+ *
  *  A note that has not left this device draws no strip either (CANT-249 ruling
  *  0, A): the outbox projects it with a `pending` transcript only because the
  *  wire type demands some state, and nothing is true of its transcript — no
@@ -52,7 +59,7 @@ const words = computed(() => transcriptWords(props.voice))
  *  appears honestly once the ack brings the server's own `pending`. The gate
  *  is on the message, read before the transcript state, so no state the server
  *  did not send is written anywhere. */
-const strip = computed<'pending' | 'ready' | 'failed' | 'none'>(() => {
+const strip = computed<'pending' | 'ready' | 'silent' | 'failed' | 'none'>(() => {
   if (isUnsent(props.message)) return 'none'
   const state = props.voice.transcript.state
   switch (state) {
@@ -61,6 +68,7 @@ const strip = computed<'pending' | 'ready' | 'failed' | 'none'>(() => {
     case 'failed':
       return 'failed'
     case 'ready':
+      if (isSilent(props.voice)) return 'silent'
       return transcriptText(props.voice) === undefined ? 'none' : 'ready'
     case 'unknown':
       return 'none'
@@ -146,6 +154,12 @@ const activeSegment = computed(() => {
            running and there is no transcript to open. -->
       <div v-else-if="strip === 'failed'" class="strip">
         <span class="label">NO TRANSCRIPT</span>
+      </div>
+
+      <!-- SILENT — no canvas frame either. The failed strip's shape under a
+           label of its own: the job did not fail, it found no words. -->
+      <div v-else-if="strip === 'silent'" class="strip">
+        <span class="label">{{ NO_SPEECH_LABEL }}</span>
       </div>
 
       <!-- C · EXPANDED ────────────────────────────────────────────── -->

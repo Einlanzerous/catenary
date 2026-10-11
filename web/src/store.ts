@@ -329,6 +329,19 @@ export const transcriptWords = (v: VoiceAttachment): number => {
   return text ? countWords(text) : 0
 }
 
+/** What the strip reads for a `ready` transcript with no words in it (CANT-236
+ *  ruling 0, A). The Flutter app's `noSpeechLabel`, character for character:
+ *  `no-speech.test.ts` reads it out of `app/lib/thread.dart`. */
+export const NO_SPEECH_LABEL = 'NO SPEECH'
+
+/** A finished job that found nothing to write down: `ready`, and the count
+ *  `EXPAND · N W` would print is zero. Decided by that count and by nothing
+ *  stored, so the strip and the count cannot disagree (Invariant 3). */
+export const isSilent = (v: VoiceAttachment | undefined): boolean => {
+  const text = transcriptText(v)
+  return text !== undefined && countWords(text) === 0
+}
+
 /* ── actions ───────────────────────────────────────────────────────────── */
 
 export function select(id: string) {
