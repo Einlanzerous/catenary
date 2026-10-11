@@ -435,6 +435,11 @@ class _FailedActions extends StatelessWidget {
   }
 }
 
+/// What the strip reads for a `ready` transcript with no words in it. The
+/// web's `VoiceNote.vue` draws the same label, and its test reads it from this
+/// line (CANT-236).
+const noSpeechLabel = 'NO SPEECH';
+
 /// A voice note: play, the server's waveform, the length — and under a
 /// hairline, the transcript, clamped to two lines until it is expanded (M9).
 /// `EXPAND · 96 W` is counted from the transcript's own text, so it cannot
@@ -464,7 +469,11 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
     final Widget? strip = widget.unsent ? null : switch (v.status) {
       TranscriptStatus.pending => _pending(t, small, v.eta),
       // No pulse and no accent: nothing is running, and nothing here is tappable.
-      TranscriptStatus.failed => Text('NO TRANSCRIPT', style: small.copyWith(letterSpacing: 1.26, color: t.textMeta)),
+      TranscriptStatus.failed => _verdict(t, small, 'NO TRANSCRIPT'),
+      // A finished job that found no words (CANT-236 ruling 0): the failed
+      // strip's shape under a label of its own, decided by the same count
+      // EXPAND prints, so there is never an `EXPAND · 0 W`.
+      TranscriptStatus.ready when transcript != null && countWords(transcript) == 0 => _verdict(t, small, noSpeechLabel),
       TranscriptStatus.ready when transcript != null => _transcript(t, small, transcript),
       TranscriptStatus.ready || TranscriptStatus.unknown => null,
     };
@@ -525,6 +534,10 @@ class _VoiceNoteBlockState extends State<VoiceNoteBlock> {
       ),
     );
   }
+
+  /// A strip that is one word about the job and nothing to tap.
+  Widget _verdict(CatenaryTokens t, TextStyle small, String label) =>
+      Text(label, style: small.copyWith(letterSpacing: 1.26, color: t.textMeta));
 
   /// A pending transcript (frame 04 B): the pulse, the word, the server's
   /// estimate when it sent one, and two skeleton lines. Each skeleton line
