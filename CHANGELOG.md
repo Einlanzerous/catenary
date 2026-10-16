@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.18.2](https://github.com/Einlanzerous/catenary/compare/v0.18.1...v0.18.2) (2026-10-16)
+
+
+### Bug Fixes
+
+* CANT-276 — the app draws NO SPEECH for a ready transcript with no words in it ([#201](https://github.com/Einlanzerous/catenary/issues/201)) ([5642bc8](https://github.com/Einlanzerous/catenary/commit/5642bc888f8422b357a2300a4c7d8a9fc375e14e))
+* CANT-277 — the web draws NO SPEECH for a ready transcript with no words in it ([#203](https://github.com/Einlanzerous/catenary/issues/203)) ([318dcb5](https://github.com/Einlanzerous/catenary/commit/318dcb5d4b1fe361f8a5ef69b8b8741865d20c17))
+* CANT-282 — web: every rail control reveals the main pane at phone width ([#206](https://github.com/Einlanzerous/catenary/issues/206)) ([04998b0](https://github.com/Einlanzerous/catenary/commit/04998b07f146b2ccbac2f4012406a67f8dcd1abc))
+
 ## [0.18.1](https://github.com/Einlanzerous/catenary/compare/v0.18.0...v0.18.1) (2026-10-10)
 
 
@@ -264,18 +273,14 @@
 
 ## [0.4.0](https://github.com/Einlanzerous/catenary/compare/v0.3.0...v0.4.0) (2026-09-12)
 
-> **Corrected by hand on 2026-10-16 (CANT-93).** The three entries from #29 (CANT-91) below were absent when this release was cut. #29 merged after the v0.3.0 tag with a `CANT-91:` squash subject, which is not a conventional-commit type, so release-please never saw it — the same cause as the 0.3.0 correction. The work shipped in this release either way; only the record of it was missing.
 
 ### Features
 
 * CANT-28 — the token model: four credential shapes, one authenticate seam ([#33](https://github.com/Einlanzerous/catenary/issues/33)) ([5339457](https://github.com/Einlanzerous/catenary/commit/533945713310cd3e5b0af0f58ff64949a18f2d5d))
-* a change marker /sync pages on, so a rename reaches a caught-up client ([#29](https://github.com/Einlanzerous/catenary/issues/29)) ([c77a803](https://github.com/Einlanzerous/catenary/commit/c77a803e70356d48be7151310ac6c570a37f208c))
 
 
 ### Bug Fixes
 
-* lock every row before the draw, and make Arm 2 able to fail ([#29](https://github.com/Einlanzerous/catenary/issues/29)) ([c77a803](https://github.com/Einlanzerous/catenary/commit/c77a803e70356d48be7151310ac6c570a37f208c))
-* FOR NO KEY UPDATE on the bump's rows — the users lock inverted against sends ([#29](https://github.com/Einlanzerous/catenary/issues/29)) ([c77a803](https://github.com/Einlanzerous/catenary/commit/c77a803e70356d48be7151310ac6c570a37f208c))
 * CANT-94 — resolve dependencies in verify.sh so CI and a local run make one claim ([#31](https://github.com/Einlanzerous/catenary/issues/31)) ([964ad33](https://github.com/Einlanzerous/catenary/commit/964ad33c415c5a149ad4c73dab8a05dc151fbb87))
 * CANT-98 — rename enrol to US enroll on the wire, in migration 0007 and on the route ([#35](https://github.com/Einlanzerous/catenary/issues/35)) ([3e50f16](https://github.com/Einlanzerous/catenary/commit/3e50f1650c41abd233300c3292dd35893e02af94))
 
