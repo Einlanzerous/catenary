@@ -14,13 +14,14 @@ import Logomark from './Logomark.vue'
 /** Computed: `state.me` is '' until a credential has been read. */
 const me = computed(() => user(state.me))
 
-/** DEVICES opens the account view, and below 900px the rail has to step aside
- *  for it even when that view is already the current one (CANT-281) — a
- *  watcher on `state.view` sees no change then, so the click says so itself. */
-const emit = defineEmits<{ devices: [] }>()
-function devices() {
-  openAccount()
-  emit('devices')
+/** Each rail control opens a main-pane view, and below 900px the rail has to
+ *  step aside for it even when that view is already the current one — a
+ *  watcher on `state.view` sees no change then, so the click says so itself.
+ *  DEVICES first (CANT-281); search and + NEW had the same hole (CANT-282). */
+const emit = defineEmits<{ reveal: [] }>()
+function reveal(open: () => void) {
+  open()
+  emit('reveal')
 }
 </script>
 
@@ -35,11 +36,11 @@ function devices() {
       </span>
       <!-- CANT-270: the one control for starting a conversation. Disabled
            while a create is in flight, and before a device is enrolled. -->
-      <button class="new" :disabled="!state.me || pickerState.busy" @click="openNew">+ NEW</button>
+      <button class="new" :disabled="!state.me || pickerState.busy" @click="reveal(openNew)">+ NEW</button>
     </header>
 
     <div class="search-slot">
-      <button class="search" @click="openSearch">
+      <button class="search" @click="reveal(openSearch)">
         <span class="glyph">⌕</span>
         <span class="placeholder">Search messages, transcripts</span>
         <!-- CTRL, not ⌘: iOS and macOS are out of scope, and a key cap
@@ -74,7 +75,7 @@ function devices() {
       <Avatar :user-id="state.me" :size="22" />
       <span class="name">{{ me?.name }}</span>
       <!-- CANT-38: log in, name a device, see sessions, revoke one. -->
-      <button class="devices-link" @click="devices">DEVICES</button>
+      <button class="devices-link" @click="reveal(openAccount)">DEVICES</button>
       <!-- Only for an enrolled device: before one, nothing is linked and
            nothing is dialling, and a lamp would claim both. -->
       <template v-if="state.me">
