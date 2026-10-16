@@ -7,23 +7,28 @@ import Rail from './components/Rail.vue'
 import SearchView from './components/SearchView.vue'
 import Thread from './components/Thread.vue'
 
+/** The views a rail control opens in the main pane. */
+const mainPaneViews: ReadonlySet<string> = new Set(['account', 'new', 'search'])
+
 /** Below 900px the rail is a full-screen first pane rather than a column. */
-const railOpen = ref(state.view !== 'account' && state.view !== 'new')
+const railOpen = ref(!mainPaneViews.has(state.view))
 
 watch(
   () => state.activeId,
   () => (railOpen.value = false),
 )
 
-/** The picker and the account view are main-pane views; below 900px that means
- *  leaving the rail. For the account view this is also the sign-in form
- *  (CANT-281): a visitor with no credential has no conversation to open and
- *  nothing in the rail to tap, so the form has to be what is on screen, not
- *  a pane hidden behind a rail with nothing in it. */
+/** The picker, the account view and search are main-pane views; below 900px
+ *  that means leaving the rail. For the account view this is also the sign-in
+ *  form (CANT-281): a visitor with no credential has no conversation to open
+ *  and nothing in the rail to tap, so the form has to be what is on screen,
+ *  not a pane hidden behind a rail with nothing in it. Search was missing from
+ *  this list, so at phone width the search control and Ctrl+K opened a view
+ *  nobody could see (CANT-282). */
 watch(
   () => state.view,
   (view) => {
-    if (view === 'new' || view === 'account') railOpen.value = false
+    if (mainPaneViews.has(view)) railOpen.value = false
   },
 )
 
@@ -42,7 +47,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
 
 <template>
   <div class="app" :class="{ 'rail-open': railOpen }">
-    <Rail class="pane-rail" @devices="railOpen = false" />
+    <Rail class="pane-rail" @reveal="railOpen = false" />
     <SearchView v-if="state.view === 'search'" class="pane-main" />
     <AccountView v-else-if="state.view === 'account'" class="pane-main" />
     <NewConversation v-else-if="state.view === 'new'" class="pane-main" />

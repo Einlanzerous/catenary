@@ -318,6 +318,12 @@ async function main() {
   check('search view renders', search.includes('RESULTS ·'))
   check('VOX tag present', search.includes('>VOX<'))
   check('JUMP TO present', search.includes('JUMP TO'))
+  // CANT-282, the phone-width landmark CANT-281 set for the sign-in view: the
+  // render has no layout engine and cannot see the 900px query, so it asserts
+  // our half — with search current the root is NOT `rail-open`, the class that
+  // hides the main pane (and the results in it) below 900px.
+  const searchRoot = search.match(/<div class="app[^"]*"/)?.[0] ?? ''
+  check('the search view is not behind an open rail (phone width)', searchRoot !== '' && !searchRoot.includes('rail-open'), searchRoot)
 
   // 4. Selecting a conversation clears its badge but keeps its unread rule.
   const bergen = state.conversations.find((c) => c.id === BERGEN)!
