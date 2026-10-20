@@ -49,8 +49,9 @@
 
   /* ── the logomark tile (canvas 07, form 1C) ───────────────── */
   /* The brand, not a state: the copper pushed one step toward yellow, so
-   * the tile reads as the mark and not as an unread lamp. Nothing else
-   * uses it. */
+   * the tile reads as the mark and not as an unread lamp. Two things wear
+   * it, both the brand speaking: the logomark tile and the rail's + NEW
+   * (CANT-302). It is never a state, which stays the copper's alone. */
   --accent-mark: #e5a03c;
 
   /* ── the only other color in the system ───────────────────── */

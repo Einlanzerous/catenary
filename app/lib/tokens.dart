@@ -106,7 +106,7 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
   final Color accentQueue;
   /// `--on-accent` — text on an accent fill
   final Color onAccent;
-  /// `--accent-mark` — the logomark tile; the brand, not a state. Nothing else uses it
+  /// `--accent-mark` — the logomark tile and the web rail's + NEW; the brand, not a state
   final Color accentMark;
   /// `--signal-fault` — failed send only — never decorative
   final Color signalFault;

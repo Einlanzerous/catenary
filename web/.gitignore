@@ -8,3 +8,4 @@ dist-ensure-self-test/
 dist-no-speech-test/
 *.local
 .DS_Store
+dist-rail-new-test/
