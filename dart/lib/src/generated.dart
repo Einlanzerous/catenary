@@ -827,7 +827,14 @@ final class ReplyRef {
 
   /// One line, rendered from the LIVE source message server-side, not frozen at send
   /// time. That is what lets a reply to a voice note back-fill its preview when the
-  /// transcript lands.
+  /// transcript lands. IT MAY BE THE EMPTY STRING: a voice source with no text of its own
+  /// and no transcript text (its transcript is pending, failed, or finished with no
+  /// words) previews as empty, and empty does not say which. A client draws its own label
+  /// for an empty voice preview, one that claims nothing it cannot back, and never an
+  /// empty line. FRESHNESS: a held empty preview is not refreshed by a catch-up, which
+  /// never re-serves a held message. A client that has the source message loaded reads
+  /// the transcript state from it; one that does not keeps the empty preview until a
+  /// bootstrap serves the reply again.
   final String preview;
 
   final DurationMs? durationMs;
