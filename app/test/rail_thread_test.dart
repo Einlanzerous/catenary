@@ -295,4 +295,21 @@ void main() {
     expect(find.text('attempt 3 · 0:08'), findsOneWidget);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('CANT-300 · the thread header\'s back, search and more controls are at least 48dp, and nothing clips at 360dp', (tester) async {
+    tester.view.physicalSize = const Size(360, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final kitchen = fixtureConversations(canvasNow).first;
+    await tester.pumpWidget(MaterialApp(
+      theme: catenaryTheme(Brightness.dark),
+      home: TickerMode(enabled: false, child: ThreadScreen(conversation: kitchen, connection: const ConnectionView.live())),
+    ));
+    for (final key in ['thread-back', 'thread-search', 'thread-more']) {
+      final size = tester.getSize(find.byKey(ValueKey(key)));
+      expect(size.width, greaterThanOrEqualTo(48), reason: key);
+      expect(size.height, greaterThanOrEqualTo(48), reason: key);
+    }
+    expect(tester.takeException(), isNull);
+  });
 }

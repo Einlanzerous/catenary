@@ -31,6 +31,13 @@ import 'widgets/status_mark.dart';
 import 'widgets/typing_row.dart';
 import 'widgets/waveform.dart';
 
+// The header's three controls. The canvas draws ‹ at 13px and ⌕ ⋯ at 11px with
+// no tap target; the app deliberately runs the glyphs about 50% larger and
+// gives each a 48dp target (CANT-300).
+const double _headerTarget = 48;
+const double _headerBackGlyph = 20;
+const double _headerGlyph = 17;
+
 class ThreadScreen extends StatelessWidget {
   const ThreadScreen({
     super.key,
@@ -74,23 +81,25 @@ class ThreadScreen extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Container(
-              height: 48,
+              // 48 of row under a 1px hairline: the controls' 48dp targets fit.
+              height: 49,
               decoration: BoxDecoration(
                 color: t.surfaceRail,
                 border: Border(bottom: BorderSide(color: t.lineHair)),
               ),
               child: Row(
                 children: [
-                  // 44px wide: the back affordance is the pane's only way out.
+                  // 48dp, Android's tap-target floor (CANT-300): the back
+                  // affordance is the pane's only way out.
                   GestureDetector(
                     key: const ValueKey('thread-back'),
                     behavior: HitTestBehavior.opaque,
                     onTap: onBack ?? () => Navigator.of(context).maybePop(),
                     child: SizedBox(
-                      width: 44,
-                      height: 48,
+                      width: _headerTarget,
+                      height: _headerTarget,
                       child: Center(
-                        child: Text('‹', style: mono.copyWith(fontSize: 13, color: t.accentWire)),
+                        child: Text('‹', style: mono.copyWith(fontSize: _headerBackGlyph, color: t.accentWire)),
                       ),
                     ),
                   ),
@@ -120,10 +129,18 @@ class ThreadScreen extends StatelessWidget {
                     ),
                   ),
                   // Drawn disabled: search and the thread's menu are not built.
-                  GlyphIcon(Glyph.search, color: t.textDisabled),
-                  const SizedBox(width: 14),
-                  GlyphIcon(Glyph.more, color: t.textDisabled),
-                  const SizedBox(width: CatenaryMetrics.s4),
+                  SizedBox(
+                    key: const ValueKey('thread-search'),
+                    width: _headerTarget,
+                    height: _headerTarget,
+                    child: Center(child: GlyphIcon(Glyph.search, color: t.textDisabled, size: _headerGlyph)),
+                  ),
+                  SizedBox(
+                    key: const ValueKey('thread-more'),
+                    width: _headerTarget,
+                    height: _headerTarget,
+                    child: Center(child: GlyphIcon(Glyph.more, color: t.textDisabled, size: _headerGlyph)),
+                  ),
                 ],
               ),
             ),
