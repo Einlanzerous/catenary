@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
-import { isSilent, jumpTo, messageById, NO_SPEECH_LABEL, transcriptText, user, voiceOf } from '@/store'
+import { isSilent, jumpTo, messageById, NO_SPEECH_LABEL, REPLY_NO_TRANSCRIPT_LABEL, REPLY_VOICE_NOTE_LABEL, transcriptText, user, voiceOf } from '@/store'
 
 /**
  * One line, always. Never wraps, never grows — ten replies in a row cost ten
@@ -27,10 +27,13 @@ const preview = computed(() => {
   if (props.reply.kind === 'voice') {
     // A loaded source whose job finished with no words (CANT-236 ruling 0, A).
     // The server's preview for it is '' too, so this has to be a literal here.
-    // A source that is not loaded has no state to read and keeps its preview:
-    // the stub cannot tell that from a reply to a failed note.
     if (isSilent(sourceVoice.value)) return NO_SPEECH_LABEL.toLowerCase()
-    return transcriptText(sourceVoice.value) ?? props.reply.preview
+    // Never an empty line (CANT-283). Text that exists is drawn as sent; if
+    // there is none, say only what the stub can derive from the state it holds.
+    const text = transcriptText(sourceVoice.value) ?? props.reply.preview
+    if (text.trim()) return text
+    if (sourceVoice.value?.transcript.state === 'failed') return REPLY_NO_TRANSCRIPT_LABEL
+    return REPLY_VOICE_NOTE_LABEL
   }
   if (props.reply.kind === 'image') return `photo · ${props.reply.preview}`
   return props.reply.preview

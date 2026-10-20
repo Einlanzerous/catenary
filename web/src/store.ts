@@ -334,6 +334,16 @@ export const transcriptWords = (v: VoiceAttachment): number => {
  *  `no-speech.test.ts` reads it out of `app/lib/thread.dart`. */
 export const NO_SPEECH_LABEL = 'NO SPEECH'
 
+/** What a reply stub reads when its loaded source's transcript `failed` and the
+ *  server's preview is empty (CANT-283). The strip's `NO TRANSCRIPT`, lowercased
+ *  as `no speech` is in the stub. */
+export const REPLY_NO_TRANSCRIPT_LABEL = 'no transcript'
+
+/** What a reply stub reads for a voice source whose text would otherwise be
+ *  empty and whose state it cannot read (not loaded, or a state this build does
+ *  not know). True of the source and claims nothing about a transcript. */
+export const REPLY_VOICE_NOTE_LABEL = 'voice note'
+
 /** A finished job that found nothing to write down: `ready`, and the count
  *  `EXPAND · N W` would print is zero. Decided by that count and by nothing
  *  stored, so the strip and the count cannot disagree (Invariant 3). */

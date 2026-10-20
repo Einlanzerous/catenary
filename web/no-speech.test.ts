@@ -3,8 +3,9 @@
  *
  *   the strip        NO SPEECH under the player for '' and for whitespace,
  *                    with nothing to expand, copy or report
- *   the reply stub   `no speech` when the source is loaded and silent; the
- *                    server's preview, untouched, when it is not loaded
+ *   the reply stub   `no speech` when the source is loaded and silent,
+ *                    `no transcript` when it failed, `voice note` when the
+ *                    source is not loaded; never an empty line (CANT-283)
  *   one label        the strip's word is the Flutter app's, read from
  *                    `app/lib/thread.dart` so neither can move alone
  *
@@ -22,7 +23,7 @@ import { createSSRApp } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import ReplyStub from '@/components/ReplyStub.vue'
 import VoiceNote from '@/components/VoiceNote.vue'
-import { NO_SPEECH_LABEL, state } from '@/store'
+import { NO_SPEECH_LABEL, REPLY_NO_TRANSCRIPT_LABEL, REPLY_VOICE_NOTE_LABEL, state } from '@/store'
 import type { Message, ReplyRef, Transcript, VoiceAttachment } from '@/wire/generated'
 
 const uuid = (n: number): string => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`
@@ -50,7 +51,7 @@ const strip = (transcript: Transcript) => {
   return renderToString(createSSRApp(VoiceNote, { message, voice: voice(transcript) }))
 }
 
-const stub = () => renderToString(createSSRApp(ReplyStub, { reply }))
+const stub = (r: ReplyRef = reply) => renderToString(createSSRApp(ReplyStub, { reply: r }))
 
 /** The stub's preview line alone, without the sender or the chip. */
 const previewOf = (html: string) => {
@@ -113,18 +114,44 @@ test('a reply to a loaded, silent voice note reads no speech', async () => {
   assert.equal(previewOf(await stub()), 'no speech')
 })
 
-test('a reply whose source is not loaded is the stub it was: the server’s preview and no literal', async () => {
-  const html = await stub()
-  assert.equal(previewOf(html), '')
-  for (const literal of ['no speech', 'no transcript', 'voice note']) {
-    assert.ok(!html.includes(literal), `${literal} in: ${html}`)
+test('a reply whose source is not loaded reads voice note, whatever the empty preview is', async () => {
+  for (const preview of ['', ' \n']) {
+    const html = await stub({ ...reply, preview })
+    assert.equal(previewOf(html), REPLY_VOICE_NOTE_LABEL)
+    for (const claim of ['no speech', 'no transcript']) {
+      assert.ok(!html.includes(claim), `${claim} in: ${html}`)
+    }
   }
 })
 
-test('a reply to a loaded note with words, or a failed one, is not labelled no speech', async () => {
+test('a reply to a loaded note with words is its text, and a failed one reads no transcript', async () => {
   state.messages = [note({ state: 'ready', text: 'two words' })]
   assert.equal(previewOf(await stub()), 'two words')
 
   state.messages = [note({ state: 'failed' })]
-  assert.equal(previewOf(await stub()), '')
+  assert.equal(previewOf(await stub()), REPLY_NO_TRANSCRIPT_LABEL)
+})
+
+test('a non-empty preview is drawn as sent, never replaced by a label', async () => {
+  const sent = { ...reply, preview: 'a caption' }
+  assert.equal(previewOf(await stub(sent)), 'a caption')
+  state.messages = [note({ state: 'failed' })]
+  assert.equal(previewOf(await stub(sent)), 'a caption')
+})
+
+test('no voice reply stub draws an empty preview, across the matrix', async () => {
+  const rows: [string, Transcript | undefined, string | RegExp][] = [
+    ['pending', { state: 'pending' }, 'transcript pending — no preview text yet'],
+    ['ready with words', { state: 'ready', text: 'two words' }, 'two words'],
+    ['ready silent', { state: 'ready', text: '' }, 'no speech'],
+    ['failed', { state: 'failed' }, REPLY_NO_TRANSCRIPT_LABEL],
+    ['unknown state', { state: 'queued' } as unknown as Transcript, REPLY_VOICE_NOTE_LABEL],
+    ['not loaded', undefined, REPLY_VOICE_NOTE_LABEL],
+  ]
+  for (const [name, transcript, want] of rows) {
+    state.messages = transcript ? [note(transcript)] : []
+    const got = previewOf(await stub())
+    assert.ok(got.trim() !== '', `${name} drew an empty preview`)
+    assert.equal(got, want, name)
+  }
 })
