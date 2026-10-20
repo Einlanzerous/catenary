@@ -128,16 +128,17 @@ function reveal(open: () => void) {
 }
 
 .new {
-  /* CANT-302: the rail header's primary action, in the brand gold. A 30px
-   * box in the 52px row; `::before` stretches the hit area past 44px. 8px a
-   * side, not 7: the 51px content box centers the box on a half pixel and
-   * the browser snaps the hit test inward by about a pixel. */
+  /* CANT-302: the rail header's primary action, in the brand gold. Its box
+   * is the logomark's height, 18px: the label's 12px line (from
+   * --type-label) plus one 2px padding on every side plus the 1px border.
+   * `::before` stretches the hit area past 44px: 14px a side, not 13, since
+   * the 51px content box centers the box on a half pixel and the browser
+   * snaps the hit test inward by about a pixel. */
   position: relative;
   flex: none;
-  height: 30px;
-  padding: 0 12px;
+  padding: 2px;
   font: var(--type-label);
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   letter-spacing: 0.1em;
   color: var(--on-accent);
@@ -147,7 +148,7 @@ function reveal(open: () => void) {
 .new::before {
   content: '';
   position: absolute;
-  inset: -8px 0;
+  inset: -14px 0;
 }
 /* --on-accent on the light gold is 3.26:1; --text-primary is 5.02:1. */
 :root[data-theme='light'] .new:not(:disabled) {
