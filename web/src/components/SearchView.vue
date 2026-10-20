@@ -24,8 +24,9 @@ const filter = ref<Filter>('all')
 const box = ref<HTMLInputElement | null>(null)
 
 /** The one place the count's wording lives; the field and the phone's own
- *  line both render it. */
-const countLabel = computed(() => `${hitCounts.value.all} RESULTS · 0.04 S`)
+ *  line both render it. No search time: the client measures nothing and the
+ *  server has no search endpoint to report one (CANT-295), so none is drawn. */
+const countLabel = computed(() => `${hitCounts.value.all} RESULTS`)
 onMounted(() => box.value?.focus())
 
 const shown = computed(() =>
