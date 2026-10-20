@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.19.0](https://github.com/Einlanzerous/catenary/compare/v0.18.3...v0.19.0) (2026-10-20)
+
+
+### Features
+
+* CANT-302 — web: the rail's + NEW is larger and drawn in the brand gold ([#216](https://github.com/Einlanzerous/catenary/issues/216)) ([8ad70ca](https://github.com/Einlanzerous/catenary/commit/8ad70ca356d4f4986551f072fadcf1ac153b4a20))
+
+
+### Bug Fixes
+
+* CANT-300 — app: thread header icons 50% larger with 48dp targets ([#215](https://github.com/Einlanzerous/catenary/issues/215)) ([4c68c06](https://github.com/Einlanzerous/catenary/commit/4c68c060ab6a3d5fe01b9efaad9d835887f4e536))
+
 ## [0.18.3](https://github.com/Einlanzerous/catenary/compare/v0.18.2...v0.18.3) (2026-10-20)
 
 
