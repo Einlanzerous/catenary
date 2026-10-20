@@ -22,6 +22,10 @@ type Filter = 'all' | 'text' | 'voice' | 'images'
 const filter = ref<Filter>('all')
 
 const box = ref<HTMLInputElement | null>(null)
+
+/** The one place the count's wording lives; the field and the phone's own
+ *  line both render it. */
+const countLabel = computed(() => `${hitCounts.value.all} RESULTS · 0.04 S`)
 onMounted(() => box.value?.focus())
 
 const shown = computed(() =>
@@ -70,19 +74,24 @@ function onKeydown(event: KeyboardEvent) {
 <template>
   <section class="search">
     <header class="head">
-      <div class="field">
-        <span class="glyph">⌕</span>
-        <input
-          ref="box"
-          v-model="state.query"
-          class="input"
-          placeholder="Search messages and transcripts"
-          @keydown="onKeydown"
-        />
-        <span class="count meta tnum">
-          {{ hitCounts.all }} RESULTS · 0.04 S
-        </span>
+      <div class="field-row">
+        <div class="field">
+          <span class="glyph">⌕</span>
+          <input
+            ref="box"
+            v-model="state.query"
+            class="input"
+            placeholder="Search messages and transcripts"
+            @keydown="onKeydown"
+          />
+          <span class="count meta tnum">{{ countLabel }}</span>
+        </div>
+        <!-- CANT-294: phone width only. The desktop close is the ESC CLOSES
+             key cap in the filter row; a phone has no Esc key, so this one is
+             labeled for what it does. -->
+        <button class="close-btn" @click="closeSearch">CLOSE</button>
       </div>
+      <p class="count-line meta tnum">{{ countLabel }}</p>
 
       <div class="filters">
         <button
@@ -210,11 +219,24 @@ function onKeydown(event: KeyboardEvent) {
   border-bottom: 1px solid var(--line-hair);
 }
 
-.field {
+.field-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: center;
   max-width: 720px;
+}
+
+.close-btn,
+.count-line {
+  display: none;
+}
+
+.field {
+  display: flex;
+  flex: 1;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
   height: 38px;
   padding: 0 12px;
   background: var(--surface-base);
@@ -445,15 +467,34 @@ function onKeydown(event: KeyboardEvent) {
   }
   /* CANT-293: a phone has no room for three facets that do not act yet
    * (CANT-298), and a nowrap row of them is what made the pane 513px wide.
-   * The chips stay and wrap. */
+   * The chips stay and wrap. The ESC CLOSES key cap goes with them (it is a
+   * `.facet`): CLOSE in the field row replaces it (CANT-294). */
   .search {
     grid-template-columns: minmax(0, 1fr);
   }
   .filters {
     flex-wrap: wrap;
   }
-  .facet:not(.close) {
+  .facet {
     display: none;
+  }
+  .field .count {
+    display: none;
+  }
+  .count-line {
+    display: block;
+    margin: 8px 0 0;
+    font-size: 10px;
+  }
+  .close-btn {
+    display: block;
+    flex: none;
+    min-height: 44px;
+    padding: 0 12px;
+    font: var(--type-label);
+    letter-spacing: 0.12em;
+    color: var(--text-secondary);
+    border: 1px solid var(--line-edge);
   }
 }
 </style>
