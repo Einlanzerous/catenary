@@ -315,7 +315,10 @@ async function main() {
     `jump=${hits.find((h) => h.jumpToMs !== undefined)?.jumpToMs}ms`)
   openSearch()
   const search = await render()
-  check('search view renders', search.includes('RESULTS ·'))
+  // CANT-295: the count is `N RESULTS`, N derived from the same hits, and no
+  // time follows it — the search time that used to follow was a literal, not a measurement.
+  check('search view renders', search.includes(`>${hits.length} RESULTS<`), `${hits.length} RESULTS`)
+  check('the result count carries no invented search time', !/RESULTS\s*·|\d S</.test(search))
   check('VOX tag present', search.includes('>VOX<'))
   check('JUMP TO present', search.includes('JUMP TO'))
   // CANT-282, the phone-width landmark CANT-281 set for the sign-in view: the
@@ -999,9 +1002,9 @@ async function main() {
   // elementWithId keys on. So a search-page assertion has to look inside the
   // results list specifically, or the first match is the rail's row for that
   // id, not the hit — searchResultsOnly slices from SearchView's own landmark
-  // (section 3's own 'RESULTS ·', which nothing in the rail renders) onward.
+  // (section 3's own 'RESULTS', which nothing in the rail renders) onward.
   function searchResultsOnly(html: string): string {
-    return html.slice(html.indexOf('RESULTS ·'))
+    return html.slice(html.indexOf('RESULTS'))
   }
 
   // The header is not the only place its own text can appear, either — a
