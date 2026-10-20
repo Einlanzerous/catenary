@@ -443,5 +443,17 @@ function onKeydown(event: KeyboardEvent) {
   .head {
     padding: 12px var(--s4);
   }
+  /* CANT-293: a phone has no room for three facets that do not act yet
+   * (CANT-298), and a nowrap row of them is what made the pane 513px wide.
+   * The chips stay and wrap. */
+  .search {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .filters {
+    flex-wrap: wrap;
+  }
+  .facet:not(.close) {
+    display: none;
+  }
 }
 </style>
