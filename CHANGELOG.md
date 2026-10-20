@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.18.3](https://github.com/Einlanzerous/catenary/compare/v0.18.2...v0.18.3) (2026-10-20)
+
+
+### Bug Fixes
+
+* CANT-289 — web: the reply stub never draws an empty line for a failed or unloaded voice source ([#207](https://github.com/Einlanzerous/catenary/issues/207)) ([60dad99](https://github.com/Einlanzerous/catenary/commit/60dad998a763d790c3c6f478ac6928acbc363bcf))
+* CANT-293 — web: search drops its inert facets below 900px and lets the chips wrap ([#209](https://github.com/Einlanzerous/catenary/issues/209)) ([fc74cb4](https://github.com/Einlanzerous/catenary/commit/fc74cb46a992376b67c61889cc80b8fd4be840c0))
+* CANT-294 — web: CLOSE at the end of the search field row on a phone, the count on its own line ([#210](https://github.com/Einlanzerous/catenary/issues/210)) ([65ce68e](https://github.com/Einlanzerous/catenary/commit/65ce68e462ff0a82fdcee180ae4a6b1221fa51d3))
+* CANT-295 — web: the search count no longer claims a hard-coded 0.04 S ([#211](https://github.com/Einlanzerous/catenary/issues/211)) ([2b67413](https://github.com/Einlanzerous/catenary/commit/2b67413320452bdf041472e86a1f2b39faeaca9d))
+
 ## [0.18.2](https://github.com/Einlanzerous/catenary/compare/v0.18.1...v0.18.2) (2026-10-16)
 
 
