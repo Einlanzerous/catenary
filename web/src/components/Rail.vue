@@ -96,6 +96,9 @@ function reveal(open: () => void) {
 }
 
 .brand {
+  /* A grid item's min-width is auto, which lets a long `.who` stretch the
+   * implicit column past the rail; 0 holds the header to the rail's width. */
+  min-width: 0;
   display: flex;
   gap: 10px;
   align-items: center;
@@ -110,27 +113,58 @@ function reveal(open: () => void) {
   color: var(--text-primary);
 }
 
+/* CANT-302: the label yields first. It truncates with an ellipsis so a long
+ * name never pushes `+ NEW` out of the 304px header (`min-width: 0` lets a
+ * flex item shrink below its text). */
 .who {
   margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font: var(--type-label);
   letter-spacing: 0.1em;
   color: var(--text-meta);
 }
 
 .new {
+  /* CANT-302: the rail header's primary action, in the brand gold. A 30px
+   * box in the 52px row; `::before` stretches the hit area past 44px. 8px a
+   * side, not 7: the 51px content box centers the box on a half pixel and
+   * the browser snaps the hit test inward by about a pixel. */
+  position: relative;
   flex: none;
-  padding: 1px 5px;
+  height: 30px;
+  padding: 0 12px;
   font: var(--type-label);
-  font-size: 9.5px;
+  font-size: 12px;
+  font-weight: 600;
   letter-spacing: 0.1em;
-  color: var(--text-secondary);
-  border: 1px solid var(--line-edge);
+  color: var(--on-accent);
+  background: var(--accent-mark);
+  border: 1px solid transparent;
 }
-.new:hover:not(:disabled) {
+.new::before {
+  content: '';
+  position: absolute;
+  inset: -8px 0;
+}
+/* --on-accent on the light gold is 3.26:1; --text-primary is 5.02:1. */
+:root[data-theme='light'] .new:not(:disabled) {
   color: var(--text-primary);
 }
+.new:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.new:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+/* A disabled control never looks like a dimmed primary action: no fill. */
 .new:disabled {
   color: var(--text-disabled);
+  background: none;
+  border-color: var(--line-edge);
   cursor: not-allowed;
 }
 
