@@ -89,6 +89,10 @@ function reveal(open: () => void) {
 <style scoped>
 .rail {
   display: grid;
+  /* CANT-304: an unset column is `auto`, which grows to the widest
+   * min-content in the rail (a long footer name, a long title) and pushes the
+   * right-hand controls past --rail-w. minmax(0, 1fr) holds it to the rail. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: 52px 48px 1fr 52px;
   overflow: hidden;
   background: var(--surface-rail);
@@ -246,7 +250,17 @@ function reveal(open: () => void) {
   border-top: 1px solid var(--line-hair);
 }
 
+/* The name yields first; everything else in the footer keeps its size (the
+ * lamp is 6px, and shrank to 2px once the name could be squeezed). */
+.me > :not(.name) {
+  flex: none;
+}
+
 .me .name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 13px;
   color: var(--text-primary);
 }
