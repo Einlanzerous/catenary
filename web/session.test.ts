@@ -64,6 +64,36 @@ afterEach(() => {
   sockets = 0
 })
 
+test('CANT-303 · the store is seeded connecting, which draws no banner, and a hung first dial claims nothing', async () => {
+  // Before any session exists, and then with a first dial that has not opened.
+  assert.equal(state.connection.state, 'connecting', 'the seed is not `reconnecting`: nothing has been lost')
+  const store = new MemoryCredentialStore(enrolled(Date.now()))
+  const journal = new MemoryJournal()
+  assert.equal(await startSession({ baseUrl: BASE, store, journal, WebSocket: DeadSocket, fetch: unreachable, logger: quiet }), true)
+  assert.equal(state.connection.state, 'connecting', 'a first dial in flight is still not lost')
+  endSession()
+})
+
+test('CANT-303 · a refused connection shows the banner state on the first status after the failure', async () => {
+  /** A socket whose connect is refused: closes without ever opening. */
+  class RefusedSocket extends DeadSocket {
+    constructor() {
+      super()
+      queueMicrotask(() => setTimeout(() => {
+        this.onerror?.({})
+        this.onclose?.({ code: 1006 })
+      }, 0))
+    }
+  }
+  const store = new MemoryCredentialStore(enrolled(Date.now()))
+  const journal = new MemoryJournal()
+  await startSession({ baseUrl: BASE, store, journal, WebSocket: RefusedSocket, fetch: unreachable, logger: quiet })
+  for (let i = 0; i < 50 && state.connection.state === 'connecting'; i++) await new Promise((r) => setTimeout(r, 10))
+  assert.equal(state.connection.state, 'reconnecting', 'the failure is reported, so the banner draws')
+  assert.equal(state.connection.attempt, 1)
+  endSession()
+})
+
 test('CANT-230 · the web does not open another account’s journal: the claim wipes it before a transport is built', async () => {
   const factory = new IDBFactory()
   // The journal as one account's visits left it…

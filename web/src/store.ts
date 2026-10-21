@@ -105,10 +105,12 @@ const state = reactive({
   view: 'thread' as View,
   theme: 'dark' as Theme,
 
-  /** `connectionInfo` over the live transport's status — it fills only what
+  /** SEEDED `connecting`, NOT `reconnecting` (CANT-303): until the transport
+   *  reports, nothing has been lost, and the banner draws nothing for it.
+   *  `connectionInfo` over the live transport's status — it fills only what
    *  it knows, so `synced`/`total`/`roomsPending` are absent, not 0, whenever
    *  there is no number to show. */
-  connection: { state: 'reconnecting' } as ConnectionInfo,
+  connection: { state: 'connecting' } as ConnectionInfo,
 
   composer: {
     draft: '',
