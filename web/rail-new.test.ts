@@ -11,6 +11,9 @@
  *   the states     hover is a brightness step, focus-visible an outline,
  *                  disabled drops the fill; no raw hex anywhere in the rule
  *   `.who`         truncates with an ellipsis so the button never yields
+ *   the footer     (CANT-304) the rail's one column is `minmax(0, 1fr)`, not
+ *                  `auto`; `.me .name` and a row's `.name` truncate with an
+ *                  ellipsis; the footer's other items do not shrink
  *   the bindings   @click, :disabled and reveal(openNew) as CANT-270 wrote
  *
  * It parses the rules of Rail.vue and tokens.css into property maps and
@@ -27,13 +30,15 @@ import { resolve } from 'node:path'
 
 const rail = readFileSync(resolve(process.cwd(), 'src/components/Rail.vue'), 'utf8')
 const tokens = readFileSync(resolve(process.cwd(), 'src/styles/tokens.css'), 'utf8')
-const style = rail.slice(rail.indexOf('<style'))
+const style = rail.slice(rail.indexOf('>', rail.indexOf('<style')) + 1)
+const rowSrc = readFileSync(resolve(process.cwd(), 'src/components/ConversationRow.vue'), 'utf8')
+const rowStyle = rowSrc.slice(rowSrc.indexOf('>', rowSrc.indexOf('<style')) + 1)
 
 /** The declarations of the one rule whose selector is `selector`, as a
  *  property map: comments, whitespace, ordering and the spelling of values
  *  (`-8px 0` against `-8px  0`) do not matter to what is asserted. */
-const rule = (selector: string): Record<string, string> => {
-  const css = style.replace(/\/\*[\s\S]*?\*\//g, '')
+const rule = (selector: string, source: string = style): Record<string, string> => {
+  const css = source.replace(/\/\*[\s\S]*?\*\//g, '')
   const norm = (x: string) => x.replace(/\s+/g, ' ').trim()
   const re = /([^{}]+)\{([^{}]*)\}/g
   for (let m = re.exec(css); m; m = re.exec(css)) {
@@ -45,7 +50,7 @@ const rule = (selector: string): Record<string, string> => {
     }
     return out
   }
-  assert.fail(`Rail.vue has a rule for ${selector}`)
+  assert.fail(`no rule for ${selector}`)
 }
 
 /** CSS box shorthand (1 to 4 values) as [top, right, bottom, left] in px. */
@@ -160,4 +165,23 @@ test('the button keeps CANT-270 wiring: click, disabled, reveal(openNew)', () =>
   const attrs = squash(m[1])
   assert.ok(attrs.includes(':disabled="!state.me||pickerState.busy"'), attrs)
   assert.ok(attrs.includes('@click="reveal(openNew)"'), attrs)
+})
+
+test('the rail column cannot grow past the rail, and long names truncate (CANT-304)', () => {
+  // An unset column is `auto`, which grows to the widest min-content inside
+  // it: a 40-character footer name made the rail's content 353px in a 304px
+  // rail. minmax(0, 1fr) has a zero floor, so the column is the rail's width.
+  assert.equal(rule('.rail')['grid-template-columns'], 'minmax(0, 1fr)')
+  const name = rule('.me .name')
+  assert.equal(parseFloat(name['min-width']), 0)
+  assert.equal(name.overflow, 'hidden')
+  assert.equal(name['text-overflow'], 'ellipsis')
+  assert.equal(name['white-space'], 'nowrap')
+  assert.equal(rule('.me > :not(.name)').flex, 'none', 'the controls and the lamp keep their size')
+  const title = rule('.name', rowStyle)
+  assert.equal(parseFloat(title['min-width']), 0)
+  assert.equal(title.overflow, 'hidden')
+  assert.equal(title['text-overflow'], 'ellipsis')
+  assert.equal(title['white-space'], 'nowrap')
+  assert.equal(rule('.preview', rowStyle)['text-overflow'], 'ellipsis')
 })
