@@ -123,13 +123,33 @@ export function emptyStats(): Stats {
 }
 
 /**
+ * True while the transport has not yet reported anything going wrong or right:
+ * no session ever established, no dial that failed to open, no socket closed,
+ * no failed sync, no refresh hold, no token refusal, and not past the first
+ * dial. Each of those is a fact the transport reports; the absence of all of
+ * them is "not yet connected", which is not "lost" (CANT-303). The first
+ * failure flips it at once, so a real outage still shows the banner promptly.
+ */
+function isFirstAttempt(status: TransportStatus): boolean {
+  const st = status.stats
+  const closed = Object.values(st.closeStatuses).some((n) => n > 0)
+  return (
+    st.readys === 0 && st.dialErrors === 0 && !closed && st.syncErrors === 0 &&
+    st.heartbeatSevers === 0 && st.dials <= 1 && status.attempt <= 1 &&
+    status.refreshHold === 'none' && !status.tokenRefused
+  )
+}
+
+/**
  * What `ConnectionBanner` reads, from what the transport knows. Pure: `now`
  * and `online` (`navigator.onLine`) are passed in.
  *
  * TERMINAL FIRST, because neither terminal ends on a network change (CANT-31
  * §6): an offline device that is also terminal is told it is terminal. Then
  * `offline` when the browser says so; then `live` or `resyncing` for a ready
- * session; and `reconnecting` for everything between dials.
+ * session; `connecting` for the first attempt of a transport that has not yet
+ * reported a failure or a session (CANT-303); and `reconnecting` for everything
+ * between dials after that.
  */
 export function connectionInfo(status: TransportStatus, env: { now: number; online?: boolean }): ConnectionInfo {
   const extra = {
@@ -163,6 +183,7 @@ export function connectionInfo(status: TransportStatus, env: { now: number; onli
       ...extra,
     }
   }
+  if (isFirstAttempt(status)) return { state: 'connecting', ...extra }
   return {
     state: 'reconnecting',
     attempt: Math.max(1, status.attempt),

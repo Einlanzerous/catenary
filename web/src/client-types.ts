@@ -77,7 +77,9 @@ export const isOutboxMessage = (m: RenderedMessage): m is OutboxMessage =>
  *  transcribing it (Invariant 3, CANT-235). */
 export const isUnsent = (m: RenderedMessage): boolean => isOutboxMessage(m) && m.state !== 'sent'
 
-/** The reconnect state machine's own labels. No wire equivalent — a session
+/** The reconnect state machine's own labels. `connecting` is the first attempt
+ *  of a transport that has reported nothing yet (CANT-303): nothing has been
+ *  lost, so nothing draws a banner. No wire equivalent — a session
  *  either is or isn't attached, and everything in between (backing off,
  *  resyncing) is this client's own bookkeeping about getting there.
  *
@@ -85,7 +87,7 @@ export const isUnsent = (m: RenderedMessage): boolean => isOutboxMessage(m) && m
  *  relaunched or re-enrolled, which is not the same thing as a backoff that
  *  has grown to its ceiling — and nothing queued will drain, so nothing may say
  *  it will (Invariant 3, CANT-35 criterion 30). */
-export type ConnectionState = 'live' | 'reconnecting' | 'resyncing' | 'offline' | 'terminal'
+export type ConnectionState = 'connecting' | 'live' | 'reconnecting' | 'resyncing' | 'offline' | 'terminal'
 
 export interface ConnectionInfo {
   state: ConnectionState

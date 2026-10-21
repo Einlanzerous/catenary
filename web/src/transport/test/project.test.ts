@@ -85,7 +85,8 @@ test('criterion 16 · connectionInfo maps every transport state onto the banner\
   assert.deepEqual(connectionInfo(status({ attempt: 3, nextDialAt: now + 4_100 }), { now }), {
     state: 'reconnecting', attempt: 3, retryInSec: 5, refreshHold: 'none', tokenRefused: false,
   })
-  assert.equal(connectionInfo(status({ connected: true }), { now }).state, 'reconnecting', 'open, not yet ready')
+  assert.equal(connectionInfo(status({ connected: true }), { now }).state, 'connecting', 'open, not yet ready, nothing failed')
+  assert.equal(connectionInfo(status({ connected: true, stats: { ...emptyStats(), readys: 1 } }), { now }).state, 'reconnecting', 'a session was held')
   assert.equal(connectionInfo(status({ connected: true, ready: true, caughtUp: false }), { now }).state, 'resyncing')
   assert.equal(connectionInfo(status({ connected: true, ready: true, caughtUp: true }), { now }).state, 'live')
   assert.equal(connectionInfo(status({ ready: true }), { now, online: false }).state, 'offline')
@@ -126,4 +127,18 @@ test('CANT-37 · resync counts toward head_seq, never a spinner, and never a 0 /
 
   // It reaches head_seq: caughtUp flips, and the numbers give way to 'live'.
   assert.equal(connectionInfo(status({ connected: true, ready: true, caughtUp: true, messages: 1000, headSeqTotal: 1000 }), { now }).state, 'live')
+})
+
+test('CANT-303 · not yet connected is not lost, and a real outage is lost at once', () => {
+  const now = 1_000_000
+  const first = connectionInfo(status({ attempt: 1, stats: { ...emptyStats(), dials: 1 } }), { now })
+  assert.equal(first.state, 'connecting', 'the first dial in flight claims nothing')
+  assert.equal(connectionInfo(status({}), { now }).state, 'connecting', 'before the first dial')
+  const refused = connectionInfo(status({ attempt: 1, nextDialAt: now + 1_000, stats: { ...emptyStats(), dials: 1, dialErrors: 1 } }), { now })
+  assert.equal(refused.state, 'reconnecting', 'a refused first dial shows the banner on the first status')
+  assert.equal(refused.attempt, 1)
+  const closed = connectionInfo(status({ attempt: 1, stats: { ...emptyStats(), dials: 1, closeStatuses: { 1001: 1 } } }), { now })
+  assert.equal(closed.state, 'reconnecting', 'a socket that closed before ready is a failure')
+  assert.equal(connectionInfo(status({ attempt: 2, stats: { ...emptyStats(), dials: 2 } }), { now }).state, 'reconnecting')
+  assert.equal(connectionInfo(status({}), { now, online: false }).state, 'offline', 'offline still wins')
 })

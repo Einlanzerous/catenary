@@ -275,6 +275,7 @@ function reveal(open: () => void) {
 .live.resyncing {
   animation: catPulse 1.2s ease-in-out infinite;
 }
+.live.connecting,
 .live.offline,
 .live.terminal {
   background: var(--text-disabled);
