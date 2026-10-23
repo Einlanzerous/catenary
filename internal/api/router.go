@@ -18,6 +18,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/magos/catenary/internal/media"
 	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/webui"
 	"github.com/magos/catenary/internal/wire"
@@ -182,6 +183,12 @@ type Deps struct {
 	Upload     UploadFunc
 	UploadCaps map[string]int64
 
+	// MediaSigner, MediaStore and MediaInfo together register GET /media/{key}
+	// (CANT-311); with any nil the route does not exist.
+	MediaSigner *media.Signer
+	MediaStore  media.Store
+	MediaInfo   MediaInfoFunc
+
 	// MediaURL derives a served URL from an opaque storage key. The same
 	// deriver /sync and the hub use (CANT-84): two derivers here would be the
 	// one way a REST-sent message's attachments could render a different URL
@@ -302,6 +309,10 @@ func NewRouter(d Deps) http.Handler {
 
 	if d.Upload != nil && d.CallerID != nil && len(d.UploadCaps) > 0 {
 		mux.HandleFunc("POST /uploads", uploadHandler(d))
+	}
+
+	if d.MediaSigner != nil && d.MediaStore != nil && d.MediaInfo != nil {
+		mux.HandleFunc("GET /media/{key}", mediaHandler(d))
 	}
 
 	if d.Enroll != nil {

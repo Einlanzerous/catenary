@@ -169,7 +169,7 @@
         },
         "url": {
           "type": "string",
-          "description": "Media URL. Opaque to the client; may be presigned and time-limited."
+          "description": "Media URL. Opaque to the client; stable, not time-limited."
         },
         "duration_ms": {
           "$ref": "#/$defs/DurationMs"
@@ -540,7 +540,7 @@
         },
         "upload_id": {
           "$ref": "#/$defs/Uuid",
-          "description": "Handle returned by the presigned-upload flow. The client sends this, never the media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed server-side on ingest, so the client cannot report them and cannot get them wrong."
+          "description": "Handle returned by the upload endpoint. The client sends this, never the media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed server-side on ingest, so the client cannot report them and cannot get them wrong."
         }
       }
     },

@@ -205,7 +205,7 @@ components:
           type: "string"
         url:
           type: "string"
-          description: "Media URL. Opaque to the client; may be presigned and time-limited."
+          description: "Media URL. Opaque to the client; stable, not time-limited."
         duration_ms:
           "$ref": "#/components/schemas/DurationMs"
         peaks:

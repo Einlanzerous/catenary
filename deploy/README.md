@@ -101,6 +101,7 @@ One without the other **refuses to boot**, with a message naming the missing var
 | variable | meaning |
 |---|---|
 | `CATENARY_MEDIA_DIR` | the directory media lives in, as `blobs/<hh>/<sha256>` with a `tmp/` beside it. **Optional**: unset, there is no `POST /uploads` and every attachment send is refused `upload_not_found`, so a deployment that predates the volume keeps booting |
+| `CATENARY_MEDIA_URL_KEYS` | `1=<hex>,2=<hex>`: the secrets media URLs are signed with, at least 32 bytes (64 hex characters) each. The **last** entry signs and all verify, so a key is rotated by appending one. **Required with `CATENARY_MEDIA_DIR`** (boot refuses naming the variable). Generated in Signet, never in a file, a compose fragment or a ticket |
 | `CATENARY_MAX_IMAGE_BYTES` | byte cap on an image upload. Default 16 MiB |
 | `CATENARY_MAX_VOICE_BYTES` | byte cap on a voice upload. Default 8 MiB |
 
