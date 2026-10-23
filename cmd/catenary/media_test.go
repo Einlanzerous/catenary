@@ -184,7 +184,8 @@ func TestOnlyImagesAndAudioAreServedInline(t *testing.T) {
 
 func TestARotatedInKeyKeepsEarlierURLsWorking(t *testing.T) {
 	r := newUploadRig(t)
-	u, key := r.sendImage(pngBytes(t, 7), nil)
+	main := pngBytes(t, 7)
+	u, key := r.sendImage(main, nil)
 
 	// A second process with kid 2 added: the newest key signs, the old URL verifies.
 	rotated := "1=" + strings.Repeat("ab", 32) + ",2=" + strings.Repeat("cd", 32)
@@ -195,12 +196,11 @@ func TestARotatedInKeyKeepsEarlierURLsWorking(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, u, nil)
 	rec := httptest.NewRecorder()
 	d2.router.ServeHTTP(rec, req)
-	// processFixtureWith reset the database, so the row is gone, but a valid
-	// signature on an old kid must get past the 403.
-	if rec.Code == http.StatusForbidden {
-		t.Fatalf("a kid 1 URL was refused after kid 2 was added")
+	// The blob is still on disk (the fixture reset only the database), so the
+	// kid 1 URL must serve it: 200 and the same bytes, not merely "not 403".
+	if rec.Code != http.StatusOK || !bytes.Equal(rec.Body.Bytes(), main) {
+		t.Fatalf("a kid 1 URL after kid 2 was added = %d; want 200 with the image", rec.Code)
 	}
-	_ = key
 	s2, err := media.ParseKeys(rotated)
 	if err != nil {
 		t.Fatal(err)

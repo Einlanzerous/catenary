@@ -164,7 +164,9 @@ there is no second listener and no such route anywhere in the process.
 // wireview turns rows into wire types, and neither should import the other's
 // transport concerns.
 //
-// MediaURL is mediaURL below, the one deriver both transports share.
+// serveSync uses the identity deriver mediaURL and is what the tests call; the
+// running process goes through serveSyncWith with setup()'s `derive`, the one
+// function /sync, the hub and REST share.
 func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
 	return serveSyncWith(ctx, st, viewer, after, limit, mediaURL)
 }
@@ -188,16 +190,13 @@ func serveSyncWith(ctx context.Context, st *store.Store, viewer uuid.UUID, after
 	}, store.ServerTime().Format(wireview.TimeLayout)), nil
 }
 
-// mediaURL derives a served URL from an opaque storage key, and it is the
-// identity for now. CANT-47 decides whether a served url is a presigned R2 GET
-// or a Traefik route, and until it does the honest thing is to hand back the
-// storage key rather than invent a URL shape that would be wrong the moment
-// that lands.
+// mediaURL is the identity deriver: it hands back the storage key. It is what a
+// process with no CATENARY_MEDIA_DIR runs, and what serveSync's tests use.
 //
-// ONE FUNCTION FOR BOTH TRANSPORTS. /sync's page and the hub's `message`
-// frame are built by the same wireview.Message, and this is the one input to
-// it that the composition root supplies; two derivers here would be the one
-// way the socket's Message and REST's could still differ (CANT-84).
+// WITH A MEDIA DIRECTORY THE DERIVER IS setup()'s `derive` (CANT-311), the
+// signed URL CANT-47 chose, and that one function is handed to /sync, the hub
+// and REST. Two derivers anywhere would be the one way the socket's Message and
+// REST's could differ (CANT-84).
 func mediaURL(storageKey string) string { return storageKey }
 
 // sessionConn adapts *api.Session to hub.Conn. The session's UserID and

@@ -92,7 +92,7 @@
     },
     "VoiceAttachment.url": {
       "kind": "derived",
-      "note": "Derived at serve time from attachments.storage_key. NOT stored: the wire says it may be presigned and time-limited, so whether it is an R2 GET or a Traefik route is CANT-47's decision and a stored URL is wrong the moment that lands."
+      "note": "Derived at serve time from attachments.storage_key. NOT stored: CANT-47 chose a stable HMAC-signed /media/{key} URL with no expiry, which is a pure function of the key and the signing keys, so a stored URL would go stale the moment a key is rotated."
     },
     "VoiceAttachment.duration_ms": {
       "kind": "column",
