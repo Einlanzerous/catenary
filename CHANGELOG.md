@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.20.0](https://github.com/Einlanzerous/catenary/compare/v0.19.0...v0.20.0) (2026-10-23)
+
+
+### Features
+
+* CANT-309 — the upload foundation: 0013_uploads, a local-disk MediaStore, POST /uploads and the real resolver ([#222](https://github.com/Einlanzerous/catenary/issues/222)) ([a2716ee](https://github.com/Einlanzerous/catenary/commit/a2716ee7190b5247aa6902ffa83e8ffe1d0b3f4e))
+* CANT-310 — image ingest: sniff, orientation, re-encode without metadata, thumbnail, blurhash ([#224](https://github.com/Einlanzerous/catenary/issues/224)) ([784379c](https://github.com/Einlanzerous/catenary/commit/784379ce3a7fc5b150ba1bd7a4aadcdb07e4313e))
+* CANT-311 — signed media serving: GET /media/{key}, &v=thumb, key rotation, one URL deriver ([#223](https://github.com/Einlanzerous/catenary/issues/223)) ([ea92496](https://github.com/Einlanzerous/catenary/commit/ea92496cb4395264825a09f222c4d36f5d59d2bf))
+
+
+### Bug Fixes
+
+* CANT-303 — web: no "Connection lost" banner before the transport's first report ([#219](https://github.com/Einlanzerous/catenary/issues/219)) ([9c341c1](https://github.com/Einlanzerous/catenary/commit/9c341c1d1ba1b2ffc449629143ed64fe794c36ab))
+* CANT-304 — web: a long name in the rail footer truncates instead of widening the rail ([#218](https://github.com/Einlanzerous/catenary/issues/218)) ([80b2111](https://github.com/Einlanzerous/catenary/commit/80b2111951123ee8f2e3675f6fd918b7ccfdc2f9))
+
 ## [0.19.0](https://github.com/Einlanzerous/catenary/compare/v0.18.3...v0.19.0) (2026-10-20)
 
 
