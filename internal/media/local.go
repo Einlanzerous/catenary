@@ -122,7 +122,26 @@ func (l *Local) Put(ctx context.Context, r io.Reader, max int64) (string, int64,
 		return "", 0, fmt.Errorf("media: commit: %w", err)
 	}
 	committed = true
+	// The rename is only durable once the directory that holds it is. Without
+	// this, power lost after the caller commits its uploads row can leave the row
+	// naming a key with no file, while the fsynced bytes sit in tmp/ for the
+	// next boot's sweep to delete. blobs/ is synced too, for the <hh> directory
+	// MkdirAll may just have created.
+	for _, d := range []string{filepath.Dir(dst), filepath.Join(l.dir, "blobs")} {
+		if err := syncDir(d); err != nil {
+			return "", 0, fmt.Errorf("media: sync %s: %w", d, err)
+		}
+	}
 	return key, n, nil
+}
+
+func syncDir(path string) error {
+	d, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 // Open implements Store.
