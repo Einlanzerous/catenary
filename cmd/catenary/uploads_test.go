@@ -16,8 +16,13 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"hash/crc32"
+	"image"
+	"image/color"
+	"image/jpeg"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -158,10 +163,9 @@ func TestUploadRefusals(t *testing.T) {
 	if code, _ := r.upload("not-a-token", "?kind=voice", []byte("x")); code != http.StatusUnauthorized {
 		t.Errorf("bad credential = %d; want 401", code)
 	}
-	// image is refused until CANT-310's ingest exists: stored as uploaded it
-	// would keep its EXIF.
+	// kind=image takes images only: bytes that are not one are 415 (CANT-310).
 	if code, _ := r.upload(r.token, "?kind=image", []byte("x")); code != http.StatusUnsupportedMediaType {
-		t.Errorf("kind=image = %d; want 415", code)
+		t.Errorf("kind=image with a non-image body = %d; want 415", code)
 	}
 	if code, _ := r.upload(r.token, "?kind=video", []byte("x")); code != http.StatusUnsupportedMediaType {
 		t.Errorf("unknown kind = %d; want 415", code)
@@ -348,5 +352,152 @@ func TestTwoConcurrentSendsOfOneHandleYieldExactlyOneMessage(t *testing.T) {
 		if !((a == http.StatusOK && b == http.StatusNotFound) || (a == http.StatusNotFound && b == http.StatusOK)) {
 			t.Fatalf("round %d: concurrent sends of one handle = %d and %d; want one 200 and one 404", i, a, b)
 		}
+	}
+}
+
+// ---- CANT-310: image ingest through the route ------------------------------
+
+func jpegWithGPS(t *testing.T, sentinel string) []byte {
+	t.Helper()
+	img := image.NewNRGBA(image.Rect(0, 0, 640, 480))
+	for y := 0; y < 480; y++ {
+		for x := 0; x < 640; x++ {
+			img.Set(x, y, color.NRGBA{uint8(x), uint8(y), 128, 255})
+		}
+	}
+	var b bytes.Buffer
+	if err := jpeg.Encode(&b, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw := b.Bytes()
+	// An APP1 segment that carries the sentinel; whether it parses as TIFF is
+	// not the point, that it does not come out the other side is.
+	payload := append([]byte("Exif\x00\x00"), []byte("GPSLatitude="+sentinel)...)
+	seg := []byte{0xFF, 0xE1, byte((len(payload) + 2) >> 8), byte(len(payload) + 2)}
+	out := append([]byte{}, raw[:2]...)
+	out = append(out, seg...)
+	out = append(out, payload...)
+	return append(out, raw[2:]...)
+}
+
+func (r *uploadRig) blob(key string) []byte {
+	r.t.Helper()
+	b, err := os.ReadFile(filepath.Join(r.dir, "blobs", key[:2], key))
+	if err != nil {
+		r.t.Fatalf("blob %s: %v", key, err)
+	}
+	return b
+}
+
+func TestAnImageUploadIsIngestedStoredAndReady(t *testing.T) {
+	r := newUploadRig(t)
+	const sentinel = "47.6062N-GPS-SENTINEL"
+	in := jpegWithGPS(t, sentinel)
+
+	code, out := r.upload(r.token, "?kind=image&filename=../../etc/Holiday%0A.jpg", in)
+	if code != http.StatusCreated {
+		t.Fatalf("POST /uploads?kind=image = %d: %v", code, out)
+	}
+	handle := uuid.MustParse(out["upload_id"])
+
+	var key, thumbKey, placeholder, filename string
+	var width, height int
+	var n int64
+	if err := r.pool.QueryRow(r.ctx,
+		`SELECT storage_key, thumb_key, placeholder, filename, width, height, bytes FROM uploads WHERE id = $1`, handle).
+		Scan(&key, &thumbKey, &placeholder, &filename, &width, &height, &n); err != nil {
+		t.Fatal(err)
+	}
+	if width != 640 || height != 480 {
+		t.Errorf("recorded %dx%d; want 640x480", width, height)
+	}
+	if filename != "Holiday.jpg" {
+		t.Errorf("filename = %q; want the sanitized last element", filename)
+	}
+	if len(placeholder) != 28 {
+		t.Errorf("blurhash %q", placeholder)
+	}
+	if key == thumbKey {
+		t.Error("the thumbnail shares the image's blob")
+	}
+	stored, thumb := r.blob(key), r.blob(thumbKey)
+	if int64(len(stored)) != n {
+		t.Errorf("bytes = %d; the stored blob is %d", n, len(stored))
+	}
+	// The stored key is the hash of the RE-ENCODED bytes, not of the upload.
+	if bytes.Contains(stored, []byte(sentinel)) || bytes.Contains(thumb, []byte(sentinel)) || bytes.Contains(stored, []byte("Exif")) {
+		t.Error("the sentinel in the upload's EXIF came out the other side")
+	}
+	if bytes.Equal(stored, in) {
+		t.Error("the upload was stored verbatim")
+	}
+
+	// And the row is READY: the real resolver turns it into an attachment.
+	code, raw := r.send(r.token, att("image", handle))
+	if code != http.StatusOK {
+		t.Fatalf("send with an ingested handle = %d: %s", code, raw)
+	}
+	var m wire.Message
+	if err := json.Unmarshal(raw, &m); err != nil || len(m.Attachments) != 1 {
+		t.Fatalf("decode: %v, %d attachments", err, len(m.Attachments))
+	}
+}
+
+func TestAnImageUploadWithNoFilenameGetsADefault(t *testing.T) {
+	r := newUploadRig(t)
+	code, out := r.upload(r.token, "?kind=image", jpegWithGPS(t, "x"))
+	if code != http.StatusCreated {
+		t.Fatalf("= %d", code)
+	}
+	var filename string
+	if err := r.pool.QueryRow(r.ctx, `SELECT filename FROM uploads WHERE id = $1`, out["upload_id"]).Scan(&filename); err != nil {
+		t.Fatal(err)
+	}
+	if filename != "image.jpg" {
+		t.Errorf("filename = %q; want image.jpg", filename)
+	}
+}
+
+func TestImageRefusalsStoreNothing(t *testing.T) {
+	r := newUploadRig(t)
+	// 100000 x 100000 RGBA: a few dozen bytes on the wire, 40 GB decoded.
+	ihdr := make([]byte, 13)
+	binary.BigEndian.PutUint32(ihdr[0:], 100000)
+	binary.BigEndian.PutUint32(ihdr[4:], 100000)
+	ihdr[8], ihdr[9] = 8, 6
+	crc := crc32.NewIEEE()
+	crc.Write([]byte("IHDR"))
+	crc.Write(ihdr)
+	bomb := []byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x0dIHDR")
+	bomb = append(bomb, ihdr...)
+	bomb = binary.BigEndian.AppendUint32(bomb, crc.Sum32())
+	cases := []struct {
+		name string
+		body []byte
+		want int
+	}{
+		{"a body labelled as a JPEG that is text", []byte("not an image"), http.StatusUnsupportedMediaType},
+		{"an SVG", []byte(`<svg xmlns="http://www.w3.org/2000/svg"><script>1</script></svg>`), http.StatusUnsupportedMediaType},
+		{"HEIC", append([]byte{0, 0, 0, 24}, []byte("ftypheic\x00\x00\x00\x00mif1heic")...), http.StatusUnsupportedMediaType},
+		{"a decompression bomb", bomb, http.StatusRequestEntityTooLarge},
+	}
+	for _, c := range cases {
+		req := httptest.NewRequest(http.MethodPost, "/uploads?kind=image", bytes.NewReader(c.body))
+		req.Header.Set("Authorization", "Bearer "+r.token)
+		req.Header.Set("Content-Type", "image/jpeg") // never trusted
+		if code, body := do(t, r.d.router, req); code != c.want {
+			t.Errorf("%s = %d: %s; want %d", c.name, code, body, c.want)
+		}
+	}
+	var rows, files int
+	_ = r.pool.QueryRow(r.ctx, `SELECT count(*) FROM uploads`).Scan(&rows)
+	_ = filepath.WalkDir(filepath.Join(r.dir, "blobs"), func(_ string, e os.DirEntry, _ error) error {
+		if e != nil && !e.IsDir() {
+			files++
+		}
+		return nil
+	})
+	if rows != 0 || files != 0 {
+		t.Errorf("refusals left %d row(s) and %d blob(s)", rows, files)
 	}
 }

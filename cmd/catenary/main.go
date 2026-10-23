@@ -283,21 +283,25 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			panic("CATENARY_MEDIA_DIR cannot be used: " + err.Error())
 		}
 		st = st.WithUploadResolver(store.PostgresUploads{})
-		uploadFn = func(ctx context.Context, uploader uuid.UUID, kind string, body io.Reader, max int64) (uuid.UUID, error) {
+		uploadFn = func(ctx context.Context, uploader uuid.UUID, kind, filename string, body io.Reader, max int64) (uuid.UUID, error) {
+			if kind == "image" {
+				return ingestImageUpload(ctx, ms, st, uploader, filename, body)
+			}
 			key, n, err := ms.Put(ctx, body, max)
 			if err != nil {
 				return uuid.Nil, err
 			}
 			return st.CreateUpload(ctx, store.NewUpload{Uploader: uploader, Kind: kind, StorageKey: key, Bytes: n})
 		}
-		// VOICE ONLY until CANT-310's ingest exists. An image stored as
-		// uploaded would keep its EXIF, GPS included, so the kind is absent
-		// from this map and the route answers it 415.
 		voiceMax := int64(cfg.MaxVoiceBytes)
 		if voiceMax == 0 {
 			voiceMax = config.DefaultMaxVoiceBytes
 		}
-		uploadCaps = map[string]int64{"voice": voiceMax}
+		imageMax := int64(cfg.MaxImageBytes)
+		if imageMax == 0 {
+			imageMax = config.DefaultMaxImageBytes
+		}
+		uploadCaps = map[string]int64{"voice": voiceMax, "image": imageMax}
 	}
 
 	var db api.Pinger

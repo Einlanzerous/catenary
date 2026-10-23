@@ -57,11 +57,22 @@ func uploadHandler(d Deps) http.HandlerFunc {
 			return
 		}
 
-		id, err := d.Upload(r.Context(), uploader, kind, http.MaxBytesReader(w, r.Body, max), max)
+		id, err := d.Upload(r.Context(), uploader, kind, r.URL.Query().Get("filename"), http.MaxBytesReader(w, r.Body, max), max)
 		if err != nil {
 			var tooBig *http.MaxBytesError
 			if errors.Is(err, media.ErrTooLarge) || errors.As(err, &tooBig) {
 				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "upload is over the size cap"})
+				return
+			}
+			// Ingest's refusals (CANT-310): bytes that are not an image this
+			// binary can decode, and an image whose declared dimensions are a
+			// decompression bomb.
+			if errors.Is(err, media.ErrUnsupportedType) {
+				writeJSON(w, http.StatusUnsupportedMediaType, map[string]string{"error": "not a supported image type (JPEG, PNG, GIF and WebP are)"})
+				return
+			}
+			if errors.Is(err, media.ErrImageTooLarge) {
+				writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "image dimensions are over the limit"})
 				return
 			}
 			// A client that hung up mid-body is not a server fault and not a
@@ -81,4 +92,7 @@ func uploadHandler(d Deps) http.HandlerFunc {
 // UploadFunc stores body (at most max bytes) as a blob of the given kind and
 // records the handle for uploader. The composition root supplies it; this
 // package neither knows the media store nor the database.
-type UploadFunc func(ctx context.Context, uploader uuid.UUID, kind string, body io.Reader, max int64) (uuid.UUID, error)
+//
+// filename is the client's suggested name from ?filename=, unsanitized; only an
+// image row records one.
+type UploadFunc func(ctx context.Context, uploader uuid.UUID, kind, filename string, body io.Reader, max int64) (uuid.UUID, error)

@@ -205,6 +205,13 @@ type NewUpload struct {
 	Kind       string // voice | image
 	StorageKey string // the media store's key for the stored bytes
 	Bytes      int64
+
+	// Image only (CANT-310); nil leaves the column NULL.
+	ThumbKey    *string
+	Width       *int
+	Height      *int
+	Placeholder *string
+	Filename    *string
 }
 
 // CreateUpload records an upload and returns its handle: the single-use id a
@@ -215,8 +222,9 @@ type NewUpload struct {
 func (s *Store) CreateUpload(ctx context.Context, u NewUpload) (uuid.UUID, error) {
 	id := uuid.New()
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO uploads (id, uploader, kind, storage_key, bytes) VALUES ($1, $2, $3, $4, $5)`,
-		id, u.Uploader, u.Kind, u.StorageKey, u.Bytes); err != nil {
+		`INSERT INTO uploads (id, uploader, kind, storage_key, bytes, thumb_key, width, height, placeholder, filename)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+		id, u.Uploader, u.Kind, u.StorageKey, u.Bytes, u.ThumbKey, u.Width, u.Height, u.Placeholder, u.Filename); err != nil {
 		return uuid.Nil, fmt.Errorf("store: create upload: %w", err)
 	}
 	return id, nil

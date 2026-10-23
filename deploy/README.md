@@ -101,7 +101,7 @@ One without the other **refuses to boot**, with a message naming the missing var
 | variable | meaning |
 |---|---|
 | `CATENARY_MEDIA_DIR` | the directory media lives in, as `blobs/<hh>/<sha256>` with a `tmp/` beside it. **Optional**: unset, there is no `POST /uploads` and every attachment send is refused `upload_not_found`, so a deployment that predates the volume keeps booting |
-| `CATENARY_MAX_IMAGE_BYTES` | byte cap on an image upload. Default 16 MiB |
+| `CATENARY_MAX_IMAGE_BYTES` | byte cap on an image upload. Default 16 MiB. Images are decoded and re-encoded on upload (JPEG, PNG, GIF first frame and WebP; HEIC and AVIF are `415`), so the process holds one image in memory per concurrent upload |
 | `CATENARY_MAX_VOICE_BYTES` | byte cap on a voice upload. Default 8 MiB |
 
 The directory must be **writable by `nobody`**, the image's user, and a directory that is not refuses to boot naming the variable rather than failing at the first upload. `tmp/` is emptied at every boot. **Media is not in Postgres, so it is not in a database backup**: the volume is a `construct-backup` source, taken **after** the database so a restored message never points at a blob the media snapshot lacks (CANT-47 section 6). The `construct-server` change is **SERV-244**; this file holds the decision, not a compose fragment.
