@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"path/filepath"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -39,7 +40,7 @@ func ingestImageUpload(ctx context.Context, ms media.Store, st *store.Store, upl
 	if err != nil {
 		return uuid.Nil, err
 	}
-	name := safeFilename(filename, img.Ext)
+	name := withExt(safeFilename(filename, img.Ext), img.Ext)
 	w, h := img.Width, img.Height
 	return st.CreateUpload(ctx, store.NewUpload{
 		Uploader: uploader, Kind: "image", StorageKey: key, Bytes: n,
@@ -63,7 +64,7 @@ func safeFilename(raw, ext string) string {
 		raw = strings.ToValidUTF8(raw, "")
 	}
 	raw = strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == ' ' || r == ' ' {
+		if unicode.IsControl(r) || unicode.Is(unicode.Cf, r) || r == '\u2028' || r == '\u2029' {
 			return -1
 		}
 		return r
@@ -76,4 +77,22 @@ func safeFilename(raw, ext string) string {
 		return "image" + ext
 	}
 	return raw
+}
+
+// withExt makes the recorded name's extension match the bytes actually stored.
+// GIF and WebP are stored as PNG, and a client that saves the attachment under
+// its recorded name would otherwise write PNG bytes to clip.gif. A .jpeg name on
+// a JPEG is left alone.
+func withExt(name, ext string) string {
+	cur := strings.ToLower(filepath.Ext(name))
+	if cur == ext || (ext == ".jpg" && cur == ".jpeg") {
+		return name
+	}
+	if cur != "" && len(cur) <= 6 && !strings.ContainsAny(cur[1:], " ") {
+		name = strings.TrimSuffix(name, filepath.Ext(name))
+	}
+	if name == "" {
+		name = "image"
+	}
+	return name + ext
 }

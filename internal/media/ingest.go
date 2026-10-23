@@ -42,11 +42,18 @@ var (
 )
 
 const (
-	// MaxPixels bounds width*height, checked on image.DecodeConfig. A 16 MiB
-	// file can declare a hundred-thousand-pixel-wide canvas that inflates to
-	// gigabytes when decoded; 64 megapixels is a 9000x7000 photograph with room
-	// to spare, and about 256 MiB of RGBA at the worst.
-	MaxPixels = 64 << 20
+	// MaxPixels bounds width*height, checked on image.DecodeConfig before any
+	// pixel is decoded. 48 Mi pixels admits the Pixel 9 Pro's 50 MP mode
+	// (8160x6144) and nothing much larger.
+	//
+	// THE MEMORY THIS ADMITS IS NOT THE FILE SIZE. The worst case is a
+	// progressive 4:2:0 JPEG with an orientation of 5-8: the decoder's
+	// coefficient blocks (int32 per sample: 8 per pixel at 4:2:0), the YCbCr
+	// image (1.5 per pixel) and orient's NRGBA copy (4 per pixel) are all live,
+	// about 11.7 bytes per pixel, so roughly 560 MiB for one upload at the limit.
+	// A deployment sizes its container for that times the uploads it expects at
+	// once (deploy/README.md).
+	MaxPixels = 48 << 20
 
 	// ThumbEdge is the thumbnail's longest side in pixels.
 	ThumbEdge = 320

@@ -24,3 +24,19 @@ func TestSafeFilename(t *testing.T) {
 		}
 	}
 }
+
+func TestWithExt(t *testing.T) {
+	for _, c := range []struct{ name, ext, want string }{
+		{"photo.jpg", ".jpg", "photo.jpg"},
+		{"photo.JPEG", ".jpg", "photo.JPEG"},
+		{"clip.gif", ".png", "clip.png"},
+		{"photo.webp", ".png", "photo.png"},
+		{"holiday", ".png", "holiday.png"},
+		{"v1.2 final", ".png", "v1.2 final.png"},
+		{"image.jpg", ".png", "image.png"},
+	} {
+		if got := withExt(c.name, c.ext); got != c.want {
+			t.Errorf("withExt(%q, %q) = %q; want %q", c.name, c.ext, got, c.want)
+		}
+	}
+}
