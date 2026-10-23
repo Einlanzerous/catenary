@@ -135,6 +135,7 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
   CATENARY_MAX_MESSAGE_BYTES  UTF-8 byte bound on a message body. Default 16384.
   CATENARY_MAX_ATTACHMENTS    how many attachments one send may carry. Default 16, at most %d.
   CATENARY_MEDIA_DIR          directory uploaded media lives in. Unset: no upload route, attachments refused.
+  CATENARY_MEDIA_URL_KEYS     "1=<hex>,2=<hex>", at least 32 bytes each; the last signs. Required with CATENARY_MEDIA_DIR.
   CATENARY_MAX_IMAGE_BYTES    byte cap on an image upload. Default 16 MiB.
   CATENARY_MAX_VOICE_BYTES    byte cap on a voice upload. Default 8 MiB.
   CATENARY_HEARTBEAT_INTERVAL_SEC  how often ready tells the client to ping. Default 35, 5-90.
@@ -163,8 +164,16 @@ there is no second listener and no such route anywhere in the process.
 // wireview turns rows into wire types, and neither should import the other's
 // transport concerns.
 //
-// MediaURL is mediaURL below, the one deriver both transports share.
+// serveSync uses the identity deriver mediaURL and is what the tests call; the
+// running process goes through serveSyncWith with setup()'s `derive`, the one
+// function /sync, the hub and REST share.
 func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
+	return serveSyncWith(ctx, st, viewer, after, limit, mediaURL)
+}
+
+// serveSyncWith is serveSync with the deriver setup() chose, so /sync, the hub
+// and REST all take the SAME function (CANT-84).
+func serveSyncWith(ctx context.Context, st *store.Store, viewer uuid.UUID, after int64, limit int, derive func(string) string) (wire.SyncResponse, error) {
 	page, err := st.Sync(ctx, viewer, after, limit)
 	if err != nil {
 		return wire.SyncResponse{}, err
@@ -177,20 +186,17 @@ func serveSync(ctx context.Context, st *store.Store, viewer uuid.UUID, after int
 	// get wrong. CANT-26.
 	return wireview.Sync(page, wireview.SyncViewer{
 		UserID:   viewer,
-		MediaURL: mediaURL,
+		MediaURL: derive,
 	}, store.ServerTime().Format(wireview.TimeLayout)), nil
 }
 
-// mediaURL derives a served URL from an opaque storage key, and it is the
-// identity for now. CANT-47 decides whether a served url is a presigned R2 GET
-// or a Traefik route, and until it does the honest thing is to hand back the
-// storage key rather than invent a URL shape that would be wrong the moment
-// that lands.
+// mediaURL is the identity deriver: it hands back the storage key. It is what a
+// process with no CATENARY_MEDIA_DIR runs, and what serveSync's tests use.
 //
-// ONE FUNCTION FOR BOTH TRANSPORTS. /sync's page and the hub's `message`
-// frame are built by the same wireview.Message, and this is the one input to
-// it that the composition root supplies; two derivers here would be the one
-// way the socket's Message and REST's could still differ (CANT-84).
+// WITH A MEDIA DIRECTORY THE DERIVER IS setup()'s `derive` (CANT-311), the
+// signed URL CANT-47 chose, and that one function is handed to /sync, the hub
+// and REST. Two derivers anywhere would be the one way the socket's Message and
+// REST's could differ (CANT-84).
 func mediaURL(storageKey string) string { return storageKey }
 
 // sessionConn adapts *api.Session to hub.Conn. The session's UserID and
@@ -264,6 +270,12 @@ var webClient = webui.Embedded
 // buildable without a database, and /readyz reports ready rather than lying
 // about a dependency that was never wired.
 func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
+	// CANT-311: the one deriver every transport shares. Identity until a media
+	// directory is configured, then the signed URL.
+	derive := mediaURL
+	var mediaSigner *media.Signer
+	var mediaStore media.Store
+	var mediaInfo api.MediaInfoFunc
 	// CANT-309: the media store, the upload route's seam, and THE ONE LINE OF
 	// WIRING CANT-85 said this owed. store.New defaults to RefuseUploads, which
 	// refuses every attachment; forgetting WithUploadResolver does not fail to
@@ -283,6 +295,17 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			panic("CATENARY_MEDIA_DIR cannot be used: " + err.Error())
 		}
 		st = st.WithUploadResolver(store.PostgresUploads{})
+		signer, err := media.ParseKeys(cfg.MediaURLKeys)
+		if err != nil {
+			// config.Load has already refused this; reaching it means a Config
+			// built by hand without the keys.
+			panic(err.Error())
+		}
+		mediaSigner, mediaStore, derive = signer, ms, signer.URL
+		mediaInfo = func(ctx context.Context, key string) (api.MediaInfo, bool, error) {
+			kind, thumb, found, err := st.UploadByStorageKey(ctx, key)
+			return api.MediaInfo{Kind: kind, ThumbKey: thumb}, found, err
+		}
 		uploadFn = func(ctx context.Context, uploader uuid.UUID, kind, filename string, body io.Reader, max int64) (uuid.UUID, error) {
 			if kind == "image" {
 				return ingestImageUpload(ctx, ms, st, uploader, filename, body)
@@ -353,7 +376,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	var revocations *store.Listener[store.RevocationPayload]
 	if st != nil {
 		syncFn = func(ctx context.Context, viewer uuid.UUID, after int64, limit int) (wire.SyncResponse, error) {
-			return serveSync(ctx, st, viewer, after, limit)
+			return serveSyncWith(ctx, st, viewer, after, limit, derive)
 		}
 		callerFn = func(r *http.Request) (store.Caller, bool) {
 			caller, err := st.Authenticate(r.Context(), bearer(r))
@@ -405,7 +428,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 		// seams on the door are its own methods over the sessionConn
 		// adapter; the listener carries message notifications and nothing
 		// else (the revocation channel is CANT-30's to consume).
-		h = hub.New(st, logger, mediaURL)
+		h = hub.New(st, logger, derive)
 		attachFn = func(s *api.Session) func() { return h.Attach(sessionConn{s}) }
 		handleFn = func(ctx context.Context, s *api.Session, f wire.ClientFrame) {
 			h.Handle(ctx, sessionConn{s}, f)
@@ -511,7 +534,10 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			FindOrCreateSelf: findOrCreateSelfFn,
 			Upload:           uploadFn,
 			UploadCaps:       uploadCaps,
-			MediaURL:         mediaURL,
+			MediaSigner:      mediaSigner,
+			MediaStore:       mediaStore,
+			MediaInfo:        mediaInfo,
+			MediaURL:         derive,
 			MaxRESTBodyBytes: maxFrameBytes,
 
 			// The routed listener only. provision.Deps never sees it, so

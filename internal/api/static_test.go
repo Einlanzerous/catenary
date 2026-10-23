@@ -252,3 +252,16 @@ func TestADuplicateStaticPatternPanicsAtRegistration(t *testing.T) {
 	registerWebClient(mux, b)
 	registerWebClient(mux, b)
 }
+
+// CANT-311: the document CSP already admits a same-origin /media/ image, and
+// audio falls back to default-src 'self', so no change to the policy is needed.
+func TestTheDocumentCSPAdmitsSameOriginMedia(t *testing.T) {
+	for _, d := range []string{"img-src 'self'", "default-src 'self'"} {
+		if !strings.Contains(documentCSP, d) {
+			t.Errorf("documentCSP lacks %q", d)
+		}
+	}
+	if strings.Contains(documentCSP, "media-src") {
+		t.Error("a media-src directive would override default-src for audio; add /media/ to it deliberately")
+	}
+}

@@ -14,6 +14,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/magos/catenary/internal/media"
 )
 
 // DefaultPort is 4012, the next free slot in the estate's 40xx block. Read off
@@ -90,7 +92,14 @@ type Config struct {
 	// MaxImageBytes is CATENARY_MAX_IMAGE_BYTES and MaxVoiceBytes is
 	// CATENARY_MAX_VOICE_BYTES: the per-kind body caps on that route, defaulted
 	// by Load.
-	MediaDir      string
+	MediaDir string
+
+	// MediaURLKeys is CATENARY_MEDIA_URL_KEYS: "1=<hex>,2=<hex>", the secrets
+	// the stable media URLs are signed with (CANT-311). Required exactly when
+	// MediaDir is set, validated by Load, and NEVER logged or put in a ticket:
+	// it comes from Signet.
+	MediaURLKeys string
+
 	MaxImageBytes int
 	MaxVoiceBytes int
 
@@ -202,6 +211,12 @@ func Load() (Config, error) {
 		return c, err
 	}
 	c.MediaDir = strings.TrimSpace(os.Getenv("CATENARY_MEDIA_DIR"))
+	c.MediaURLKeys = strings.TrimSpace(os.Getenv("CATENARY_MEDIA_URL_KEYS"))
+	if c.MediaDir != "" {
+		if _, err := media.ParseKeys(c.MediaURLKeys); err != nil {
+			return c, fmt.Errorf("config: %w", err)
+		}
+	}
 	if c.MaxImageBytes, err = positiveInt("CATENARY_MAX_IMAGE_BYTES", os.Getenv("CATENARY_MAX_IMAGE_BYTES")); err != nil {
 		return c, err
 	}

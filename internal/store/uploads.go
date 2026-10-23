@@ -18,6 +18,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -338,4 +339,26 @@ func (PostgresUploads) Resolve(ctx context.Context, tx pgx.Tx, uploader uuid.UUI
 		out[i] = row
 	}
 	return out, nil
+}
+
+// UploadByStorageKey is what GET /media/{key} needs from uploads (CANT-311): the
+// row's kind, for the sniffed content type of a voice blob, and its thumbnail's
+// key. Found is false when no row names the key. Two rows can share a key (the
+// store is content-addressed, so the same bytes uploaded twice are one blob), and
+// any of them answers; a thumbnail is taken from whichever row has one.
+func (s *Store) UploadByStorageKey(ctx context.Context, storageKey string) (kind, thumbKey string, found bool, err error) {
+	var thumb *string
+	err = s.pool.QueryRow(ctx,
+		`SELECT kind, thumb_key FROM uploads WHERE storage_key = $1
+		  ORDER BY (thumb_key IS NULL), created_at LIMIT 1`, storageKey).Scan(&kind, &thumb)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", "", false, nil
+	}
+	if err != nil {
+		return "", "", false, fmt.Errorf("store: upload by storage key: %w", err)
+	}
+	if thumb != nil {
+		thumbKey = *thumb
+	}
+	return kind, thumbKey, true, nil
 }

@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -54,6 +55,7 @@ func newUploadRig(t *testing.T) *uploadRig {
 	dir := t.TempDir()
 	ctx, pool, st, d := processFixtureWith(t, slog.New(slog.DiscardHandler), func(c *config.Config) {
 		c.MediaDir = dir
+		c.MediaURLKeys = "1=" + strings.Repeat("ab", 32)
 		c.MaxVoiceBytes = 64
 	})
 	ada := mkUser(ctx, t, pool, "ada", "Ada")

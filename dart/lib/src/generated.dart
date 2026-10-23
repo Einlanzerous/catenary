@@ -718,7 +718,7 @@ final class VoiceAttachment implements Attachment {
   @override
   String get kind => "voice";
 
-  /// Media URL. Opaque to the client; may be presigned and time-limited.
+  /// Media URL. Opaque to the client; stable, not time-limited.
   final String url;
 
   final DurationMs durationMs;
@@ -1343,8 +1343,8 @@ final class OutboundAttachment {
 
   final String kind;
 
-  /// Handle returned by the presigned-upload flow. The client sends this, never the
-  /// media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
+  /// Handle returned by the upload endpoint. The client sends this, never the media:
+  /// dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
   /// server-side on ingest, so the client cannot report them and cannot get them wrong.
   final Uuid uploadId;
 
