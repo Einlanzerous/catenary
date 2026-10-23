@@ -170,6 +170,18 @@ type Deps struct {
 	// registered, the same safe absence as FindOrCreateDirect.
 	FindOrCreateSelf func(ctx context.Context, viewer uuid.UUID) (store.ConversationRow, error)
 
+	// Upload serves POST /uploads (CANT-309) and UploadCaps says which kinds it
+	// takes and each one's byte cap. The route is registered only with Upload,
+	// CallerID and a non-empty UploadCaps — a process with no CATENARY_MEDIA_DIR
+	// has none of them, and gets a route that does not exist rather than one
+	// that accepts bytes it has nowhere to keep.
+	//
+	// A kind absent from UploadCaps is 415, which is how image uploads stay
+	// refused until CANT-310's ingest exists: the map, not the handler, is the
+	// list of what is accepted.
+	Upload     UploadFunc
+	UploadCaps map[string]int64
+
 	// MediaURL derives a served URL from an opaque storage key. The same
 	// deriver /sync and the hub use (CANT-84): two derivers here would be the
 	// one way a REST-sent message's attachments could render a different URL
@@ -286,6 +298,10 @@ func NewRouter(d Deps) http.Handler {
 	// Registered only when BOTH are supplied. See CallerID.
 	if d.Sync != nil && d.CallerID != nil {
 		mux.HandleFunc("GET /sync", syncHandler(d))
+	}
+
+	if d.Upload != nil && d.CallerID != nil && len(d.UploadCaps) > 0 {
+		mux.HandleFunc("POST /uploads", uploadHandler(d))
 	}
 
 	if d.Enroll != nil {

@@ -156,7 +156,7 @@ func TestMigration0012DownDeletesOnlyTheSelfConversationsContents(t *testing.T) 
 
 	before := rowCounts(ctx, t, pool)
 
-	if err := MigrateDown(ctx, pool, 1); err != nil {
+	if err := MigrateDown(ctx, pool, migrationsAfter(t, "0011")); err != nil {
 		t.Fatalf("0012 down: %v", err)
 	}
 
@@ -254,7 +254,7 @@ func TestMigration0012DownLogsTheCountItDeletes(t *testing.T) {
 	}
 	t.Cleanup(logged.Close)
 
-	if err := MigrateDown(ctx, logged, 1); err != nil {
+	if err := MigrateDown(ctx, logged, migrationsAfter(t, "0011")); err != nil {
 		t.Fatalf("0012 down: %v", err)
 	}
 	joined := strings.Join(notices, "\n")

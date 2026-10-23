@@ -65,9 +65,12 @@ FROM alpine:3.23 AS runtime
 RUN apk add --no-cache ca-certificates
 COPY --from=build /out/catenary /usr/local/bin/catenary
 
-# Unprivileged. 4012 is above 1024 and the process writes nothing to disk —
-# logs go to stdout, and the migrations and the web client are embedded — so
-# root buys nothing here. Still one COPY: the binary is the whole service.
+# Unprivileged. 4012 is above 1024, logs go to stdout, and the migrations and the
+# web client are embedded, so root buys nothing here. The one thing the process
+# writes is uploaded media, under CATENARY_MEDIA_DIR (CANT-47): a volume the
+# deployment mounts and makes writable by `nobody`, and not a path in the image.
+# Unset, the process writes nothing to disk. Still one COPY: the binary is the
+# whole service.
 USER nobody
 
 ENV CATENARY_PORT=4012

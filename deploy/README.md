@@ -94,6 +94,18 @@ One without the other **refuses to boot**, with a message naming the missing var
 
 **The contract is `provision/openapi.yaml`, versioned by the tag `provision-v1`.** It is not part of `schema/`, no generator reads it, and a test in `server/spec` drives every operation against the real handlers and fails when they disagree with it. PRSR-50 pins the tag, which is invariant 4's arrangement for the shared ASR service pointed the other way round.
 
+## Media
+
+**Uploaded media lives on local disk, on a volume the deployment mounts.** The decision is `docs/decisions/cant-47-media-storage.md`; this is what a deployment needs from it.
+
+| variable | meaning |
+|---|---|
+| `CATENARY_MEDIA_DIR` | the directory media lives in, as `blobs/<hh>/<sha256>` with a `tmp/` beside it. **Optional**: unset, there is no `POST /uploads` and every attachment send is refused `upload_not_found`, so a deployment that predates the volume keeps booting |
+| `CATENARY_MAX_IMAGE_BYTES` | byte cap on an image upload. Default 16 MiB |
+| `CATENARY_MAX_VOICE_BYTES` | byte cap on a voice upload. Default 8 MiB |
+
+The directory must be **writable by `nobody`**, the image's user, and a directory that is not refuses to boot naming the variable rather than failing at the first upload. `tmp/` is emptied at every boot. **Media is not in Postgres, so it is not in a database backup**: the volume is a `construct-backup` source, taken **after** the database so a restored message never points at a blob the media snapshot lacks (CANT-47 section 6). The `construct-server` change is **SERV-244**; this file holds the decision, not a compose fragment.
+
 ## The routing split, and why it is not symmetric
 
 **`/admin` behind Access; the socket and `/sync` never.** Cloudflare Access is a
