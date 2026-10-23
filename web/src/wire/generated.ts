@@ -516,7 +516,7 @@ export function encodeTranscript(v: Transcript): Record<string, unknown> {
 
 export interface VoiceAttachment {
   readonly kind: "voice"
-  // Media URL. Opaque to the client; may be presigned and time-limited.
+  // Media URL. Opaque to the client; stable, not time-limited.
   url: string
   durationMs: DurationMs
   // Amplitude peaks 0–100, computed server-side ONCE and stored with the message.
@@ -1024,8 +1024,8 @@ export function encodePong(v: Pong): Record<string, unknown> {
 
 export interface OutboundAttachment {
   kind: "voice" | "image"
-  // Handle returned by the presigned-upload flow. The client sends this, never the
-  // media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
+  // Handle returned by the upload endpoint. The client sends this, never the media:
+  // dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
   // server-side on ingest, so the client cannot report them and cannot get them wrong.
   uploadId: Uuid
 }

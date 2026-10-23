@@ -1004,7 +1004,7 @@ func (v *Transcript) decode(b []byte, p string, side decodeSide) error {
 }
 
 type VoiceAttachment struct {
-	// Media URL. Opaque to the client; may be presigned and time-limited.
+	// Media URL. Opaque to the client; stable, not time-limited.
 	URL        string     `json:"url"`
 	DurationMs DurationMs `json:"duration_ms"`
 	// Amplitude peaks 0–100, computed server-side ONCE and stored with the message.
@@ -1971,8 +1971,8 @@ func (Pong) isServerFrame() {}
 
 type OutboundAttachment struct {
 	Kind string `json:"kind"`
-	// Handle returned by the presigned-upload flow. The client sends this, never the
-	// media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
+	// Handle returned by the upload endpoint. The client sends this, never the media:
+	// dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
 	// server-side on ingest, so the client cannot report them and cannot get them wrong.
 	UploadID Uuid `json:"upload_id"`
 }
