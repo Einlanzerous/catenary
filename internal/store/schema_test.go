@@ -868,7 +868,7 @@ type col struct {
 // its own literal. A migration that adds a table then reads as three unrelated
 // failures, one of which (the concurrency one) looks like a regression in
 // something it has nothing to do with.
-const plannedTableCount = 10
+const plannedTableCount = 11
 
 func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 	ctx, pool := freshDB(t)
@@ -945,6 +945,25 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"height", "integer", true},
 			{"bytes", "bigint", true},
 			{"placeholder", "text", true},
+		},
+		// CANT-309's. The columns 0013 gives a pending upload; the sketch in
+		// docs/decisions/cant-47-media-storage.md plus duration_ms and peaks,
+		// which CANT-56 fills for voice.
+		"uploads": {
+			{"id", "uuid", false},
+			{"uploader", "uuid", false},
+			{"kind", "text", false},
+			{"storage_key", "text", false},
+			{"thumb_key", "text", true},
+			{"bytes", "bigint", false},
+			{"width", "integer", true},
+			{"height", "integer", true},
+			{"placeholder", "text", true},
+			{"filename", "text", true},
+			{"duration_ms", "integer", true},
+			{"peaks", "ARRAY", true},
+			{"created_at", "timestamp with time zone", false},
+			{"consumed_at", "timestamp with time zone", true},
 		},
 		"log_counter": {
 			{"id", "integer", false},
@@ -1098,6 +1117,10 @@ func TestEveryForeignKeyNamesItsOnDelete(t *testing.T) {
 		"refresh_tokens.replaced_by -> refresh_tokens":    "RESTRICT",
 		"access_tokens.user_id -> users":                  "RESTRICT",
 		"access_tokens.device_id -> devices":              "RESTRICT",
+
+		// CANT-309: an account with uploads cannot be deleted from under the
+		// handles that name it, the same rule 0007 states for credentials.
+		"uploads.uploader -> users": "RESTRICT",
 	}
 
 	rows, err := pool.Query(ctx, `

@@ -40,6 +40,15 @@ const DefaultPort = 4012
 // against a server that is still starting.
 const DefaultShutdownGrace = 20 * time.Second
 
+// DefaultMaxImageBytes and DefaultMaxVoiceBytes are the per-kind upload caps
+// (CANT-47 section 2). Here and not in the store because the upload endpoint is
+// the only thing that enforces them: nothing in the send path sees a byte count
+// until the blob is already stored.
+const (
+	DefaultMaxImageBytes = 16 << 20
+	DefaultMaxVoiceBytes = 8 << 20
+)
+
 // Config is the process-wide configuration. Every field is set from exactly one
 // environment variable, named in its comment, so `grep CATENARY_` over this
 // file is the complete list.
@@ -71,6 +80,19 @@ type Config struct {
 	// without inverting the layering.
 	MaxMessageBytes int
 	MaxAttachments  int
+
+	// MediaDir is CATENARY_MEDIA_DIR: the directory uploaded media lives in
+	// (CANT-47). OPTIONAL, and empty means the process has no media store: no
+	// POST /uploads route exists and every attachment send is refused
+	// upload_not_found, which is what a deployment that predates SERV-244 should
+	// do rather than fail to boot.
+	//
+	// MaxImageBytes is CATENARY_MAX_IMAGE_BYTES and MaxVoiceBytes is
+	// CATENARY_MAX_VOICE_BYTES: the per-kind body caps on that route, defaulted
+	// by Load.
+	MediaDir      string
+	MaxImageBytes int
+	MaxVoiceBytes int
 
 	// HeartbeatIntervalSec is CATENARY_HEARTBEAT_INTERVAL_SEC and
 	// MissedPongLimit is CATENARY_MISSED_PONG_LIMIT: CANT-23's deployed dial,
@@ -178,6 +200,19 @@ func Load() (Config, error) {
 	}
 	if c.MaxAttachments, err = positiveInt("CATENARY_MAX_ATTACHMENTS", os.Getenv("CATENARY_MAX_ATTACHMENTS")); err != nil {
 		return c, err
+	}
+	c.MediaDir = strings.TrimSpace(os.Getenv("CATENARY_MEDIA_DIR"))
+	if c.MaxImageBytes, err = positiveInt("CATENARY_MAX_IMAGE_BYTES", os.Getenv("CATENARY_MAX_IMAGE_BYTES")); err != nil {
+		return c, err
+	}
+	if c.MaxImageBytes == 0 {
+		c.MaxImageBytes = DefaultMaxImageBytes
+	}
+	if c.MaxVoiceBytes, err = positiveInt("CATENARY_MAX_VOICE_BYTES", os.Getenv("CATENARY_MAX_VOICE_BYTES")); err != nil {
+		return c, err
+	}
+	if c.MaxVoiceBytes == 0 {
+		c.MaxVoiceBytes = DefaultMaxVoiceBytes
 	}
 	if c.HeartbeatIntervalSec, err = positiveInt("CATENARY_HEARTBEAT_INTERVAL_SEC", os.Getenv("CATENARY_HEARTBEAT_INTERVAL_SEC")); err != nil {
 		return c, err

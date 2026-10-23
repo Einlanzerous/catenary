@@ -9,6 +9,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +27,7 @@ import (
 	"github.com/magos/catenary/internal/api"
 	"github.com/magos/catenary/internal/config"
 	"github.com/magos/catenary/internal/hub"
+	"github.com/magos/catenary/internal/media"
 	"github.com/magos/catenary/internal/provision"
 	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/webui"
@@ -132,6 +134,9 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
   CATENARY_SHUTDOWN_GRACE  how long in-flight work has on SIGTERM. Default 20s.
   CATENARY_MAX_MESSAGE_BYTES  UTF-8 byte bound on a message body. Default 16384.
   CATENARY_MAX_ATTACHMENTS    how many attachments one send may carry. Default 16, at most %d.
+  CATENARY_MEDIA_DIR          directory uploaded media lives in. Unset: no upload route, attachments refused.
+  CATENARY_MAX_IMAGE_BYTES    byte cap on an image upload. Default 16 MiB.
+  CATENARY_MAX_VOICE_BYTES    byte cap on a voice upload. Default 8 MiB.
   CATENARY_HEARTBEAT_INTERVAL_SEC  how often ready tells the client to ping. Default 35, 5-90.
   CATENARY_MISSED_PONG_LIMIT       missed pings before severance, both ends. Default 2, at least 1.
 
@@ -259,6 +264,42 @@ var webClient = webui.Embedded
 // buildable without a database, and /readyz reports ready rather than lying
 // about a dependency that was never wired.
 func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
+	// CANT-309: the media store, the upload route's seam, and THE ONE LINE OF
+	// WIRING CANT-85 said this owed. store.New defaults to RefuseUploads, which
+	// refuses every attachment; forgetting WithUploadResolver does not fail to
+	// compile, it fails in production at the first photo. It is HERE, in the
+	// composition root and off the same condition as the media store, so a test
+	// that goes through setup() exercises the wiring and not only the resolver.
+	//
+	// No CATENARY_MEDIA_DIR means no media store, no route and the refusing
+	// resolver: a deployment that predates SERV-244 keeps booting.
+	var uploadFn api.UploadFunc
+	var uploadCaps map[string]int64
+	if st != nil && cfg.MediaDir != "" {
+		ms, err := media.NewLocal(cfg.MediaDir)
+		if err != nil {
+			// runServe has already proved the directory with this same call,
+			// so reaching this is a directory that went away between the two.
+			panic("CATENARY_MEDIA_DIR cannot be used: " + err.Error())
+		}
+		st = st.WithUploadResolver(store.PostgresUploads{})
+		uploadFn = func(ctx context.Context, uploader uuid.UUID, kind string, body io.Reader, max int64) (uuid.UUID, error) {
+			key, n, err := ms.Put(ctx, body, max)
+			if err != nil {
+				return uuid.Nil, err
+			}
+			return st.CreateUpload(ctx, store.NewUpload{Uploader: uploader, Kind: kind, StorageKey: key, Bytes: n})
+		}
+		// VOICE ONLY until CANT-310's ingest exists. An image stored as
+		// uploaded would keep its EXIF, GPS included, so the kind is absent
+		// from this map and the route answers it 415.
+		voiceMax := int64(cfg.MaxVoiceBytes)
+		if voiceMax == 0 {
+			voiceMax = config.DefaultMaxVoiceBytes
+		}
+		uploadCaps = map[string]int64{"voice": voiceMax}
+	}
+
 	var db api.Pinger
 	if st != nil {
 		db = st
@@ -464,6 +505,8 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			CreateGroup:        createGroupFn,
 
 			FindOrCreateSelf: findOrCreateSelfFn,
+			Upload:           uploadFn,
+			UploadCaps:       uploadCaps,
 			MediaURL:         mediaURL,
 			MaxRESTBodyBytes: maxFrameBytes,
 
@@ -594,6 +637,14 @@ func runServe(args []string) error {
 	}
 	if err := heartbeatBoundsFrom(cfg); err != nil {
 		return err
+	}
+	// CANT-309: prove the media directory before anything slow starts, so a
+	// read-only volume is a startup error naming the variable and not a 500 at
+	// the first upload.
+	if cfg.MediaDir != "" {
+		if _, err := media.NewLocal(cfg.MediaDir); err != nil {
+			return fmt.Errorf("config: CATENARY_MEDIA_DIR %q: %w", cfg.MediaDir, err)
+		}
 	}
 
 	// Signals are trapped before anything slow starts. A SIGTERM arriving

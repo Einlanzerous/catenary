@@ -3,12 +3,12 @@ package store
 // CANT-85 — the seam between a send and the uploads it names, and the one
 // statement that writes what they resolve to.
 //
-// CANT-18 Ruling 1: the lookup lives behind an interface, and nothing here
-// knows what an upload IS. CANT-48 mints the handles under CANT-47's storage
-// decision and supplies the real resolver; until it lands the store refuses
-// every attachment with upload_not_found, which is not a placeholder pretending
-// to work — no client can hold a real handle, and that is the wire's own name
-// for exactly this.
+// CANT-18 Ruling 1: the lookup lives behind an interface, and the send path
+// knows nothing about what an upload IS. CANT-309 mints the handles under
+// CANT-47's storage decision and supplies the real resolver (PostgresUploads,
+// below); a store nobody wired with it refuses every attachment with
+// upload_not_found, which is not a placeholder pretending to work — no client
+// can hold a real handle, and that is the wire's own name for exactly this.
 //
 // What the store DOES decide, whatever resolver is wired, is decided here and in
 // messages.go rather than left to each implementation: one row per requested
@@ -26,7 +26,7 @@ import (
 )
 
 // UploadResolver turns the upload handles a send names into the attachment rows
-// it stores. CANT-48 supplies the real one.
+// it stores. PostgresUploads is the real one.
 //
 // THE CONTRACT, and SendMessage relies on every line of it:
 //
@@ -54,8 +54,8 @@ type UploadResolver interface {
 	Resolve(ctx context.Context, tx pgx.Tx, uploader uuid.UUID, want []NewAttachment) ([]AttachmentRow, error)
 }
 
-// RefuseUploads is the resolver the service runs until CANT-48 lands, and the
-// one New wires by default (CANT-85 Ruling 2).
+// RefuseUploads is the resolver New wires by default (CANT-85 Ruling 2), and the
+// one a process runs when it was given no CATENARY_MEDIA_DIR.
 //
 // It touches neither tx nor the database. The cause names how many handles were
 // asked for and not the handles themselves.
@@ -63,7 +63,7 @@ type RefuseUploads struct{}
 
 // Resolve refuses everything.
 func (RefuseUploads) Resolve(_ context.Context, _ pgx.Tx, _ uuid.UUID, want []NewAttachment) ([]AttachmentRow, error) {
-	return nil, fmt.Errorf("store: %d upload(s) named and no upload flow exists yet (CANT-48): %w",
+	return nil, fmt.Errorf("store: %d upload(s) named and no media store is configured (CATENARY_MEDIA_DIR): %w",
 		len(want), ErrUploadNotFound)
 }
 
@@ -197,4 +197,137 @@ func insertAttachments(ctx context.Context, tx pgx.Tx, messageID uuid.UUID, rows
 		return fmt.Errorf("store: insert attachments: %w", err)
 	}
 	return nil
+}
+
+// NewUpload is one stored blob waiting for a send to take it.
+type NewUpload struct {
+	Uploader   uuid.UUID
+	Kind       string // voice | image
+	StorageKey string // the media store's key for the stored bytes
+	Bytes      int64
+}
+
+// CreateUpload records an upload and returns its handle: the single-use id a
+// send names in `upload_id`.
+//
+// The handle is a random UUID the server chose, so it is not derivable from the
+// bytes, and the row binds it to its uploader (contract line 4 below).
+func (s *Store) CreateUpload(ctx context.Context, u NewUpload) (uuid.UUID, error) {
+	id := uuid.New()
+	if _, err := s.pool.Exec(ctx,
+		`INSERT INTO uploads (id, uploader, kind, storage_key, bytes) VALUES ($1, $2, $3, $4, $5)`,
+		id, u.Uploader, u.Kind, u.StorageKey, u.Bytes); err != nil {
+		return uuid.Nil, fmt.Errorf("store: create upload: %w", err)
+	}
+	return id, nil
+}
+
+// PostgresUploads is the real UploadResolver (CANT-309): it consumes the
+// uploads rows a send names, in the send's own transaction.
+//
+// THE CONTRACT LINES, AS THIS IMPLEMENTS THEM:
+//
+//	1  rows come back in want's order, one per handle.
+//	2  a handle that is unknown, already consumed, listed twice or not ready is
+//	   ErrUploadNotFound.
+//	3  ONE statement, `UPDATE … WHERE id IN (SELECT … FOR UPDATE) RETURNING`, so
+//	   the row lock and the consumed flag are the same step. A concurrent send
+//	   naming the same handle blocks on the lock, and when the winner commits
+//	   the loser's re-check of consumed_at IS NULL (READ COMMITTED re-evaluates
+//	   the subquery's WHERE after waiting) finds nothing — which is the
+//	   ErrUploadNotFound line 2 says is safe to report.
+//	4  uploader = $2 is in the predicate: a handle minted by somebody else is
+//	   indistinguishable from an unknown one, so this is not an oracle for which
+//	   ids exist.
+//	6  only the uploads table is touched. The subquery orders by id so two
+//	   sends naming overlapping handles lock them in one order and cannot
+//	   deadlock on each other.
+//
+// READY IS PART OF THE PREDICATE, NOT A CHECK AFTER IT. attachments requires
+// peaks and duration_ms on a voice row and filename, width and height on an
+// image row. A row missing them cannot become an attachment, and consuming it
+// first would burn a handle for a send that can only fail; leaving it
+// unconsumed means it resolves the moment the field is filled (peaks, CANT-56).
+type PostgresUploads struct{}
+
+// Resolve implements UploadResolver.
+func (PostgresUploads) Resolve(ctx context.Context, tx pgx.Tx, uploader uuid.UUID, want []NewAttachment) ([]AttachmentRow, error) {
+	ids := make([]uuid.UUID, len(want))
+	for i, w := range want {
+		ids[i] = w.UploadID
+	}
+
+	rows, err := tx.Query(ctx, `
+		UPDATE uploads SET consumed_at = now()
+		 WHERE id IN (
+		       SELECT id FROM uploads
+		        WHERE id = ANY($1)
+		          AND uploader = $2
+		          AND consumed_at IS NULL
+		          AND (   (kind = 'voice' AND peaks IS NOT NULL AND duration_ms IS NOT NULL)
+		               OR (kind = 'image' AND width IS NOT NULL AND height IS NOT NULL AND filename IS NOT NULL))
+		        ORDER BY id
+		          FOR UPDATE)
+		RETURNING id, kind, storage_key, bytes, width, height, placeholder, filename, duration_ms, peaks`,
+		ids, uploader)
+	if err != nil {
+		return nil, fmt.Errorf("store: consume uploads: %w", err)
+	}
+	defer rows.Close()
+
+	byID := make(map[uuid.UUID]AttachmentRow, len(want))
+	for rows.Next() {
+		var (
+			id         uuid.UUID
+			row        AttachmentRow
+			bytes      int64
+			width      *int32
+			height     *int32
+			durationMs *int32
+			peaks      []int16
+		)
+		if err := rows.Scan(&id, &row.Kind, &row.StorageKey, &bytes, &width, &height,
+			&row.Placeholder, &row.Filename, &durationMs, &peaks); err != nil {
+			return nil, fmt.Errorf("store: scan upload: %w", err)
+		}
+		row.Bytes = &bytes
+		if width != nil {
+			w := int64(*width)
+			row.Width = &w
+		}
+		if height != nil {
+			h := int64(*height)
+			row.Height = &h
+		}
+		if row.Kind == "voice" {
+			d := int64(*durationMs)
+			row.DurationMs = &d
+			row.Peaks = make([]int64, len(peaks))
+			for i, p := range peaks {
+				row.Peaks[i] = int64(p)
+			}
+			// Transcription is a client of the estate ASR service (invariant 4),
+			// and nothing has submitted this audio: it is pending, and says so.
+			pending := "pending"
+			row.TranscriptState = &pending
+		}
+		byID[id] = row
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: consume uploads: %w", err)
+	}
+
+	// Count against the REQUEST, so a handle listed twice (one row consumed,
+	// two wanted) and a handle that did not match both fall out here.
+	out := make([]AttachmentRow, len(want))
+	seen := make(map[uuid.UUID]bool, len(want))
+	for i, w := range want {
+		row, ok := byID[w.UploadID]
+		if !ok || seen[w.UploadID] {
+			return nil, fmt.Errorf("store: attachment %d: %w", i, ErrUploadNotFound)
+		}
+		seen[w.UploadID] = true
+		out[i] = row
+	}
+	return out, nil
 }
