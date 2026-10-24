@@ -118,7 +118,11 @@ test('the blurhash decoder', () => {
   assert.ok(px && px.length === 8 * 6 * 4)
   assert.ok(px.every((v, i) => (i % 4 === 3 ? v === 255 : true)))
   assert.notDeepEqual(Array.from(px.slice(0, 4)), Array.from(px.slice(-4)), 'a gradient, not a flat plane')
-  // A 1x1 hash is flat: its DC colour everywhere. '00' size, 0 maxAC, then #ff0000-ish.
+  // A 1x1 hash is flat: its DC colour everywhere ('0' size, '0' maxAC, #ff0000).
+  const flat = decodeBlurhash('00TI:j', 2, 2)
+  assert.ok(flat)
+  for (let i = 0; i < 16; i += 4) assert.deepEqual(Array.from(flat.slice(i, i + 4)), [255, 0, 0, 255])
+  assert.equal(decodeBlurhash('00\u0001???', 2, 2), null, 'a character outside the alphabet in the DC term')
   assert.equal(decodeBlurhash('nothash', 4, 4), null)
   assert.equal(decodeBlurhash('', 4, 4), null)
   assert.equal(decodeBlurhash('LEHV6nWB2yk8pyo0adR*.7kCMdn', 4, 4), null, 'wrong length')

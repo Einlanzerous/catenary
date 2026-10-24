@@ -37,6 +37,7 @@ export function decodeBlurhash(hash: string, width: number, height: number): Uin
   for (let i = 0; i < nx * ny; i++) {
     if (i === 0) {
       const v = decode83(hash.slice(2, 6))
+      if (!Number.isFinite(v)) return null
       colors.push([toLinear(v >> 16), toLinear((v >> 8) & 255), toLinear(v & 255)])
     } else {
       const v = decode83(hash.slice(4 + i * 2, 6 + i * 2))
