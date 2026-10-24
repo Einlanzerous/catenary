@@ -3,8 +3,12 @@ import { computed, ref, watch } from 'vue'
 import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
 import { peaksFromSeed } from '@/lib/waveform'
+import { IMAGE_ACCEPT } from '@/attach'
 import {
+  canAttachFile,
   messageById,
+  pickImage,
+  removeAttachment,
   replyTo,
   send,
   startRecording,
@@ -19,8 +23,20 @@ import Waveform from './Waveform.vue'
 const props = defineProps<{ conversationName: string }>()
 
 const box = ref<HTMLTextAreaElement | null>(null)
+const picker = ref<HTMLInputElement | null>(null)
 
-/** The app never pretends a message left the building. */
+/** The file dialog's result. One image: the input is not `multiple`, and the
+ *  store replaces whatever was held. The input is cleared so choosing the same
+ *  file again still fires. */
+async function onPick(event: Event) {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (file) await pickImage(file)
+}
+
+/** The app never pretends a message left the building. ATTACH does not use
+ *  this: its enablement is the outbox's own predicate (`canAttachFile`). */
 const offline = computed(() => state.connection.state !== 'live')
 /** CANT-31 §6: nothing composed now will drain until a relaunch or a
  *  re-enrollment, so the composer does not offer to queue it (Invariant 3). */
@@ -114,6 +130,16 @@ const grow = () => {
           </button>
         </div>
 
+        <!-- The picked image: the least that lets a person see what SEND will
+             send. The canvas has no picker design, so this chip is a gap
+             flagged to the designer, not a decision. -->
+        <div v-if="state.composer.attachment" class="attach-chip">
+          <span class="chip-name">{{ state.composer.attachment.filename ?? 'image' }}</span>
+          <button class="dismiss" aria-label="Remove attachment" @click="removeAttachment">
+            ✕
+          </button>
+        </div>
+
         <textarea
           ref="box"
           v-model="state.composer.draft"
@@ -131,8 +157,25 @@ const grow = () => {
         />
 
         <div class="actions">
-          <!-- Uploads can't be queued safely, so ATTACH dims when offline. -->
-          <button class="ghost" :class="{ off: offline }" :disabled="offline">
+          <!-- Uploads can't be queued safely, so ATTACH is enabled exactly when
+               the outbox would take a picked file now. One image, no
+               `multiple`; the dialog's `accept` is a hint, the check is the
+               store's. -->
+          <input
+            ref="picker"
+            class="picker"
+            type="file"
+            :accept="IMAGE_ACCEPT"
+            tabindex="-1"
+            hidden
+            @change="onPick"
+          />
+          <button
+            class="ghost"
+            :class="{ off: !canAttachFile }"
+            :disabled="!canAttachFile"
+            @click="picker?.click()"
+          >
             ATTACH
           </button>
           <button class="ghost" :class="{ off: terminal }" :disabled="terminal" @click="startRecording">
@@ -152,6 +195,9 @@ const grow = () => {
           </button>
         </div>
       </div>
+      <p v-if="state.composer.attachError" class="hint attach-error" role="status">
+        {{ state.composer.attachError }}
+      </p>
       <!-- The typing indicator used to sit here as a strip. Call 10a moved it
            into the thread as its own last row, so the composer stays the
            bottom of the window and nothing shifts under the cursor. -->
@@ -185,6 +231,26 @@ const grow = () => {
   flex: 1;
   min-width: 0;
   margin-top: 0;
+}
+
+.attach-chip {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 12px 8px 14px;
+  background: var(--surface-lift);
+  border-bottom: 1px solid var(--line-inner);
+}
+
+.chip-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dismiss {

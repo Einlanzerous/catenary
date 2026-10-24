@@ -9,8 +9,11 @@
  * `useTransport`), a composed image attachment, and the outbox's drain. The Go
  * side then reads what the server holds.
  *
- * TWO MODES, ONE BUNDLE. `positive` composes the picked JPEG and waits for it to
- * be sent and acked. `negative` is the pass-through's negative control: it
+ * THREE MODES, ONE BUNDLE. `positive` composes the picked JPEG and waits for it to
+ * be sent and acked. `unsendable` is CANT-247 ruling 1 → B's end to end: the picker refuses
+ * a HEIC, an SVG and an oversize body before anything is composed, and with the pre-check bypassed
+ * the server's own 415 and 413 fail the entry with the same words, RETRY and DELETE working.
+ * `negative` is the pass-through's negative control: it
  * rebuilds the outbox over the live transport with NO uploader option, which is
  * exactly what a composition root that forgot the pass-through does, and
  * expects the same compose to fail with "Attachments can't be sent yet". It
@@ -19,11 +22,13 @@
 
 import { readFileSync } from 'node:fs'
 import { accountState, configureAccount, login, onEnrolled } from '@/account'
-import { liveTransport, outboxReady, startSession, state, useTransport } from '@/store'
+import { liveTransport, outboxReady, pickImage, startSession, state, useTransport } from '@/store'
 import { MemoryCredentialStore } from '@/transport/credential-store'
 import type { Logger } from '@/transport/seams'
 import { RefusingUploader, project } from '@/outbox'
+import { UPLOAD_MESSAGES } from '@/upload'
 import type { Uuid } from '@/wire/generated'
+import { loadManifest, oversizeImage, readFixture } from './media-fixtures'
 
 const quiet: Logger = { info: () => {}, warn: (msg, fields) => console.warn(`transport: ${msg}`, fields ?? {}) }
 
@@ -40,13 +45,51 @@ async function until(what: string, pred: () => boolean, ms = 20_000, why: () => 
   }
 }
 
+/** Ruling 1 → B on a live server. Nothing here may reach `uploads`. */
+async function unsendable(conversationId: Uuid) {
+  const manifest = loadManifest()
+  const outbox = await outboxReady
+  const held = () => outbox.view().items.length
+  const check = (ok: boolean, what: string) => (ok ? console.log(`ok    ${what}`) : die(what))
+
+  // 1. The picker refuses, before compose: nothing is held and the outbox is empty.
+  const refusals: [string, Uint8Array, string][] = [
+    ['image.heic', readFixture('image.heic'), UPLOAD_MESSAGES.unsupportedType],
+    ['image.svg', readFixture('image.svg'), UPLOAD_MESSAGES.unsupportedType],
+    ['oversize.jpg', oversizeImage(manifest), UPLOAD_MESSAGES.tooLarge],
+  ]
+  for (const [name, bytes, message] of refusals) {
+    await pickImage(new File([bytes as BlobPart], name))
+    check(state.composer.attachError === message, `the picker refuses ${name} with "${message}"`)
+    check(state.composer.attachment === null, `${name} is not held`)
+    check(held() === 0, `no outbox entry was written for ${name}`)
+  }
+
+  // 2. With the pre-check bypassed (compose called directly), the server's own
+  // answer fails the entry with the same words, and RETRY and DELETE work.
+  for (const [name, bytes, message] of refusals) {
+    const entry = await outbox.compose({
+      conversationId,
+      attachments: [{ kind: 'image', blob: new Blob([bytes as BlobPart]), filename: name, upload: 'pending' }],
+    })
+    const item = () => outbox.view().items.find((i) => i.entry.clientId === entry.clientId)
+    await until(`the server to refuse ${name}`, () => item()?.state === 'failed', 60_000)
+    check(project(item()!).error === message, `the server's refusal of ${name} fails the entry with "${message}"`)
+    await outbox.retry(entry.clientId)
+    await until(`RETRY of ${name} to fail again`, () => item()?.state === 'failed', 60_000)
+    check(project(item()!).error === message, `RETRY of ${name} is offered and fails the same way`)
+    await outbox.discard(entry.clientId)
+    check(item() === undefined, `DELETE of ${name} removes the entry`)
+  }
+}
+
 async function main() {
   const baseUrl = process.env.CATENARY_UPLOAD_BASE_URL
   const token = process.env.CATENARY_UPLOAD_ENROLLMENT_TOKEN
   const conversationId = process.env.CATENARY_UPLOAD_CONVERSATION_ID as Uuid | undefined
   const fixture = process.env.CATENARY_UPLOAD_FIXTURE
   const mode = process.env.CATENARY_UPLOAD_MODE
-  if (!baseUrl || !token || !conversationId || !fixture || (mode !== 'positive' && mode !== 'negative')) {
+  if (!baseUrl || !token || !conversationId || !fixture || (mode !== 'positive' && mode !== 'negative' && mode !== 'unsendable')) {
     console.error('uploadroundtrip: run `npm run smoke:upload`, which starts a server and sets CATENARY_UPLOAD_*.')
     process.exit(2)
   }
@@ -69,6 +112,11 @@ async function main() {
     // The broken composition root: the outbox rebuilt over the same live
     // transport, with no uploader to pass.
     await useTransport(liveTransport()!, quiet)
+  }
+
+  if (mode === 'unsendable') {
+    await unsendable(conversationId)
+    process.exit(0)
   }
 
   const bytes = readFileSync(fixture)

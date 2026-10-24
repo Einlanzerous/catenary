@@ -213,3 +213,21 @@ func TestTheWebUploadPassThroughNegativeControlFailsWithoutTheUploader(t *testin
 		t.Errorf("%d upload rows exist; an outbox with no uploader must reach the server with nothing", n)
 	}
 }
+
+// CANT-314 — ruling 1 → B, end to end. The bundle's picker refuses a HEIC, an
+// SVG and a generated oversize body before anything is composed; with that
+// pre-check bypassed, this server's 415 and 413 fail the entry with the same
+// words and RETRY and DELETE work. The server must have kept nothing.
+func TestTheWebUploadPickerRefusesWhatTheServerWouldAndTheServerStillDoes(t *testing.T) {
+	r, _ := runUploadBundle(t, "unsendable")
+	var uploads, messages int
+	if err := r.pool.QueryRow(r.ctx, `SELECT count(*) FROM uploads`).Scan(&uploads); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.pool.QueryRow(r.ctx, `SELECT count(*) FROM messages`).Scan(&messages); err != nil {
+		t.Fatal(err)
+	}
+	if uploads != 0 || messages != 0 {
+		t.Errorf("the server holds %d uploads and %d messages; an unsendable file leaves neither", uploads, messages)
+	}
+}
