@@ -259,6 +259,23 @@ void main() {
       expect(find.byKey(const ValueKey('composer-recording')), findsNothing);
     });
 
+    testWidgets('leaving the thread mid-recording cancels it once', (tester) async {
+      var cancels = 0;
+      await pumpThread(tester, thread(start: () async => const RecordingStarted(), cancel: () async => cancels++, send: () async {}));
+      await tester.tap(find.text('REC'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('composer-recording')), findsOneWidget);
+      await tester.pumpWidget(const SizedBox());
+      expect(cancels, 1, reason: 'nothing on screen owns the recorder any more');
+    });
+
+    testWidgets('leaving the thread when not recording cancels nothing', (tester) async {
+      var cancels = 0;
+      await pumpThread(tester, thread(start: () async => const RecordingStarted(), cancel: () async => cancels++, send: () async {}));
+      await tester.pumpWidget(const SizedBox());
+      expect(cancels, 0);
+    });
+
     testWidgets('a refused microphone shows its words inline and stays idle', (tester) async {
       await pumpThread(tester, thread(start: () async => const RecordRefused(microphoneDenied), cancel: () async {}, send: () async {}));
       await tester.tap(find.text('REC'));

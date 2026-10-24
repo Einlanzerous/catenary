@@ -79,8 +79,10 @@ class ThreadScreen extends StatelessWidget {
   /// The composer's send with its one held image, given the draft.
   final Future<void> Function(String text, PickedImage image)? onSendPicked;
 
-  /// REC and the recording's two ways out. NULL DRAWS REC DISABLED: the
-  /// caller passes them only while the voice gate is on (store/voice.dart).
+  /// REC and the recording's two ways out. A NULL [onStartRecording] DRAWS REC
+  /// DISABLED: the caller passes it only while the voice gate is on
+  /// (store/voice.dart). The other two matter only once a recording has started,
+  /// which a null start prevents.
   final Future<RecordStart> Function()? onStartRecording;
   final Future<void> Function()? onCancelRecording;
   final Future<void> Function()? onSendRecording;
@@ -260,6 +262,9 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   @override
   void dispose() {
     _clock?.cancel();
+    // Leaving the thread mid-recording ends it: nothing on screen owns the
+    // platform recorder, and its temporary file would otherwise stay.
+    if (_recordingSince != null) widget.onCancelRecording?.call();
     _draft.dispose();
     super.dispose();
   }
