@@ -7,6 +7,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:catenary_client/catenary_client.dart';
 import 'package:catenary_wire/catenary_wire.dart';
@@ -126,6 +127,49 @@ void main() {
     expect(answer.status, 418);
     expect(answer.body, 'got: {"a":1}');
     expect(answer.headers['x-echo'], 'POST a header');
+  });
+
+  test('ioUploadFetch sends the bytes as they are, with their length, and an abort tears a stalled request down', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(() => server.close(force: true));
+    final seen = <List<int>>[];
+    final lengths = <int>[];
+    server.listen((req) async {
+      final chunks = <int>[];
+      await for (final c in req) {
+        chunks.addAll(c);
+      }
+      if (req.uri.path == '/stall') return;
+      seen.add(chunks);
+      lengths.add(req.contentLength);
+      req.response
+        ..statusCode = 201
+        ..write('{"upload_id":"x"}');
+      await req.response.close();
+    });
+    // Not valid UTF-8, so a string round trip would change it.
+    final bytes = Uint8List.fromList([0xff, 0xd8, 0xff, 0xe0, 0x80, 0x81, 0xc0, 0x00, 0xfe]);
+    final answer = await ioUploadFetch(UploadExchange(
+      url: Uri.parse('http://127.0.0.1:${server.port}/uploads?kind=image'),
+      headers: {'Authorization': 'Bearer t'},
+      body: bytes,
+      abort: Completer<void>().future,
+    ));
+    expect(answer.status, 201);
+    expect(seen.single, bytes);
+    expect(lengths.single, bytes.length);
+
+    final abort = Completer<void>();
+    final stalled = ioUploadFetch(UploadExchange(
+      url: Uri.parse('http://127.0.0.1:${server.port}/stall'),
+      headers: const {},
+      body: bytes,
+      abort: abort.future,
+    ));
+    final failed = expectLater(stalled, throwsA(anything));
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+    abort.complete();
+    await failed;
   });
 }
 
