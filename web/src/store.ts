@@ -31,6 +31,7 @@ import {
 } from '@/client-types'
 import { requestSelfConversation } from '@/account'
 import { createEnsureSelf } from '@/ensure-self'
+import { createUploader } from '@/upload'
 import { countWords } from '@/lib/format'
 import {
   BroadcastOutboxChannel,
@@ -44,6 +45,7 @@ import {
   type OutboxOptions,
   type OutboxStore,
   type OutboxView,
+  type Uploader,
 } from '@/outbox'
 import {
   EMPTY_PROJECTION,
@@ -829,8 +831,9 @@ function shippedTransport(): Transport {
  * exists, the Web Lock and BroadcastChannel where they exist, the adapter
  * over the unstarted transport above until `startSession` replaces it, and
  * NO UPLOADER — the outbox's own default refuses every attachment with
- * "Attachments can't be sent yet". `seams.uploader` is the one line CANT-247
- * uses to pass the real one through.
+ * "Attachments can't be sent yet". That default is for a bare outbox and the
+ * outbox's own tests: `startSession` passes the real uploader (CANT-313)
+ * through `useTransport`, and the round trip is what fails if it does not.
  */
 export async function configureOutbox(
   seams: Partial<Omit<OutboxOptions, 'onChange' | 'accountId'>> = {},
@@ -893,9 +896,13 @@ export function useOutbox(seams: Parameters<typeof configureOutbox>[0]): Promise
 /** Rebuild the outbox over a CANT-35 transport — `startSession`'s one call
  *  once it has built and started the live one. The transport stays the
  *  caller's to stop; a reconfigure detaches the adapter from it. */
-export function useTransport(transport: Transport, logger: Logger = consoleLogger): Promise<Outbox> {
+export function useTransport(
+  transport: Transport,
+  logger: Logger = consoleLogger,
+  options: { uploader?: Uploader } = {},
+): Promise<Outbox> {
   const a = new TransportOutbox(transport, logger)
-  const ready = useOutbox({ transport: a })
+  const ready = useOutbox({ transport: a, ...(options.uploader ? { uploader: options.uploader } : {}) })
   // `configureOutbox` has run to its first await, so this is recorded after
   // it detached the previous adapter, and the next reconfigure detaches it.
   adapter = a
@@ -917,6 +924,12 @@ export interface SessionSeams {
   fetch?: typeof globalThis.fetch
   WebSocket?: WebSocketCtor
   logger?: Logger
+  /** The outbox's `Uploader`. Default: the real one (`createUploader`) over
+   *  the SAME credential instance the transport holds. Replaceable only so a
+   *  test can script it. `startSession` always passes one; `useTransport`'s
+   *  own option is optional, so a root that forgot it compiles (CANT-247), and
+   *  the round trip's negative control is what catches that. */
+  uploader?: Uploader
 }
 
 interface LiveSession {
@@ -982,15 +995,19 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
   }
   state.typing = {}
   const logger = seams.logger ?? consoleLogger
+  // ONE CREDENTIAL INSTANCE FOR THE SESSION: the transport's and the uploader's
+  // are the same object, so a refresh by one is never a second presentation of
+  // a spent token by the other (CANT-29 reuse detection).
+  const credential = createRefreshingCredential({
+    baseUrl: seams.baseUrl,
+    store: seams.store,
+    logger,
+    ...(seams.lock ? { lock: seams.lock } : {}),
+    ...(seams.fetch ? { fetch: seams.fetch } : {}),
+  })
   const transport = createTransport({
     baseUrl: seams.baseUrl,
-    credential: createRefreshingCredential({
-      baseUrl: seams.baseUrl,
-      store: seams.store,
-      logger,
-      ...(seams.lock ? { lock: seams.lock } : {}),
-      ...(seams.fetch ? { fetch: seams.fetch } : {}),
-    }),
+    credential,
     logger,
     ...(seams.journal ? { journal: seams.journal } : {}),
     ...(seams.fetch ? { fetch: seams.fetch } : {}),
@@ -1044,7 +1061,11 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
   }
   transport.start()
   showStatus(transport.status())
-  await useTransport(transport, logger)
+  await useTransport(transport, logger, {
+    uploader:
+      seams.uploader ??
+      createUploader({ baseUrl: seams.baseUrl, credential, ...(seams.fetch ? { fetch: seams.fetch } : {}) }),
+  })
   return true
 }
 
