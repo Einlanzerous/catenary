@@ -1,0 +1,389 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Catenary \u2014 system map",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "viewBox": [
+      1240,
+      600
+    ],
+    "repository": {
+      "url": "https://github.com/Einlanzerous/catenary",
+      "revision": "bcf49c16c5257ea54a2f577e349a638f55b8d9ea"
+    },
+    "views": [
+      {
+        "id": "send-path",
+        "label": "A message, end to end",
+        "focus": [
+          "web",
+          "sync",
+          "postgres",
+          "hub"
+        ],
+        "note": "A send commits to the append-only log and raises a NOTIFY inside the same transaction; the hub turns it into frames on live sockets."
+      },
+      {
+        "id": "contract",
+        "label": "One schema, three languages",
+        "focus": [
+          "schema",
+          "web",
+          "app",
+          "server"
+        ],
+        "note": "TypeScript, Dart and Go are generated from the one wire schema, and conformance vectors hold them to each other."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "purser",
+      "type": "external",
+      "label": "Purser",
+      "sublabel": "account provisioning",
+      "pos": [
+        330,
+        60
+      ],
+      "size": [
+        150,
+        60
+      ],
+      "sources": [
+        {
+          "path": "provision/openapi.yaml",
+          "label": "provisioning contract"
+        },
+        {
+          "path": "internal/provision/provision.go",
+          "label": "the door"
+        }
+      ]
+    },
+    {
+      "id": "server",
+      "type": "backend",
+      "label": "catenary",
+      "sublabel": "one static Go binary",
+      "tag": "serve \u00b7 migrate \u00b7 version",
+      "pos": [
+        680,
+        60
+      ],
+      "size": [
+        170,
+        70
+      ],
+      "sources": [
+        {
+          "path": "cmd/catenary/main.go",
+          "line": 272,
+          "label": "composition root"
+        },
+        {
+          "path": "internal/webui/webui.go",
+          "label": "embedded web bundle"
+        },
+        {
+          "path": "deploy/Dockerfile",
+          "label": "image"
+        }
+      ]
+    },
+    {
+      "id": "asr",
+      "type": "external",
+      "label": "Estate ASR service",
+      "sublabel": "whisper.cpp \u00b7 shared GPU",
+      "tag": "client two",
+      "pos": [
+        1020,
+        60
+      ],
+      "size": [
+        170,
+        64
+      ],
+      "sources": [
+        {
+          "path": "internal/store/uploads.go",
+          "line": 318,
+          "end_line": 322,
+          "label": "transcript marked pending"
+        }
+      ]
+    },
+    {
+      "id": "schema",
+      "type": "backend",
+      "label": "Wire schema",
+      "sublabel": "generates TS \u00b7 Dart \u00b7 Go",
+      "tag": "source of truth",
+      "pos": [
+        40,
+        260
+      ],
+      "size": [
+        160,
+        64
+      ],
+      "sources": [
+        {
+          "path": "schema/catenary.wire.v1.schema.json",
+          "label": "the schema"
+        },
+        {
+          "path": "schema/codegen/generate.mjs",
+          "label": "generator"
+        },
+        {
+          "path": "verify.sh",
+          "line": 194,
+          "end_line": 196,
+          "label": "staleness guard"
+        }
+      ]
+    },
+    {
+      "id": "web",
+      "type": "frontend",
+      "label": "Web client",
+      "sublabel": "Vue 3 + TypeScript",
+      "tag": "served by the binary",
+      "pos": [
+        330,
+        150
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "web/src/main.ts"
+        },
+        {
+          "path": "web/src/transport/transport.ts",
+          "label": "sync + socket driver"
+        },
+        {
+          "path": "web/vite.config.ts",
+          "line": 42,
+          "label": "builds into the embed"
+        }
+      ]
+    },
+    {
+      "id": "app",
+      "type": "frontend",
+      "label": "Flutter app",
+      "sublabel": "Linux desktop \u00b7 Android",
+      "tag": "Dart client",
+      "pos": [
+        330,
+        400
+      ],
+      "size": [
+        150,
+        64
+      ],
+      "sources": [
+        {
+          "path": "app/lib/main.dart",
+          "line": 42,
+          "end_line": 45,
+          "label": "entrypoint"
+        },
+        {
+          "path": "dart-client/lib/src/transport.dart",
+          "label": "sync + socket driver"
+        },
+        {
+          "path": "app/pubspec.yaml",
+          "label": "wire + client packages"
+        }
+      ]
+    },
+    {
+      "id": "sync",
+      "type": "backend",
+      "label": "Sync protocol",
+      "sublabel": "GET /sync \u00b7 GET /ws",
+      "tag": "cursor = log_seq",
+      "pos": [
+        680,
+        260
+      ],
+      "size": [
+        170,
+        70
+      ],
+      "sources": [
+        {
+          "path": "internal/api/router.go",
+          "line": 444,
+          "label": "sync handler"
+        },
+        {
+          "path": "internal/api/socket.go",
+          "line": 260,
+          "label": "socket handler"
+        },
+        {
+          "path": "internal/store/sync.go",
+          "line": 144,
+          "label": "catch-up read"
+        }
+      ]
+    },
+    {
+      "id": "hub",
+      "type": "messagebus",
+      "label": "LISTEN / NOTIFY fan-out",
+      "sublabel": "hub \u00b7 one listener per channel",
+      "pos": [
+        1000,
+        260
+      ],
+      "size": [
+        190,
+        70
+      ],
+      "sources": [
+        {
+          "path": "internal/store/notify.go",
+          "line": 258,
+          "label": "listener"
+        },
+        {
+          "path": "internal/hub/hub.go",
+          "line": 197,
+          "label": "hub"
+        }
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "Postgres 16",
+      "sublabel": "append-only log \u00b7 seq / log_seq",
+      "tag": "own database and role",
+      "pos": [
+        1000,
+        440
+      ],
+      "size": [
+        190,
+        70
+      ],
+      "sources": [
+        {
+          "path": "migrations/0003_messages.up.sql",
+          "line": 179,
+          "end_line": 184,
+          "label": "log_counter"
+        },
+        {
+          "path": "internal/store/messages.go",
+          "line": 766,
+          "end_line": 773,
+          "label": "notify inside the insert"
+        },
+        {
+          "path": "deploy/provision.sql",
+          "label": "role and database"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "purser-to-server",
+      "from": "purser",
+      "to": "server",
+      "label": "provision / deactivate",
+      "variant": "security"
+    },
+    {
+      "id": "server-to-asr",
+      "from": "server",
+      "to": "asr",
+      "label": "voice (pending)",
+      "variant": "dashed"
+    },
+    {
+      "id": "server-to-web",
+      "from": "server",
+      "to": "web",
+      "label": "serves the bundle"
+    },
+    {
+      "id": "server-to-sync",
+      "from": "server",
+      "to": "sync",
+      "label": "mounts",
+      "labelAt": [
+        765,
+        144
+      ]
+    },
+    {
+      "id": "schema-to-web",
+      "from": "schema",
+      "to": "web",
+      "label": "TS types"
+    },
+    {
+      "id": "schema-to-app",
+      "from": "schema",
+      "to": "app",
+      "label": "Dart types"
+    },
+    {
+      "id": "schema-to-sync",
+      "from": "schema",
+      "to": "sync",
+      "label": "Go types",
+      "labelAt": [
+        440,
+        284
+      ]
+    },
+    {
+      "id": "web-to-sync",
+      "from": "web",
+      "to": "sync",
+      "label": "frames + catch-up",
+      "variant": "emphasis"
+    },
+    {
+      "id": "app-to-sync",
+      "from": "app",
+      "to": "sync",
+      "label": "frames + catch-up",
+      "variant": "emphasis"
+    },
+    {
+      "id": "sync-to-postgres",
+      "from": "sync",
+      "to": "postgres",
+      "label": "append \u00b7 read after log_seq",
+      "variant": "emphasis"
+    },
+    {
+      "id": "postgres-to-hub",
+      "from": "postgres",
+      "to": "hub",
+      "label": "NOTIFY"
+    },
+    {
+      "id": "hub-to-sync",
+      "from": "hub",
+      "to": "sync",
+      "label": "frames"
+    }
+  ]
+}
