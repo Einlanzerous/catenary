@@ -231,3 +231,44 @@ func TestTheWebUploadPickerRefusesWhatTheServerWouldAndTheServerStillDoes(t *tes
 		t.Errorf("the server holds %d uploads and %d messages; an unsendable file leaves neither", uploads, messages)
 	}
 }
+
+// CANT-315 — ruling 0 → B, the live half. The bundle's recording path, with a
+// scripted recorder standing in for the microphone (the shipped one is gated
+// off until CANT-56), hands the real uploader webm bytes as recorded; the
+// server must have minted a handle for a `kind=voice` upload and hold its row,
+// with the bytes exactly as sent and nothing the client could have measured
+// about them: peaks and the server-measured duration stay NULL until CANT-56.
+func TestTheWebUploadVoiceRecordingReturnsAHandleAndARow(t *testing.T) {
+	r, out := runUploadBundle(t, "voice")
+	m := regexp.MustCompile(`RESULT (\{.*\})`).FindStringSubmatch(out)
+	if m == nil {
+		t.Fatalf("the bundle printed no RESULT line:\n%s", out)
+	}
+	var res struct {
+		Handle string   `json:"handle"`
+		Bytes  int      `json:"bytes"`
+		Keys   []string `json:"keys"`
+	}
+	if err := json.Unmarshal([]byte(m[1]), &res); err != nil {
+		t.Fatal(err)
+	}
+	// The client's voice draft carries no peaks: its four fields plus the handle
+	// the uploader set on it.
+	if strings.Join(res.Keys, ",") != "blob,durationMs,kind,upload,uploadId" {
+		t.Errorf("the client's voice attachment has fields %v", res.Keys)
+	}
+	var kind string
+	var n int64
+	var peaksNull, durationNull bool
+	if err := r.pool.QueryRow(r.ctx,
+		`SELECT kind, bytes, peaks IS NULL, duration_ms IS NULL FROM uploads WHERE id = $1`, res.Handle).
+		Scan(&kind, &n, &peaksNull, &durationNull); err != nil {
+		t.Fatalf("no uploads row for the handle %s: %v", res.Handle, err)
+	}
+	if kind != "voice" || n != int64(res.Bytes) {
+		t.Errorf("row = kind %q, %d bytes; want voice, %d", kind, n, res.Bytes)
+	}
+	if !peaksNull || !durationNull {
+		t.Errorf("peaks null=%v duration null=%v: nothing the client sent may have filled them", peaksNull, durationNull)
+	}
+}

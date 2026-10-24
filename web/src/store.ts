@@ -34,6 +34,7 @@ import { createEnsureSelf } from '@/ensure-self'
 import { createUploader } from '@/upload'
 import { countWords } from '@/lib/format'
 import { precheckImage } from '@/attach'
+import { RECORDER_MESSAGES, RecorderRefused, shippedRecorder, type Capture, type Recorder } from '@/recorder'
 import {
   BroadcastOutboxChannel,
   ComposeRefused,
@@ -88,8 +89,9 @@ interface Composer {
    *  not in the outbox, until SEND composes it: choosing another replaces it,
    *  because the composer holds at most one picked image per message. */
   attachment: PickedImage | null
-  /** Why the last pick or send was refused, shown inline in the meta color
-   *  (red stays for failure alone). Cleared by the next accepted pick or send. */
+  /** Why the last pick, send or recording was refused, shown inline in the
+   *  meta color (red stays for failure alone). Cleared by the next accepted
+   *  pick, send or take. */
   attachError: string | null
 }
 
@@ -609,33 +611,74 @@ export function retryNow() {
 /* ── recording ─────────────────────────────────────────────────────────── */
 
 let recordTicker: ReturnType<typeof setInterval> | null = null
+let capture: Capture | null = null
+/** The permission prompt is open: a second click must not open a second take. */
+let starting = false
 
-export function startRecording() {
+/** The recorder RECORD uses: the browser's, behind `VOICE_SEND_ENABLED`, which
+ *  is off until CANT-56 makes a voice message sendable (CANT-247 ruling 0 → B).
+ *  Replaceable so a test can switch it on with a scripted capture. */
+const recorderRef = shallowRef<Recorder>(shippedRecorder())
+export function configureRecorder(next: Recorder = shippedRecorder()) {
+  recorderRef.value = next
+}
+
+/** Whether RECORD is offered: the gate, nothing else. REC is drawn disabled
+ *  while it is off. */
+export const canRecord = computed(() => recorderRef.value.enabled)
+
+/**
+ * Start a take. Nothing is shown as recording until the microphone is actually
+ * granted: a denial (or no microphone, or no `MediaRecorder`) leaves the
+ * composer idle and says so inline, never as a dead red dot. While the gate is
+ * off this does nothing at all.
+ */
+export async function startRecording() {
+  const recorder = recorderRef.value
+  if (!recorder.enabled || state.composer.recording || starting || cannotSend()) return
+  state.composer.attachError = null
+  starting = true
+  try {
+    capture = await recorder.start()
+  } catch (e) {
+    state.composer.attachError = e instanceof RecorderRefused ? e.message : RECORDER_MESSAGES.failed
+    return
+  } finally {
+    starting = false
+  }
   state.composer.recording = true
   state.composer.recordingSec = 0
   recordTicker = setInterval(() => state.composer.recordingSec++, 1000)
 }
 
+/**
+ * End the take. SEND composes ONE voice attachment with the bytes exactly as
+ * recorded and `durationMs` from the recorder's own clock (display only; the
+ * server measures its own). There is no `peaks` field on the draft and none is
+ * ever computed here (Invariant 3).
+ */
 export async function stopRecording(sendIt: boolean) {
   if (recordTicker) clearInterval(recordTicker)
   recordTicker = null
+  const taken = capture
+  capture = null
   state.composer.recording = false
-  if (!sendIt || cannotSend()) return
-  // There is no recorder yet (CANT-247), so the clip is empty; the entry is
-  // real. The outbox offers it to its `Uploader` once a session is ready, and
-  // the shipped app has none, so it fails there with "Attachments can't be
-  // sent yet" and RETRY and DELETE — never a row that reads QUEUED for good.
+  if (!taken) return
+  if (!sendIt || cannotSend()) {
+    taken.cancel()
+    return
+  }
+  let recorded: { blob: Blob; durationMs: number }
+  try {
+    recorded = await taken.stop()
+  } catch (e) {
+    state.composer.attachError = e instanceof RecorderRefused ? e.message : RECORDER_MESSAGES.failed
+    return
+  }
   const outbox = await outboxReady
   await outbox.compose({
     conversationId: state.activeId,
-    attachments: [
-      {
-        kind: 'voice',
-        blob: new Blob([], { type: 'audio/ogg' }),
-        durationMs: (state.composer.recordingSec || 1) * 1000,
-        upload: 'pending',
-      },
-    ],
+    attachments: [{ kind: 'voice', blob: recorded.blob, durationMs: recorded.durationMs, upload: 'pending' }],
   })
 }
 

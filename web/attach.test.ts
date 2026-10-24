@@ -23,6 +23,7 @@ import { IMAGE_CAP_BYTES, precheckImage, sniffImage } from '@/attach'
 import { ComposeRefused, MemoryOutboxStore, ScriptedTransport } from '@/outbox'
 import { canAttachFile, outboxMessages, outboxReady, pickImage, removeAttachment, send, state, useOutbox } from '@/store'
 import { UPLOAD_MESSAGES } from '@/upload'
+import { configureRecorder } from '@/store'
 import type { ConnectionState } from '@/client-types'
 import { loadManifest, oversizeImage, readFixture } from './media-fixtures'
 
@@ -95,7 +96,10 @@ const reset = async () => {
   state.composer.attachError = null
   state.connection = { state: 'live' }
 }
-afterEach(reset)
+afterEach(() => {
+  configureRecorder()
+  return reset()
+})
 
 const render = () => renderToString(createSSRApp(Composer, { conversationName: 'Kitchen Table' }))
 
@@ -183,6 +187,9 @@ test('Offline rule · the old second condition is gone: a live banner over a ses
 
 test('Offline rule · RECORD stays allowed offline, and is dimmed only when terminal', async () => {
   await outboxIn('closed')
+  // The voice gate is off in the shipped app until CANT-56 (CANT-315); the offline
+  // rule is about the connection, so a recorder is switched on to isolate it.
+  configureRecorder({ enabled: true, start: async () => ({ stop: async () => ({ blob: new Blob(), durationMs: 1 }), cancel() {} }) })
   for (const c of ['connecting', 'reconnecting', 'resyncing', 'offline'] as const) {
     state.connection = { state: c }
     assert.ok(!/\bdisabled\b/.test(recordButton(await render())), `RECORD is enabled while ${c}`)
