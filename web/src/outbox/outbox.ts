@@ -196,6 +196,20 @@ export class Outbox {
     return { items, persist: this.persistStatus }
   }
 
+  /**
+   * Whether a picked file would be taken by `compose` right now: a ready
+   * session and no terminal state. THE ONE PREDICATE: the composer enables
+   * ATTACH from this and from no second condition of its own, so the button
+   * and `compose`'s `ComposeRefused` (which refuses a picked file without a
+   * ready session, and any attachment on a terminal client) cannot disagree
+   * about connection states (CANT-247 ruling 4 → A). Read on each call, never
+   * cached: a terminal reached with no close emits nothing. `compose` itself
+   * is unchanged.
+   */
+  canAttachFile(): boolean {
+    return this.ready && !this.terminal && !this.transport.isTerminal()
+  }
+
   /** Test visibility. */
   get isHolder(): boolean {
     return this.holding

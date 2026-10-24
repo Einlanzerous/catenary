@@ -33,8 +33,10 @@ import { requestSelfConversation } from '@/account'
 import { createEnsureSelf } from '@/ensure-self'
 import { createUploader } from '@/upload'
 import { countWords } from '@/lib/format'
+import { precheckImage } from '@/attach'
 import {
   BroadcastOutboxChannel,
+  ComposeRefused,
   IdbOutboxStore,
   InProcessLockHub,
   MemoryOutboxStore,
@@ -82,7 +84,18 @@ interface Composer {
   replyToId: string | null
   recording: boolean
   recordingSec: number
-  /** Attachments cannot be queued safely, so ATTACH dims when offline. */
+  /** The ONE image chosen with ATTACH and not yet sent (CANT-314). Held here,
+   *  not in the outbox, until SEND composes it: choosing another replaces it,
+   *  because the composer holds at most one picked image per message. */
+  attachment: PickedImage | null
+  /** Why the last pick or send was refused, shown inline in the meta color
+   *  (red stays for failure alone). Cleared by the next accepted pick or send. */
+  attachError: string | null
+}
+
+export interface PickedImage {
+  blob: Blob
+  filename?: string
 }
 
 const state = reactive({
@@ -119,6 +132,8 @@ const state = reactive({
     replyToId: null,
     recording: false,
     recordingSec: 0,
+    attachment: null,
+    attachError: null,
   } as Composer,
 
   playback: {
@@ -429,12 +444,15 @@ const cannotSend = () => state.connection.state === 'terminal'
  */
 export async function send(): Promise<string | undefined> {
   const text = state.composer.draft.trim()
-  if (!text || cannotSend()) return undefined
+  const attachment = state.composer.attachment
+  if ((!text && !attachment) || cannotSend()) return undefined
   const draft = state.composer.draft
   const replyToId = state.composer.replyToId
   const conversationId = state.activeId
   state.composer.draft = ''
   state.composer.replyToId = null
+  state.composer.attachment = null
+  state.composer.attachError = null
 
   const source = replyToId ? messageById(replyToId) : undefined
   const replyPreview: ReplyRef | undefined = source
@@ -445,8 +463,20 @@ export async function send(): Promise<string | undefined> {
     const outbox = await outboxReady
     const entry = await outbox.compose({
       conversationId,
-      text,
+      ...(text ? { text } : {}),
       ...(source ? { replyToMessageId: source.id, replyPreview } : {}),
+      ...(attachment
+        ? {
+            attachments: [
+              {
+                kind: 'image' as const,
+                blob: attachment.blob,
+                ...(attachment.filename ? { filename: attachment.filename } : {}),
+                upload: 'pending' as const,
+              },
+            ],
+          }
+        : {}),
     })
     return entry.clientId
   } catch (e) {
@@ -454,9 +484,49 @@ export async function send(): Promise<string | undefined> {
       state.composer.draft = draft
       state.composer.replyToId = replyToId
     }
+    if (attachment && !state.composer.attachment) state.composer.attachment = attachment
+    // The connection dropped between the click and the compose: the outbox
+    // wrote nothing, and the person is told where they are looking.
+    if (e instanceof ComposeRefused) {
+      state.composer.attachError = e.message
+      return undefined
+    }
     throw e
   }
 }
+
+/**
+ * ATTACH, after the file dialog. The pre-check runs BEFORE anything is
+ * composed: a refused file writes no outbox entry and is told inline. An
+ * accepted one replaces whatever image was held (one per message), and a
+ * refused one leaves what was held where it was.
+ */
+export async function pickImage(file: Blob & { name?: string }): Promise<void> {
+  const verdict = await precheckImage(file)
+  if (!verdict.ok) {
+    state.composer.attachError = verdict.message
+    return
+  }
+  state.composer.attachment = { blob: file, ...(file.name ? { filename: file.name } : {}) }
+  state.composer.attachError = null
+}
+
+export function removeAttachment() {
+  state.composer.attachment = null
+  state.composer.attachError = null
+}
+
+/**
+ * Whether ATTACH is enabled: the outbox's own predicate and nothing the
+ * composer adds (CANT-247 ruling 4 → A). `state.connection` and the outbox view
+ * are read only so this recomputes when either moves; the answer is the
+ * outbox's.
+ */
+export const canAttachFile = computed(() => {
+  void state.connection
+  void outboxView.value
+  return current?.canAttachFile() ?? false
+})
 
 /* NOTHING LOCALLY MOVES A SEND TO `sent` EXCEPT AN ACK, and nothing ever moves
  * your own message to `delivered`. CANT-90 settled that your own message is
