@@ -50,6 +50,7 @@ import {
   searchHits,
   select,
   send,
+  configureRecorder,
   startRecording,
   startSession,
   state,
@@ -928,7 +929,16 @@ async function main() {
     const before = state.activeId
     state.conversations.push({ id: ROOM, kind: 'group', name: 'Platform End', memberCount: 3, headSeq: 0 })
     select(ROOM)
-    startRecording()
+    // The shipped recorder is gated off until CANT-56 (CANT-247 ruling 0 → B);
+    // a scripted one stands in for the microphone, as the outbox tests' does.
+    configureRecorder({
+      enabled: true,
+      start: async () => ({
+        stop: async () => ({ blob: new Blob([Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3])], { type: 'audio/webm' }), durationMs: 1000 }),
+        cancel() {},
+      }),
+    })
+    await startRecording()
     await stopRecording(true)
     await new Promise((r) => setTimeout(r, 0))
     const unsent = outboxMessages.value.find((m) => m.conversationId === ROOM)

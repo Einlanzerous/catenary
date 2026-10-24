@@ -67,6 +67,7 @@ import {
   retry,
   select,
   send,
+  configureRecorder,
   startRecording,
   state,
   stopRecording,
@@ -1198,7 +1199,16 @@ test('CANT-162 · the refusing default, through the shipped wiring: RECORD then 
   // No `uploader`: what the shipped app builds.
   await useOutbox({ store, transport, storage: null, clock })
   select(CONV)
-  startRecording()
+  // The gate is off in the shipped app (CANT-247 ruling 0 → B); this proves the
+  // recorder-to-outbox path, so the test switches a scripted recorder on.
+  configureRecorder({
+    enabled: true,
+    start: async () => ({
+      stop: async () => ({ blob: new Blob([Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 1, 2, 3])], { type: 'audio/webm' }), durationMs: 1000 }),
+      cancel() {},
+    }),
+  })
+  await startRecording()
   await stopRecording(true)
   transport.open()
   await ticks()

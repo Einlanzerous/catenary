@@ -6,6 +6,7 @@ import { peaksFromSeed } from '@/lib/waveform'
 import { IMAGE_ACCEPT } from '@/attach'
 import {
   canAttachFile,
+  canRecord,
   messageById,
   pickImage,
   removeAttachment,
@@ -178,7 +179,15 @@ const grow = () => {
           >
             ATTACH
           </button>
-          <button class="ghost" :class="{ off: terminal }" :disabled="terminal" @click="startRecording">
+          <!-- REC is drawn disabled until CANT-56 makes a voice message
+               sendable (CANT-247 ruling 0 → B): `canRecord` is the one gate.
+               Offline it stays allowed; only a terminal client dims it. -->
+          <button
+            class="ghost"
+            :class="{ off: terminal || !canRecord }"
+            :disabled="terminal || !canRecord"
+            @click="startRecording"
+          >
             RECORD
           </button>
           <button class="ghost hide-narrow">MARKDOWN</button>

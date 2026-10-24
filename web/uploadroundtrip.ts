@@ -9,7 +9,11 @@
  * `useTransport`), a composed image attachment, and the outbox's drain. The Go
  * side then reads what the server holds.
  *
- * THREE MODES, ONE BUNDLE. `positive` composes the picked JPEG and waits for it to
+ * FOUR MODES, ONE BUNDLE. `voice` is CANT-247 ruling 0 → B's live half: a scripted recorder (the shipped
+ * one is gated off until CANT-56) hands the recording path webm bytes, and the real uploader's `kind=voice`
+ * request returns a handle; the Go side finds its row. The send that follows is refused `upload_not_found`
+ * until CANT-56, which is exactly why the gate is off.
+ * `positive` composes the picked JPEG and waits for it to
  * be sent and acked. `unsendable` is CANT-247 ruling 1 → B's end to end: the picker refuses
  * a HEIC, an SVG and an oversize body before anything is composed, and with the pre-check bypassed
  * the server's own 415 and 413 fail the entry with the same words, RETRY and DELETE working.
@@ -22,7 +26,7 @@
 
 import { readFileSync } from 'node:fs'
 import { accountState, configureAccount, login, onEnrolled } from '@/account'
-import { liveTransport, outboxReady, pickImage, startSession, state, useTransport } from '@/store'
+import { configureRecorder, liveTransport, outboxReady, pickImage, startRecording, startSession, state, stopRecording, useTransport } from '@/store'
 import { MemoryCredentialStore } from '@/transport/credential-store'
 import type { Logger } from '@/transport/seams'
 import { RefusingUploader, project } from '@/outbox'
@@ -89,7 +93,7 @@ async function main() {
   const conversationId = process.env.CATENARY_UPLOAD_CONVERSATION_ID as Uuid | undefined
   const fixture = process.env.CATENARY_UPLOAD_FIXTURE
   const mode = process.env.CATENARY_UPLOAD_MODE
-  if (!baseUrl || !token || !conversationId || !fixture || (mode !== 'positive' && mode !== 'negative' && mode !== 'unsendable')) {
+  if (!baseUrl || !token || !conversationId || !fixture || (mode !== 'positive' && mode !== 'negative' && mode !== 'unsendable' && mode !== 'voice')) {
     console.error('uploadroundtrip: run `npm run smoke:upload`, which starts a server and sets CATENARY_UPLOAD_*.')
     process.exit(2)
   }
@@ -112,6 +116,28 @@ async function main() {
     // The broken composition root: the outbox rebuilt over the same live
     // transport, with no uploader to pass.
     await useTransport(liveTransport()!, quiet)
+  }
+
+  if (mode === 'voice') {
+    // The recorded bytes: a webm header and a payload, handed over as recorded.
+    const recorded = Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, ...Array.from({ length: 2000 }, (_, i) => (i * 7) & 0xff)])
+    configureRecorder({
+      enabled: true,
+      start: async () => ({
+        stop: async () => ({ blob: new Blob([recorded], { type: 'audio/webm' }), durationMs: 2500 }),
+        cancel() {},
+      }),
+    })
+    state.activeId = conversationId
+    await startRecording()
+    await stopRecording(true)
+    const outbox = await outboxReady
+    const uploaded = () => outbox.view().items[0]?.entry.attachments?.[0]
+    await until('the voice note to be uploaded', () => uploaded()?.upload === 'uploaded', 20_000, () => JSON.stringify(outbox.view().items[0]?.entry.lastError ?? null))
+    const a = uploaded()!
+    console.log(`ok    the recording was uploaded as kind=voice and the server minted ${a.uploadId}`)
+    console.log(`RESULT ${JSON.stringify({ handle: a.uploadId, bytes: recorded.length, keys: Object.keys(a).sort() })}`)
+    process.exit(0)
   }
 
   if (mode === 'unsendable') {
