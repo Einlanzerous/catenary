@@ -15,10 +15,11 @@
 /// never holds up a `status`. Nothing else is ever written to stdout; the
 /// transport's own log, when asked for, goes to stderr.
 ///
-/// ALL TWELVE COMMANDS: start, send, read, compose, composeImage, outbox,
-/// sever, blackhole, catchup, status, snapshot and stop. Eleven are each as the
-/// driver.ts header states it; `composeImage` (CANT-316) is Dart-only and
-/// driver.ts has no counterpart.
+/// ALL THIRTEEN COMMANDS: start, send, read, compose, composeImage,
+/// composeVoice, outbox, sever, blackhole, catchup, status, snapshot and stop.
+/// Eleven are each as the driver.ts header states it; `composeImage` (CANT-316)
+/// and `composeVoice` (CANT-318) are Dart-only and driver.ts has no
+/// counterpart.
 ///
 /// `Kill` IS NOT A COMMAND. It is SIGKILL on this process, sent from Go, and
 /// nothing here can observe it. Closing stdin ends the process too, so a rig
@@ -324,6 +325,24 @@ Future<void> main(List<String> argv) async {
         conversationId: conversationId,
         text: args['text'] as String?,
         attachments: [OutboundAttachmentDraft(kind: 'image', source: MediaFile(path), filename: args['filename'] as String?)],
+      ));
+      return {'clientId': entry.clientId};
+    },
+    // One recording, from a file on disk, as the app's recorder hands one over
+    // (CANT-318): a `voice` attachment with the recorder's own `durationMs` and
+    // nothing else measured. The app keeps REC disabled behind a gate until
+    // CANT-56 gives the server peaks, so this is how the uploader's voice path
+    // is proven against a live server today.
+    'composeVoice': (args) async {
+      need();
+      final box = outbox ?? (throw const DriverError('NotStarted', 'driver: no outbox is open; send start first'));
+      final conversationId = args['conversationId'], path = args['path'], durationMs = args['durationMs'];
+      if (conversationId is! String || path is! String || durationMs is! int) {
+        throw const DriverError('BadArgs', 'driver: composeVoice takes {conversationId, path, durationMs}');
+      }
+      final entry = await box.compose(OutboxDraft(
+        conversationId: conversationId,
+        attachments: [OutboundAttachmentDraft(kind: 'voice', source: MediaFile(path), durationMs: durationMs)],
       ));
       return {'clientId': entry.clientId};
     },

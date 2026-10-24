@@ -15,6 +15,8 @@
 // messages, and a badge asserting otherwise is the one claim this surface
 // must not make. Over an `http` address its last word is CLEARTEXT.
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'metrics.dart';
@@ -22,6 +24,7 @@ import 'store/attach.dart';
 import 'store/connection.dart';
 import 'store/conversation.dart';
 import 'store/status.dart';
+import 'store/voice.dart';
 import 'store/when.dart';
 import 'tokens.dart';
 import 'widgets/composer.dart';
@@ -52,6 +55,9 @@ class ThreadScreen extends StatelessWidget {
     this.onDiscardMessage,
     this.onPickImage,
     this.onSendPicked,
+    this.onStartRecording,
+    this.onCancelRecording,
+    this.onSendRecording,
   });
 
   final ConversationView conversation;
@@ -72,6 +78,12 @@ class ThreadScreen extends StatelessWidget {
 
   /// The composer's send with its one held image, given the draft.
   final Future<void> Function(String text, PickedImage image)? onSendPicked;
+
+  /// REC and the recording's two ways out. NULL DRAWS REC DISABLED: the
+  /// caller passes them only while the voice gate is on (store/voice.dart).
+  final Future<RecordStart> Function()? onStartRecording;
+  final Future<void> Function()? onCancelRecording;
+  final Future<void> Function()? onSendRecording;
 
   /// RETRY and DELETE on a failed message, given its `client_id` (the
   /// message's `id`).
@@ -193,7 +205,15 @@ class ThreadScreen extends StatelessWidget {
             if (onSend == null)
               Composer(connection: connection)
             else
-              _ThreadComposer(connection: connection, onSend: onSend!, onPickImage: onPickImage, onSendPicked: onSendPicked),
+              _ThreadComposer(
+                connection: connection,
+                onSend: onSend!,
+                onPickImage: onPickImage,
+                onSendPicked: onSendPicked,
+                onStartRecording: onStartRecording,
+                onCancelRecording: onCancelRecording,
+                onSendRecording: onSendRecording,
+              ),
           ],
         ),
       ),
@@ -206,12 +226,23 @@ class ThreadScreen extends StatelessWidget {
 /// also holds the one picked image: choosing another replaces it, so it can
 /// never hold two.
 class _ThreadComposer extends StatefulWidget {
-  const _ThreadComposer({required this.connection, required this.onSend, this.onPickImage, this.onSendPicked});
+  const _ThreadComposer({
+    required this.connection,
+    required this.onSend,
+    this.onPickImage,
+    this.onSendPicked,
+    this.onStartRecording,
+    this.onCancelRecording,
+    this.onSendRecording,
+  });
 
   final ConnectionView connection;
   final Future<void> Function(String text) onSend;
   final Future<PickOutcome?> Function()? onPickImage;
   final Future<void> Function(String text, PickedImage image)? onSendPicked;
+  final Future<RecordStart> Function()? onStartRecording;
+  final Future<void> Function()? onCancelRecording;
+  final Future<void> Function()? onSendRecording;
 
   @override
   State<_ThreadComposer> createState() => _ThreadComposerState();
@@ -223,11 +254,62 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   var _picking = false;
   PickedImage? _picked;
   String? _notice;
+  DateTime? _recordingSince;
+  Timer? _clock;
 
   @override
   void dispose() {
+    _clock?.cancel();
     _draft.dispose();
     super.dispose();
+  }
+
+  Future<void> _record() async {
+    if (_recordingSince != null || _sending) return;
+    final started = await widget.onStartRecording!();
+    if (!mounted) return;
+    switch (started) {
+      case RecordRefused(:final message):
+        setState(() => _notice = message);
+      case RecordingStarted():
+        setState(() {
+          _notice = null;
+          _recordingSince = DateTime.now();
+        });
+        _clock = Timer.periodic(const Duration(milliseconds: 250), (_) => setState(() {}));
+    }
+  }
+
+  void _endRecording() {
+    _clock?.cancel();
+    _clock = null;
+    _recordingSince = null;
+  }
+
+  Future<void> _cancelRecording() async {
+    await widget.onCancelRecording?.call();
+    if (mounted) setState(_endRecording);
+  }
+
+  Future<void> _sendRecording() async {
+    if (_sending) return;
+    _sending = true;
+    try {
+      await widget.onSendRecording?.call();
+      if (mounted) setState(() => _endRecording());
+    } on AttachRefused catch (e) {
+      // Nothing was written; the recording is over either way.
+      if (mounted) {
+        setState(() {
+          _endRecording();
+          _notice = e.message;
+        });
+      }
+    } on Object {
+      if (mounted) setState(_endRecording);
+    } finally {
+      _sending = false;
+    }
   }
 
   Future<void> _attach() async {
@@ -290,6 +372,10 @@ class _ThreadComposerState extends State<_ThreadComposer> {
         attachment: _picked?.name,
         onRemoveAttachment: () => setState(() => _picked = null),
         notice: _notice,
+        onRecord: widget.onStartRecording == null ? null : _record,
+        recording: _recordingSince == null ? null : DateTime.now().difference(_recordingSince!),
+        onCancelRecording: _cancelRecording,
+        onSendRecording: _sendRecording,
       );
 }
 

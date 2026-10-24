@@ -45,6 +45,7 @@ import 'ensure_self.dart';
 import 'session.dart';
 import 'start.dart';
 import 'status.dart';
+import 'voice.dart';
 
 /// What the banner reads, from what the transport knows. Pure: [now]
 /// (wall-clock ms) and [online] are passed in. Follows `connectionInfo` in
@@ -322,12 +323,14 @@ Future<void> wipeJournalFile(String directory) async {
 /// everything else is empty: there is no fixture corpus behind it.
 final class AppStore extends ChangeNotifier {
   /// [now] is wall-clock ms, which the banner's countdown is measured against.
-  AppStore(this._seams, [this._now = systemClock, this._wipe = wipeJournalFile, this._pick]);
+  AppStore(this._seams, [this._now = systemClock, this._wipe = wipeJournalFile, this._pick, this._recorder, this._voiceEnabled = voiceSendEnabled]);
 
   final SessionSeams _seams;
   final Clock _now;
   final JournalWipe _wipe;
   final ImagePick? _pick;
+  final VoiceRecorder? _recorder;
+  final bool _voiceEnabled;
 
   Session? _session;
   Projection _projection = emptyProjection;
@@ -521,6 +524,64 @@ final class AppStore extends ChangeNotifier {
     }
     final refusal = imageRefusal(checkImage(head, length));
     return refusal == null ? Picked(picked) : PickRefused(refusal);
+  }
+
+  /// Whether REC may be offered: the voice gate ([voiceSendEnabled]) is on and
+  /// there is a recorder. Off, REC is drawn disabled and nothing here is
+  /// reachable from the screen.
+  bool get canRecord => _voiceEnabled && _recorder != null;
+
+  /// REC: starts the platform recorder. A refused microphone permission is a
+  /// message and nothing is recording. Needs no session: a recording made
+  /// offline is held with its media and sent on reconnect.
+  Future<RecordStart> startRecording() async {
+    final recorder = _recorder;
+    if (!_voiceEnabled || recorder == null) return const RecordRefused(recorderUnavailable);
+    try {
+      return await recorder.start() ? const RecordingStarted() : const RecordRefused(microphoneDenied);
+    } on Object {
+      return const RecordRefused(recorderUnavailable);
+    }
+  }
+
+  /// ✕ on a recording: stops it and keeps nothing.
+  Future<void> cancelRecording() async {
+    try {
+      await _recorder?.cancel();
+    } on Object {
+      // Nothing was recording, or the platform already let go of it.
+    }
+  }
+
+  /// SEND on a recording: stops the recorder and composes the file as a `voice`
+  /// attachment in [conversationId], with the recorder's own `durationMs` and
+  /// nothing else measured, and the bytes as they were recorded. The outbox
+  /// copies them at compose, so the temporary file is removed after. A
+  /// refusal (a terminal client) is [AttachRefused] and writes nothing.
+  Future<void> sendRecording(String conversationId) async {
+    final recorder = _recorder;
+    if (!_voiceEnabled || recorder == null) return;
+    final RecordedVoice? voice;
+    try {
+      voice = await recorder.stop();
+    } on Object {
+      throw const AttachRefused(recorderUnavailable);
+    }
+    if (voice == null) return;
+    try {
+      await _running.outbox.compose(OutboxDraft(
+        conversationId: conversationId,
+        attachments: [OutboundAttachmentDraft(kind: 'voice', source: MediaFile(voice.path), durationMs: voice.durationMs)],
+      ));
+    } on ComposeRefused catch (e) {
+      throw AttachRefused(e.message);
+    } finally {
+      try {
+        File(voice.path).deleteSync();
+      } on Object {
+        // The platform's cache is its own to clean.
+      }
+    }
   }
 
   /// RETRY on a failed message: `Outbox.retry`, under the same `client_id`.
@@ -765,6 +826,7 @@ final class AppStore extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    _recorder?.dispose().ignore();
     _detach();
     _session?.end();
     _session = null;

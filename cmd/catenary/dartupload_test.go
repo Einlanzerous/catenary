@@ -39,6 +39,7 @@ import (
 
 	"github.com/magos/catenary/internal/client"
 	"github.com/magos/catenary/internal/config"
+	"github.com/magos/catenary/internal/media"
 	"github.com/magos/catenary/internal/wire"
 )
 
@@ -51,14 +52,16 @@ type dartUploadRig struct {
 	driver     *tsDriver
 	ctx        context.Context
 	fixtureJPG string
+	mediaDir   string
 }
 
 func newDartUploadRig(t *testing.T) *dartUploadRig {
 	t.Helper()
 	dartDriverExe(t) // skips when there is no driver
 	log := &recorder{}
+	mediaDir := t.TempDir()
 	ctx, pool, st, d := processFixtureWith(t, slog.New(log), func(c *config.Config) {
-		c.MediaDir = t.TempDir()
+		c.MediaDir = mediaDir
 		c.MediaURLKeys = "1=" + strings.Repeat("ab", 32)
 	})
 	srv := httptest.NewServer(d.router)
@@ -73,7 +76,7 @@ func newDartUploadRig(t *testing.T) *dartUploadRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u := &dartUploadRig{rig: r, ada: ada, bob: bob, group: group, ctx: ctx, fixtureJPG: fixture}
+	u := &dartUploadRig{rig: r, ada: ada, bob: bob, group: group, ctx: ctx, fixtureJPG: fixture, mediaDir: mediaDir}
 	u.adaDev = r.enroll(ada, "Ada's phone")
 	u.bobDev = r.enroll(bob, "Bob's phone")
 	u.driver = dartLane.newClient(t, r.base, u.adaDev, client.Faults{})
@@ -209,4 +212,85 @@ func TestWithoutThePassThroughTheDartClientCannotSendAnImage(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	t.Fatalf("the entry never failed: %+v", u.entries())
+}
+
+// CANT-318 — the voice path the app's recorder feeds, proven against a live
+// server while the app keeps REC disabled (CANT-247 ruling 0 → B). A recording
+// is composed from a file as the platform recorder would leave it, the real
+// uploader POSTs it as kind=voice, and the server mints a handle: a row exists
+// with the recorded bytes stored as they were. The message then cannot be sent
+// (a voice row resolves only with peaks, which CANT-56 computes), so the entry
+// fails and Bob receives nothing: that end-to-end half is CANT-56's to prove,
+// and the gate that keeps REC off in the app is why a person never sees it.
+func TestTheDartClientsVoiceUploadMintsAHandleAndStoresTheBytesAsRecorded(t *testing.T) {
+	u := newDartUploadRig(t)
+	// An m4a: an ftyp box with the "M4A " brand, then bytes that are not text.
+	recorded := append([]byte{0, 0, 0, 0x20, 'f', 't', 'y', 'p', 'M', '4', 'A', ' ', 0, 0, 0, 0}, bytes.Repeat([]byte{0x9a, 0x01, 0xfe}, 400)...)
+	path := filepath.Join(t.TempDir(), "take.m4a")
+	if err := os.WriteFile(path, recorded, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		ClientID wire.Uuid `json:"clientId"`
+	}
+	if err := u.driver.call(u.ctx, "composeVoice", map[string]any{"conversationId": u.group, "path": path, "durationMs": 4200}, &out); err != nil {
+		t.Fatalf("composeVoice: %v", err)
+	}
+
+	var key string
+	var kind string
+	var n int64
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		err := u.pool.QueryRow(u.ctx, `SELECT kind, storage_key, bytes FROM uploads WHERE uploader = $1 ORDER BY created_at LIMIT 1`, u.ada).Scan(&kind, &key, &n)
+		if err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("no uploads row for Ada after the recording was composed: %v (driver outbox: %+v)", err, u.entries())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if kind != "voice" {
+		t.Errorf("kind = %q; want voice", kind)
+	}
+	if n != int64(len(recorded)) {
+		t.Errorf("bytes = %d; want %d", n, len(recorded))
+	}
+	stored, err := os.ReadFile(filepath.Join(u.mediaDir, "blobs", key[:2], key))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(stored, recorded) {
+		t.Error("the stored bytes are not the recorded bytes: voice is submitted and stored as recorded")
+	}
+	if ct, _ := media.ContentType(stored, "voice"); ct != "audio/mp4" {
+		t.Errorf("the stored recording sniffs as %q; want audio/mp4", ct)
+	}
+	var withPeaks int
+	if err := u.pool.QueryRow(u.ctx, `SELECT count(*) FROM uploads WHERE uploader = $1 AND peaks IS NOT NULL`, u.ada).Scan(&withPeaks); err != nil {
+		t.Fatal(err)
+	}
+	if withPeaks != 0 {
+		t.Errorf("%d upload rows carry peaks: no client computes them", withPeaks)
+	}
+	// The send is refused (upload_not_found), the outbox spends its one
+	// re-upload, and the entry fails. Wait for that, then look at Bob.
+	failedBy := time.Now().Add(20 * time.Second)
+	for {
+		var failed bool
+		for _, e := range u.entries() {
+			failed = failed || (e.ClientID == out.ClientID && e.State == "failed")
+		}
+		if failed {
+			break
+		}
+		if time.Now().After(failedBy) {
+			t.Fatalf("the unsendable voice entry never failed: %+v", u.entries())
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	if urls := u.bobsImageURLs(); len(urls) != 0 {
+		t.Errorf("Bob received %v: a voice note cannot be sent until CANT-56", urls)
+	}
 }
