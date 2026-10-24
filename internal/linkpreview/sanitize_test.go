@@ -17,6 +17,8 @@ func TestClean(t *testing.T) {
 		{"C1 controls removed", "a\u0085b\u009bc", 20, "a bc"},
 		{"bidi overrides removed", "\u202Eevil\u202C \u2066x\u2069", 20, "evil x"},
 		{"every bidi char", "\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069ok", 20, "ok"},
+		{"direction marks and invisibles", "a\u200Eb\u200Fc\u061Cd\u200Be\u2060f\uFEFFg", 20, "abcdefg"},
+		{"joiners are kept for emoji", "\U0001F468\u200D\U0001F469", 20, "\U0001F468\u200D\U0001F469"},
 		{"invalid utf-8", "a\xffb", 20, "a\uFFFDb"},
 		{"rune cap, not byte cap", strings.Repeat("\u00E9", 10), 4, "\u00E9\u00E9\u00E9\u00E9"},
 		{"cap then trim", "ab cd", 3, "ab"},
