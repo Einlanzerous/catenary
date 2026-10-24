@@ -10,3 +10,5 @@ dist-no-speech-test/
 .DS_Store
 dist-rail-new-test/
 dist-image-box-test/
+dist-upload/
+dist-upload-test/
