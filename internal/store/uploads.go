@@ -134,8 +134,9 @@ func (s *Store) resolveUploads(ctx context.Context, tx pgx.Tx, m NewMessage) ([]
 // under the extended protocol's 65,535 parameters, so a column added here
 // cannot quietly cross it.
 //
-// It is the columns Sync's loadAttachments reads, plus id and message_id; cmd/catenary/servedattachments_test.go is what proves the two
-// lists agree, by serving what this writes.
+// It is the columns Sync's loadAttachments reads, plus id and message_id;
+// cmd/catenary/servedattachments_test.go is what proves the two lists agree, by
+// serving what this writes.
 var attachmentColumns = []string{
 	"id", "message_id", "kind", "storage_key", "position",
 	"duration_ms", "peaks", "transcript_state", "transcript_json",
