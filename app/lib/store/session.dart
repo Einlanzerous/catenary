@@ -44,6 +44,7 @@ final class SessionSeams {
     required this.directory,
     required this.lifecycle,
     this.fetch,
+    this.uploadFetch,
     this.connect,
     this.logger,
     this.transportFactory = createTransport,
@@ -59,6 +60,9 @@ final class SessionSeams {
 
   /// Default: `ioHttpFetch` and `ioWebSocket`, which run under Flutter.
   final HttpFetch? fetch;
+
+  /// Default: `ioUploadFetch`. Uploads carry bytes, which `HttpFetch` cannot.
+  final UploadFetch? uploadFetch;
   final WebSocketConnect? connect;
   final Logger? logger;
   final TransportFactory transportFactory;
@@ -201,6 +205,11 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing, void 
       accountId: held.userId,
       lock: SqliteDrainLock(locks),
       onChange: onOutbox,
+      // THE PASS-THROUGH (CANT-316). Leave this out and everything compiles,
+      // and the outbox falls back to the RefusingUploader: every attachment
+      // fails with "Attachments can't be sent yet". test/session_test.dart
+      // is what fails.
+      uploader: HttpUploader(baseUrl: address, credential: refreshing, store: outboxStore, fetch: seams.uploadFetch),
     );
   } on Object {
     closeAll();

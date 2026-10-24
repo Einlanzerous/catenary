@@ -35,3 +35,4 @@ export 'src/sqlite_journal.dart';
 export 'src/status.dart';
 export 'src/terminal.dart';
 export 'src/transport.dart';
+export 'src/upload.dart';

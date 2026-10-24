@@ -93,6 +93,31 @@ Future<HttpAnswer> ioHttpFetch(HttpExchange exchange) async {
   return HttpAnswer(res.statusCode, text, headers);
 }
 
+/// One upload through the shared `dart:io` `HttpClient`: the bytes go out as
+/// they are, never through a string, with their length declared.
+Future<HttpAnswer> ioUploadFetch(UploadExchange exchange) async {
+  final client = _sharedClient ??= HttpClient();
+  var aborted = false;
+  HttpClientRequest? request;
+  unawaited(exchange.abort.then((_) {
+    aborted = true;
+    request?.abort();
+  }));
+  final req = request = await client.openUrl('POST', exchange.url);
+  if (aborted) {
+    req.abort();
+    throw const HttpException('aborted before the request was sent');
+  }
+  exchange.headers.forEach(req.headers.set);
+  req.contentLength = exchange.body.length;
+  req.add(exchange.body);
+  final res = await req.close();
+  final text = await const Utf8Decoder(allowMalformed: true).bind(res).join();
+  final headers = <String, String>{};
+  res.headers.forEach((name, values) => headers[name.toLowerCase()] = values.join(', '));
+  return HttpAnswer(res.statusCode, text, headers);
+}
+
 /// Structured log lines on stderr, one JSON object each. Never stdout: a
 /// driver's stdout is its protocol.
 final class StderrLogger implements Logger {

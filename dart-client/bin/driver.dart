@@ -15,7 +15,7 @@
 /// never holds up a `status`. Nothing else is ever written to stdout; the
 /// transport's own log, when asked for, goes to stderr.
 ///
-/// ALL ELEVEN COMMANDS: start, send, read, compose, outbox, sever, blackhole,
+/// ALL TWELVE COMMANDS: start, send, read, compose, composeImage, outbox, sever, blackhole,
 /// catchup, status, snapshot and stop, each as the driver.ts header states it.
 ///
 /// `Kill` IS NOT A COMMAND. It is SIGKILL on this process, sent from Go, and
@@ -278,7 +278,24 @@ Future<void> main(List<String> argv) async {
       // Attached before the first dial, so the outbox sees this transport's
       // first `ready` rather than reading it late.
       final a = adapter = TransportOutbox(t, log);
-      outbox = await Outbox.open(store: outboxStore, transport: a, accountId: credential['userId']! as String);
+      // THE REAL UPLOADER, over the same held credential and the store the
+      // outbox keeps the media in (CANT-316): this is the driver's composition
+      // root, and the Go rig's round trip is what proves it is passed. The
+      // environment's CATENARY_DRIVER_NO_UPLOADER=1 omits it, which is the
+      // pass-through's negative control (a rig has no argument to carry it): the outbox falls back to the RefusingUploader, and an image
+      // fails with "Attachments can't be sent yet".
+      final uploader = Platform.environment['CATENARY_DRIVER_NO_UPLOADER'] == '1'
+          ? const RefusingUploader() as Uploader
+          : HttpUploader(
+              baseUrl: baseUrl,
+              credential: HeldCredential(Credential(
+                userId: credential['userId']! as String,
+                deviceId: credential['deviceId']! as String,
+                accessToken: credential['accessToken']! as String,
+              )),
+              store: outboxStore,
+            );
+      outbox = await Outbox.open(store: outboxStore, transport: a, accountId: credential['userId']! as String, uploader: uploader);
       t.start();
       return const <String, Object?>{};
     },
@@ -292,12 +309,29 @@ Future<void> main(List<String> argv) async {
       final entry = await box.compose(OutboxDraft(conversationId: conversationId, text: text));
       return {'clientId': entry.clientId};
     },
+    // One image, from a file on disk, as the app's picker hands one over
+    // (CANT-316). Answers once the entry is durable, like `compose`.
+    'composeImage': (args) async {
+      need();
+      final box = outbox ?? (throw const DriverError('NotStarted', 'driver: no outbox is open; send start first'));
+      final conversationId = args['conversationId'], path = args['path'];
+      if (conversationId is! String || path is! String) {
+        throw const DriverError('BadArgs', 'driver: composeImage takes {conversationId, path, filename?, text?}');
+      }
+      final entry = await box.compose(OutboxDraft(
+        conversationId: conversationId,
+        text: args['text'] as String?,
+        attachments: [OutboundAttachmentDraft(kind: 'image', source: MediaFile(path), filename: args['filename'] as String?)],
+      ));
+      return {'clientId': entry.clientId};
+    },
     'outbox': (_) async {
       need();
       final box = outbox ?? (throw const DriverError('NotStarted', 'driver: no outbox is open; send start first'));
       return {
         'entries': [
-          for (final i in box.view()) {'clientId': i.entry.clientId, 'state': i.state.name},
+          for (final i in box.view())
+            {'clientId': i.entry.clientId, 'state': i.state.name, if (errorText(i.entry.lastError) != null) 'error': errorText(i.entry.lastError)},
         ],
       };
     },

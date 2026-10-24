@@ -87,6 +87,24 @@ final class HttpAnswer {
 /// Fails when no response arrived at all.
 typedef HttpFetch = Future<HttpAnswer> Function(HttpExchange request);
 
+/// The byte-capable twin of [HttpExchange] (CANT-316): [HttpExchange.body] is a
+/// `String?` and cannot carry a photograph, so an upload has its own seam and
+/// the transport's is unchanged. [abort] completes when the caller has given up, and an
+/// implementation tears the request down then.
+final class UploadExchange {
+  const UploadExchange({required this.url, required this.headers, required this.body, required this.abort});
+
+  final Uri url;
+  final Map<String, String> headers;
+
+  /// The media, as the store holds it. Always a POST.
+  final Uint8List body;
+  final Future<void> abort;
+}
+
+/// Fails when no response arrived at all.
+typedef UploadFetch = Future<HttpAnswer> Function(UploadExchange request);
+
 /// What a device tells the transport about itself. The names are the
 /// reference's, which are a browser's: `visible` and `hidden` are the app
 /// coming to the foreground and leaving it, `online` and `offline` the
