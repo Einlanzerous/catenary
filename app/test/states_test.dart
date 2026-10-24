@@ -119,7 +119,11 @@ void main() {
           connection: const ConnectionView(kind: ConnectionKind.offline),
           controller: draft,
           onSend: () => sent++,
-          onAttach: () => attached++,
+          // ADD follows its wiring alone (CANT-247 ruling 4 → A): the thread
+          // passes no callback while the outbox's predicate says no file
+          // would be taken, which is what an offline client is. The
+          // composer does not read the connection a second time.
+          onAttach: null,
           onRecord: () => recorded++,
         ),
         brightness: brightness,

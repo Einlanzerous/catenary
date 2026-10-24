@@ -58,6 +58,9 @@ class Composer extends StatefulWidget {
     this.onRecord,
     this.onCancelRecording,
     this.onSendRecording,
+    this.attachment,
+    this.onRemoveAttachment,
+    this.notice,
   });
 
   final ConnectionView connection;
@@ -71,6 +74,16 @@ class Composer extends StatefulWidget {
   final VoidCallback? onRecord;
   final VoidCallback? onCancelRecording;
   final VoidCallback? onSendRecording;
+
+  /// The one picked image held for the next send, by file name; null when none.
+  /// There is no canvas design for it: it is the least that lets a person see
+  /// what SEND will send, and it is flagged as a canvas gap.
+  final String? attachment;
+  final VoidCallback? onRemoveAttachment;
+
+  /// A refusal to show beside the field: a picked file that cannot be sent. In
+  /// the meta color; red stays for failure alone.
+  final String? notice;
 
   @override
   State<Composer> createState() => _ComposerState();
@@ -113,7 +126,27 @@ class _ComposerState extends State<Composer> {
     return Container(
       decoration: BoxDecoration(color: t.surfaceRail, border: Border(top: BorderSide(color: t.lineHair))),
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
-      child: recording != null ? _recording(t, recording) : _row(t),
+      child: recording != null
+          ? _recording(t, recording)
+          : (widget.attachment == null && widget.notice == null)
+              ? _row(t)
+              : Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (widget.notice != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Text(
+                          widget.notice!,
+                          key: const ValueKey('composer-notice'),
+                          style: TextStyle(fontFamily: fontSans, fontSize: 12.5, height: 17 / 12.5, color: t.textMeta),
+                        ),
+                      ),
+                    if (widget.attachment != null) _chip(t, widget.attachment!),
+                    _row(t),
+                  ],
+                ),
     );
   }
 
@@ -179,11 +212,50 @@ class _ComposerState extends State<Composer> {
     );
   }
 
+  /// The held image: its file name and a remove control.
+  Widget _chip(CatenaryTokens t, String name) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Container(
+        key: const ValueKey('composer-attachment'),
+        decoration: BoxDecoration(color: t.surfaceBase, border: Border.all(color: t.lineEdge)),
+        child: Row(
+          children: [
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Text(
+                  name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontFamily: fontMono, fontSize: 11, color: t.textSecondary),
+                ),
+              ),
+            ),
+            GestureDetector(
+              key: const ValueKey('composer-attachment-remove'),
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.onRemoveAttachment,
+              child: SizedBox(
+                width: 44,
+                height: 44,
+                child: Center(child: Text('×', style: TextStyle(fontFamily: fontMono, fontSize: 16, color: t.textMeta))),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _row(CatenaryTokens t) {
     final offline = widget.connection.offline;
     final terminal = widget.connection.isTerminal;
-    final off = offline || widget.onAttach == null;
-    final drafted = _controller.text.trim().isNotEmpty;
+    // ADD follows the callback alone: whoever wires it decides from the
+    // outbox's own predicate (AppStore.canAttach), and nothing here reads
+    // the connection a second time.
+    final off = widget.onAttach == null;
+    final drafted = _controller.text.trim().isNotEmpty || widget.attachment != null;
     final hint = terminal
         ? 'This device cannot send'
         : offline
@@ -208,8 +280,8 @@ class _ComposerState extends State<Composer> {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.end,
       children: [
-        // A picked file is not composed without a session, so ADD dims; and
-        // it dims while nothing is wired to attach.
+        // ADD dims while nothing is wired to attach: a picked file is not
+        // composed without a ready session, and the wiring says when.
         _Square(
           'ADD',
           color: off ? t.textDisabled : t.textMeta,

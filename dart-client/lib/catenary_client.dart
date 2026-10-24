@@ -17,6 +17,7 @@ export 'src/db.dart';
 export 'src/enroll.dart';
 export 'src/faults.dart';
 export 'src/hold.dart';
+export 'src/image_check.dart';
 export 'src/io_seams.dart';
 export 'src/journal.dart';
 export 'src/lock.dart';

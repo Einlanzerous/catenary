@@ -8,68 +8,9 @@ import 'dart:typed_data';
 import 'package:catenary/store/address.dart';
 import 'package:catenary/store/session.dart';
 import 'package:catenary_client/catenary_client.dart';
-import 'package:catenary_wire/catenary_wire.dart' show ClientRead, ClientSend, ClientTyping, ServerAck, ServerTyping;
 import 'package:flutter_test/flutter_test.dart';
 
-/// A real transport that says it is ready, so the outbox offers an attachment
-/// to its uploader at once. Nothing else about it is changed.
-final class _Ready implements Transport {
-  _Ready(this.inner);
-
-  final Transport inner;
-
-  @override
-  TransportStatus status() {
-    final s = inner.status();
-    return TransportStatus(
-      terminal: s.terminal,
-      refreshHold: s.refreshHold,
-      tokenRefused: s.tokenRefused,
-      nextRefreshAt: s.nextRefreshAt,
-      connected: true,
-      ready: true,
-      sessionId: 's-1',
-      heartbeatIntervalSec: s.heartbeatIntervalSec,
-      missedPongLimit: s.missedPongLimit,
-      caughtUp: s.caughtUp,
-      cursor: s.cursor,
-      attempt: s.attempt,
-      nextDialAt: s.nextDialAt,
-      stats: s.stats,
-      messages: s.messages,
-      wipes: s.wipes,
-      headSeqTotal: s.headSeqTotal,
-      journalError: s.journalError,
-    );
-  }
-
-  @override
-  void start() => inner.start();
-  @override
-  void stop() => inner.stop();
-  @override
-  void Function() subscribe(void Function(TransportStatus s) fn) => inner.subscribe(fn);
-  @override
-  Future<ServerAck> send(ClientSend f) => inner.send(f);
-  @override
-  void read(ClientRead f) => inner.read(f);
-  @override
-  void typing(ClientTyping f) => inner.typing(f);
-  @override
-  void catchUp() => inner.catchUp();
-  @override
-  void retryNow() => inner.retryNow();
-  @override
-  Future<void> refreshIfDue() => inner.refreshIfDue();
-  @override
-  void Function() onSessionEnd(void Function(SessionEnd e) fn) => inner.onSessionEnd(fn);
-  @override
-  void Function() onApply(void Function(Applied e) fn) => inner.onApply(fn);
-  @override
-  JournalSnapshot snapshot() => inner.snapshot();
-  @override
-  void Function() onTyping(void Function(ServerTyping f) fn) => inner.onTyping(fn);
-}
+import 'ready_transport.dart';
 
 const me = '11111111-1111-4111-8111-111111111111';
 
@@ -229,7 +170,7 @@ void main() {
         requests.add(x);
         return const HttpAnswer(201, '{"upload_id":"33333333-3333-4333-8333-333333333333"}');
       },
-      transportFactory: (cfg) => _Ready(createTransport(cfg)),
+      transportFactory: (cfg) => ReadyTransport(createTransport(cfg)),
     );
     final session = ((await startSession(s)) as SessionRunning).session;
     addTearDown(session.end);

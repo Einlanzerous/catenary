@@ -18,6 +18,7 @@
 import 'package:flutter/material.dart';
 
 import 'metrics.dart';
+import 'store/attach.dart';
 import 'store/connection.dart';
 import 'store/conversation.dart';
 import 'store/status.dart';
@@ -49,6 +50,8 @@ class ThreadScreen extends StatelessWidget {
     this.onSend,
     this.onRetryMessage,
     this.onDiscardMessage,
+    this.onPickImage,
+    this.onSendPicked,
   });
 
   final ConversationView conversation;
@@ -62,6 +65,13 @@ class ThreadScreen extends StatelessWidget {
   /// The composer's send, given the draft. The draft is cleared once this
   /// completes and kept when it throws.
   final Future<void> Function(String text)? onSend;
+
+  /// ADD: opens the picker. NULL DIMS ADD, and nothing else does: the caller
+  /// passes it only when the outbox says a picked file would be accepted.
+  final Future<PickOutcome?> Function()? onPickImage;
+
+  /// The composer's send with its one held image, given the draft.
+  final Future<void> Function(String text, PickedImage image)? onSendPicked;
 
   /// RETRY and DELETE on a failed message, given its `client_id` (the
   /// message's `id`).
@@ -180,7 +190,10 @@ class ThreadScreen extends StatelessWidget {
                 ),
               ),
             ),
-            if (onSend == null) Composer(connection: connection) else _ThreadComposer(connection: connection, onSend: onSend!),
+            if (onSend == null)
+              Composer(connection: connection)
+            else
+              _ThreadComposer(connection: connection, onSend: onSend!, onPickImage: onPickImage, onSendPicked: onSendPicked),
           ],
         ),
       ),
@@ -189,12 +202,16 @@ class ThreadScreen extends StatelessWidget {
 }
 
 /// The composer with a draft of its own: send hands the text over and clears
-/// the field once the call completes, and keeps it when the call throws.
+/// the field once the call completes, and keeps it when the call throws. It
+/// also holds the one picked image: choosing another replaces it, so it can
+/// never hold two.
 class _ThreadComposer extends StatefulWidget {
-  const _ThreadComposer({required this.connection, required this.onSend});
+  const _ThreadComposer({required this.connection, required this.onSend, this.onPickImage, this.onSendPicked});
 
   final ConnectionView connection;
   final Future<void> Function(String text) onSend;
+  final Future<PickOutcome?> Function()? onPickImage;
+  final Future<void> Function(String text, PickedImage image)? onSendPicked;
 
   @override
   State<_ThreadComposer> createState() => _ThreadComposerState();
@@ -203,6 +220,9 @@ class _ThreadComposer extends StatefulWidget {
 class _ThreadComposerState extends State<_ThreadComposer> {
   final _draft = TextEditingController();
   var _sending = false;
+  var _picking = false;
+  PickedImage? _picked;
+  String? _notice;
 
   @override
   void dispose() {
@@ -210,14 +230,50 @@ class _ThreadComposerState extends State<_ThreadComposer> {
     super.dispose();
   }
 
+  Future<void> _attach() async {
+    if (_picking) return;
+    _picking = true;
+    try {
+      final outcome = await widget.onPickImage?.call();
+      if (!mounted) return;
+      switch (outcome) {
+        case Picked(:final image):
+          setState(() {
+            _picked = image;
+            _notice = null;
+          });
+        case PickRefused(:final message):
+          setState(() => _notice = message);
+        case null:
+          break;
+      }
+    } finally {
+      _picking = false;
+    }
+  }
+
   Future<void> _send() async {
     // A second tap while the first is being stored would compose it twice.
     if (_sending) return;
     final text = _draft.text;
+    final image = _picked;
+    final sendPicked = widget.onSendPicked;
     _sending = true;
     try {
-      await widget.onSend(text);
-      if (mounted && _draft.text == text) _draft.clear();
+      if (image != null && sendPicked != null) {
+        await sendPicked(text, image);
+      } else {
+        await widget.onSend(text);
+      }
+      if (!mounted) return;
+      setState(() {
+        if (_draft.text == text) _draft.clear();
+        if (identical(_picked, image)) _picked = null;
+        _notice = null;
+      });
+    } on AttachRefused catch (e) {
+      // Nothing was written, and the draft and the image stay where they were.
+      if (mounted) setState(() => _notice = e.message);
     } on Object {
       // The draft stays where it was typed.
     } finally {
@@ -226,7 +282,15 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   }
 
   @override
-  Widget build(BuildContext context) => Composer(connection: widget.connection, controller: _draft, onSend: _send);
+  Widget build(BuildContext context) => Composer(
+        connection: widget.connection,
+        controller: _draft,
+        onSend: _send,
+        onAttach: widget.onPickImage == null ? null : _attach,
+        attachment: _picked?.name,
+        onRemoveAttachment: () => setState(() => _picked = null),
+        notice: _notice,
+      );
 }
 
 /// A labelled hairline: the date separator, and the "N NEW" rule.

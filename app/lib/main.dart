@@ -275,6 +275,9 @@ class _ShellState extends State<_Shell> {
           onRetry: _onRetry,
           onReenroll: _onReenroll,
           onSend: (text) => store.send(c.id, text),
+          // Offered only while the outbox would take a file (its own predicate).
+          onPickImage: store.canAttach ? store.pickImage : null,
+          onSendPicked: (text, image) => store.send(c.id, text, image: image),
           onRetryMessage: store.retry,
           onDiscardMessage: store.discard,
         ),
