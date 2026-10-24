@@ -161,6 +161,30 @@ func attachment(a store.AttachmentRow, v Viewer) wire.Attachment {
 			Placeholder: a.Placeholder,
 		}
 		return out
+	case "link":
+		// A card whose page had no url cannot exist (attachments_link_fields), and
+		// a nil here would be a half-built object, so it is dropped like an
+		// unknown kind rather than served with an empty address.
+		if a.LinkURL == nil {
+			return nil
+		}
+		out := wire.LinkAttachment{
+			URL:         *a.LinkURL,
+			Title:       a.LinkTitle,
+			Description: a.LinkDescription,
+			SiteName:    a.LinkSiteName,
+		}
+		// A text-only card has no blob: image_url is emitted only when the key is
+		// present, and the deriver is never called with an empty one. The
+		// dimensions and the blurhash describe the image, so they ride with it.
+		if a.StorageKey != "" {
+			u := v.MediaURL(a.StorageKey)
+			out.ImageURL = &u
+			out.ImageWidth = a.Width
+			out.ImageHeight = a.Height
+			out.ImagePlaceholder = a.Placeholder
+		}
+		return out
 	}
 	return nil
 }

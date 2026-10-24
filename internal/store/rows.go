@@ -52,13 +52,17 @@ type MessageRow struct {
 // CHECK constraints rather than two tables, because the wire has one
 // `attachments` array. Which fields are populated follows `kind`.
 type AttachmentRow struct {
-	Kind     string // voice | image, per the column's CHECK
+	Kind     string // voice | image | link, per the column's CHECK
 	Position int
 
 	// StorageKey is OPAQUE and never reaches the wire. The served `url` is
 	// derived from it at serve time, because whether that is a presigned R2 GET
 	// or a Traefik route is CANT-47's decision and a stored URL would be wrong
 	// the moment that lands.
+	//
+	// EMPTY MEANS NO BLOB, and is stored as NULL, for kind link only (CANT-308):
+	// a card whose page had no usable image. For every other kind the column is
+	// NOT NULL by CHECK.
 	StorageKey string
 
 	// voice
@@ -73,6 +77,14 @@ type AttachmentRow struct {
 	Height      *int64
 	Bytes       *int64
 	Placeholder *string
+
+	// link (CANT-308). A card is a snapshot of what the target page said when the
+	// sender composed the message: stored, never refetched. Width, Height and
+	// Placeholder above describe the card's image, when it has one.
+	LinkURL         *string
+	LinkTitle       *string
+	LinkDescription *string
+	LinkSiteName    *string
 }
 
 // ReplySource is what the served ReplyRef is built from: the source message as

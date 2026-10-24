@@ -289,6 +289,55 @@ func TestTheProducibleVectorsRoundTrip(t *testing.T) {
 				})
 			},
 		},
+		{
+			// CANT-321. The server_message_link_card_* vectors are the oracle for the
+			// `link` mapping: every optional field, then the minimal card.
+			name:   "server_message_link_card_full",
+			vector: "server_message_link_card_full",
+			build: func(t *testing.T) wire.Message {
+				return Message(store.MessageRow{
+					ID:             mustUUID(t, "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d"),
+					ConversationID: mustUUID(t, convID),
+					AuthorID:       mustUUID(t, "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"),
+					Seq:            1911,
+					LogSeq:         41270,
+					At:             mustTime(t, "2026-10-24T18:02:11.480Z"),
+					Text:           ptr("this one https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+				}, []store.AttachmentRow{{
+					Kind:            "link",
+					StorageKey:      "i/5a6b7c8d",
+					LinkURL:         ptr("https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+					LinkTitle:       ptr("Rick Astley - Never Gonna Give You Up (Official Video)"),
+					LinkDescription: ptr("The official video for Never Gonna Give You Up."),
+					LinkSiteName:    ptr("YouTube"),
+					Width:           ptr(int64(1280)),
+					Height:          ptr(int64(720)),
+					Placeholder:     ptr("LKO2?U%2Tw=w]~RBVZRi};RPxuwH"),
+				}}, nil, Viewer{
+					UserID: mustUUID(t, "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"), State: wire.DeliveryStateSent,
+					MediaURL: fixedURL("https://media.catenary.invalid/i/5a6b7c8d.jpg"),
+				})
+			},
+		},
+		{
+			name:   "server_message_link_card_minimal",
+			vector: "server_message_link_card_minimal",
+			build: func(t *testing.T) wire.Message {
+				return Message(store.MessageRow{
+					ID:             mustUUID(t, "6b7c8d9e-0f1a-4b2c-9d3e-4f5a6b7c8d9e"),
+					ConversationID: mustUUID(t, convID),
+					AuthorID:       mustUUID(t, "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"),
+					Seq:            1912,
+					LogSeq:         41271,
+					At:             mustTime(t, "2026-10-24T18:02:11.480Z"),
+					Text:           ptr("this one https://www.youtube.com/watch?v=dQw4w9WgXcQ"),
+				}, []store.AttachmentRow{{Kind: "link", LinkURL: ptr("http://example.invalid/post")}}, nil, Viewer{
+					UserID: mustUUID(t, "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"), State: wire.DeliveryStateSent,
+					// A text-only card must never reach the deriver.
+					MediaURL: func(string) string { panic("the deriver was called for a card with no image") },
+				})
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := canonical(t, loadVector(t, tc.vector))
@@ -306,7 +355,7 @@ func TestTheDecoderOnlyVectorIsExcludedDeliberately(t *testing.T) {
 	if m == nil {
 		t.Fatal("the vector this test explains is gone; the exclusion above needs revisiting")
 	}
-	// attachments.kind carries a CHECK (voice | image), so an unknown kind is
+	// attachments.kind carries a CHECK (voice | image | link), so an unknown kind is
 	// unstorable and this mapper cannot produce one. It is a property of the
 	// generated DECODER, which is CANT-25's, not of this package.
 	if a := attachment(store.AttachmentRow{Kind: "hologram"}, Viewer{}); a != nil {

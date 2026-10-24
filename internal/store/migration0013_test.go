@@ -23,7 +23,8 @@ func TestMigration0013CreatesUploadsAndDownDropsIt(t *testing.T) {
 	if !exists() {
 		t.Fatal("0013 did not create uploads")
 	}
-	if err := MigrateDown(ctx, pool, 1); err != nil {
+	// Two steps: 0014 (link previews) sits above 0013 and is rolled back first.
+	if err := MigrateDown(ctx, pool, 2); err != nil {
 		t.Fatalf("0013 down: %v", err)
 	}
 	if exists() {
