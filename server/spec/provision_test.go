@@ -716,7 +716,7 @@ func TestTheContractIsNotPartOfTheWireSchema(t *testing.T) {
 			"nothing regenerates it; a marker here would send the next reader looking for a generator " +
 			"and then hand-editing the one document in this repository that is meant to be hand-edited.")
 	}
-	// The generated wire document lives in schema/ and is 85 vectors' worth of
+	// The generated wire document lives in schema/ and is the whole of the
 	// contract. This one names no vectors at all.
 	if bytes.Contains(raw, []byte("catenary.wire.v1")) {
 		t.Error("provision/openapi.yaml references the wire schema. No client calls this surface, " +
