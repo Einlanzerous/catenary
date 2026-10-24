@@ -592,6 +592,72 @@ export function encodeImageAttachment(v: ImageAttachment): Record<string, unknow
   })
 }
 
+// A link preview card (CANT-308): what the server's own fetch of url saw when the
+// sender composed the message, frozen into the message. It is a SNAPSHOT: the page may
+// have changed or vanished since, no client refetches it and no client ever contacts
+// the target. title, description and site_name are text the TARGET PAGE chose,
+// length-capped and stripped of control characters by the server; clients render them
+// as plain text, never as markup. The host a client shows is derived from url, never
+// from site_name. image_url is a stable signed media URL like ImageAttachment.url,
+// with the same &v=thumb variant; image_width and image_height are present together or
+// not at all. Decoders that do not know this kind drop the attachment and keep the
+// message.
+export interface LinkAttachment {
+  readonly kind: "link"
+  // The URL as the sender typed it, http or https. Its host is what a client shows;
+  // nothing else on the card vouches for it.
+  url: string
+  // The page's own title (og:title, twitter:title or <title>), at most 200 characters.
+  // Page-chosen text: render as plain text.
+  title?: string
+  // The page's own description, at most 300 characters. Page-chosen text: render as
+  // plain text.
+  description?: string
+  // The page's og:site_name, at most 80 characters. Page-chosen text, and never the host
+  // a client shows: derive that from url.
+  siteName?: string
+  // A stable signed media URL for the card image, like ImageAttachment.url, with the
+  // same &v=thumb variant. Absent for a text-only card.
+  imageUrl?: string
+  // Stored intrinsic width of the card image. Present together with image_height, or not
+  // at all.
+  imageWidth?: number
+  // Stored intrinsic height of the card image. Present together with image_width, or not
+  // at all.
+  imageHeight?: number
+  // Blurhash. Absent means render the plane flat; never means block on the image.
+  imagePlaceholder?: string
+}
+
+export function decodeLinkAttachment(v: unknown, p = "LinkAttachment"): LinkAttachment {
+  const o = asObj(v, p)
+  return {
+    kind: "link",
+    url: o["url"] === undefined || o["url"] === null ? bad(`${p}.url`, 'required field is missing') : asStr(o["url"], `${p}.url`),
+    title: o["title"] === undefined || o["title"] === null ? undefined : asStr(o["title"], `${p}.title`),
+    description: o["description"] === undefined || o["description"] === null ? undefined : asStr(o["description"], `${p}.description`),
+    siteName: o["site_name"] === undefined || o["site_name"] === null ? undefined : asStr(o["site_name"], `${p}.site_name`),
+    imageUrl: o["image_url"] === undefined || o["image_url"] === null ? undefined : asStr(o["image_url"], `${p}.image_url`),
+    imageWidth: o["image_width"] === undefined || o["image_width"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `image_width must be >= 1, got ${x}`); return x })(o["image_width"], `${p}.image_width`),
+    imageHeight: o["image_height"] === undefined || o["image_height"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `image_height must be >= 1, got ${x}`); return x })(o["image_height"], `${p}.image_height`),
+    imagePlaceholder: o["image_placeholder"] === undefined || o["image_placeholder"] === null ? undefined : asStr(o["image_placeholder"], `${p}.image_placeholder`),
+  }
+}
+
+export function encodeLinkAttachment(v: LinkAttachment): Record<string, unknown> {
+  return compact({
+    "kind": "link",
+    "url": v.url,
+    "title": v.title === undefined ? undefined : v.title,
+    "description": v.description === undefined ? undefined : v.description,
+    "site_name": v.siteName === undefined ? undefined : v.siteName,
+    "image_url": v.imageUrl === undefined ? undefined : v.imageUrl,
+    "image_width": v.imageWidth === undefined ? undefined : v.imageWidth,
+    "image_height": v.imageHeight === undefined ? undefined : v.imageHeight,
+    "image_placeholder": v.imagePlaceholder === undefined ? undefined : v.imagePlaceholder,
+  })
+}
+
 export interface ReplyRef {
   messageId: Uuid
   authorId: Uuid
@@ -1023,17 +1089,18 @@ export function encodePong(v: Pong): Record<string, unknown> {
 }
 
 export interface OutboundAttachment {
-  kind: "voice" | "image"
+  kind: "voice" | "image" | "link"
   // Handle returned by the upload endpoint. The client sends this, never the media:
   // dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
   // server-side on ingest, so the client cannot report them and cannot get them wrong.
+  // For kind `link`, the handle comes from `POST /link-previews`.
   uploadId: Uuid
 }
 
 export function decodeOutboundAttachment(v: unknown, p = "OutboundAttachment"): OutboundAttachment {
   const o = asObj(v, p)
   return {
-    kind: o["kind"] === undefined || o["kind"] === null ? bad(`${p}.kind`, 'required field is missing') : asOneOf(o["kind"], ["voice","image"], `${p}.kind`),
+    kind: o["kind"] === undefined || o["kind"] === null ? bad(`${p}.kind`, 'required field is missing') : asOneOf(o["kind"], ["voice","image","link"], `${p}.kind`),
     uploadId: o["upload_id"] === undefined || o["upload_id"] === null ? bad(`${p}.upload_id`, 'required field is missing') : asUuid(o["upload_id"], `${p}.upload_id`),
   }
 }
@@ -1042,6 +1109,54 @@ export function encodeOutboundAttachment(v: OutboundAttachment): Record<string, 
   return compact({
     "kind": v.kind,
     "upload_id": v.uploadId,
+  })
+}
+
+// `POST /link-previews` (CANT-308): ask the server to fetch the page of a URL being
+// composed and return a card the send can bind. Client-authored; the server answers
+// 204 for every failure of the fetch itself, so the endpoint is not an oracle for
+// which internal addresses exist.
+export interface LinkPreviewRequest {
+  // The http or https URL the member is composing. Ports other than 80 and 443, userinfo
+  // and non-http(s) schemes are a 400.
+  url: string
+}
+
+export function decodeLinkPreviewRequest(v: unknown, p = "LinkPreviewRequest"): LinkPreviewRequest {
+  const o = asObj(v, p)
+  return {
+    url: o["url"] === undefined || o["url"] === null ? bad(`${p}.url`, 'required field is missing') : ((v: unknown, p: string): string => { const x = asStr(v, p); if ([...x].length > 2048) bad(p, `url must be at most 2048 characters, got ${[...x].length}`); return x })(o["url"], `${p}.url`),
+  }
+}
+
+export function encodeLinkPreviewRequest(v: LinkPreviewRequest): Record<string, unknown> {
+  return compact({
+    "url": v.url,
+  })
+}
+
+// `200` from `POST /link-previews`: a card exists. Any other outcome of the fetch is
+// `204 No Content` with no body.
+export interface LinkPreviewResponse {
+  // A single-use, uploader-bound handle. The send names it as {kind: "link", upload_id};
+  // a handle that no longer resolves is upload_not_found, as for any attachment.
+  uploadId: Uuid
+  // The card the message will carry, as the server will freeze it.
+  preview: LinkAttachment
+}
+
+export function decodeLinkPreviewResponse(v: unknown, p = "LinkPreviewResponse"): LinkPreviewResponse {
+  const o = asObj(v, p)
+  return {
+    uploadId: o["upload_id"] === undefined || o["upload_id"] === null ? bad(`${p}.upload_id`, 'required field is missing') : asUuid(o["upload_id"], `${p}.upload_id`),
+    preview: o["preview"] === undefined || o["preview"] === null ? bad(`${p}.preview`, 'required field is missing') : decodeLinkAttachment(o["preview"], `${p}.preview`),
+  }
+}
+
+export function encodeLinkPreviewResponse(v: LinkPreviewResponse): Record<string, unknown> {
+  return compact({
+    "upload_id": v.uploadId,
+    "preview": encodeLinkAttachment(v.preview),
   })
 }
 
@@ -1941,7 +2056,7 @@ export function encodeCreateGroupRequest(v: CreateGroupRequest): Record<string, 
 // Tagged union on `kind`. Decoders MUST ignore an attachment whose `kind` they do not
 // know rather than failing the whole message — a client that hard-errors on an unknown
 // attachment type cannot be shipped ahead of a server that adds one.
-export type Attachment = VoiceAttachment | ImageAttachment
+export type Attachment = VoiceAttachment | ImageAttachment | LinkAttachment
 
 // Decode a Attachment. Returns null for an unrecognised "kind", which callers MUST
 // treat as "ignore this frame and carry on" rather than as an error — that is what
@@ -1951,6 +2066,7 @@ export function decodeAttachment(v: unknown, p = "Attachment"): Attachment | nul
   switch (o["kind"]) {
     case "voice": return decodeVoiceAttachment(o, p)
     case "image": return decodeImageAttachment(o, p)
+    case "link": return decodeLinkAttachment(o, p)
     default: return null
   }
 }
@@ -1959,6 +2075,7 @@ export function encodeAttachment(v: Attachment): Record<string, unknown> {
   switch (v.kind) {
     case "voice": return encodeVoiceAttachment(v as VoiceAttachment)
     case "image": return encodeImageAttachment(v as ImageAttachment)
+    case "link": return encodeLinkAttachment(v as LinkAttachment)
   }
 }
 
@@ -2055,6 +2172,7 @@ export const codecs: Record<string, WireCodec> = {
   Transcript: { decode: (v) => decodeTranscript(v), encode: (v) => encodeTranscript(v as Transcript) },
   VoiceAttachment: { decode: (v) => decodeVoiceAttachment(v), encode: (v) => encodeVoiceAttachment(v as VoiceAttachment) },
   ImageAttachment: { decode: (v) => decodeImageAttachment(v), encode: (v) => encodeImageAttachment(v as ImageAttachment) },
+  LinkAttachment: { decode: (v) => decodeLinkAttachment(v), encode: (v) => encodeLinkAttachment(v as LinkAttachment) },
   Attachment: { decode: (v) => decodeAttachment(v), encode: (v) => encodeAttachment(v as Attachment) },
   ReplyRef: { decode: (v) => decodeReplyRef(v), encode: (v) => encodeReplyRef(v as ReplyRef) },
   Message: { decode: (v) => decodeMessage(v), encode: (v) => encodeMessage(v as Message) },
@@ -2064,6 +2182,8 @@ export const codecs: Record<string, WireCodec> = {
   Ping: { decode: (v) => decodePing(v), encode: (v) => encodePing(v as Ping) },
   Pong: { decode: (v) => decodePong(v), encode: (v) => encodePong(v as Pong) },
   OutboundAttachment: { decode: (v) => decodeOutboundAttachment(v), encode: (v) => encodeOutboundAttachment(v as OutboundAttachment) },
+  LinkPreviewRequest: { decode: (v) => decodeLinkPreviewRequest(v), encode: (v) => encodeLinkPreviewRequest(v as LinkPreviewRequest) },
+  LinkPreviewResponse: { decode: (v) => decodeLinkPreviewResponse(v), encode: (v) => encodeLinkPreviewResponse(v as LinkPreviewResponse) },
   ClientSend: { decode: (v) => decodeClientSend(v), encode: (v) => encodeClientSend(v as ClientSend) },
   ServerAck: { decode: (v) => decodeServerAck(v), encode: (v) => encodeServerAck(v as ServerAck) },
   ServerConversationFrame: { decode: (v) => decodeServerConversationFrame(v), encode: (v) => encodeServerConversationFrame(v as ServerConversationFrame) },

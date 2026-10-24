@@ -95,8 +95,8 @@ const byName = new Map(model.map((d) => [d.name, d]))
  * last. Non-enum types shared by both sides — Uuid, Timestamp, the ordinals,
  * Token, Ping, Pong — are normal and neither rule touches them.
  * ------------------------------------------------------------------ */
-const SERVER_ROOTS = ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse', 'RosterResponse']
-const CLIENT_ROOTS = ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest', 'CreateGroupRequest']
+const SERVER_ROOTS = ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse', 'RosterResponse', 'LinkPreviewResponse']
+const CLIENT_ROOTS = ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest', 'CreateGroupRequest', 'LinkPreviewRequest']
 
 /** Every $defs name a node references, at any depth. */
 function refsIn(node, out = new Set()) {

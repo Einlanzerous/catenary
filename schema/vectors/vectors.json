@@ -1318,7 +1318,12 @@
         "kind": "voice",
         "url": "https://media.catenary.invalid/v/9e0f1a2b.opus",
         "duration_ms": 12000,
-        "peaks": [10, 40, 101, 22],
+        "peaks": [
+          10,
+          40,
+          101,
+          22
+        ],
         "transcript": {
           "state": "pending",
           "eta_sec": 4
@@ -1585,6 +1590,126 @@
       "json": {
         "name": "Night shift",
         "member_handles": []
+      }
+    },
+    {
+      "name": "server_message_link_card_full",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-308. A link card with every optional field. The image dimensions fix the row height before a byte of image arrives, exactly as for ImageAttachment, and are present together. `url` is what the sender typed; the host a client shows comes from it, never from `site_name`.",
+      "json": {
+        "type": "message",
+        "message": {
+          "id": "5a6b7c8d-9e0f-4a1b-8c2d-3e4f5a6b7c8d",
+          "seq": 1911,
+          "log_seq": 41270,
+          "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+          "author_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+          "at": "2026-10-24T18:02:11.480Z",
+          "state": "sent",
+          "text": "this one https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          "attachments": [
+            {
+              "kind": "link",
+              "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+              "title": "Rick Astley - Never Gonna Give You Up (Official Video)",
+              "description": "The official video for Never Gonna Give You Up.",
+              "site_name": "YouTube",
+              "image_url": "https://media.catenary.invalid/i/5a6b7c8d.jpg",
+              "image_width": 1280,
+              "image_height": 720,
+              "image_placeholder": "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "server_message_link_card_minimal",
+      "kind": "ServerFrame",
+      "expect": "roundtrip",
+      "why": "CANT-308. The smallest valid card: `kind` and `url` only. A page with a title and no image, or an image and no title, is a card; a page with neither is a 204 and never reaches the wire. Absent fields stay absent.",
+      "json": {
+        "type": "message",
+        "message": {
+          "id": "6b7c8d9e-0f1a-4b2c-9d3e-4f5a6b7c8d9e",
+          "seq": 1912,
+          "log_seq": 41271,
+          "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+          "author_id": "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e",
+          "at": "2026-10-24T18:02:11.480Z",
+          "state": "sent",
+          "text": "this one https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+          "attachments": [
+            {
+              "kind": "link",
+              "url": "http://example.invalid/post"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "client_send_link_attachment",
+      "kind": "ClientFrame",
+      "expect": "roundtrip",
+      "why": "CANT-308. A send binds a link card the way it binds an image: by the handle `POST /link-previews` returned, never by the card text. The client cannot assert what the page said.",
+      "json": {
+        "type": "send",
+        "client_id": "3e4f5a6b-7c8d-4e9f-8a0b-1c2d3e4f5a6c",
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "text": "this one https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        "attachments": [
+          {
+            "kind": "link",
+            "upload_id": "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f"
+          }
+        ]
+      }
+    },
+    {
+      "name": "reject_link_attachment_without_url",
+      "kind": "Message",
+      "expect": "reject",
+      "why": "CANT-308. `url` is the one required field on a card: it is what the host a client shows is derived from, so a card without one has nothing to vouch for it.",
+      "json": {
+        "id": "7c8d9e0f-1a2b-4c3d-9e4f-6a7b8c9d0e1f",
+        "seq": 1913,
+        "log_seq": 41272,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-10-24T18:03:00.000Z",
+        "state": "sent",
+        "attachments": [
+          {
+            "kind": "link",
+            "title": "No address"
+          }
+        ]
+      }
+    },
+    {
+      "name": "reject_link_attachment_image_width_zero",
+      "kind": "Message",
+      "expect": "reject",
+      "why": "CANT-308. `image_width` and `image_height` have a minimum of 1, like ImageAttachment. 0 is what an unset field looks like and would make the reserved row height zero.",
+      "json": {
+        "id": "8d9e0f1a-2b3c-4d4e-8f5a-7b8c9d0e1f2a",
+        "seq": 1914,
+        "log_seq": 41273,
+        "conversation_id": "aa11bb22-cc33-4d44-9e55-ff66aa77bb88",
+        "author_id": "8d9e0f1a-2b3c-4d4e-9f5a-6b7c8d9e0f1a",
+        "at": "2026-10-24T18:04:00.000Z",
+        "state": "sent",
+        "attachments": [
+          {
+            "kind": "link",
+            "url": "https://example.invalid/x",
+            "image_url": "https://media.catenary.invalid/i/8d9e0f1a.jpg",
+            "image_width": 0,
+            "image_height": 720
+          }
+        ]
       }
     }
   ]

@@ -493,6 +493,7 @@ sealed class Attachment {
     switch (o["kind"]) {
       case "voice": return VoiceAttachment.fromJson(o, p);
       case "image": return ImageAttachment.fromJson(o, p);
+      case "link": return LinkAttachment.fromJson(o, p);
       default: return null;
     }
   }
@@ -806,6 +807,90 @@ final class ImageAttachment implements Attachment {
     "height": height,
     "bytes": bytes,
     "placeholder": placeholder == null ? null : placeholder!,
+  });
+}
+
+/// A link preview card (CANT-308): what the server's own fetch of url saw when the
+/// sender composed the message, frozen into the message. It is a SNAPSHOT: the page may
+/// have changed or vanished since, no client refetches it and no client ever contacts
+/// the target. title, description and site_name are text the TARGET PAGE chose,
+/// length-capped and stripped of control characters by the server; clients render them
+/// as plain text, never as markup. The host a client shows is derived from url, never
+/// from site_name. image_url is a stable signed media URL like ImageAttachment.url,
+/// with the same &v=thumb variant; image_width and image_height are present together or
+/// not at all. Decoders that do not know this kind drop the attachment and keep the
+/// message.
+final class LinkAttachment implements Attachment {
+  const LinkAttachment({
+    required this.url,
+    this.title,
+    this.description,
+    this.siteName,
+    this.imageUrl,
+    this.imageWidth,
+    this.imageHeight,
+    this.imagePlaceholder,
+  });
+
+  @override
+  String get kind => "link";
+
+  /// The URL as the sender typed it, http or https. Its host is what a client shows;
+  /// nothing else on the card vouches for it.
+  final String url;
+
+  /// The page's own title (og:title, twitter:title or <title>), at most 200 characters.
+  /// Page-chosen text: render as plain text.
+  final String? title;
+
+  /// The page's own description, at most 300 characters. Page-chosen text: render as
+  /// plain text.
+  final String? description;
+
+  /// The page's og:site_name, at most 80 characters. Page-chosen text, and never the host
+  /// a client shows: derive that from url.
+  final String? siteName;
+
+  /// A stable signed media URL for the card image, like ImageAttachment.url, with the
+  /// same &v=thumb variant. Absent for a text-only card.
+  final String? imageUrl;
+
+  /// Stored intrinsic width of the card image. Present together with image_height, or not
+  /// at all.
+  final int? imageWidth;
+
+  /// Stored intrinsic height of the card image. Present together with image_width, or not
+  /// at all.
+  final int? imageHeight;
+
+  /// Blurhash. Absent means render the plane flat; never means block on the image.
+  final String? imagePlaceholder;
+
+  factory LinkAttachment.fromJson(Object? v, [String p = "LinkAttachment"]) {
+    final o = _obj(v, p);
+    return LinkAttachment(
+      url: o["url"] == null ? _bad('${p}.url', 'required field is missing') : _str(o["url"], '${p}.url'),
+      title: o["title"] == null ? null : _str(o["title"], '${p}.title'),
+      description: o["description"] == null ? null : _str(o["description"], '${p}.description'),
+      siteName: o["site_name"] == null ? null : _str(o["site_name"], '${p}.site_name'),
+      imageUrl: o["image_url"] == null ? null : _str(o["image_url"], '${p}.image_url'),
+      imageWidth: o["image_width"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'image_width must be >= 1, got $x'); return x; })(o["image_width"], '${p}.image_width'),
+      imageHeight: o["image_height"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'image_height must be >= 1, got $x'); return x; })(o["image_height"], '${p}.image_height'),
+      imagePlaceholder: o["image_placeholder"] == null ? null : _str(o["image_placeholder"], '${p}.image_placeholder'),
+    );
+  }
+
+  @override
+  Map<String, dynamic> toJson() => _compact({
+    "kind": "link",
+    "url": url,
+    "title": title == null ? null : title!,
+    "description": description == null ? null : description!,
+    "site_name": siteName == null ? null : siteName!,
+    "image_url": imageUrl == null ? null : imageUrl!,
+    "image_width": imageWidth == null ? null : imageWidth!,
+    "image_height": imageHeight == null ? null : imageHeight!,
+    "image_placeholder": imagePlaceholder == null ? null : imagePlaceholder!,
   });
 }
 
@@ -1346,12 +1431,13 @@ final class OutboundAttachment {
   /// Handle returned by the upload endpoint. The client sends this, never the media:
   /// dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
   /// server-side on ingest, so the client cannot report them and cannot get them wrong.
+  /// For kind `link`, the handle comes from `POST /link-previews`.
   final Uuid uploadId;
 
   factory OutboundAttachment.fromJson(Object? v, [String p = "OutboundAttachment"]) {
     final o = _obj(v, p);
     return OutboundAttachment(
-      kind: o["kind"] == null ? _bad('${p}.kind', 'required field is missing') : _oneOf(o["kind"], const ["voice", "image"], '${p}.kind'),
+      kind: o["kind"] == null ? _bad('${p}.kind', 'required field is missing') : _oneOf(o["kind"], const ["voice", "image", "link"], '${p}.kind'),
       uploadId: o["upload_id"] == null ? _bad('${p}.upload_id', 'required field is missing') : _asUuid(o["upload_id"], '${p}.upload_id'),
     );
   }
@@ -1359,6 +1445,60 @@ final class OutboundAttachment {
   Map<String, dynamic> toJson() => _compact({
     "kind": kind,
     "upload_id": uploadId,
+  });
+}
+
+/// `POST /link-previews` (CANT-308): ask the server to fetch the page of a URL being
+/// composed and return a card the send can bind. Client-authored; the server answers
+/// 204 for every failure of the fetch itself, so the endpoint is not an oracle for
+/// which internal addresses exist.
+final class LinkPreviewRequest {
+  const LinkPreviewRequest({
+    required this.url,
+  });
+
+  /// The http or https URL the member is composing. Ports other than 80 and 443, userinfo
+  /// and non-http(s) schemes are a 400.
+  final String url;
+
+  factory LinkPreviewRequest.fromJson(Object? v, [String p = "LinkPreviewRequest"]) {
+    final o = _obj(v, p);
+    return LinkPreviewRequest(
+      url: o["url"] == null ? _bad('${p}.url', 'required field is missing') : ((Object? v, String p) { final x = _str(v, p); if (x.runes.length > 2048) _bad(p, 'url must be at most 2048 characters, got ${x.runes.length}'); return x; })(o["url"], '${p}.url'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "url": url,
+  });
+}
+
+/// `200` from `POST /link-previews`: a card exists. Any other outcome of the fetch is
+/// `204 No Content` with no body.
+final class LinkPreviewResponse {
+  const LinkPreviewResponse({
+    required this.uploadId,
+    required this.preview,
+  });
+
+  /// A single-use, uploader-bound handle. The send names it as {kind: "link", upload_id};
+  /// a handle that no longer resolves is upload_not_found, as for any attachment.
+  final Uuid uploadId;
+
+  /// The card the message will carry, as the server will freeze it.
+  final LinkAttachment preview;
+
+  factory LinkPreviewResponse.fromJson(Object? v, [String p = "LinkPreviewResponse"]) {
+    final o = _obj(v, p);
+    return LinkPreviewResponse(
+      uploadId: o["upload_id"] == null ? _bad('${p}.upload_id', 'required field is missing') : _asUuid(o["upload_id"], '${p}.upload_id'),
+      preview: o["preview"] == null ? _bad('${p}.preview', 'required field is missing') : LinkAttachment.fromJson(o["preview"], '${p}.preview'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => _compact({
+    "upload_id": uploadId,
+    "preview": preview.toJson(),
   });
 }
 
@@ -2428,6 +2568,7 @@ const Map<String, WireCodec> codecs = {
   "Transcript": WireCodec(Transcript.fromJson, _encTranscript),
   "VoiceAttachment": WireCodec(VoiceAttachment.fromJson, _encVoiceAttachment),
   "ImageAttachment": WireCodec(ImageAttachment.fromJson, _encImageAttachment),
+  "LinkAttachment": WireCodec(LinkAttachment.fromJson, _encLinkAttachment),
   "Attachment": WireCodec(Attachment.fromJson, _encAttachment),
   "ReplyRef": WireCodec(ReplyRef.fromJson, _encReplyRef),
   "Message": WireCodec(Message.fromJson, _encMessage),
@@ -2437,6 +2578,8 @@ const Map<String, WireCodec> codecs = {
   "Ping": WireCodec(Ping.fromJson, _encPing),
   "Pong": WireCodec(Pong.fromJson, _encPong),
   "OutboundAttachment": WireCodec(OutboundAttachment.fromJson, _encOutboundAttachment),
+  "LinkPreviewRequest": WireCodec(LinkPreviewRequest.fromJson, _encLinkPreviewRequest),
+  "LinkPreviewResponse": WireCodec(LinkPreviewResponse.fromJson, _encLinkPreviewResponse),
   "ClientSend": WireCodec(ClientSend.fromJson, _encClientSend),
   "ServerAck": WireCodec(ServerAck.fromJson, _encServerAck),
   "ServerConversationFrame": WireCodec(ServerConversationFrame.fromJson, _encServerConversationFrame),
@@ -2469,6 +2612,7 @@ Map<String, dynamic> _encTranscriptSegment(Object v) => (v as TranscriptSegment)
 Map<String, dynamic> _encTranscript(Object v) => (v as Transcript).toJson();
 Map<String, dynamic> _encVoiceAttachment(Object v) => (v as VoiceAttachment).toJson();
 Map<String, dynamic> _encImageAttachment(Object v) => (v as ImageAttachment).toJson();
+Map<String, dynamic> _encLinkAttachment(Object v) => (v as LinkAttachment).toJson();
 Map<String, dynamic> _encAttachment(Object v) => (v as Attachment).toJson();
 Map<String, dynamic> _encReplyRef(Object v) => (v as ReplyRef).toJson();
 Map<String, dynamic> _encMessage(Object v) => (v as Message).toJson();
@@ -2478,6 +2622,8 @@ Map<String, dynamic> _encServerReady(Object v) => (v as ServerReady).toJson();
 Map<String, dynamic> _encPing(Object v) => (v as Ping).toJson();
 Map<String, dynamic> _encPong(Object v) => (v as Pong).toJson();
 Map<String, dynamic> _encOutboundAttachment(Object v) => (v as OutboundAttachment).toJson();
+Map<String, dynamic> _encLinkPreviewRequest(Object v) => (v as LinkPreviewRequest).toJson();
+Map<String, dynamic> _encLinkPreviewResponse(Object v) => (v as LinkPreviewResponse).toJson();
 Map<String, dynamic> _encClientSend(Object v) => (v as ClientSend).toJson();
 Map<String, dynamic> _encServerAck(Object v) => (v as ServerAck).toJson();
 Map<String, dynamic> _encServerConversationFrame(Object v) => (v as ServerConversationFrame).toJson();

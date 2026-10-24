@@ -53,9 +53,9 @@ const classify = () => JSON.parse(execFileSync(process.execPath, [GEN, '--classi
 test('today\'s schema classifies exactly as the CANT-74 plan says', () => {
   const c = classify()
   assert.deepEqual(c.serverRoots,
-    ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse', 'RosterResponse'])
+    ['ServerFrame', 'SyncResponse', 'EnrollResponse', 'RefreshResponse', 'DeviceListResponse', 'RosterResponse', 'LinkPreviewResponse'])
   assert.deepEqual(c.clientRoots,
-    ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest', 'CreateGroupRequest'])
+    ['ClientFrame', 'EnrollRequest', 'RefreshRequest', 'MessageSendRequest', 'DirectConversationRequest', 'CreateGroupRequest', 'LinkPreviewRequest'])
   // Every unreferenced $defs entry is a root, and every root is unreferenced.
   assert.deepEqual([...c.unreferenced].sort(), [...c.serverRoots, ...c.clientRoots].sort())
   assert.deepEqual([...c.clientOpen].sort(),
@@ -120,7 +120,7 @@ test('an inline enum on a server-emitted type fails, naming the field, with no a
   assert.match(r.out, /ServerAck\.outcome: an inline enum on a server-emitted type/)
   // The only inline enum left is on a client-authored type, and it is not
   // allow-listed — it passes because the rule does not reach it.
-  assert.equal(s.$defs.OutboundAttachment.properties.kind.enum.length, 2)
+  assert.equal(s.$defs.OutboundAttachment.properties.kind.enum.length, 3)
   assert.doesNotMatch(readFileSync(GEN, 'utf8'), /allowList|allow-list|ALLOW_LIST/)
 })
 
@@ -240,6 +240,10 @@ test('Go enum blocks and inline oneOf guards are byte-identical to origin/main, 
   // exemption falls through to plain equality.
   const ALLOWED_CHANGED = new Set(['ConversationKind'])
   const ALLOWED_REMOVED_GUARDS = ['"cursor_too_old", "membership_changed", "retention_purge"']
+  // CANT-320: `OutboundAttachment.kind` gains `link`, so its one inline guard is
+  // rewritten with three values. The old two-value guard leaves, the new one
+  // arrives, and once this is on main both fall through to plain equality.
+  const ALLOWED_CHANGED_GUARDS = ['"voice", "image"']
 
   for (const [name, block] of bb) {
     assert.ok(hb.has(name), `enum block ${name} is on main and missing at HEAD`)
@@ -264,12 +268,12 @@ test('Go enum blocks and inline oneOf guards are byte-identical to origin/main, 
   const bg = goInlineGuards(base)
   for (const g of bg) {
     if (hg.has(g)) continue
-    assert.ok(ALLOWED_REMOVED_GUARDS.some((k) => g.includes(k)), `an inline guard left main and is not in the CANT-74 delta:\n${g}`)
+    assert.ok([...ALLOWED_REMOVED_GUARDS, ...ALLOWED_CHANGED_GUARDS].some((k) => g.includes(k)), `an inline guard left main and is not in the CANT-74 delta:\n${g}`)
   }
-  for (const g of hg) assert.ok(bg.has(g), `an inline guard appeared at HEAD that main does not have:\n${g}`)
+  for (const g of hg) assert.ok(bg.has(g) || g.includes('"voice", "image", "link"'), `an inline guard appeared at HEAD that main does not have:\n${g}`)
   // What is left: exactly one inline guard, on the client-authored OutboundAttachment.kind.
   assert.equal(hg.size, 1)
-  assert.match([...hg][0], /"voice", "image"/)
+  assert.match([...hg][0], /"voice", "image", "link"/)
 })
 
 /* ------------------------------------------------------------------ *
