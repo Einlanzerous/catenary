@@ -116,13 +116,20 @@ export function browserRecorder(enabled: boolean, seams: BrowserRecorderSeams = 
         stop: () =>
           new Promise((resolve, reject) => {
             const stoppedAt = now()
-            recorder.onstop = () => {
+            const finish = () => {
               release()
               resolve({
                 blob: new Blob(chunks, { type: recorder.mimeType || mimeType || '' }),
                 durationMs: Math.max(0, Math.round(stoppedAt - startedAt)),
               })
             }
+            // Every track can end mid-take (a headset unplugged, the microphone
+            // revoked): the browser has then stopped the recorder itself, its
+            // `stop` event has fired with nobody listening, and `stop()` on an
+            // inactive recorder is a no-op that would never settle. What was
+            // recorded up to then is what there is.
+            if (recorder.state === 'inactive') return finish()
+            recorder.onstop = finish
             recorder.onerror = () => {
               release()
               reject(new RecorderRefused(RECORDER_MESSAGES.failed))

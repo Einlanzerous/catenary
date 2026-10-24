@@ -107,6 +107,18 @@ test('The capture · a browser with only mp4 (Safari) records mp4', async () => 
   assert.equal((await capture.stop()).blob.type, 'audio/mp4')
 })
 
+test('The capture · a take the browser already ended (every track gone) still settles with what was recorded', async () => {
+  const devices = fakeDevices()
+  const { Ctor, made } = fakeMediaRecorder([...RECORDER_MIME_TYPES], [])
+  const capture = await browserRecorder(true, { mediaDevices: devices, MediaRecorder: Ctor }).start()
+  const rec = made[0].recorder as unknown as { state: string; ondataavailable: (e: { data: Blob }) => void }
+  rec.ondataavailable({ data: new Blob([Uint8Array.from([7, 7])]) })
+  rec.state = 'inactive' // the UA stopped it; `stop()` would now be a no-op
+  const { blob } = await capture.stop()
+  assert.deepEqual([...(await bytesOf(blob))], [7, 7])
+  assert.ok(devices.tracks.every((t) => t.stopped))
+})
+
 test('The capture · cancel throws the take away and releases the microphone', async () => {
   const devices = fakeDevices()
   const { Ctor } = fakeMediaRecorder([...RECORDER_MIME_TYPES], [Uint8Array.from([1])])

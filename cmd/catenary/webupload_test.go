@@ -252,7 +252,8 @@ func TestTheWebUploadVoiceRecordingReturnsAHandleAndARow(t *testing.T) {
 	if err := json.Unmarshal([]byte(m[1]), &res); err != nil {
 		t.Fatal(err)
 	}
-	// The client's voice draft carries no peaks, and no field beyond the four.
+	// The client's voice draft carries no peaks: its four fields plus the handle
+	// the uploader set on it.
 	if strings.Join(res.Keys, ",") != "blob,durationMs,kind,upload,uploadId" {
 		t.Errorf("the client's voice attachment has fields %v", res.Keys)
 	}
