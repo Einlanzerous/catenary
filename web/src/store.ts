@@ -926,8 +926,9 @@ export interface SessionSeams {
   logger?: Logger
   /** The outbox's `Uploader`. Default: the real one (`createUploader`) over
    *  the SAME credential instance the transport holds. Replaceable only so a
-   *  test can script it; forgetting to pass one on is not possible, which is
-   *  the point (CANT-247: a composition root that forgot it compiles). */
+   *  test can script it. `startSession` always passes one; `useTransport`'s
+   *  own option is optional, so a root that forgot it compiles (CANT-247), and
+   *  the round trip's negative control is what catches that. */
   uploader?: Uploader
 }
 

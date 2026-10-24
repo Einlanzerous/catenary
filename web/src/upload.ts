@@ -56,6 +56,9 @@ export const UPLOAD_MESSAGES = {
   tooLarge: 'That image is too large to send.',
   /** 415: names what the server takes. */
   unsupportedType: "That file type isn't supported. Send a JPEG, PNG, GIF or WebP image.",
+  /** 413 and 415 for a voice note, which `kind=voice` shares with images. */
+  voiceTooLarge: 'That recording is too large to send.',
+  voiceUnsupportedType: "That recording isn't in a format the server accepts.",
   /** 404: a deployment with no media directory has no route at all. */
   unavailable: "Uploads aren't available on this server.",
   /** 401 after the credential layer's repair. */
@@ -94,7 +97,7 @@ export function createUploader(cfg: UploaderConfig): Uploader {
     return { status: res.status, body: await res.text() }
   }
 
-  const run = async (url: string, blob: Blob, signal: AbortSignal): Promise<Uuid> => {
+  const run = async (url: string, blob: Blob, signal: AbortSignal, voice: boolean): Promise<Uuid> => {
     await cred.refreshIfDue()
     if (signal.aborted) throw new UploadRefused(UPLOAD_MESSAGES.didNotFinish)
     const presented = await cred.current()
@@ -118,8 +121,8 @@ export function createUploader(cfg: UploaderConfig): Uploader {
     }
     // Any other status is a genuine answer only when its body is Catenary's;
     // the credential layer's `answered()` is not called for the rest.
-    if (out.status === 413) throw new UploadRefused(UPLOAD_MESSAGES.tooLarge)
-    if (out.status === 415) throw new UploadRefused(UPLOAD_MESSAGES.unsupportedType)
+    if (out.status === 413) throw new UploadRefused(voice ? UPLOAD_MESSAGES.voiceTooLarge : UPLOAD_MESSAGES.tooLarge)
+    if (out.status === 415) throw new UploadRefused(voice ? UPLOAD_MESSAGES.voiceUnsupportedType : UPLOAD_MESSAGES.unsupportedType)
     if (out.status === 404) throw new UploadRefused(UPLOAD_MESSAGES.unavailable)
     if (out.status >= 500) throw new UploadRefused(UPLOAD_MESSAGES.serverError)
     throw new UploadRefused(UPLOAD_MESSAGES.notCatenary)
@@ -145,7 +148,7 @@ export function createUploader(cfg: UploaderConfig): Uploader {
           timers.clearTimeout(timer)
           fn()
         }
-        run(url, attachment.blob, controller.signal).then(
+        run(url, attachment.blob, controller.signal, kind === 'voice').then(
           (id) => finish(() => resolve(id)),
           (e: unknown) =>
             finish(() =>

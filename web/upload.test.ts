@@ -170,6 +170,15 @@ test('Error mapping · each cause says something different, and no message carri
   assert.match(UPLOAD_MESSAGES.unsupportedType, /JPEG, PNG, GIF or WebP/, 'the 415 names what the server takes')
 })
 
+test('Error mapping · a voice note that is refused is not called an image', async () => {
+  for (const [code, want] of [[413, UPLOAD_MESSAGES.voiceTooLarge], [415, UPLOAD_MESSAGES.voiceUnsupportedType]] as const) {
+    const { fetchFn } = scriptedFetch(() => status(code))
+    const { uploader } = uploaderOver(fetchFn)
+    await assert.rejects(uploader.upload(ENTRY, { ...image(16), kind: 'voice' }), (e: Error) => e.message === want, String(code))
+  }
+  assert.ok(!/image|JPEG/i.test(UPLOAD_MESSAGES.voiceTooLarge + UPLOAD_MESSAGES.voiceUnsupportedType))
+})
+
 test('Error mapping · the token never reaches a log line', async () => {
   const lines: string[] = []
   const realLog = console.log
