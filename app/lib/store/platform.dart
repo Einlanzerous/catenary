@@ -9,9 +9,11 @@ import 'package:catenary_client/catenary_client.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_store.dart';
+import 'attach.dart';
 import 'session.dart';
 
 /// The application-support directory: private to the app, backed up by
@@ -97,7 +99,21 @@ final class DebugLogger implements Logger {
   }
 }
 
+/// The system photo picker for one image. On Android that is the Photo Picker,
+/// which hands the app only what the person chose and asks for no storage
+/// permission. The file comes back as the platform stored it: a HEIC stays a
+/// HEIC, and the pre-check in the store is what refuses it.
+Future<PickedImage?> devicePickImage() async {
+  final x = await ImagePicker().pickImage(source: ImageSource.gallery);
+  return x == null ? null : PickedImage(path: x.path, name: x.name);
+}
+
 /// The store over this device's own seams: its support directory, its network
 /// and lifecycle signals, and `debugPrint` for the log. Not started.
 Future<AppStore> deviceStore() async =>
-    AppStore(SessionSeams(directory: await supportDirectory(), lifecycle: FlutterLifecycle(), logger: const DebugLogger()));
+    AppStore(
+      SessionSeams(directory: await supportDirectory(), lifecycle: FlutterLifecycle(), logger: const DebugLogger()),
+      systemClock,
+      wipeJournalFile,
+      devicePickImage,
+    );

@@ -243,6 +243,14 @@ final class Outbox {
 
   // ── actions ────────────────────────────────────────────────────────────────
 
+  /// Whether a picked file would be accepted now: a ready session, and a client
+  /// that is not terminal (CANT-247 ruling 4 → A; the web's `canAttachFile()`).
+  /// `compose` refuses a non-voice attachment exactly when this is false, and
+  /// the composer's ADD follows it and no second condition, so the two cannot
+  /// disagree about a state (`resyncing` is ready; `offline` and `reconnecting`
+  /// are not).
+  bool get canAttachFile => _ready && !_terminal && !_transport.isTerminal;
+
   /// §2: mint the clientId ONCE, allocate `order` and write the entry in one
   /// transaction — and only when that transaction has committed does the entry
   /// render, or become eligible for a frame. Completes with the stored entry,

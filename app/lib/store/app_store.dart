@@ -29,6 +29,7 @@
 // no widget sends either yet.
 
 import 'dart:async';
+import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:catenary_client/catenary_client.dart';
@@ -36,6 +37,7 @@ import 'package:catenary_wire/catenary_wire.dart' as wire;
 import 'package:flutter/foundation.dart';
 
 import 'address.dart';
+import 'attach.dart';
 import 'connection.dart';
 import 'conversation.dart';
 import 'enrollment.dart';
@@ -320,11 +322,12 @@ Future<void> wipeJournalFile(String directory) async {
 /// everything else is empty: there is no fixture corpus behind it.
 final class AppStore extends ChangeNotifier {
   /// [now] is wall-clock ms, which the banner's countdown is measured against.
-  AppStore(this._seams, [this._now = systemClock, this._wipe = wipeJournalFile]);
+  AppStore(this._seams, [this._now = systemClock, this._wipe = wipeJournalFile, this._pick]);
 
   final SessionSeams _seams;
   final Clock _now;
   final JournalWipe _wipe;
+  final ImagePick? _pick;
 
   Session? _session;
   Projection _projection = emptyProjection;
@@ -465,12 +468,59 @@ final class AppStore extends ChangeNotifier {
   /// The composer's send: the text becomes an outbox entry in [conversationId],
   /// whether or not a session is ready (`Outbox.compose`). Completes once the
   /// entry is stored, not once the server has acked it, and the thread shows
-  /// it as queued until the outbox says otherwise. Blank text is not a
-  /// message. Throws when the device is not enrolled.
-  Future<void> send(String conversationId, String text) async {
+  /// it as queued until the outbox says otherwise. Blank text with no [image]
+  /// is not a message. [image], one picked file, rides in the same entry; the
+  /// outbox refuses it when there is no ready session, which is [AttachRefused]
+  /// here and writes nothing. Throws when the device is not enrolled.
+  Future<void> send(String conversationId, String text, {PickedImage? image}) async {
     final trimmed = text.trim();
-    if (trimmed.isEmpty) return;
-    await _running.outbox.compose(OutboxDraft(conversationId: conversationId, text: trimmed));
+    if (trimmed.isEmpty && image == null) return;
+    try {
+      await _running.outbox.compose(OutboxDraft(
+        conversationId: conversationId,
+        text: trimmed.isEmpty ? null : trimmed,
+        attachments: [
+          if (image != null) OutboundAttachmentDraft(kind: 'image', source: MediaFile(image.path), filename: image.name),
+        ],
+      ));
+    } on ComposeRefused catch (e) {
+      throw AttachRefused(e.message);
+    }
+  }
+
+  /// Whether ADD may be offered: the outbox's own predicate for "a picked file
+  /// would be accepted now" (`Outbox.canAttachFile`: a ready session, not
+  /// terminal), and a picker to open. Never a second condition of the
+  /// connection's.
+  bool get canAttach => _pick != null && (_session?.outbox.canAttachFile ?? false);
+
+  /// ADD: opens the photo picker and checks what came back BEFORE anything is
+  /// composed (CANT-247 ruling 1 → B). The type is read from the file's first
+  /// bytes, never its name, and the size against the server's image cap; the
+  /// server's 415 and 413 stay the authority and are mapped to the same words.
+  /// Null when the person backed out. A refusal writes nothing.
+  Future<PickOutcome?> pickImage() async {
+    final pick = _pick;
+    if (pick == null) return null;
+    final PickedImage? picked;
+    try {
+      picked = await pick();
+    } on Object {
+      return const PickRefused("Couldn't open the photo picker.");
+    }
+    if (picked == null) return null;
+    final Uint8List head;
+    final int length;
+    try {
+      final file = File(picked.path);
+      length = await file.length();
+      final chunks = await file.openRead(0, imageSniffBytes).toList();
+      head = Uint8List.fromList([for (final c in chunks) ...c]);
+    } on Object {
+      return const PickRefused("Couldn't read that file.");
+    }
+    final refusal = imageRefusal(checkImage(head, length));
+    return refusal == null ? Picked(picked) : PickRefused(refusal);
   }
 
   /// RETRY on a failed message: `Outbox.retry`, under the same `client_id`.
