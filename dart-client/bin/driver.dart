@@ -15,8 +15,10 @@
 /// never holds up a `status`. Nothing else is ever written to stdout; the
 /// transport's own log, when asked for, goes to stderr.
 ///
-/// ALL TWELVE COMMANDS: start, send, read, compose, composeImage, outbox, sever, blackhole,
-/// catchup, status, snapshot and stop, each as the driver.ts header states it.
+/// ALL TWELVE COMMANDS: start, send, read, compose, composeImage, outbox,
+/// sever, blackhole, catchup, status, snapshot and stop. Eleven are each as the
+/// driver.ts header states it; `composeImage` (CANT-316) is Dart-only and
+/// driver.ts has no counterpart.
 ///
 /// `Kill` IS NOT A COMMAND. It is SIGKILL on this process, sent from Go, and
 /// nothing here can observe it. Closing stdin ends the process too, so a rig
