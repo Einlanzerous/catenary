@@ -76,9 +76,24 @@ func TestEveryFixtureGetsTheVerdictTheClientsPreChecksMustMatch(t *testing.T) {
 	if len(m.Files) != 7 {
 		t.Fatalf("manifest lists %d files; the plan's set is seven", len(m.Files))
 	}
+	// The plan's split, written here and not only in the manifest the clients
+	// read: a manifest row cannot be flipped to make a red test green without
+	// this test saying the settled set changed.
+	want := map[string]int{
+		"photo-exif-gps.jpg": http.StatusCreated,
+		"image.png":          http.StatusCreated,
+		"image.gif":          http.StatusCreated,
+		"image.webp":         http.StatusCreated,
+		"image.heic":         http.StatusUnsupportedMediaType,
+		"image.svg":          http.StatusUnsupportedMediaType,
+		"not-an-image.jpg":   http.StatusUnsupportedMediaType,
+	}
 	r := newUploadRig(t)
 
 	for _, f := range m.Files {
+		if w, ok := want[f.Name]; !ok || w != f.Status {
+			t.Errorf("%s: manifest status %d; the settled split says %d (listed: %v)", f.Name, f.Status, w, ok)
+		}
 		body, err := os.ReadFile(filepath.Join(mediaFixtureDir, f.Name))
 		if err != nil {
 			t.Fatal(err)
