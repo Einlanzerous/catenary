@@ -11,10 +11,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/widgets.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:record/record.dart';
 
 import 'app_store.dart';
 import 'attach.dart';
 import 'session.dart';
+import 'voice.dart';
 
 /// The application-support directory: private to the app, backed up by
 /// nothing the app does not ask for, and the same on every launch. It holds
@@ -108,6 +110,45 @@ Future<PickedImage?> devicePickImage() async {
   return x == null ? null : PickedImage(path: x.path, name: x.name);
 }
 
+/// The platform recorder: AAC in an `.m4a`, which `media.ContentType` on the
+/// server already recognises as `audio/mp4`. Submitted as recorded. The length
+/// is this recorder's own clock and is for local rendering only; the server
+/// measures its own.
+final class DeviceVoiceRecorder implements VoiceRecorder {
+  DeviceVoiceRecorder();
+
+  final _rec = AudioRecorder();
+  final _clock = Stopwatch();
+
+  @override
+  Future<bool> start() async {
+    if (!await _rec.hasPermission()) return false;
+    final dir = await getTemporaryDirectory();
+    final path = '${dir.path}/voice-${DateTime.now().microsecondsSinceEpoch}.m4a';
+    await _rec.start(const RecordConfig(encoder: AudioEncoder.aacLc), path: path);
+    _clock
+      ..reset()
+      ..start();
+    return true;
+  }
+
+  @override
+  Future<RecordedVoice?> stop() async {
+    _clock.stop();
+    final path = await _rec.stop();
+    return path == null ? null : RecordedVoice(path: path, durationMs: _clock.elapsedMilliseconds);
+  }
+
+  @override
+  Future<void> cancel() async {
+    _clock.stop();
+    await _rec.cancel();
+  }
+
+  @override
+  Future<void> dispose() => _rec.dispose();
+}
+
 /// The store over this device's own seams: its support directory, its network
 /// and lifecycle signals, and `debugPrint` for the log. Not started.
 Future<AppStore> deviceStore() async =>
@@ -116,4 +157,5 @@ Future<AppStore> deviceStore() async =>
       systemClock,
       wipeJournalFile,
       devicePickImage,
+      DeviceVoiceRecorder(),
     );
