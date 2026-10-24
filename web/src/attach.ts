@@ -35,19 +35,21 @@ export type PrecheckResult =
 
 const ascii = (b: Uint8Array, at: number, s: string) => [...s].every((c, i) => b[at + i] === c.charCodeAt(0))
 
-/** The type of an image from its first twelve bytes, or null. */
+/** The type of an image from its first fourteen bytes, or null. */
 export function sniffImage(head: Uint8Array): AcceptedImageType | null {
   if (head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return 'image/jpeg'
   if (head[0] === 0x89 && ascii(head, 1, 'PNG') && head[4] === 0x0d && head[5] === 0x0a && head[6] === 0x1a && head[7] === 0x0a) return 'image/png'
   if (ascii(head, 0, 'GIF87a') || ascii(head, 0, 'GIF89a')) return 'image/gif'
-  if (ascii(head, 0, 'RIFF') && ascii(head, 8, 'WEBP')) return 'image/webp'
+  // Go's http.DetectContentType, which the server's ingest sniffs with, wants
+  // `RIFF????WEBPVP` — a chunk that begins VP8, VP8L or VP8X — not just WEBP.
+  if (ascii(head, 0, 'RIFF') && ascii(head, 8, 'WEBPVP')) return 'image/webp'
   return null
 }
 
 /** Type first, then size: a HEIC over the cap is a type problem, which is what
  *  the server's ingest would say too. */
 export async function precheckImage(file: Blob): Promise<PrecheckResult> {
-  const head = new Uint8Array(await file.slice(0, 12).arrayBuffer())
+  const head = new Uint8Array(await file.slice(0, 14).arrayBuffer())
   const type = sniffImage(head)
   if (type === null) return { ok: false, reason: 'type', message: UPLOAD_MESSAGES.unsupportedType }
   if (file.size > IMAGE_CAP_BYTES) return { ok: false, reason: 'size', message: UPLOAD_MESSAGES.tooLarge }

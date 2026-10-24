@@ -68,6 +68,15 @@ test('Shared fixtures · the generated oversize body is refused for its size, an
   assert.equal(atCap.ok, true, 'exactly the cap passes the pre-check; the server decides the rest')
 })
 
+test('Shared fixtures · a RIFF/WEBP body with no VP8 chunk is refused, as the server’s sniffer refuses it', async () => {
+  const riff = (chunk: string) => Uint8Array.from([...'RIFF'].map((c) => c.charCodeAt(0)).concat([0, 0, 0, 0], [...'WEBP' + chunk].map((c) => c.charCodeAt(0))))
+  assert.equal((await precheckImage(file('a.webp', riff('VP8 ')))).ok, true)
+  assert.equal((await precheckImage(file('b.webp', riff('VP8L')))).ok, true)
+  assert.equal((await precheckImage(file('c.webp', riff('VP8X')))).ok, true)
+  assert.equal((await precheckImage(file('d.webp', riff('ALPH')))).ok, false)
+  assert.equal((await precheckImage(file('e.webp', Uint8Array.from([...'RIFF'].map((c) => c.charCodeAt(0)).concat([0, 0, 0, 0], [...'WEBP'].map((c) => c.charCodeAt(0))))))).ok, false, 'a truncated one')
+})
+
 test('Shared fixtures · a name or type that lies does not change the verdict', async () => {
   assert.equal((await precheckImage(file('notes.txt', readFixture('image.png'), 'text/plain'))).ok, true, 'a PNG named .txt is a PNG')
   const heic = await precheckImage(file('holiday.jpg', readFixture('image.heic'), 'image/jpeg'))
