@@ -229,6 +229,54 @@
         }
       }
     },
+    "LinkAttachment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "url"
+      ],
+      "properties": {
+        "kind": {
+          "const": "link"
+        },
+        "url": {
+          "type": "string",
+          "description": "The URL as the sender typed it, http or https. Its host is what a client shows; nothing else on the card vouches for it."
+        },
+        "title": {
+          "type": "string",
+          "description": "The page's own title (og:title, twitter:title or <title>), at most 200 characters. Page-chosen text: render as plain text."
+        },
+        "description": {
+          "type": "string",
+          "description": "The page's own description, at most 300 characters. Page-chosen text: render as plain text."
+        },
+        "site_name": {
+          "type": "string",
+          "description": "The page's og:site_name, at most 80 characters. Page-chosen text, and never the host a client shows: derive that from url."
+        },
+        "image_url": {
+          "type": "string",
+          "description": "A stable signed media URL for the card image, like ImageAttachment.url, with the same &v=thumb variant. Absent for a text-only card."
+        },
+        "image_width": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Stored intrinsic width of the card image. Present together with image_height, or not at all."
+        },
+        "image_height": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Stored intrinsic height of the card image. Present together with image_width, or not at all."
+        },
+        "image_placeholder": {
+          "type": "string",
+          "description": "Blurhash. Absent means render the plane flat; never means block on the image."
+        }
+      },
+      "description": "A link preview card (CANT-308): what the server's own fetch of url saw when the sender composed the message, frozen into the message. It is a SNAPSHOT: the page may have changed or vanished since, no client refetches it and no client ever contacts the target. title, description and site_name are text the TARGET PAGE chose, length-capped and stripped of control characters by the server; clients render them as plain text, never as markup. The host a client shows is derived from url, never from site_name. image_url is a stable signed media URL like ImageAttachment.url, with the same &v=thumb variant; image_width and image_height are present together or not at all. Decoders that do not know this kind drop the attachment and keep the message."
+    },
     "Attachment": {
       "oneOf": [
         {
@@ -236,6 +284,9 @@
         },
         {
           "$ref": "#/$defs/ImageAttachment"
+        },
+        {
+          "$ref": "#/$defs/LinkAttachment"
         }
       ],
       "discriminator": {
@@ -535,14 +586,49 @@
           "type": "string",
           "enum": [
             "voice",
-            "image"
+            "image",
+            "link"
           ]
         },
         "upload_id": {
           "$ref": "#/$defs/Uuid",
-          "description": "Handle returned by the upload endpoint. The client sends this, never the media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed server-side on ingest, so the client cannot report them and cannot get them wrong."
+          "description": "Handle returned by the upload endpoint. The client sends this, never the media: dimensions, duration, peaks, EXIF stripping and the blurhash are all computed server-side on ingest, so the client cannot report them and cannot get them wrong. For kind `link`, the handle comes from `POST /link-previews`."
         }
       }
+    },
+    "LinkPreviewRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "maxLength": 2048,
+          "description": "The http or https URL the member is composing. Ports other than 80 and 443, userinfo and non-http(s) schemes are a 400."
+        }
+      },
+      "description": "`POST /link-previews` (CANT-308): ask the server to fetch the page of a URL being composed and return a card the send can bind. Client-authored; the server answers 204 for every failure of the fetch itself, so the endpoint is not an oracle for which internal addresses exist."
+    },
+    "LinkPreviewResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "upload_id",
+        "preview"
+      ],
+      "properties": {
+        "upload_id": {
+          "$ref": "#/$defs/Uuid",
+          "description": "A single-use, uploader-bound handle. The send names it as {kind: \"link\", upload_id}; a handle that no longer resolves is upload_not_found, as for any attachment."
+        },
+        "preview": {
+          "$ref": "#/$defs/LinkAttachment",
+          "description": "The card the message will carry, as the server will freeze it."
+        }
+      },
+      "description": "`200` from `POST /link-previews`: a card exists. Any other outcome of the fetch is `204 No Content` with no body."
     },
     "ClientSend": {
       "type": "object",

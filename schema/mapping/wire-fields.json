@@ -156,6 +156,50 @@
       "column": "placeholder",
       "note": "The blurhash, computed server-side on ingest."
     },
+    "LinkAttachment.kind": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "kind",
+      "note": ""
+    },
+    "LinkAttachment.url": {
+      "kind": "derived",
+      "note": "The URL as typed, stored as attachments.link_url. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+    },
+    "LinkAttachment.title": {
+      "kind": "derived",
+      "note": "Stored as attachments.link_title, frozen at compose time. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+    },
+    "LinkAttachment.description": {
+      "kind": "derived",
+      "note": "Stored as attachments.link_description, frozen at compose time. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+    },
+    "LinkAttachment.site_name": {
+      "kind": "derived",
+      "note": "Stored as attachments.link_site_name, frozen at compose time. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+    },
+    "LinkAttachment.image_url": {
+      "kind": "derived",
+      "note": "Derived at serve time from attachments.storage_key, as ImageAttachment.url; absent when the key is NULL (a text-only card)."
+    },
+    "LinkAttachment.image_width": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "width",
+      "note": "The card image, measured by media.IngestImage."
+    },
+    "LinkAttachment.image_height": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "height",
+      "note": "The card image, measured by media.IngestImage."
+    },
+    "LinkAttachment.image_placeholder": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "placeholder",
+      "note": "The blurhash of the card image, computed server-side on ingest."
+    },
     "ReplyRef.message_id": {
       "kind": "column",
       "table": "messages",
@@ -457,6 +501,18 @@
     "OutboundAttachment.upload_id": {
       "kind": "derived",
       "note": "Resolved against the pending upload at send time. CANT-48 owns the upload record."
+    },
+    "LinkPreviewRequest.url": {
+      "kind": "client-local",
+      "note": "The request body of POST /link-previews; the server fetches it and stores nothing about the request itself."
+    },
+    "LinkPreviewResponse.upload_id": {
+      "kind": "derived",
+      "note": "The id of the uploads row (kind link) the endpoint minted for this requester; consumed by the send."
+    },
+    "LinkPreviewResponse.preview": {
+      "kind": "derived",
+      "note": "Composed from the LinkAttachment mappings, read off the freshly written uploads row."
     },
     "ClientSend.client_id": {
       "kind": "column",

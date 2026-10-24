@@ -1176,6 +1176,119 @@ func (v ImageAttachment) MarshalJSON() ([]byte, error) {
 
 func (ImageAttachment) isAttachment() {}
 
+// A link preview card (CANT-308): what the server's own fetch of url saw when the
+// sender composed the message, frozen into the message. It is a SNAPSHOT: the page may
+// have changed or vanished since, no client refetches it and no client ever contacts
+// the target. title, description and site_name are text the TARGET PAGE chose,
+// length-capped and stripped of control characters by the server; clients render them
+// as plain text, never as markup. The host a client shows is derived from url, never
+// from site_name. image_url is a stable signed media URL like ImageAttachment.url,
+// with the same &v=thumb variant; image_width and image_height are present together or
+// not at all. Decoders that do not know this kind drop the attachment and keep the
+// message.
+type LinkAttachment struct {
+	// The URL as the sender typed it, http or https. Its host is what a client shows;
+	// nothing else on the card vouches for it.
+	URL string `json:"url"`
+	// The page's own title (og:title, twitter:title or <title>), at most 200 characters.
+	// Page-chosen text: render as plain text.
+	Title *string `json:"title,omitempty"`
+	// The page's own description, at most 300 characters. Page-chosen text: render as
+	// plain text.
+	Description *string `json:"description,omitempty"`
+	// The page's og:site_name, at most 80 characters. Page-chosen text, and never the host
+	// a client shows: derive that from url.
+	SiteName *string `json:"site_name,omitempty"`
+	// A stable signed media URL for the card image, like ImageAttachment.url, with the
+	// same &v=thumb variant. Absent for a text-only card.
+	ImageURL *string `json:"image_url,omitempty"`
+	// Stored intrinsic width of the card image. Present together with image_height, or not
+	// at all.
+	ImageWidth *int64 `json:"image_width,omitempty"`
+	// Stored intrinsic height of the card image. Present together with image_width, or not
+	// at all.
+	ImageHeight *int64 `json:"image_height,omitempty"`
+	// Blurhash. Absent means render the plane flat; never means block on the image.
+	ImagePlaceholder *string `json:"image_placeholder,omitempty"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a LinkAttachment: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *LinkAttachment) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "LinkAttachment", sideServer)
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *LinkAttachment) decode(b []byte, p string, side decodeSide) error {
+	var s struct {
+		URL              *string `json:"url"`
+		Title            *string `json:"title"`
+		Description      *string `json:"description"`
+		SiteName         *string `json:"site_name"`
+		ImageURL         *string `json:"image_url"`
+		ImageWidth       *int64  `json:"image_width"`
+		ImageHeight      *int64  `json:"image_height"`
+		ImagePlaceholder *string `json:"image_placeholder"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out LinkAttachment
+	if s.URL == nil {
+		return badf(p+".url", "required field is missing")
+	}
+	out.URL = *s.URL
+	if s.Title != nil {
+		out.Title = s.Title
+	}
+	if s.Description != nil {
+		out.Description = s.Description
+	}
+	if s.SiteName != nil {
+		out.SiteName = s.SiteName
+	}
+	if s.ImageURL != nil {
+		out.ImageURL = s.ImageURL
+	}
+	if s.ImageWidth != nil {
+		out.ImageWidth = s.ImageWidth
+	}
+	if s.ImageHeight != nil {
+		out.ImageHeight = s.ImageHeight
+	}
+	if s.ImagePlaceholder != nil {
+		out.ImagePlaceholder = s.ImagePlaceholder
+	}
+	if out.ImageWidth != nil {
+		if *out.ImageWidth < 1 {
+			return badf(p+".image_width", "image_width must be >= 1, got %v", *out.ImageWidth)
+		}
+	}
+	if out.ImageHeight != nil {
+		if *out.ImageHeight < 1 {
+			return badf(p+".image_height", "image_height must be >= 1, got %v", *out.ImageHeight)
+		}
+	}
+	*v = out
+	return nil
+}
+
+// WireTag returns the discriminator value "link".
+func (LinkAttachment) WireTag() string { return "link" }
+
+// MarshalJSON injects the constant "kind" tag, so the tag cannot be
+// forgotten at a call site or set to something the schema does not allow.
+func (v LinkAttachment) MarshalJSON() ([]byte, error) {
+	type alias LinkAttachment
+	return json.Marshal(struct {
+		T string `json:"kind"`
+		alias
+	}{T: "link", alias: alias(v)})
+}
+
+func (LinkAttachment) isAttachment() {}
+
 type ReplyRef struct {
 	MessageID Uuid         `json:"message_id"`
 	AuthorID  Uuid         `json:"author_id"`
@@ -1974,6 +2087,7 @@ type OutboundAttachment struct {
 	// Handle returned by the upload endpoint. The client sends this, never the media:
 	// dimensions, duration, peaks, EXIF stripping and the blurhash are all computed
 	// server-side on ingest, so the client cannot report them and cannot get them wrong.
+	// For kind `link`, the handle comes from `POST /link-previews`.
 	UploadID Uuid `json:"upload_id"`
 }
 
@@ -2002,8 +2116,89 @@ func (v *OutboundAttachment) decode(b []byte, p string, side decodeSide) error {
 		return badf(p+".upload_id", "required field is missing")
 	}
 	out.UploadID = *s.UploadID
-	if !oneOf(out.Kind, []string{"voice", "image"}) {
-		return badf(p+".kind", "expected one of %s, got %q", "voice|image", out.Kind)
+	if !oneOf(out.Kind, []string{"voice", "image", "link"}) {
+		return badf(p+".kind", "expected one of %s, got %q", "voice|image|link", out.Kind)
+	}
+	if err := checkUuid(out.UploadID, p+".upload_id"); err != nil {
+		return err
+	}
+	*v = out
+	return nil
+}
+
+// `POST /link-previews` (CANT-308): ask the server to fetch the page of a URL being
+// composed and return a card the send can bind. Client-authored; the server answers
+// 204 for every failure of the fetch itself, so the endpoint is not an oracle for
+// which internal addresses exist.
+type LinkPreviewRequest struct {
+	// The http or https URL the member is composing. Ports other than 80 and 443, userinfo
+	// and non-http(s) schemes are a 400.
+	URL string `json:"url"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a LinkPreviewRequest: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *LinkPreviewRequest) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "LinkPreviewRequest", sideServer)
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *LinkPreviewRequest) decode(b []byte, p string, side decodeSide) error {
+	var s struct {
+		URL *string `json:"url"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out LinkPreviewRequest
+	if s.URL == nil {
+		return badf(p+".url", "required field is missing")
+	}
+	out.URL = *s.URL
+	if utf8.RuneCountInString(out.URL) > 2048 {
+		return badf(p+".url", "url must be at most 2048 characters, got %d", utf8.RuneCountInString(out.URL))
+	}
+	*v = out
+	return nil
+}
+
+// `200` from `POST /link-previews`: a card exists. Any other outcome of the fetch is
+// `204 No Content` with no body.
+type LinkPreviewResponse struct {
+	// A single-use, uploader-bound handle. The send names it as {kind: "link", upload_id};
+	// a handle that no longer resolves is upload_not_found, as for any attachment.
+	UploadID Uuid `json:"upload_id"`
+	// The card the message will carry, as the server will freeze it.
+	Preview LinkAttachment `json:"preview"`
+}
+
+// UnmarshalJSON decodes and VALIDATES a LinkPreviewResponse: required fields must be
+// present, and every constrained value is checked against the schema.
+func (v *LinkPreviewResponse) UnmarshalJSON(b []byte) error {
+	return v.decode(b, "LinkPreviewResponse", sideServer)
+}
+
+// decode carries the JSON path, so a nested failure names the field it came
+// from rather than the outermost type, and the decode side (CANT-177).
+func (v *LinkPreviewResponse) decode(b []byte, p string, side decodeSide) error {
+	var s struct {
+		UploadID *Uuid            `json:"upload_id"`
+		Preview  *json.RawMessage `json:"preview"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		return decodeErr(p, err)
+	}
+	var out LinkPreviewResponse
+	if s.UploadID == nil {
+		return badf(p+".upload_id", "required field is missing")
+	}
+	out.UploadID = *s.UploadID
+	if s.Preview == nil {
+		return badf(p+".preview", "required field is missing")
+	}
+	if err := out.Preview.decode(*s.Preview, p+".preview", side); err != nil {
+		return err
 	}
 	if err := checkUuid(out.UploadID, p+".upload_id"); err != nil {
 		return err
@@ -3676,6 +3871,12 @@ func decodeAttachment(b []byte, p string, side decodeSide) (Attachment, error) {
 			return nil, err
 		}
 		return v, nil
+	case "link":
+		var v LinkAttachment
+		if err := v.decode(b, p+"[link]", side); err != nil {
+			return nil, err
+		}
+		return v, nil
 	}
 	return nil, nil
 }
@@ -3880,6 +4081,12 @@ func decodeNamed(name string, b []byte, side decodeSide) (any, error) {
 			return nil, err
 		}
 		return v, nil
+	case "LinkAttachment":
+		var v LinkAttachment
+		if err := v.decode(b, "LinkAttachment", side); err != nil {
+			return nil, err
+		}
+		return v, nil
 	case "Attachment":
 		v, err := decodeAttachment(b, "Attachment", side)
 		if err != nil {
@@ -3934,6 +4141,18 @@ func decodeNamed(name string, b []byte, side decodeSide) (any, error) {
 	case "OutboundAttachment":
 		var v OutboundAttachment
 		if err := v.decode(b, "OutboundAttachment", side); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "LinkPreviewRequest":
+		var v LinkPreviewRequest
+		if err := v.decode(b, "LinkPreviewRequest", side); err != nil {
+			return nil, err
+		}
+		return v, nil
+	case "LinkPreviewResponse":
+		var v LinkPreviewResponse
+		if err := v.decode(b, "LinkPreviewResponse", side); err != nil {
 			return nil, err
 		}
 		return v, nil
