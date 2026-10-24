@@ -9,3 +9,4 @@ dist-no-speech-test/
 *.local
 .DS_Store
 dist-rail-new-test/
+dist-image-box-test/
