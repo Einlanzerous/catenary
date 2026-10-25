@@ -8,7 +8,8 @@
          manifest strips it (CANT-327). CANT-56 deletes this line, and the
          matching step in .github/workflows/app.yml, in the PR that flips the
          gate; test/manifest_test.dart fails if either moves alone. -->
-        <application
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove"/>
+    <application
         android:label="${appLabel}"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
