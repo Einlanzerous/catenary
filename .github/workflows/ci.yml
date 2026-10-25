@@ -152,6 +152,14 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+
+      # SERV-159. Reads docs/architecture.archify.json (the system map the estate
+      # wiki and the public portfolio render) and checks every cited source
+      # against the commit it is pinned to. A stale pin only warns; a path that
+      # is missing at the pin, or a malformed map, fails. Runs on every PR.
+      - name: Architecture map is renderable, and say if it has gone stale (SERV-159)
+        run: scripts/architecture-map-check.sh
+
       - uses: actions/setup-go@v5
         with:
           go-version: "1.26"
