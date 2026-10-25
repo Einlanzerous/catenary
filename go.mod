@@ -8,6 +8,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/jackc/puddle/v2 v2.2.2
 	golang.org/x/image v0.45.0
+	golang.org/x/net v0.58.0
 )
 
 require (
