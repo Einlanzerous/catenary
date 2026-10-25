@@ -41,6 +41,16 @@ func newLinkRig(t *testing.T) (*rig, string) {
 	})
 	srv := httptest.NewServer(d.router)
 	t.Cleanup(srv.Close)
+	// The 0014 down refuses while a link card exists, and the next test's reset
+	// is MigrateDown to empty: every card this rig makes is removed when the
+	// test ends, on the still-open pool (Cleanup runs last-added first).
+	t.Cleanup(func() {
+		for _, q := range []string{`DELETE FROM attachments WHERE kind = 'link'`, `DELETE FROM uploads WHERE kind = 'link'`} {
+			if _, err := pool.Exec(ctx, q); err != nil {
+				t.Fatalf("cleanup: %s: %v", q, err)
+			}
+		}
+	})
 	r := &rig{t: t, ctx: ctx, pool: pool, st: st, d: d, log: log, base: srv.URL, since: dbNow(ctx, t, pool)}
 	r.runListener()
 	return r, dir

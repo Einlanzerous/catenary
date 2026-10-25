@@ -1,30 +1,44 @@
--- Reverses 0014. READ THIS BEFORE RUNNING IT: THIS DELETES LINK CARDS.
+-- Reverses 0014. READ THIS BEFORE RUNNING IT: IT REFUSES WHILE A LINK CARD EXISTS.
 --
 -- storage_key cannot be made NOT NULL again, and the narrower kind CHECKs cannot
--- be restored, while a link row exists. So every row of kind 'link' is deleted
--- from attachments and uploads first. No MESSAGE is deleted: a message that
--- carried a card keeps its text and its other attachments and loses only the
--- card, which is what a client that predates this kind already renders (it drops
--- an attachment kind it does not know). Position gaps are harmless.
+-- be restored, while a row of kind 'link' exists in attachments or uploads. The
+-- rows in attachments are parts of authored messages, and this file does not
+-- delete authored content on an operator's behalf: it counts the link rows and,
+-- if there are any, raises an exception naming the count, and the transaction
+-- the migrator wraps it in rolls back with the schema still at 0014 and every
+-- row intact. The DDL below runs only when the count is zero.
 --
--- The image blobs a card pointed at are files and are not touched.
+-- To roll back over cards anyway, delete them FIRST, as a decision taken and
+-- typed by a person rather than a side effect of a down:
 --
--- The number of rows deleted is counted here, at down time, and raised as a
--- NOTICE so the operator's output carries it rather than an assumption.
+--     DELETE FROM attachments WHERE kind = 'link';
+--     DELETE FROM uploads     WHERE kind = 'link';
+--
+-- and then run this migration again. No MESSAGE is deleted by that either: a
+-- message that carried a card keeps its text and its other attachments, which
+-- is what a client that predates this kind already renders (it drops an
+-- attachment kind it does not know). Position gaps are harmless. The image
+-- blobs a card pointed at are files and are not touched by either step.
+--
+-- The 0012 down deletes the self conversations' own notes with a NOTICE, and
+-- this file deliberately does not follow that precedent: those notes were their
+-- owner's alone, and a card sits in a thread other people read.
 
 DO $$
 DECLARE
-    doomed_attachments bigint;
-    doomed_uploads bigint;
+    link_attachments bigint;
+    link_uploads bigint;
 BEGIN
-    SELECT count(*) INTO doomed_attachments FROM attachments WHERE kind = 'link';
-    SELECT count(*) INTO doomed_uploads FROM uploads WHERE kind = 'link';
-    RAISE NOTICE '0014 down: deleting % link card(s) from attachments and % from uploads', doomed_attachments, doomed_uploads;
+    SELECT count(*) INTO link_attachments FROM attachments WHERE kind = 'link';
+    SELECT count(*) INTO link_uploads FROM uploads WHERE kind = 'link';
+    IF link_attachments > 0 OR link_uploads > 0 THEN
+        RAISE EXCEPTION USING
+            MESSAGE = format('0014 down refused: %s link card(s) in attachments and %s in uploads would be destroyed', link_attachments, link_uploads),
+            HINT = 'Rolling back over link cards deletes authored content. If that is the decision, run DELETE FROM attachments WHERE kind = ''link''; DELETE FROM uploads WHERE kind = ''link''; yourself, then run the down again. Messages are not affected either way.',
+            ERRCODE = 'check_violation';
+    END IF;
 END
 $$;
-
-DELETE FROM attachments WHERE kind = 'link';
-DELETE FROM uploads WHERE kind = 'link';
 
 ALTER TABLE uploads DROP CONSTRAINT uploads_link_columns_only_on_link;
 ALTER TABLE uploads DROP CONSTRAINT uploads_link_image_dims;

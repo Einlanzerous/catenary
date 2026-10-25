@@ -353,6 +353,73 @@ func TestACrossConversationReplyRefIsDroppedEvenWhenTheSourceIsOffThePage(t *tes
 	}
 }
 
+// A reply to a message whose first attachment is a link card is served as kind
+// `link`, with no url (the url is an image ref's thumbnail and nothing else) and
+// no duration. The preview is the source's text, so a link-only source previews
+// as empty, the way a voice note with no transcript does: the client draws its
+// own label. Until 0014 nothing stored a `link` attachment and the switch fell
+// through to `text`, which a client renders as an empty quote with no affordance.
+func TestAReplyToALinkCardIsServedAsALinkRef(t *testing.T) {
+	reader := mustUUID(t, theoID)
+	author := mustUUID(t, nadiaID)
+	conv := mustUUID(t, convID)
+	srcID := mustUUID(t, "9f8e7d6c-5b4a-4392-8180-7f6e5d4c3b2a")
+	at := mustTime(t, "2026-08-17T04:22:03.117Z")
+
+	page := func(text *string) store.SyncPage {
+		return store.SyncPage{
+			Messages: []store.MessageRow{{
+				ID:             mustUUID(t, "7c8d9e0f-1a2b-4c3d-8e4f-5a6b7c8d9e0f"),
+				ConversationID: conv, AuthorID: author, Seq: 2, LogSeq: 9, At: at,
+				Text: ptr("that one"), ReplyTo: &srcID,
+			}},
+			Attachments: map[uuid.UUID][]store.AttachmentRow{},
+			ReplySources: map[uuid.UUID]store.ReplySource{srcID: {
+				MessageID: srcID, ConversationID: conv, AuthorID: author, Text: text,
+				FirstAttachment: &store.AttachmentRow{
+					Kind: "link", StorageKey: "cardimage", Position: 0,
+					LinkURL: ptr("https://example.invalid/watch?v=abc"), LinkTitle: ptr("A title"),
+				},
+			}},
+			Conversations: []store.ConversationRow{{
+				ID: conv, Kind: "group", Name: ptr("Sunday Dinner"),
+				LastSeq: 2, MemberCount: 7,
+			}},
+			Users:     []store.UserRow{{ID: author, DisplayName: "Nadia Ruiz"}},
+			HighWater: 9,
+		}
+	}
+	// A deriver that fails the test if a link ref ever asks for a url.
+	v := SyncViewer{UserID: reader, MediaURL: func(key string) string {
+		t.Errorf("MediaURL(%q) called for a link ref; only an image ref carries a url", key)
+		return ""
+	}}
+
+	got := Sync(page(nil), v, "2026-08-17T04:32:00.000Z")
+	ref := got.Messages[0].ReplyTo
+	if ref == nil {
+		t.Fatal("the reply lost its ref")
+	}
+	if ref.Kind != wire.ReplyRefKindLink {
+		t.Errorf("kind = %q, want link", ref.Kind)
+	}
+	if ref.URL != nil {
+		t.Errorf("url = %q on a link ref; want none", *ref.URL)
+	}
+	if ref.DurationMs != nil {
+		t.Errorf("duration_ms = %d on a link ref; want none", *ref.DurationMs)
+	}
+	if ref.Preview != "" {
+		t.Errorf("preview = %q for a link-only source; want empty, not the card's title", ref.Preview)
+	}
+
+	// The same card under a message that also has text previews that text.
+	got = Sync(page(ptr("look at this")), v, "2026-08-17T04:32:00.000Z")
+	if ref := got.Messages[0].ReplyTo; ref == nil || ref.Kind != wire.ReplyRefKindLink || ref.Preview != "look at this" {
+		t.Errorf("link card with text: ref = %+v, want kind link and preview \"look at this\"", ref)
+	}
+}
+
 // read_by IS SERVED FOR EVERY MESSAGE, ZERO INCLUDED — and it is `0` rather
 // than absent, because a sync page always knows the answer. CANT-26's
 // aggregate ran over the whole page, so "nobody else has read it" is a fact the

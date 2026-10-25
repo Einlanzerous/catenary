@@ -10,9 +10,11 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -22,10 +24,30 @@ func linkStore(pool *pgxpool.Pool) *Store {
 
 func sptr(s string) *string { return &s }
 
+// dropLinkCardsOnCleanup removes every row of kind link when the test ends, and
+// is registered by every test that puts one in the database.
+//
+// NEEDED BECAUSE THE 0014 DOWN REFUSES OVER A CARD, and the next test's freshDB
+// reset is MigrateDown to empty. A card left behind would make that reset fail
+// with 0014's own refusal, and every test after it in the package would go down
+// with it. Same shape as dropBotHasNoEmailCheck in persons_test.go: registered
+// after freshDB's own cleanups, so it runs first, on a still-open pool.
+func dropLinkCardsOnCleanup(ctx context.Context, t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
+	t.Cleanup(func() {
+		for _, q := range []string{`DELETE FROM attachments WHERE kind = 'link'`, `DELETE FROM uploads WHERE kind = 'link'`} {
+			if _, err := pool.Exec(ctx, q); err != nil {
+				t.Fatalf("cleanup: %s: %v", q, err)
+			}
+		}
+	})
+}
+
 // linkHandle mints a ready link handle the way the endpoint (CANT-322) will.
 // withImage gives the card a blob key, a thumbnail and dimensions.
 func linkHandle(ctx context.Context, t *testing.T, st *Store, uploader uuid.UUID, withImage bool) uuid.UUID {
 	t.Helper()
+	dropLinkCardsOnCleanup(ctx, t, st.pool)
 	u := NewUpload{
 		Uploader: uploader, Kind: "link",
 		LinkURL: sptr("https://example.invalid/watch?v=abc"), LinkTitle: sptr("A title"),
@@ -52,6 +74,96 @@ func sendCard(ctx context.Context, st *Store, conv, author, handle uuid.UUID) (S
 	})
 }
 
+// The down REFUSES while a card exists: the rows of kind link in attachments are
+// parts of authored messages, and the migrator's one-transaction-per-migration
+// means the refusal leaves the schema at 0014 and every row where it was. The
+// operator deletes the cards as a typed decision, then the down runs.
+func TestMigration0014RefusesToRollBackOverACard(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := linkStore(pool)
+	author := mkUser(ctx, t, pool, "author-0014r")
+	other := mkUser(ctx, t, pool, "other-0014r")
+	conv := mkGroup(ctx, t, pool, "room", author, other)
+
+	card := linkHandle(ctx, t, st, author, true)
+	sentCard, err := sendCard(ctx, st, conv, author, card)
+	if err != nil {
+		t.Fatalf("send card: %v", err)
+	}
+	pending := linkHandle(ctx, t, st, author, false) // an unconsumed link upload
+
+	count := func(q string, args ...any) int {
+		var n int
+		if err := pool.QueryRow(ctx, q, args...).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	version := func() string {
+		var v string
+		if err := pool.QueryRow(ctx, `SELECT max(version) FROM schema_migrations`).Scan(&v); err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
+	before := version()
+
+	err = MigrateDown(ctx, pool, 1)
+	if err == nil {
+		t.Fatal("0014 down ran over a link card; it must refuse")
+	}
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != "23514" {
+		t.Fatalf("0014 down error = %v, want a check_violation raised by the migration", err)
+	}
+	// One card on a message, two link upload rows: the consumed handle's kept
+	// row and the pending one. The message names both counts.
+	if want := "0014 down refused: 1 link card(s) in attachments and 2 in uploads"; !strings.Contains(err.Error(), want) {
+		t.Errorf("error = %q, want it to carry %q", err.Error(), want)
+	}
+	if !strings.Contains(pgErr.Hint, "DELETE FROM attachments WHERE kind = 'link'") {
+		t.Errorf("hint = %q, want the operator told what to run", pgErr.Hint)
+	}
+
+	// Nothing moved: schema still at 0014, card and handle still there.
+	if got := version(); got != before {
+		t.Errorf("schema_migrations max = %s after a refused down, want %s", got, before)
+	}
+	if n := count(`SELECT count(*) FROM attachments WHERE message_id = $1 AND kind = 'link'`, sentCard.ID); n != 1 {
+		t.Errorf("refused down left %d link attachment(s) on the card's message, want 1", n)
+	}
+	if n := count(`SELECT count(*) FROM uploads WHERE id = $1`, pending); n != 1 {
+		t.Error("refused down removed the pending link upload")
+	}
+	if n := count(`SELECT count(*) FROM information_schema.columns WHERE table_name = 'attachments' AND column_name = 'link_url'`); n != 1 {
+		t.Error("refused down dropped link_url")
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO uploads (id, uploader, kind, storage_key, bytes, link_url) VALUES (gen_random_uuid(), $1, 'link', NULL, 0, 'https://x.invalid/')`, author); err != nil {
+		t.Errorf("after a refused down, a text-only link upload was refused: %v", err)
+	}
+
+	// The operator's typed decision, then the down goes through and the
+	// message survives it.
+	if _, err := pool.Exec(ctx, `DELETE FROM attachments WHERE kind = 'link'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `DELETE FROM uploads WHERE kind = 'link'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateDown(ctx, pool, 1); err != nil {
+		t.Fatalf("0014 down with no cards left: %v", err)
+	}
+	if n := count(`SELECT count(*) FROM messages WHERE id = $1`, sentCard.ID); n != 1 {
+		t.Error("the message that carried a card is gone; only the card may go, and only by hand")
+	}
+	if err := Migrate(ctx, pool); err != nil {
+		t.Fatalf("0014 up again: %v", err)
+	}
+}
+
+// With no card in the database the down is an ordinary reversal: an image
+// attachment beside it is untouched, the columns and the NULL go, and up again
+// restores them.
 func TestMigration0014AppliesAndReverses(t *testing.T) {
 	ctx, pool := freshDB(t)
 	st := linkStore(pool)
@@ -59,15 +171,6 @@ func TestMigration0014AppliesAndReverses(t *testing.T) {
 	other := mkUser(ctx, t, pool, "other-0014")
 	conv := mkGroup(ctx, t, pool, "room", author, other)
 
-	// A card and an image on the same message's neighbors, so the down migration
-	// has something to keep and something to remove.
-	card := linkHandle(ctx, t, st, author, true)
-	sentCard, err := sendCard(ctx, st, conv, author, card)
-	if err != nil {
-		t.Fatalf("send card: %v", err)
-	}
-	pending := linkHandle(ctx, t, st, author, false) // an unconsumed link upload
-	_ = pending
 	imgID := uuid.New()
 	if _, err := pool.Exec(ctx, `INSERT INTO uploads (id, uploader, kind, storage_key, bytes, width, height, filename)
 		VALUES ($1, $2, 'image', 'k', 1, 1, 1, 'a.png')`, imgID, author); err != nil {
@@ -89,18 +192,8 @@ func TestMigration0014AppliesAndReverses(t *testing.T) {
 		}
 		return n
 	}
-	// The cards go; the MESSAGES stay, and the image attachment stays.
-	if n := count(`SELECT count(*) FROM attachments WHERE message_id = $1`, sentCard.ID); n != 0 {
-		t.Errorf("down left %d attachment row(s) on the card's message", n)
-	}
-	if n := count(`SELECT count(*) FROM messages WHERE id = $1`, sentCard.ID); n != 1 {
-		t.Error("down deleted the message that carried a card; only the card may go")
-	}
 	if n := count(`SELECT count(*) FROM attachments WHERE message_id = $1 AND kind = 'image'`, imgSent.ID); n != 1 {
 		t.Error("down touched an image attachment")
-	}
-	if n := count(`SELECT count(*) FROM uploads WHERE kind = 'link'`); n != 0 {
-		t.Errorf("down left %d link upload row(s)", n)
 	}
 	for _, col := range []string{"link_url", "link_title", "link_description", "link_site_name"} {
 		if n := count(`SELECT count(*) FROM information_schema.columns WHERE table_name IN ('uploads','attachments') AND column_name = $1`, col); n != 0 {
@@ -118,6 +211,7 @@ func TestMigration0014AppliesAndReverses(t *testing.T) {
 	if err := Migrate(ctx, pool); err != nil {
 		t.Fatalf("0014 up again: %v", err)
 	}
+	dropLinkCardsOnCleanup(ctx, t, pool)
 	if _, err := pool.Exec(ctx, `INSERT INTO uploads (id, uploader, kind, storage_key, bytes, link_url) VALUES (gen_random_uuid(), $1, 'link', NULL, 0, 'https://x.invalid/')`, author); err != nil {
 		t.Errorf("after up again, a text-only link upload was refused: %v", err)
 	}
@@ -125,6 +219,7 @@ func TestMigration0014AppliesAndReverses(t *testing.T) {
 
 func TestMigration0014Constraints(t *testing.T) {
 	ctx, pool := freshDB(t)
+	dropLinkCardsOnCleanup(ctx, t, pool)
 	user := insertTestUser(ctx, t, pool, "constraints-0014")
 	conv := mkGroup(ctx, t, pool, "c", user)
 	msg := insertTestMessage(ctx, t, pool, conv, user, 1, 1)

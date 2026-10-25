@@ -288,11 +288,14 @@ func replyRef(src store.ReplySource, v Viewer) *wire.ReplyRef {
 
 	// KIND comes from the source's first attachment, else text.
 	//
-	// `link` is the fourth value of the enum and the SERVER NEVER EMITS IT.
-	// Nothing derives it: there is no link-preview feature, no column behind it
-	// and no ticket that owns one. The enum keeps it for the clients that
-	// render one, and this comment exists so a reader looking for the missing
-	// branch finds the answer rather than assuming a bug.
+	// `link` is a card (CANT-308, stored by 0014). A link ref carries the kind
+	// and nothing else: no duration, and no url, because the url rule below is
+	// the image's thumbnail and a card's image is not the thing being replied
+	// to. Its preview is the source's own text, the same as every other kind,
+	// and is EMPTY for a link-only message: the wire says the preview is cut
+	// from the source's text or transcript, and a card's title is neither, so
+	// the client draws its own label for an empty link preview exactly as it
+	// does for a voice note whose transcript has not landed.
 	if a := src.FirstAttachment; a != nil {
 		switch a.Kind {
 		case "voice":
@@ -303,6 +306,8 @@ func replyRef(src store.ReplySource, v Viewer) *wire.ReplyRef {
 			}
 		case "image":
 			ref.Kind = wire.ReplyRefKindImage
+		case "link":
+			ref.Kind = wire.ReplyRefKindLink
 		}
 		// URL ON AN IMAGE REF ONLY, and this is the one rule the vectors do
 		// not fix — flagged rather than smoothed over.
