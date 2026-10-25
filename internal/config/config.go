@@ -42,6 +42,51 @@ const DefaultPort = 4012
 // against a server that is still starting.
 const DefaultShutdownGrace = 20 * time.Second
 
+// LinkPreviews is the configuration of POST /link-previews (CANT-308). The
+// values are the plan's table: the fetch policy's timeouts and byte bounds, the
+// abuse bounds (four fetches in flight server-wide, ten a minute per account
+// with a burst of five) and the two cache lifetimes.
+type LinkPreviews struct {
+	// Enabled is CATENARY_LINK_PREVIEWS. Off by default: turning it on makes this
+	// process open sockets to addresses a member chose, which is a deploy
+	// decision (deploy/README.md) and not something a default should make.
+	Enabled bool
+
+	Concurrency   int // CATENARY_LINKPREVIEW_CONCURRENCY: fetches in flight, server-wide
+	RatePerMinute int // CATENARY_LINKPREVIEW_RATE_PER_MINUTE: per account
+	Burst         int // CATENARY_LINKPREVIEW_BURST: per account
+
+	CacheTTL         time.Duration // CATENARY_LINKPREVIEW_CACHE_TTL: a card
+	NegativeCacheTTL time.Duration // CATENARY_LINKPREVIEW_NEGATIVE_CACHE_TTL: a 204
+
+	ConnectTimeout time.Duration // CATENARY_LINKPREVIEW_CONNECT_TIMEOUT
+	PageTimeout    time.Duration // CATENARY_LINKPREVIEW_PAGE_TIMEOUT
+	ImageTimeout   time.Duration // CATENARY_LINKPREVIEW_IMAGE_TIMEOUT
+	TotalTimeout   time.Duration // CATENARY_LINKPREVIEW_TOTAL_TIMEOUT
+
+	MaxPageBytes  int64 // CATENARY_LINKPREVIEW_MAX_PAGE_BYTES, counted after decompression
+	MaxImageBytes int64 // CATENARY_LINKPREVIEW_MAX_IMAGE_BYTES
+	MaxRedirects  int   // CATENARY_LINKPREVIEW_MAX_REDIRECTS
+}
+
+// DefaultLinkPreviews is the plan's table.
+func DefaultLinkPreviews() LinkPreviews {
+	return LinkPreviews{
+		Concurrency:      4,
+		RatePerMinute:    10,
+		Burst:            5,
+		CacheTTL:         15 * time.Minute,
+		NegativeCacheTTL: 5 * time.Minute,
+		ConnectTimeout:   3 * time.Second,
+		PageTimeout:      6 * time.Second,
+		ImageTimeout:     4 * time.Second,
+		TotalTimeout:     10 * time.Second,
+		MaxPageBytes:     2 << 20,
+		MaxImageBytes:    5 << 20,
+		MaxRedirects:     3,
+	}
+}
+
 // DefaultMaxImageBytes and DefaultMaxVoiceBytes are the per-kind upload caps
 // (CANT-47 section 2). Here and not in the store because the upload endpoint is
 // the only thing that enforces them: nothing in the send path sees a byte count
@@ -102,6 +147,13 @@ type Config struct {
 
 	MaxImageBytes int
 	MaxVoiceBytes int
+
+	// LinkPreviews is CANT-308's link preview endpoint: CATENARY_LINK_PREVIEWS
+	// and the CATENARY_LINKPREVIEW_* bounds. DEFAULT OFF, and off means no
+	// route and no outbound traffic from this process. Load fills every bound
+	// with the plan's value, so a Config that came from Load is complete; one
+	// built by hand has zeros, which the composition root treats as unset.
+	LinkPreviews LinkPreviews
 
 	// HeartbeatIntervalSec is CATENARY_HEARTBEAT_INTERVAL_SEC and
 	// MissedPongLimit is CATENARY_MISSED_PONG_LIMIT: CANT-23's deployed dial,
@@ -229,6 +281,9 @@ func Load() (Config, error) {
 	if c.MaxVoiceBytes == 0 {
 		c.MaxVoiceBytes = DefaultMaxVoiceBytes
 	}
+	if err := c.loadLinkPreviews(); err != nil {
+		return c, err
+	}
 	if c.HeartbeatIntervalSec, err = positiveInt("CATENARY_HEARTBEAT_INTERVAL_SEC", os.Getenv("CATENARY_HEARTBEAT_INTERVAL_SEC")); err != nil {
 		return c, err
 	}
@@ -319,6 +374,87 @@ func (c Config) validateProvisioning() error {
 			"and sharing the port would put account creation on the routed one", c.ProvisionAddr)
 	}
 
+	return nil
+}
+
+// loadLinkPreviews reads CATENARY_LINK_PREVIEWS and the CATENARY_LINKPREVIEW_*
+// bounds. Every Getenv argument is a literal, for the reason given where Load
+// reads CATENARY_MAX_MESSAGE_BYTES: the env scanner in config_test.go only sees
+// literals.
+//
+// A set bound must be positive and an unset one is the plan's value. ENABLING
+// WITHOUT A MEDIA DIRECTORY IS REFUSED, naming the variable: a card's image is a
+// blob and its handle is resolved by the uploads resolver, and both exist only
+// with CATENARY_MEDIA_DIR, so the alternative is a route that accepts a URL,
+// opens a socket to it and then has nowhere to put the answer.
+func (c *Config) loadLinkPreviews() error {
+	lp := DefaultLinkPreviews()
+	var err error
+	if v := strings.TrimSpace(os.Getenv("CATENARY_LINK_PREVIEWS")); v != "" {
+		if lp.Enabled, err = strconv.ParseBool(v); err != nil {
+			return fmt.Errorf("config: CATENARY_LINK_PREVIEWS %q is not a boolean", v)
+		}
+	}
+	for _, f := range []struct {
+		dst  *int
+		name string
+		raw  string
+	}{
+		{&lp.Concurrency, "CATENARY_LINKPREVIEW_CONCURRENCY", os.Getenv("CATENARY_LINKPREVIEW_CONCURRENCY")},
+		{&lp.RatePerMinute, "CATENARY_LINKPREVIEW_RATE_PER_MINUTE", os.Getenv("CATENARY_LINKPREVIEW_RATE_PER_MINUTE")},
+		{&lp.Burst, "CATENARY_LINKPREVIEW_BURST", os.Getenv("CATENARY_LINKPREVIEW_BURST")},
+		{&lp.MaxRedirects, "CATENARY_LINKPREVIEW_MAX_REDIRECTS", os.Getenv("CATENARY_LINKPREVIEW_MAX_REDIRECTS")},
+	} {
+		n, err := positiveInt(f.name, f.raw)
+		if err != nil {
+			return err
+		}
+		if n != 0 {
+			*f.dst = n
+		}
+	}
+	for _, f := range []struct {
+		dst  *int64
+		name string
+		raw  string
+	}{
+		{&lp.MaxPageBytes, "CATENARY_LINKPREVIEW_MAX_PAGE_BYTES", os.Getenv("CATENARY_LINKPREVIEW_MAX_PAGE_BYTES")},
+		{&lp.MaxImageBytes, "CATENARY_LINKPREVIEW_MAX_IMAGE_BYTES", os.Getenv("CATENARY_LINKPREVIEW_MAX_IMAGE_BYTES")},
+	} {
+		n, err := positiveInt(f.name, f.raw)
+		if err != nil {
+			return err
+		}
+		if n != 0 {
+			*f.dst = int64(n)
+		}
+	}
+	for _, f := range []struct {
+		dst  *time.Duration
+		name string
+		raw  string
+	}{
+		{&lp.CacheTTL, "CATENARY_LINKPREVIEW_CACHE_TTL", os.Getenv("CATENARY_LINKPREVIEW_CACHE_TTL")},
+		{&lp.NegativeCacheTTL, "CATENARY_LINKPREVIEW_NEGATIVE_CACHE_TTL", os.Getenv("CATENARY_LINKPREVIEW_NEGATIVE_CACHE_TTL")},
+		{&lp.ConnectTimeout, "CATENARY_LINKPREVIEW_CONNECT_TIMEOUT", os.Getenv("CATENARY_LINKPREVIEW_CONNECT_TIMEOUT")},
+		{&lp.PageTimeout, "CATENARY_LINKPREVIEW_PAGE_TIMEOUT", os.Getenv("CATENARY_LINKPREVIEW_PAGE_TIMEOUT")},
+		{&lp.ImageTimeout, "CATENARY_LINKPREVIEW_IMAGE_TIMEOUT", os.Getenv("CATENARY_LINKPREVIEW_IMAGE_TIMEOUT")},
+		{&lp.TotalTimeout, "CATENARY_LINKPREVIEW_TOTAL_TIMEOUT", os.Getenv("CATENARY_LINKPREVIEW_TOTAL_TIMEOUT")},
+	} {
+		v := strings.TrimSpace(f.raw)
+		if v == "" {
+			continue
+		}
+		d, err := time.ParseDuration(v)
+		if err != nil || d <= 0 {
+			return fmt.Errorf("config: %s %q is not a positive duration", f.name, v)
+		}
+		*f.dst = d
+	}
+	if lp.Enabled && c.MediaDir == "" {
+		return fmt.Errorf("config: CATENARY_LINK_PREVIEWS needs CATENARY_MEDIA_DIR: a card's image is a stored blob")
+	}
+	c.LinkPreviews = lp
 	return nil
 }
 

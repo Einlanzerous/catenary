@@ -183,6 +183,12 @@ type Deps struct {
 	Upload     UploadFunc
 	UploadCaps map[string]int64
 
+	// LinkPreview serves POST /link-previews (CANT-308). Registered only with
+	// CallerID, so a process that has not switched previews on (the default) has
+	// a route that does not exist: the router's own 404, and no code path that
+	// could open an outbound socket.
+	LinkPreview LinkPreviewFunc
+
 	// MediaSigner, MediaStore and MediaInfo together register GET /media/{key}
 	// (CANT-311); with any nil the route does not exist.
 	MediaSigner *media.Signer
@@ -309,6 +315,10 @@ func NewRouter(d Deps) http.Handler {
 
 	if d.Upload != nil && d.CallerID != nil && len(d.UploadCaps) > 0 {
 		mux.HandleFunc("POST /uploads", uploadHandler(d))
+	}
+
+	if d.LinkPreview != nil && d.CallerID != nil {
+		mux.HandleFunc("POST /link-previews", linkPreviewHandler(d))
 	}
 
 	if d.MediaSigner != nil && d.MediaStore != nil && d.MediaInfo != nil {

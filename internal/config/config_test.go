@@ -482,3 +482,89 @@ func TestTheProvisioningVariablesAreVisibleToTheEnvScanner(t *testing.T) {
 		}
 	}
 }
+
+// CANT-322. Link previews are OFF unless switched on, every bound defaults to
+// the plan's table, a set bound must be positive, and enabling needs the media
+// directory (a card's image is a stored blob).
+func TestLinkPreviewsDefaultOffWithThePlansBounds(t *testing.T) {
+	setEnv(t, map[string]string{"CATENARY_DATABASE_URL": "x"})
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.LinkPreviews.Enabled {
+		t.Error("link previews are on by default")
+	}
+	if got, want := c.LinkPreviews, DefaultLinkPreviews(); got != want {
+		t.Errorf("defaults = %+v; want %+v", got, want)
+	}
+	lp := c.LinkPreviews
+	if lp.Concurrency != 4 || lp.RatePerMinute != 10 || lp.Burst != 5 || lp.CacheTTL.Minutes() != 15 || lp.NegativeCacheTTL.Minutes() != 5 {
+		t.Errorf("abuse bounds = %+v", lp)
+	}
+}
+
+func TestLinkPreviewsBoundsAreOverridable(t *testing.T) {
+	setEnv(t, map[string]string{
+		"CATENARY_DATABASE_URL":                   "x",
+		"CATENARY_MEDIA_DIR":                      t.TempDir(),
+		"CATENARY_MEDIA_URL_KEYS":                 "1=" + strings.Repeat("ab", 32),
+		"CATENARY_LINK_PREVIEWS":                  "true",
+		"CATENARY_LINKPREVIEW_CONCURRENCY":        "2",
+		"CATENARY_LINKPREVIEW_RATE_PER_MINUTE":    "3",
+		"CATENARY_LINKPREVIEW_BURST":              "1",
+		"CATENARY_LINKPREVIEW_CACHE_TTL":          "1m",
+		"CATENARY_LINKPREVIEW_NEGATIVE_CACHE_TTL": "10s",
+		"CATENARY_LINKPREVIEW_MAX_PAGE_BYTES":     "1048576",
+		"CATENARY_LINKPREVIEW_MAX_IMAGE_BYTES":    "1000",
+		"CATENARY_LINKPREVIEW_MAX_REDIRECTS":      "1",
+		"CATENARY_LINKPREVIEW_TOTAL_TIMEOUT":      "5s",
+	})
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lp := c.LinkPreviews
+	if !lp.Enabled || lp.Concurrency != 2 || lp.RatePerMinute != 3 || lp.Burst != 1 || lp.CacheTTL != time.Minute ||
+		lp.NegativeCacheTTL != 10*time.Second || lp.MaxPageBytes != 1<<20 || lp.MaxImageBytes != 1000 ||
+		lp.MaxRedirects != 1 || lp.TotalTimeout != 5*time.Second {
+		t.Errorf("overrides = %+v", lp)
+	}
+	if lp.PageTimeout != DefaultLinkPreviews().PageTimeout {
+		t.Error("an unset bound lost its default")
+	}
+}
+
+func TestLinkPreviewsRejects(t *testing.T) {
+	media := map[string]string{
+		"CATENARY_DATABASE_URL":   "x",
+		"CATENARY_MEDIA_DIR":      t.TempDir(),
+		"CATENARY_MEDIA_URL_KEYS": "1=" + strings.Repeat("ab", 32),
+	}
+	with := func(k, v string) map[string]string {
+		m := map[string]string{k: v}
+		for mk, mv := range media {
+			m[mk] = mv
+		}
+		return m
+	}
+	for name, c := range map[string]struct {
+		env  map[string]string
+		want string
+	}{
+		"not a boolean":           {with("CATENARY_LINK_PREVIEWS", "yes please"), "CATENARY_LINK_PREVIEWS"},
+		"zero concurrency":        {with("CATENARY_LINKPREVIEW_CONCURRENCY", "0"), "CATENARY_LINKPREVIEW_CONCURRENCY"},
+		"negative rate":           {with("CATENARY_LINKPREVIEW_RATE_PER_MINUTE", "-1"), "CATENARY_LINKPREVIEW_RATE_PER_MINUTE"},
+		"duration without a unit": {with("CATENARY_LINKPREVIEW_CACHE_TTL", "900"), "CATENARY_LINKPREVIEW_CACHE_TTL"},
+		"zero duration":           {with("CATENARY_LINKPREVIEW_PAGE_TIMEOUT", "0s"), "CATENARY_LINKPREVIEW_PAGE_TIMEOUT"},
+		"enabled without media":   {map[string]string{"CATENARY_DATABASE_URL": "x", "CATENARY_LINK_PREVIEWS": "1"}, "CATENARY_MEDIA_DIR"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			setEnv(t, c.env)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Load = %v; want an error naming %s", err, c.want)
+			}
+		})
+	}
+}

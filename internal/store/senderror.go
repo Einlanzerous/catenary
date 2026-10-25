@@ -70,10 +70,12 @@ var (
 	// sender's upload_not_found.
 	ErrUploadResolverContract = errors.New("store: the upload resolver broke its contract")
 
-	// ErrRateLimited is PLUMBED AND UNEMITTED. retry_after_sec travels end to
-	// end and the vector server_error_rate_limited stays satisfied, but no
-	// policy decides when to raise it and no ticket on the board owns one.
-	// Inventing a limiter here would be scope this ticket did not ask for.
+	// ErrRateLimited is UNEMITTED BY THE SEND PATH. retry_after_sec travels end
+	// to end and the vector server_error_rate_limited stays satisfied, but no
+	// policy decides when a send raises it and no ticket on the board owns one.
+	// The one emitter is POST /link-previews (CANT-322), whose limiter is local
+	// to that endpoint and sets RetryAfterSec itself; it reads its code,
+	// retryable flag and status from this row rather than naming them.
 	//
 	// The guard asserts the table is total over the causes the store can
 	// PRODUCE, not that every ErrorCode is reachable, so this staying unemitted

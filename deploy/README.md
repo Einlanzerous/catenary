@@ -107,6 +107,23 @@ One without the other **refuses to boot**, with a message naming the missing var
 
 The directory must be **writable by `nobody`**, the image's user, and a directory that is not refuses to boot naming the variable rather than failing at the first upload. `tmp/` is emptied at every boot. **Media is not in Postgres, so it is not in a database backup**: the volume is a `construct-backup` source, taken **after** the database so a restored message never points at a blob the media snapshot lacks (CANT-47 section 6). The `construct-server` change is **SERV-244**; this file holds the decision, not a compose fragment.
 
+## Link previews
+
+**Off by default, and enabling it is a decision, not a toggle.** `POST /link-previews` (CANT-308) makes the server fetch the page behind a URL a member is composing and return a card for it. That is the one place this process opens a socket to an address somebody else chose, from inside the estate's network, so the route does not exist unless `CATENARY_LINK_PREVIEWS` is set: with it unset the router answers its own `404`, no fetcher is built and no outbound traffic is possible. A client treats that `404` as "previews unavailable".
+
+| variable | meaning |
+|---|---|
+| `CATENARY_LINK_PREVIEWS` | `true` serves the route. Default off. **Requires `CATENARY_MEDIA_DIR`** (boot refuses naming the variable): a card's image is a stored blob and its handle is resolved by the uploads resolver |
+| `CATENARY_LINKPREVIEW_CONCURRENCY` | fetches in flight server-wide. Default 4 |
+| `CATENARY_LINKPREVIEW_RATE_PER_MINUTE`, `CATENARY_LINKPREVIEW_BURST` | per-account token bucket. Default 10 a minute, burst 5. Over either bound is `429 rate_limited` with `retry_after_sec` |
+| `CATENARY_LINKPREVIEW_CACHE_TTL`, `CATENARY_LINKPREVIEW_NEGATIVE_CACHE_TTL` | in-process cache by canonical URL: a card 15m, a failure 5m. A hit opens no socket but still mints a fresh single-use handle |
+| `CATENARY_LINKPREVIEW_CONNECT_TIMEOUT`, `_PAGE_TIMEOUT`, `_IMAGE_TIMEOUT`, `_TOTAL_TIMEOUT` | Go durations. Default 3s, 6s, 4s, 10s |
+| `CATENARY_LINKPREVIEW_MAX_PAGE_BYTES`, `_MAX_IMAGE_BYTES`, `_MAX_REDIRECTS` | page bytes counted after decompression (2 MiB), image bytes (5 MiB), redirects (3) |
+
+**The requirement, and the reason enabling waits.** The address check lives inside the process, at connect time: every socket the fetcher opens is refused unless its actual remote address is a global unicast one, so loopback, RFC 1918 (which is `construct_net` and every Docker bridge), link-local including the `169.254.169.254` metadata address, carrier-grade NAT and the other special ranges die at the dialer, and so do a redirect or a rebinding name that lands on one. That is one layer. The container also needs **outbound DNS and HTTPS to the public internet, and ideally nothing more than that**: an egress restriction at the network layer (no route from this container to anything but a resolver and the internet) is the second layer, and it is what makes a hole in the first one not matter. Whether the estate's container network can express that restriction is not settled, and **nothing should enable `CATENARY_LINK_PREVIEWS` in `construct-server` until it is.** Until then the variable stays unset, the route stays a `404`, and this repository carries the code switched off. The end-to-end proof (a fake origin and a rebinding resolver) is CANT-326 and has not run against a real container network; nothing in this repository has made a real outbound request.
+
+**What an operator sees.** One structured log line per request: requester id, result class (`ok`, `blocked`, `timeout`, `too_large`, `not_html`, `empty`, `dns`, `unavailable`, `bad_url`, `limited`), duration, and whether the answer came from the cache. A `blocked` result also logs the address class at warn (a member pasting an internal address is worth noticing). **The URL's path and query are never logged**, because a pasted link can carry a token. To a client every fetch failure is the same empty `204`; the class exists only in this log.
+
 ## The routing split, and why it is not symmetric
 
 **`/admin` behind Access; the socket and `/sync` never.** Cloudflare Access is a
