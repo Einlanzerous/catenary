@@ -377,16 +377,10 @@ func (c Config) validateProvisioning() error {
 	return nil
 }
 
-// positiveInt reads an optional positive bound. Unset returns 0, which the
-// composition root reads as "keep the store's default".
-//
-// Zero is REFUSED rather than accepted as a bound. An operator setting a limit
-// to 0 means "off" far more often than "refuse everything", and a store that
-// refuses every send because a variable was misread is a worse outage than a
-// startup failure that names the variable.
 // loadLinkPreviews reads CATENARY_LINK_PREVIEWS and the CATENARY_LINKPREVIEW_*
-// bounds. Every Getenv argument is a literal for the reason positiveInt's
-// comment gives.
+// bounds. Every Getenv argument is a literal, for the reason given where Load
+// reads CATENARY_MAX_MESSAGE_BYTES: the env scanner in config_test.go only sees
+// literals.
 //
 // A set bound must be positive and an unset one is the plan's value. ENABLING
 // WITHOUT A MEDIA DIRECTORY IS REFUSED, naming the variable: a card's image is a
@@ -464,6 +458,13 @@ func (c *Config) loadLinkPreviews() error {
 	return nil
 }
 
+// positiveInt reads an optional positive bound. Unset returns 0, which the
+// composition root reads as "keep the store's default".
+//
+// Zero is REFUSED rather than accepted as a bound. An operator setting a limit
+// to 0 means "off" far more often than "refuse everything", and a store that
+// refuses every send because a variable was misread is a worse outage than a
+// startup failure that names the variable.
 func positiveInt(name, raw string) (int, error) {
 	v := strings.TrimSpace(raw)
 	if v == "" {
