@@ -269,7 +269,7 @@ final class Outbox {
     if (account == null) throw StateError('outbox: no enrolled account to compose as');
     if (draft.attachments.isNotEmpty && !_ready) {
       if (_terminal || _transport.isTerminal) throw const ComposeRefused(ComposeRefused.terminal);
-      if (draft.attachments.any((a) => a.kind != 'voice')) throw const ComposeRefused(ComposeRefused.pickedFileOffline);
+      if (draft.attachments.any((a) => a.kind != 'voice' && !a.isLink)) throw const ComposeRefused(ComposeRefused.pickedFileOffline);
     }
     final media = <Uint8List?>[];
     for (final a in draft.attachments) {
@@ -395,6 +395,23 @@ final class Outbox {
     if (e == null || err.code != ErrorCode.uploadNotFound || e.attachments.isEmpty) return false;
     if (_faults.staleHandleFails) return false;
     if (e.reuploads >= 1 && !_faults.reuploadUnbounded) return false;
+    final links = e.attachments.any((a) => a.isLink);
+    // A link card's handle cannot be re-minted from anything this entry holds,
+    // and the outbox never re-fetches (CANT-308 ruling 6): the card is dropped
+    // and the same clientId is sent again, once, without it. A message with
+    // nothing left to say is not resent empty; the refusal is the caller's.
+    if (links && (e.text ?? '').trim().isEmpty && e.attachments.every((a) => a.isLink)) return false;
+    if (links) {
+      await _mutate(id, (x) {
+        x.reuploads++;
+        x.notBefore = null;
+        x.attachments = [for (final a in x.attachments) if (!a.isLink) a.cleared()];
+      });
+      _emit();
+      final after = _entries[id];
+      if (after != null && _awaitsUpload(after) && _mayUpload) unawaited(_upload(id));
+      return true;
+    }
     if (_faults.remintOnReupload) {
       final media = [for (var i = 0; i < e.attachments.length; i++) await _store.media(id, i)];
       _forget(id);
@@ -446,7 +463,8 @@ final class Outbox {
         x.status = OutboxStatus.pending;
         x.lastError = null;
         x.notBefore = null;
-        if (afterUpload) x.attachments = [for (final a in x.attachments) a.cleared()];
+        // A card is dropped, never cleared: there is nothing to upload it from.
+        if (afterUpload) x.attachments = [for (final a in x.attachments) if (!a.isLink) a.cleared()];
       });
       // An attachment with no handle is offered again, so the entry either
       // joins the drain or fails again with the uploader's message — or, with
@@ -611,7 +629,13 @@ final class Outbox {
     _inFlight.remove(id);
     _busy.add(id);
     try {
-      if (await _reupload(id, err)) return;
+      if (await _reupload(id, err)) {
+        // Released first so the drain, which passes over a busy entry, can take
+        // a card-less one at once.
+        _busy.remove(id);
+        _drain();
+        return;
+      }
       var hold = isHeldRefusal(err);
       if (hold && _faults.misclassifyRetryable) hold = false;
       if (!hold && _faults.retryNonRetryable) hold = true;

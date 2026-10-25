@@ -89,7 +89,9 @@ final class OutboundAttachmentDraft {
         upload: UploadState.values.byName(o['upload'] as String),
       );
 
-  /// `voice` or `image`.
+  /// `voice`, `image` or `link`. A `link` holds a handle from `POST
+  /// /link-previews` and no media: it is born uploaded, and the server's
+  /// refusal of that handle drops it (CANT-324) rather than uploading anything.
   final String kind;
 
   /// Where the media is copied from at compose: what the platform's recorder
@@ -104,6 +106,12 @@ final class OutboundAttachmentDraft {
   /// Set when an `Uploader` returns.
   final Uuid? uploadId;
   final UploadState upload;
+
+  /// A link card bound by [handle] (CANT-324): already uploaded, with no media
+  /// to hold and no source to read.
+  factory OutboundAttachmentDraft.link(Uuid handle) => OutboundAttachmentDraft(kind: 'link', uploadId: handle, upload: UploadState.uploaded);
+
+  bool get isLink => kind == 'link';
 
   /// This attachment, uploaded under `handle`.
   OutboundAttachmentDraft uploadedAs(Uuid handle) =>
