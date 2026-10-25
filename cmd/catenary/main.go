@@ -138,6 +138,20 @@ configuration is env-only, CATENARY_-prefixed. There are no config files.
   CATENARY_MEDIA_URL_KEYS     "1=<hex>,2=<hex>", at least 32 bytes each; the last signs. Required with CATENARY_MEDIA_DIR.
   CATENARY_MAX_IMAGE_BYTES    byte cap on an image upload. Default 16 MiB.
   CATENARY_MAX_VOICE_BYTES    byte cap on a voice upload. Default 8 MiB.
+  CATENARY_LINK_PREVIEWS      true: serve POST /link-previews, which fetches pages for members. Default off; needs CATENARY_MEDIA_DIR.
+                              See deploy/README.md before enabling. Its bounds are all optional:
+  CATENARY_LINKPREVIEW_CONCURRENCY          fetches in flight server-wide. Default 4.
+  CATENARY_LINKPREVIEW_RATE_PER_MINUTE      per account. Default 10.
+  CATENARY_LINKPREVIEW_BURST                per account. Default 5.
+  CATENARY_LINKPREVIEW_CACHE_TTL            how long a card is remembered. Default 15m.
+  CATENARY_LINKPREVIEW_NEGATIVE_CACHE_TTL   how long a failure is remembered. Default 5m.
+  CATENARY_LINKPREVIEW_CONNECT_TIMEOUT      per socket. Default 3s.
+  CATENARY_LINKPREVIEW_PAGE_TIMEOUT         the whole page fetch. Default 6s.
+  CATENARY_LINKPREVIEW_IMAGE_TIMEOUT        the whole image fetch. Default 4s.
+  CATENARY_LINKPREVIEW_TOTAL_TIMEOUT        the whole request. Default 10s.
+  CATENARY_LINKPREVIEW_MAX_PAGE_BYTES       page bytes after decompression. Default 2 MiB.
+  CATENARY_LINKPREVIEW_MAX_IMAGE_BYTES      card image bytes. Default 5 MiB.
+  CATENARY_LINKPREVIEW_MAX_REDIRECTS        redirects followed. Default 3.
   CATENARY_HEARTBEAT_INTERVAL_SEC  how often ready tells the client to ping. Default 35, 5-90.
   CATENARY_MISSED_PONG_LIMIT       missed pings before severance, both ends. Default 2, at least 1.
 
@@ -286,6 +300,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 	// No CATENARY_MEDIA_DIR means no media store, no route and the refusing
 	// resolver: a deployment that predates SERV-244 keeps booting.
 	var uploadFn api.UploadFunc
+	var linkPreviewFn api.LinkPreviewFunc
 	var uploadCaps map[string]int64
 	if st != nil && cfg.MediaDir != "" {
 		ms, err := media.NewLocal(cfg.MediaDir)
@@ -325,6 +340,14 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			imageMax = config.DefaultMaxImageBytes
 		}
 		uploadCaps = map[string]int64{"voice": voiceMax, "image": imageMax}
+
+		// CANT-322: link previews. OFF BY DEFAULT, and off means the service is
+		// never built: no route, no fetcher, nothing that could open a socket.
+		// Wired here, beside the media store, because a card's image is a blob and
+		// its handle is resolved by the resolver installed above.
+		if cfg.LinkPreviews.Enabled {
+			linkPreviewFn = newLinkService(cfg.LinkPreviews, logger, ms, st, derive).Preview
+		}
 	}
 
 	var db api.Pinger
@@ -534,6 +557,7 @@ func setup(cfg config.Config, logger *slog.Logger, st *store.Store) deps {
 			FindOrCreateSelf: findOrCreateSelfFn,
 			Upload:           uploadFn,
 			UploadCaps:       uploadCaps,
+			LinkPreview:      linkPreviewFn,
 			MediaSigner:      mediaSigner,
 			MediaStore:       mediaStore,
 			MediaInfo:        mediaInfo,

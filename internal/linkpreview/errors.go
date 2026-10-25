@@ -105,3 +105,9 @@ func classify(err error) *Error {
 	}
 	return newErr(ClassUnavailable, "", err)
 }
+
+// NewError builds the error a Previewer other than Guarded returns, so a second
+// implementation (IDEA-66's unfurl service) or a test double reports the same
+// classes the endpoint logs. detail follows the conventions on Error.Detail and
+// must never contain the URL.
+func NewError(c Class, detail string) error { return newErr(c, detail, nil) }
