@@ -1,5 +1,30 @@
 # Changelog
 
+## [0.20.0](https://github.com/Einlanzerous/catenary/compare/v0.19.0...v0.20.0) (2026-10-25)
+
+
+### Features
+
+* CANT-309 — the upload foundation: 0013_uploads, a local-disk MediaStore, POST /uploads and the real resolver ([#222](https://github.com/Einlanzerous/catenary/issues/222)) ([a2716ee](https://github.com/Einlanzerous/catenary/commit/a2716ee7190b5247aa6902ffa83e8ffe1d0b3f4e))
+* CANT-310 — image ingest: sniff, orientation, re-encode without metadata, thumbnail, blurhash ([#224](https://github.com/Einlanzerous/catenary/issues/224)) ([784379c](https://github.com/Einlanzerous/catenary/commit/784379ce3a7fc5b150ba1bd7a4aadcdb07e4313e))
+* CANT-311 — signed media serving: GET /media/{key}, &v=thumb, key rotation, one URL deriver ([#223](https://github.com/Einlanzerous/catenary/issues/223)) ([ea92496](https://github.com/Einlanzerous/catenary/commit/ea92496cb4395264825a09f222c4d36f5d59d2bf))
+* CANT-313 — web: the real Uploader, its bound and the composition-root pass-through ([#230](https://github.com/Einlanzerous/catenary/issues/230)) ([ee02215](https://github.com/Einlanzerous/catenary/commit/ee02215e4c81f266298af5c52e9b85b5d7634074))
+* CANT-314 — web: the ATTACH picker, its pre-check and the composer gate ([#234](https://github.com/Einlanzerous/catenary/issues/234)) ([3030b07](https://github.com/Einlanzerous/catenary/commit/3030b0744cad0be5b155857e53edae051bf354e4))
+* CANT-315 — web: the recorder behind RECORD, gated off until CANT-56 ([#236](https://github.com/Einlanzerous/catenary/issues/236)) ([92aa88d](https://github.com/Einlanzerous/catenary/commit/92aa88d649bec1b0fa63573223bebe799ec91022))
+* CANT-316 — Dart: the real Uploader, its bound and the Outbox.open pass-through ([#229](https://github.com/Einlanzerous/catenary/issues/229)) ([8c72508](https://github.com/Einlanzerous/catenary/commit/8c72508096e19f6b498eb1b6558c72afca871391))
+* CANT-317 — Flutter: the ADD picker, its pre-check and the outbox's attach predicate ([#233](https://github.com/Einlanzerous/catenary/issues/233)) ([f5897d7](https://github.com/Einlanzerous/catenary/commit/f5897d7d6a299f3dab8ec4aeab33799cb26be9fd))
+* CANT-318 — Flutter: the recorder behind REC, built and gated off until CANT-56 ([#235](https://github.com/Einlanzerous/catenary/issues/235)) ([0274087](https://github.com/Einlanzerous/catenary/commit/0274087c22c39b6dab62ba4ccd310caa42e0e312))
+* CANT-319 — link previews: the guarded fetcher (internal/linkpreview), unwired ([#226](https://github.com/Einlanzerous/catenary/issues/226)) ([386cf37](https://github.com/Einlanzerous/catenary/commit/386cf377f5020fcae3e45bfc972f9e52e52320ea))
+* CANT-320 — link previews: the LinkAttachment wire schema, vectors and mapping ([#228](https://github.com/Einlanzerous/catenary/issues/228)) ([bcf49c1](https://github.com/Einlanzerous/catenary/commit/bcf49c16c5257ea54a2f577e349a638f55b8d9ea))
+* CANT-321 — link previews: migration 0014 and the store, resolver and serve changes for kind link ([#232](https://github.com/Einlanzerous/catenary/issues/232)) ([28dacf9](https://github.com/Einlanzerous/catenary/commit/28dacf9be292b29a5bdb92e89495c24b55928274))
+* CANT-49 — web: inline image and lightbox, row height final before the first byte ([#227](https://github.com/Einlanzerous/catenary/issues/227)) ([8567d59](https://github.com/Einlanzerous/catenary/commit/8567d598aef0ae33c5ee7f404818027080b67483))
+
+
+### Bug Fixes
+
+* CANT-303 — web: no "Connection lost" banner before the transport's first report ([#219](https://github.com/Einlanzerous/catenary/issues/219)) ([9c341c1](https://github.com/Einlanzerous/catenary/commit/9c341c1d1ba1b2ffc449629143ed64fe794c36ab))
+* CANT-304 — web: a long name in the rail footer truncates instead of widening the rail ([#218](https://github.com/Einlanzerous/catenary/issues/218)) ([80b2111](https://github.com/Einlanzerous/catenary/commit/80b2111951123ee8f2e3675f6fd918b7ccfdc2f9))
+
 ## [0.19.0](https://github.com/Einlanzerous/catenary/compare/v0.18.3...v0.19.0) (2026-10-20)
 
 
