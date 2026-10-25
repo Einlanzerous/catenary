@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
+import { hostOf } from '@/linkpreview'
 import { isSilent, jumpTo, messageById, NO_SPEECH_LABEL, REPLY_NO_TRANSCRIPT_LABEL, REPLY_VOICE_NOTE_LABEL, transcriptText, user, voiceOf } from '@/store'
 
 /**
@@ -36,6 +37,14 @@ const preview = computed(() => {
     return REPLY_VOICE_NOTE_LABEL
   }
   if (props.reply.kind === 'image') return `photo · ${props.reply.preview}`
+  // A link reply's preview is the source's own text, and is empty for a
+  // message that is only a card. Never an empty line: name what the stub can
+  // derive from the source it holds, the host of the card's URL, else nothing
+  // more than "link".
+  if (props.reply.kind === 'link' && !props.reply.preview.trim()) {
+    const card = source.value?.attachments?.find((a) => a.kind === 'link')
+    return (card?.kind === 'link' ? hostOf(card.url) : '') || 'link'
+  }
   return props.reply.preview
 })
 </script>

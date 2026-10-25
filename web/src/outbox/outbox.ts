@@ -139,6 +139,9 @@ export class Outbox {
    *  Never stored, and `'uploading'` is never written to an attachment: an
    *  unanswered offer reads `pending` after a reload, as `sending` does. */
   private readonly uploading = new Set<Uuid>()
+  /** Entries whose `upload_not_found` dropped a card: the resend is asked for
+   *  once `busy` is released. Never stored. */
+  private readonly redrain = new Set<Uuid>()
   /** What the holder in another tab says is in flight / acked there. */
   private remoteInFlight = new Set<Uuid>()
   private remoteAcks = new Map<Uuid, ServerAck>()
@@ -251,7 +254,10 @@ export class Outbox {
    */
   async compose(draft: OutboxDraft): Promise<OutboxEntry> {
     if (!this.accountId) throw new Error('outbox: no enrolled account to compose as')
-    if (draft.attachments?.length && !this.ready) {
+    // A `link` card is no picked file: it has no bytes, it was minted before
+    // this call, and if it goes stale the send drops it (CANT-323). It never
+    // makes a message wait for a session, so it is not refused offline.
+    if (draft.attachments?.some((a) => a.kind !== 'link') && !this.ready) {
       if (this.terminal || this.transport.isTerminal()) throw new ComposeRefused(ComposeRefused.terminal)
       if (draft.attachments.some((a) => a.kind !== 'voice')) throw new ComposeRefused(ComposeRefused.pickedFileOffline)
     }
@@ -496,6 +502,7 @@ export class Outbox {
       }
     } finally {
       this.busy.delete(id)
+      if (this.redrain.delete(id)) this.drain()
     }
     this.emit()
     this.post()
@@ -589,6 +596,24 @@ export class Outbox {
     const e = this.entries.get(id)
     if (!e || err.code !== 'upload_not_found' || !e.attachments?.length) return false
     if (this.faults.staleHandleFails) return false
+    // CANT-323 (CANT-308 ruling 6 → 0): a card whose handle no longer
+    // resolves is DROPPED and the message goes again under the same clientId,
+    // text and every other attachment intact. A card is a courtesy, so this
+    // never fails the entry and never re-fetches. It cannot loop: the card is
+    // gone after one pass, so a second `upload_not_found` is about something
+    // else and takes the path below.
+    if (e.attachments.some((a) => a.kind === 'link')) {
+      await this.mutate(id, (x) => {
+        dropLinks(x)
+        delete x.notBefore
+      })
+      this.emit()
+      this.post()
+      // `onError` holds `busy` for this entry until it returns, and a drain
+      // skips a busy entry, so the resend is asked for from its `finally`.
+      this.redrain.add(id)
+      return true
+    }
     if (e.reuploads >= 1 && !this.faults.reuploadUnbounded) return false
     if (this.faults.remintOnReupload) {
       this.forget(id)
@@ -789,10 +814,22 @@ const uploaded = (a: OutboundAttachmentDraft) => a.upload === 'uploaded' && !!a.
 /** Every handle the server has disowned, or that was never minted, goes; the
  *  Blobs stay, which is what the next offer uploads. */
 function clearHandles(e: OutboxEntry) {
+  // A card's handle cannot be re-minted from anything held here, so a handle
+  // being cleared takes the card with it (CANT-323).
+  dropLinks(e)
   for (const a of e.attachments ?? []) {
     delete a.uploadId
     a.upload = 'pending'
   }
+}
+
+/** Remove every `link` attachment; an entry left with none carries no
+ *  `attachments` field at all, which is what a text-only entry looks like. */
+function dropLinks(e: OutboxEntry) {
+  if (!e.attachments) return
+  const kept = e.attachments.filter((a) => a.kind !== 'link')
+  if (kept.length) e.attachments = kept
+  else delete e.attachments
 }
 
 /** The only path from an entry to the wire. `replyPreview`, `composedAt` and

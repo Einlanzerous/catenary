@@ -27,7 +27,7 @@ import { createSSRApp } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import StatusLabel from '@/components/StatusLabel.vue'
-import { decodeVoiceAttachment, type Conversation, type User } from '@/wire/generated'
+import { decodeLinkAttachment, decodeVoiceAttachment, type Conversation, type User } from '@/wire/generated'
 import { canCreateGroup, createGroup, pickerState, resetPicker, startDirect, toggleSelected } from '@/conversations'
 import {
   activeConversation,
@@ -961,6 +961,54 @@ async function main() {
     // Take it out again: a settle is how an entry leaves the outbox in any
     // status, and later sections count what the outbox holds.
     if (unsent) await (await outboxReady).settle(unsent.id)
+    state.conversations.splice(state.conversations.findIndex((c) => c.id === ROOM), 1)
+    if (before) select(before)
+  }
+
+  // 8d. CANT-323 — a link preview card says only what the server's fetch saw.
+  //
+  // PLANTED, THROUGH THE WIRE'S OWN DECODER, in a room of its own that is taken
+  // out again: the seed's rooms carry no card, and adding one there would move
+  // every count above. The JSON is what a server sends for kind `link`; its
+  // `site_name` is a lie on purpose, to catch a card that shows it.
+  {
+    const ROOM = 'c-link-cards'
+    const before = state.activeId
+    state.conversations.push({ id: ROOM, kind: 'group', name: 'Signal Lamp', memberCount: 7, headSeq: 2 })
+    state.messages.push({
+      id: 'm-card', seq: 1, logSeq: 1_000_300, conversationId: ROOM, authorId: MAREK,
+      at: '2026-09-24T00:01:00.000Z', state: 'read',
+      text: 'this is the one',
+      attachments: [decodeLinkAttachment({
+        kind: 'link', url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+        title: 'A page title <b>not markup</b>', description: 'What the page says about itself.',
+        site_name: 'Official Verified Bank', image_url: '/media/card-key?exp=1&sig=2',
+        image_width: 640, image_height: 360, image_placeholder: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj',
+      })],
+    })
+    state.messages.push({
+      id: 'm-card-reply', seq: 2, logSeq: 1_000_301, conversationId: ROOM, authorId: state.me,
+      at: '2026-09-24T00:02:00.000Z', state: 'read', text: 'ha',
+      replyTo: { messageId: 'm-card', authorId: MAREK, kind: 'link', preview: '' },
+    })
+    select(ROOM)
+    const page = await render()
+    const card = messageRow(page, 'm-card')
+    check('a card is drawn on the thread row', card.includes('A page title'), rowText(card).slice(0, 120))
+    check('with the host derived from its url', card.includes('www.youtube.com'))
+    check('and never the site_name the page chose', !page.includes('Official Verified Bank'))
+    check('the page\'s title is text, not markup', card.includes('&lt;b&gt;not markup&lt;/b&gt;') && !card.includes('<b>not'))
+    check('it opens the url with rel=noopener noreferrer',
+      card.includes('href="https://www.youtube.com/watch?v=dQw4w9WgXcQ"') && card.includes('rel="noopener noreferrer"'))
+    const img = card.match(/<img[^>]*src="([^"]+)"/)?.[1]?.replace(/&amp;/g, '&') ?? ''
+    check('the image request is same-origin, and the thumbnail variant',
+      img !== '' && new URL(img, baseUrl).origin === new URL(baseUrl).origin && img.includes('v=thumb'), img)
+    check('its box is final before the image: the stored 16:9 at 340 wide', card.includes('height:191px'))
+    check('no E2E and no verified anywhere on the page', !/E2E|verified/i.test(page.replace('Official Verified Bank', '')))
+    check('a reply to a card says LINK and names the host rather than drawing an empty line',
+      messageRow(page, 'm-card-reply').includes('↗ LINK') && messageRow(page, 'm-card-reply').includes('www.youtube.com'))
+    state.messages.splice(state.messages.findIndex((m) => m.id === 'm-card-reply'), 1)
+    state.messages.splice(state.messages.findIndex((m) => m.id === 'm-card'), 1)
     state.conversations.splice(state.conversations.findIndex((c) => c.id === ROOM), 1)
     if (before) select(before)
   }

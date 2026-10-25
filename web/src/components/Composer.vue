@@ -4,9 +4,12 @@ import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
 import { peaksFromSeed } from '@/lib/waveform'
 import { IMAGE_ACCEPT } from '@/attach'
+import { hostOf } from '@/linkpreview'
 import {
   canAttachFile,
   canRecord,
+  composerDraftChanged,
+  dismissPreview,
   messageById,
   pickImage,
   removeAttachment,
@@ -69,6 +72,10 @@ const armed = computed<ReplyRef | null>(() => {
     }
   }
 
+  if (source.attachments?.some((a) => a.kind === 'link')) {
+    return { messageId: source.id, authorId: source.authorId, kind: 'link', preview: source.text ?? '' }
+  }
+
   return {
     messageId: source.id,
     authorId: source.authorId,
@@ -76,6 +83,12 @@ const armed = computed<ReplyRef | null>(() => {
     preview: source.text ?? '',
   }
 })
+
+/** The held link card: shown while it is asked for and once it is ready, and
+ *  nowhere else. No card, a refused ask and a dismissed one all show nothing,
+ *  and none says why. The host is derived from the URL the sender typed. */
+const previewShown = computed(() => state.composer.preview.state === 'ready' || state.composer.preview.state === 'loading')
+const previewHost = computed(() => hostOf(state.composer.preview.card?.url ?? state.composer.preview.url ?? ''))
 
 const livePeaks = peaksFromSeed(2281, 70)
 
@@ -141,6 +154,21 @@ const grow = () => {
           </button>
         </div>
 
+        <!-- The link preview being composed. The canvas has no design for it,
+             so it is the attachment chip's twin: a gap flagged to the
+             designer, not a decision. Page-chosen words render as text. -->
+        <div v-if="previewShown" class="attach-chip link-chip" :class="{ loading: state.composer.preview.state === 'loading' }">
+          <span class="chip-kind">LINK</span>
+          <template v-if="state.composer.preview.state === 'ready'">
+            <span class="chip-name">{{ previewHost }}<template v-if="state.composer.preview.card?.title"> · {{ state.composer.preview.card.title }}</template></span>
+            <button class="dismiss" aria-label="Remove link preview" @click="dismissPreview">✕</button>
+          </template>
+          <template v-else>
+            <span class="chip-name">{{ previewHost }}</span>
+            <button class="dismiss" aria-label="Skip link preview" @click="dismissPreview">✕</button>
+          </template>
+        </div>
+
         <textarea
           ref="box"
           v-model="state.composer.draft"
@@ -153,7 +181,7 @@ const grow = () => {
                 ? `Message ${props.conversationName} — will send when reconnected`
                 : `Message ${props.conversationName}`
           "
-          @input="grow"
+          @input="grow(); composerDraftChanged()"
           @keydown="onKeydown"
         />
 
@@ -260,6 +288,14 @@ const grow = () => {
   color: var(--text-secondary);
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.chip-kind {
+  flex: none;
+  font: var(--type-label);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-meta);
 }
 
 .dismiss {

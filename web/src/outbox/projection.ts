@@ -23,8 +23,12 @@ export function errorText(e: OutboxError | undefined): string | undefined {
 
 export function project(item: OutboxItem): OutboxMessage {
   const { entry, ack } = item
-  const attachments: Attachment[] = (entry.attachments ?? []).map((a) =>
-    a.kind === 'voice'
+  const attachments: Attachment[] = (entry.attachments ?? []).map((a): Attachment =>
+    a.kind === 'link'
+      ? // The card as the composer showed it. It is the sender's own preview of
+        // what the server is about to freeze; the stored one replaces it.
+        (a.preview ?? { kind: 'link', url: '' })
+      : a.kind === 'voice'
       ? {
           kind: 'voice',
           // No media URL until an upload exists, and no peaks: those are

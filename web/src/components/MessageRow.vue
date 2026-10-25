@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { isOutboxMessage, type ImageAttachment, type RenderedMessage } from '@/client-types'
+import type { LinkAttachment } from '@/wire/generated'
 import { clock } from '@/lib/format'
 import { discard, isMine, jumpTo, replyTo, retry, state, user, voiceOf } from '@/store'
 import Avatar from './Avatar.vue'
 import ImageAttachmentView from './ImageAttachment.vue'
+import LinkCard from './LinkCard.vue'
 import ReplyStub from './ReplyStub.vue'
 import StatusLabel from './StatusLabel.vue'
 import VoiceNote from './VoiceNote.vue'
@@ -26,6 +28,10 @@ const images = computed<ImageAttachment[]>(
     props.message.attachments?.filter(
       (a): a is ImageAttachment => a.kind === 'image',
     ) ?? [],
+)
+
+const links = computed<LinkAttachment[]>(
+  () => props.message.attachments?.filter((a): a is LinkAttachment => a.kind === 'link') ?? [],
 )
 
 /** A new author, or a reply, starts a group and gets the name header. */
@@ -107,6 +113,11 @@ const returnTo = computed(() => {
           :key="i"
           :image="image"
         />
+      </div>
+
+      <!-- A link card (CANT-323): a frozen snapshot, drawn from the record. -->
+      <div v-if="links.length" class="links">
+        <LinkCard v-for="(link, i) in links" :key="i" :link="link" />
       </div>
 
       <!-- Failure is a row, not a toast: toasts expire, failures don't. Only
@@ -254,6 +265,15 @@ const returnTo = computed(() => {
 .images {
   display: flex;
   gap: var(--s2);
+  margin-top: var(--s2);
+  padding-bottom: 3px;
+}
+
+.links {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  align-items: flex-start;
   margin-top: var(--s2);
   padding-bottom: 3px;
 }

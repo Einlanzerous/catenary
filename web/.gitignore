@@ -13,4 +13,5 @@ dist-image-box-test/
 dist-upload/
 dist-upload-test/
 dist-attach-test/
+dist-linkpreview-test/
 dist-recorder-test/
