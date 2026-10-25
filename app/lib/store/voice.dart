@@ -18,6 +18,19 @@
 /// live test proves the real uploader gets a handle for one. CANT-56 flips
 /// this constant in the same PR that makes peaks exist and adds the
 /// end-to-end proof. It is the only line that decides it.
+///
+/// THE MICROPHONE PERMISSION FOLLOWS THE GATE (CANT-327). While this is false
+/// the Android main manifest carries
+/// `<uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove"/>`,
+/// so the merged manifest does not declare a permission the app cannot use;
+/// the `record` plugin would otherwise add it. To flip the gate, in one PR:
+/// delete that manifest line (and the `xmlns:tools` namespace if nothing else
+/// uses it), delete the "no RECORD_AUDIO in the merged manifest" step of the
+/// `android` job in `.github/workflows/app.yml`, and set this to true.
+/// `manifestMatchesGate` in `test/manifest_test.dart` fails if the constant and
+/// the manifest line move apart, and that CI step fails if the line goes and
+/// the step stays. Flipping only the constant would leave a person with
+/// "allow it in Settings" and no permission to allow.
 const bool voiceSendEnabled = false;
 
 /// A finished recording: where the platform recorder left the file (as it
