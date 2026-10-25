@@ -31,7 +31,7 @@
 /// the manifest line move apart, and that CI step fails if the line goes and
 /// the step stays. Flipping only the constant would leave a person with
 /// "allow it in Settings" and no permission to allow.
-const bool voiceSendEnabled = false;
+const bool voiceSendEnabled = true;
 
 /// A finished recording: where the platform recorder left the file (as it
 /// recorded it: no re-encode), and its own clock's length. There is no peaks
