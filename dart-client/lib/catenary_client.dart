@@ -20,6 +20,7 @@ export 'src/hold.dart';
 export 'src/image_check.dart';
 export 'src/io_seams.dart';
 export 'src/journal.dart';
+export 'src/link_preview.dart';
 export 'src/lock.dart';
 export 'src/outbox/coordination.dart';
 export 'src/outbox/media.dart';
