@@ -134,21 +134,36 @@ func (s *Store) resolveUploads(ctx context.Context, tx pgx.Tx, m NewMessage) ([]
 // under the extended protocol's 65,535 parameters, so a column added here
 // cannot quietly cross it.
 //
-// It is the twelve columns Sync's loadAttachments reads, plus id and
-// message_id; cmd/catenary/servedattachments_test.go is what proves the two
-// lists agree, by serving what this writes.
+// It is the columns Sync's loadAttachments reads, plus id and message_id;
+// cmd/catenary/servedattachments_test.go is what proves the two lists agree, by
+// serving what this writes.
 var attachmentColumns = []string{
 	"id", "message_id", "kind", "storage_key", "position",
 	"duration_ms", "peaks", "transcript_state", "transcript_json",
 	"filename", "width", "height", "bytes", "placeholder",
+	"link_url", "link_title", "link_description", "link_site_name",
 }
 
 func attachmentValues(id, messageID uuid.UUID, a AttachmentRow) []any {
 	return []any{
-		id, messageID, a.Kind, a.StorageKey, a.Position,
+		id, messageID, a.Kind, storageKeyValue(a.Kind, a.StorageKey), a.Position,
 		a.DurationMs, a.Peaks, a.TranscriptState, a.TranscriptJSON,
 		a.Filename, a.Width, a.Height, a.Bytes, a.Placeholder,
+		a.LinkURL, a.LinkTitle, a.LinkDescription, a.LinkSiteName,
 	}
+}
+
+// storageKeyValue is what the storage_key column is given: NULL for a link card
+// with no image, the key as it is for everything else. The kind test is the
+// point. An empty key on a voice or image row is written as the empty string it
+// has always been, and the two CHECKs (uploads_storage_key_present,
+// attachments_storage_key_present) stay the only thing that decides which kinds
+// may omit a blob.
+func storageKeyValue(kind, key string) any {
+	if kind == "link" && key == "" {
+		return nil
+	}
+	return key
 }
 
 // insertAttachments is position 11b: every row in ONE statement, on tx.
@@ -203,9 +218,17 @@ func insertAttachments(ctx context.Context, tx pgx.Tx, messageID uuid.UUID, rows
 // NewUpload is one stored blob waiting for a send to take it.
 type NewUpload struct {
 	Uploader   uuid.UUID
-	Kind       string // voice | image
-	StorageKey string // the media store's key for the stored bytes
-	Bytes      int64
+	Kind       string // voice | image | link
+	StorageKey string // the media store's key for the stored bytes; empty for a link with no image
+	Bytes      int64  // 0 for a link with no image
+
+	// Link only (CANT-308). LinkURL is required for kind link; the rest are nil
+	// when the page did not provide them. Width, Height and Placeholder below
+	// describe the card's image when it has one, with Width and Height together.
+	LinkURL         *string
+	LinkTitle       *string
+	LinkDescription *string
+	LinkSiteName    *string
 
 	// Image only (CANT-310); nil leaves the column NULL.
 	ThumbKey    *string
@@ -223,9 +246,11 @@ type NewUpload struct {
 func (s *Store) CreateUpload(ctx context.Context, u NewUpload) (uuid.UUID, error) {
 	id := uuid.New()
 	if _, err := s.pool.Exec(ctx,
-		`INSERT INTO uploads (id, uploader, kind, storage_key, bytes, thumb_key, width, height, placeholder, filename)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-		id, u.Uploader, u.Kind, u.StorageKey, u.Bytes, u.ThumbKey, u.Width, u.Height, u.Placeholder, u.Filename); err != nil {
+		`INSERT INTO uploads (id, uploader, kind, storage_key, bytes, thumb_key, width, height, placeholder, filename,
+		                      link_url, link_title, link_description, link_site_name)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		id, u.Uploader, u.Kind, storageKeyValue(u.Kind, u.StorageKey), u.Bytes, u.ThumbKey, u.Width, u.Height, u.Placeholder, u.Filename,
+		u.LinkURL, u.LinkTitle, u.LinkDescription, u.LinkSiteName); err != nil {
 		return uuid.Nil, fmt.Errorf("store: create upload: %w", err)
 	}
 	return id, nil
@@ -257,6 +282,10 @@ func (s *Store) CreateUpload(ctx context.Context, u NewUpload) (uuid.UUID, error
 // image row. A row missing them cannot become an attachment, and consuming it
 // first would burn a handle for a send that can only fail; leaving it
 // unconsumed means it resolves the moment the field is filled (peaks, CANT-56).
+//
+// A LINK is ready when it has its url (CANT-308); the CHECKs on uploads already
+// make its image dimensions come as a pair. A card with no image has a NULL
+// storage_key, so it is scanned into a nullable and an empty key means no blob.
 type PostgresUploads struct{}
 
 // Resolve implements UploadResolver.
@@ -274,10 +303,12 @@ func (PostgresUploads) Resolve(ctx context.Context, tx pgx.Tx, uploader uuid.UUI
 		          AND uploader = $2
 		          AND consumed_at IS NULL
 		          AND (   (kind = 'voice' AND peaks IS NOT NULL AND duration_ms IS NOT NULL)
-		               OR (kind = 'image' AND width IS NOT NULL AND height IS NOT NULL AND filename IS NOT NULL))
+		               OR (kind = 'image' AND width IS NOT NULL AND height IS NOT NULL AND filename IS NOT NULL)
+		               OR (kind = 'link' AND link_url IS NOT NULL))
 		        ORDER BY id
 		          FOR UPDATE)
-		RETURNING id, kind, storage_key, bytes, width, height, placeholder, filename, duration_ms, peaks`,
+		RETURNING id, kind, storage_key, bytes, width, height, placeholder, filename, duration_ms, peaks,
+		          link_url, link_title, link_description, link_site_name`,
 		ids, uploader)
 	if err != nil {
 		return nil, fmt.Errorf("store: consume uploads: %w", err)
@@ -289,17 +320,24 @@ func (PostgresUploads) Resolve(ctx context.Context, tx pgx.Tx, uploader uuid.UUI
 		var (
 			id         uuid.UUID
 			row        AttachmentRow
+			storageKey *string
 			bytes      int64
 			width      *int32
 			height     *int32
 			durationMs *int32
 			peaks      []int16
 		)
-		if err := rows.Scan(&id, &row.Kind, &row.StorageKey, &bytes, &width, &height,
-			&row.Placeholder, &row.Filename, &durationMs, &peaks); err != nil {
+		if err := rows.Scan(&id, &row.Kind, &storageKey, &bytes, &width, &height,
+			&row.Placeholder, &row.Filename, &durationMs, &peaks,
+			&row.LinkURL, &row.LinkTitle, &row.LinkDescription, &row.LinkSiteName); err != nil {
 			return nil, fmt.Errorf("store: scan upload: %w", err)
 		}
-		row.Bytes = &bytes
+		row.StorageKey = derefStr(storageKey)
+		if row.Kind != "link" {
+			// A link card's attachment row has no byte count: it is not a wire
+			// field, and the blob's size stays on the kept uploads row.
+			row.Bytes = &bytes
+		}
 		if width != nil {
 			w := int64(*width)
 			row.Width = &w

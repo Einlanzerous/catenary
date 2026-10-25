@@ -934,7 +934,10 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"id", "uuid", false},
 			{"message_id", "uuid", false},
 			{"kind", "text", false},
-			{"storage_key", "text", false},
+			// NULLABLE, FOR kind = link ONLY (0014, CANT-321): a card with no image
+			// has no blob. attachments_storage_key_present refuses a NULL on any
+			// other kind.
+			{"storage_key", "text", true},
 			{"position", "integer", false},
 			{"duration_ms", "integer", true},
 			{"peaks", "ARRAY", true},
@@ -945,6 +948,11 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"height", "integer", true},
 			{"bytes", "bigint", true},
 			{"placeholder", "text", true},
+			// kind = link only (0014, CANT-321).
+			{"link_url", "text", true},
+			{"link_title", "text", true},
+			{"link_description", "text", true},
+			{"link_site_name", "text", true},
 		},
 		// CANT-309's. The columns 0013 gives a pending upload; the sketch in
 		// docs/decisions/cant-47-media-storage.md plus duration_ms and peaks,
@@ -953,7 +961,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"id", "uuid", false},
 			{"uploader", "uuid", false},
 			{"kind", "text", false},
-			{"storage_key", "text", false},
+			{"storage_key", "text", true}, // NULL for a link with no image (0014)
 			{"thumb_key", "text", true},
 			{"bytes", "bigint", false},
 			{"width", "integer", true},
@@ -964,6 +972,10 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"peaks", "ARRAY", true},
 			{"created_at", "timestamp with time zone", false},
 			{"consumed_at", "timestamp with time zone", true},
+			{"link_url", "text", true},
+			{"link_title", "text", true},
+			{"link_description", "text", true},
+			{"link_site_name", "text", true},
 		},
 		"log_counter": {
 			{"id", "integer", false},

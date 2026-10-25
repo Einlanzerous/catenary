@@ -163,20 +163,29 @@
       "note": ""
     },
     "LinkAttachment.url": {
-      "kind": "derived",
-      "note": "The URL as typed, stored as attachments.link_url. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+      "kind": "column",
+      "table": "attachments",
+      "column": "link_url",
+      "note": "The URL as the sender typed it, frozen at compose time.",
+      "required_via": "attachments_link_fields"
     },
     "LinkAttachment.title": {
-      "kind": "derived",
-      "note": "Stored as attachments.link_title, frozen at compose time. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+      "kind": "column",
+      "table": "attachments",
+      "column": "link_title",
+      "note": "The page's own title, sanitized and capped by the fetcher; a snapshot, never refetched."
     },
     "LinkAttachment.description": {
-      "kind": "derived",
-      "note": "Stored as attachments.link_description, frozen at compose time. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+      "kind": "column",
+      "table": "attachments",
+      "column": "link_description",
+      "note": "The page's own description, sanitized and capped by the fetcher; a snapshot."
     },
     "LinkAttachment.site_name": {
-      "kind": "derived",
-      "note": "Stored as attachments.link_site_name, frozen at compose time. Migration 0014 (CANT-321) adds attachments.link_* and promotes this entry to a column; until then no column exists to claim."
+      "kind": "column",
+      "table": "attachments",
+      "column": "link_site_name",
+      "note": "The page's og:site_name. Never the host a client shows: that is derived from url."
     },
     "LinkAttachment.image_url": {
       "kind": "derived",

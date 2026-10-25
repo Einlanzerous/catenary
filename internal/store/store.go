@@ -61,9 +61,9 @@ func DefaultLimits() Limits {
 //     store can answer, and a client whose outbox retries it reconnect-loops.
 //     64 × 68 bytes is about 4.3 KiB.
 //   - The extended protocol's 65,535 parameters. Position 11b writes every row
-//     in one statement at 14 columns a row, so 4,681 rows is the most one
+//     in one statement at 18 columns a row, so 3,640 rows is the most one
 //     statement can carry, and above it pgx refuses client-side with an error
-//     classified internal and not retryable. 64 × 14 is 896.
+//     classified internal and not retryable. 64 × 18 is 1,152.
 //
 // A plain number rather than one derived from the parameter limit, because the
 // derived one is the ceiling the socket crosses first. If a real need for more
