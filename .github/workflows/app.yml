@@ -94,3 +94,18 @@ jobs:
       # and its placeholders, the bundled fonts — without a signing key, which
       # nothing here has and no release lane yet needs.
       - run: flutter build apk --debug
+
+      # CANT-327: the `record` plugin declares RECORD_AUDIO in its own library
+      # manifest, and the main manifest strips it until CANT-56 flips the voice
+      # gate. This reads the MERGED manifest, which the source-level test in
+      # test/manifest_test.dart cannot see, so a plugin upgrade or a typo in the
+      # directive shows up here. A moved path fails rather than reading as green.
+      # CANT-56 deletes this step with the manifest line, in the same PR.
+      - name: merged manifest declares no RECORD_AUDIO
+        run: |
+          merged=build/app/intermediates/merged_manifests/debug/processDebugManifest/AndroidManifest.xml
+          test -f "$merged" || { echo "::error::merged manifest not found at $merged"; exit 1; }
+          if grep -q 'android.permission.RECORD_AUDIO' "$merged"; then
+            echo "::error::RECORD_AUDIO is in the merged manifest while voiceSendEnabled is false (CANT-327)"
+            exit 1
+          fi

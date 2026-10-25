@@ -1,7 +1,16 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <!-- The debug and profile manifests have declared this for hot reload;
          a release build reaches no server without it. -->
     <uses-permission android:name="android.permission.INTERNET"/>
+    <!-- The `record` plugin declares this in its own library manifest, and the
+         app cannot record until CANT-56 flips `voiceSendEnabled`, so the merged
+         manifest strips it (CANT-327). CANT-56 deletes this line, and the
+         matching step in .github/workflows/app.yml, in the PR that flips the
+         gate. test/manifest_test.dart fails if this line and
+         voiceSendEnabled move apart; that CI step fails if this line goes and
+         the step stays. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" tools:node="remove"/>
     <application
         android:label="${appLabel}"
         android:name="${applicationName}"
