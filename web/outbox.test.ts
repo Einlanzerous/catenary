@@ -1048,6 +1048,83 @@ async function c14(f: Faults) {
   ctx2.close()
 }
 
+/* ── CANT-323 · a stale link-card handle is dropped, not re-uploaded ─────── */
+
+const linkAttachment = (): OutboundAttachmentDraft => ({
+  kind: 'link',
+  blob: new Blob([]),
+  uploadId: 'card-1',
+  upload: 'uploaded',
+  preview: { kind: 'link', url: 'https://example.com/p', title: 'T' },
+})
+
+async function linkDrop(f: Faults) {
+  const transport = new ScriptedTransport()
+  const uploader = minting()
+  const ctx = await context({ transport, faults: f, uploader })
+  transport.open()
+  await ticks()
+  const e = await within('compose', ctx.outbox.compose({ conversationId: CONV, text: 'see https://example.com/p', attachments: [linkAttachment()] }))
+  await ticks()
+  assert.equal(uploader.calls.length, 0, 'a card is never offered to the Uploader')
+  assert.deepEqual(transport.framesFor(e.clientId).map((fr) => fr.attachments), [[{ kind: 'link', uploadId: 'card-1' }]], 'sent with the card')
+
+  transport.refuse(e.clientId, UPLOAD_NOT_FOUND)
+  await ticks()
+  const frames = transport.framesFor(e.clientId)
+  assert.equal(frames.length, 2, 'resent once')
+  assert.equal(frames[1].clientId, e.clientId, 'under the same clientId')
+  assert.equal(frames[1].text, 'see https://example.com/p', 'text intact')
+  assert.equal(frames[1].attachments, undefined, 'with no card')
+  assert.equal(uploader.calls.length, 0, 'still nothing uploaded')
+  const held = await stored(ctx.store, e.clientId)
+  assert.equal(held?.status, 'pending')
+  assert.equal(held?.attachments, undefined, 'the card is gone from the stored entry')
+  assert.equal(held?.reuploads, 0, 'and a dropped card does not spend the re-upload budget')
+  assert.notEqual(ctx.item(e.clientId)?.state, 'failed')
+
+  // Any later upload_not_found is not about a card: it fails like any refusal.
+  transport.refuse(e.clientId, UPLOAD_NOT_FOUND)
+  await ticks()
+  assert.equal(ctx.item(e.clientId)?.state, 'failed', 'no loop')
+  assert.equal(transport.framesFor(e.clientId).length, 2)
+  ctx.close()
+}
+
+test('CANT-323 · upload_not_found on a link card drops it and resends the same clientId, once', () => linkDrop({}))
+test('CANT-323 · fault staleHandleFails makes the link-card drop fail', async () => {
+  await assert.rejects(linkDrop({ staleHandleFails: true }))
+})
+
+test('CANT-323 · a card riding with an image: the stale card goes, the image and its handle stay', async () => {
+  const transport = new ScriptedTransport()
+  const uploader = minting()
+  const ctx = await context({ transport, uploader })
+  transport.open()
+  await ticks()
+  const draft = imageDraft(recording(3))
+  draft.attachments!.push(linkAttachment())
+  const e = await within('compose', ctx.outbox.compose(draft))
+  await ticks()
+  assert.equal(uploader.calls.length, 1, 'only the image was uploaded')
+  assert.deepEqual(transport.framesFor(e.clientId)[0].attachments, [{ kind: 'image', uploadId: 'up-1' }, { kind: 'link', uploadId: 'card-1' }])
+  transport.refuse(e.clientId, UPLOAD_NOT_FOUND)
+  await ticks()
+  assert.deepEqual(transport.framesFor(e.clientId)[1].attachments, [{ kind: 'image', uploadId: 'up-1' }])
+  assert.equal(uploader.calls.length, 1, 'the image was not uploaded again')
+  ctx.close()
+})
+
+test('CANT-323 · a card is taken without a ready session; a picked file still is not', async () => {
+  const transport = new ScriptedTransport()
+  const ctx = await context({ transport, uploader: minting() })
+  const e = await within('compose', ctx.outbox.compose({ conversationId: CONV, text: 'x', attachments: [linkAttachment()] }))
+  assert.equal(transport.frames.length, 0)
+  assert.ok(e.clientId)
+  await assert.rejects(ctx.outbox.compose(imageDraft(recording(1))), /can't be attached while offline/)
+  ctx.close()
+})
+
 /* ── criterion 15 · one drainer, held only while ready ───────────────────── */
 
 async function c15(f: Faults) {

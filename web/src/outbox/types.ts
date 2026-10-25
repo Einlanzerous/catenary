@@ -7,7 +7,7 @@
  * is the `ClientSend` the drain builds from it.
  */
 
-import type { ClientSend, ErrorCode, ReplyRef, ServerAck, ServerError, Uuid } from '@/wire/generated'
+import type { ClientSend, ErrorCode, LinkAttachment, ReplyRef, ServerAck, ServerError, Uuid } from '@/wire/generated'
 
 /** Persisted in database `catenary-outbox`, store `outbox`. keyPath clientId.
  *  Index: by_account_order [accountId, order]. */
@@ -57,13 +57,21 @@ export type OutboxError =
  *  lost. The `Uploader` moves it to `uploaded`; until then the send drain skips
  *  the entry rather than sending it without its handle (§10 item 1). */
 export interface OutboundAttachmentDraft {
-  kind: 'voice' | 'image'
-  /** The media as recorded or chosen; the service decodes. */
+  kind: 'voice' | 'image' | 'link'
+  /** The media as recorded or chosen; the service decodes. For `link` it is
+   *  an empty Blob: a card has no bytes to hold, only a handle the composer
+   *  already got from `POST /link-previews` (CANT-323). */
   blob: Blob
   filename?: string
   /** Voice: local render only; the server measures its own. */
   durationMs?: number
-  /** Set when the Uploader returns; cleared on `upload_not_found`. */
+  /** `link` only: the card as the composer showed it, for the sender's own
+   *  pending row. Display-only and never sent; the server writes the stored
+   *  card from the handle. */
+  preview?: LinkAttachment
+  /** Set when the Uploader returns; cleared on `upload_not_found`. A `link`
+   *  is born with it: it is never offered to the Uploader, because a card's
+   *  handle cannot be re-minted from anything the outbox holds. */
   uploadId?: Uuid
   /** Only `pending` and `uploaded` are ever stored. An offer in flight is
    *  this context's memory alone, for the reason `sending` is never stored

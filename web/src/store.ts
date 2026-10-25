@@ -21,7 +21,7 @@
  */
 
 import { computed, reactive, shallowRef } from 'vue'
-import type { Conversation, ReplyRef, User, VoiceAttachment } from '@/wire/generated'
+import type { Conversation, LinkAttachment, ReplyRef, User, Uuid, VoiceAttachment } from '@/wire/generated'
 import {
   isOutboxMessage,
   type ConnectionInfo,
@@ -34,6 +34,13 @@ import { createEnsureSelf } from '@/ensure-self'
 import { createUploader } from '@/upload'
 import { countWords } from '@/lib/format'
 import { precheckImage } from '@/attach'
+import {
+  PREVIEW_IDLE_MS,
+  createLinkPreviewClient,
+  detectLink,
+  looksComplete,
+  type LinkPreviewClient,
+} from '@/linkpreview'
 import { RECORDER_MESSAGES, RecorderRefused, shippedRecorder, type Capture, type Recorder } from '@/recorder'
 import {
   BroadcastOutboxChannel,
@@ -93,7 +100,25 @@ interface Composer {
    *  meta color (red stays for failure alone). Cleared by the next accepted
    *  pick, send or take. */
   attachError: string | null
+  /** The link preview for the draft's first URL (CANT-323). Client-local, the
+   *  same category as `sending` and `queued`: the server has no opinion on it. */
+  preview: ComposerPreview
 }
+
+/** `idle` is "nothing asked yet" (a request may be scheduled), `loading` a
+ *  request in flight, `ready` a card with its single-use handle, `none` no
+ *  card for any reason (never says which), `dismissed` the sender's no. */
+export type PreviewState = 'idle' | 'loading' | 'ready' | 'none' | 'dismissed'
+
+export interface ComposerPreview {
+  state: PreviewState
+  /** The URL this state is about. */
+  url: string | null
+  uploadId: Uuid | null
+  card: LinkAttachment | null
+}
+
+const emptyPreview = (): ComposerPreview => ({ state: 'idle', url: null, uploadId: null, card: null })
 
 export interface PickedImage {
   blob: Blob
@@ -136,6 +161,7 @@ const state = reactive({
     recordingSec: 0,
     attachment: null,
     attachError: null,
+    preview: emptyPreview(),
   } as Composer,
 
   playback: {
@@ -451,6 +477,14 @@ export async function send(): Promise<string | undefined> {
   const draft = state.composer.draft
   const replyToId = state.composer.replyToId
   const conversationId = state.activeId
+  // THE SEND NEVER WAITS ON A PREVIEW (CANT-308): whatever the state is right
+  // now is what goes. A card that is `ready` rides with the message; one still
+  // `loading` is abandoned and the message goes with none.
+  const held = state.composer.preview
+  const card = held.state === 'ready' && held.uploadId && held.card ? { uploadId: held.uploadId, card: held.card } : null
+  const heldPreview = { ...held }
+  abandonPreview()
+  state.composer.preview = emptyPreview()
   state.composer.draft = ''
   state.composer.replyToId = null
   state.composer.attachment = null
@@ -476,9 +510,12 @@ export async function send(): Promise<string | undefined> {
                 ...(attachment.filename ? { filename: attachment.filename } : {}),
                 upload: 'pending' as const,
               },
+              ...(card ? [linkDraft(card)] : []),
             ],
           }
-        : {}),
+        : card
+          ? { attachments: [linkDraft(card)] }
+          : {}),
     })
     return entry.clientId
   } catch (e) {
@@ -487,6 +524,10 @@ export async function send(): Promise<string | undefined> {
       state.composer.replyToId = replyToId
     }
     if (attachment && !state.composer.attachment) state.composer.attachment = attachment
+    if (!state.composer.preview.url) {
+      if (heldPreview.state === 'ready' || heldPreview.state === 'dismissed') state.composer.preview = heldPreview
+      else composerDraftChanged()
+    }
     // The connection dropped between the click and the compose: the outbox
     // wrote nothing, and the person is told where they are looking.
     if (e instanceof ComposeRefused) {
@@ -495,6 +536,125 @@ export async function send(): Promise<string | undefined> {
     }
     throw e
   }
+}
+
+/** A card as an outbox attachment: born with its handle, holding no bytes. */
+const linkDraft = (c: { uploadId: Uuid; card: LinkAttachment }) => ({
+  kind: 'link' as const,
+  blob: new Blob([]),
+  uploadId: c.uploadId,
+  // A plain copy: the composer's card is a reactive proxy, which neither
+  // structuredClone nor IndexedDB will take.
+  preview: { ...c.card },
+  upload: 'uploaded' as const,
+})
+
+/* ── link previews (CANT-323) ──────────────────────────────────────────── */
+
+let linkPreviews: LinkPreviewClient | null = null
+let previewTimers: { setTimeout(fn: () => void, ms: number): unknown; clearTimeout(h: unknown): void } = {
+  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+  clearTimeout: (h) => globalThis.clearTimeout(h as ReturnType<typeof globalThis.setTimeout>),
+}
+let previewIdleMs = PREVIEW_IDLE_MS
+let previewTimer: unknown = null
+let previewAbort: AbortController | null = null
+/** Bumped whenever the answer a request is waiting for stops mattering, so a
+ *  late reply can never paint a card the draft has moved past. */
+let previewSeq = 0
+/** A `404` means this deployment has no previews: asked no more this session. */
+let previewsUnavailable = false
+
+/** Wire the preview call. `startSession` does this over the session's own
+ *  credential; a test passes a scripted client and timers. */
+export function configureLinkPreviews(
+  client: LinkPreviewClient | null,
+  opts: { timers?: typeof previewTimers; idleMs?: number } = {},
+) {
+  abandonPreview()
+  state.composer.preview = emptyPreview()
+  linkPreviews = client
+  previewsUnavailable = false
+  previewTimers = opts.timers ?? previewTimers
+  previewIdleMs = opts.idleMs ?? PREVIEW_IDLE_MS
+}
+
+function abandonPreview() {
+  previewSeq++
+  if (previewTimer !== null) previewTimers.clearTimeout(previewTimer)
+  previewTimer = null
+  previewAbort?.abort()
+  previewAbort = null
+}
+
+/**
+ * The draft changed. Looks for the first URL; a new one is asked about once
+ * the draft has been idle (about 600 ms), and a changed or removed one drops
+ * whatever was held for the old. A dismissed preview is not asked again for
+ * this draft. Called from the textarea's input; nothing awaits it.
+ */
+export function composerDraftChanged() {
+  const p = state.composer.preview
+  const url = detectLink(state.composer.draft)
+  if (url === null) {
+    if (p.state !== 'idle' || p.url !== null) {
+      abandonPreview()
+      state.composer.preview = emptyPreview()
+    }
+    return
+  }
+  if (p.state === 'dismissed' || p.url === url) return
+  abandonPreview()
+  state.composer.preview = { ...emptyPreview(), url }
+  schedulePreview(url, previewIdleMs)
+}
+
+function schedulePreview(url: string, delay: number) {
+  if (!looksComplete(url)) return
+  const seq = previewSeq
+  previewTimer = previewTimers.setTimeout(() => {
+    previewTimer = null
+    void askForPreview(url, seq)
+  }, delay)
+}
+
+async function askForPreview(url: string, seq: number) {
+  if (seq !== previewSeq) return
+  if (!linkPreviews || previewsUnavailable) {
+    state.composer.preview = { ...emptyPreview(), state: 'none', url }
+    return
+  }
+  const ctl = new AbortController()
+  previewAbort = ctl
+  state.composer.preview = { ...emptyPreview(), state: 'loading', url }
+  const result = await linkPreviews.preview(url, ctl.signal)
+  if (seq !== previewSeq) return
+  previewAbort = null
+  switch (result.kind) {
+    case 'card':
+      state.composer.preview = { state: 'ready', url, uploadId: result.uploadId, card: result.preview }
+      return
+    case 'limited':
+      // Asked again once the server says it will listen; nothing is shown.
+      state.composer.preview = { ...emptyPreview(), url }
+      schedulePreview(url, result.retryAfterSec * 1000)
+      return
+    case 'unavailable':
+      previewsUnavailable = true
+      state.composer.preview = { ...emptyPreview(), state: 'none', url }
+      return
+    default:
+      state.composer.preview = { ...emptyPreview(), state: 'none', url }
+  }
+}
+
+/** The sender's no, before sending. The handle is abandoned, not returned:
+ *  it is single-use and expires unconsumed, and the draft is not asked again. */
+export function dismissPreview() {
+  const p = state.composer.preview
+  if (p.state === 'dismissed') return
+  abandonPreview()
+  state.composer.preview = { ...emptyPreview(), state: 'dismissed', url: p.url }
 }
 
 /**
@@ -566,6 +726,9 @@ function previewOf(m: Message): {
   if (image && image.kind === 'image') {
     return { kind: 'image', preview: image.filename }
   }
+  // A card is the server's `link` ReplyRef, whose preview is the source's own
+  // text and may be empty; the stub draws its own label for that.
+  if (m.attachments?.some((a) => a.kind === 'link')) return { kind: 'link', preview: m.text ?? '' }
   const url = m.text?.match(/\b[\w.-]+\.[a-z]{2,}\/\S*/i)?.[0]
   if (url) return { kind: 'link', preview: url, url: `https://${url}` }
   return { kind: 'text', preview: m.text ?? '' }
@@ -1037,6 +1200,8 @@ export interface SessionSeams {
   fetch?: typeof globalThis.fetch
   WebSocket?: WebSocketCtor
   logger?: Logger
+  /** The preview call. Default: the real one over the SAME credential. */
+  linkPreviews?: LinkPreviewClient
   /** The outbox's `Uploader`. Default: the real one (`createUploader`) over
    *  the SAME credential instance the transport holds. Replaceable only so a
    *  test can script it. `startSession` always passes one; `useTransport`'s
@@ -1172,6 +1337,10 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
       transport.stop()
     },
   }
+  configureLinkPreviews(
+    seams.linkPreviews ??
+      createLinkPreviewClient({ baseUrl: seams.baseUrl, credential, ...(seams.fetch ? { fetch: seams.fetch } : {}) }),
+  )
   transport.start()
   showStatus(transport.status())
   await useTransport(transport, logger, {
