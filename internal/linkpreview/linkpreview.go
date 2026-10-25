@@ -45,9 +45,18 @@ type Previewer interface {
 
 // Preview is a card. Every text field is already sanitized and length-capped.
 type Preview struct {
-	// URL is the canonical form that was fetched: lowercase scheme, ASCII (IDNA)
-	// host, no fragment. The card shows the host of this, never SiteName.
+	// URL is the canonical form of the URL the caller asked for, BEFORE any
+	// redirect: lowercase scheme, ASCII (IDNA) host, no fragment. It is what
+	// the card stores (migration 0014: the URL as the sender gave it) and the
+	// host the card shows, never SiteName.
 	URL string
+
+	// FinalURL is where the page actually came from: the URL of the last
+	// response after redirects, so a shortener's link still says which host
+	// authored the title and the picture. It is the base og:image was resolved
+	// against. Equal to URL when nothing redirected. For the endpoint's log line
+	// and its decision, not for the card.
+	FinalURL string
 
 	Title       string
 	Description string

@@ -12,6 +12,8 @@ import (
 	"net/url"
 	"strings"
 	"syscall"
+
+	"golang.org/x/net/html/charset"
 )
 
 // Guarded is the in-process Previewer: it fetches with a client whose every
@@ -192,6 +194,7 @@ func (g *Guarded) Preview(ctx context.Context, rawURL string) (*Preview, error) 
 	}
 	p := &Preview{
 		URL:         u.String(),
+		FinalURL:    finalURL.String(),
 		Title:       clean(m.title, maxTitleRunes),
 		Description: clean(m.description, maxDescriptionRunes),
 		SiteName:    clean(m.siteName, maxSiteNameRunes),
@@ -268,7 +271,20 @@ func (g *Guarded) fetchPage(ctx context.Context, u *url.URL) (meta, *url.URL, er
 	}
 
 	capped := &capReader{r: body, left: g.cfg.MaxPageBytes}
-	m := extract(capped)
+	// The page is decoded from ITS encoding before it is tokenized: the charset
+	// parameter of the Content-Type, else a BOM, else a <meta charset> in the
+	// first KiB, else UTF-8 when the first KiB is valid UTF-8 (the HTML
+	// standard's sniff, as x/net/html/charset implements it). Without this a
+	// windows-1252 or Shift_JIS page stores a title of U+FFFD, forever. The
+	// decoder sits ABOVE the cap: what the target sent is still bounded at
+	// MaxPageBytes, and the transcoded output can exceed it only by the
+	// encoding's own expansion ratio.
+	var m meta
+	if decoded, derr := charset.NewReader(capped, resp.Header.Get("Content-Type")); derr == nil {
+		m = extract(decoded, int(g.cfg.MaxPageBytes))
+	}
+	// derr is the first read failing before one byte arrived (an empty body, or a
+	// connection that died on the first read); the checks below say which.
 	if (capped.cut || m.overflow) && m.title == "" && m.image == "" {
 		return meta{}, nil, newErr(ClassTooLarge, "", nil)
 	}
@@ -301,11 +317,19 @@ func (g *Guarded) fetchImage(ctx context.Context, base *url.URL, ref string) ([]
 	if resp.StatusCode != http.StatusOK {
 		return nil, ClassUnavailable
 	}
+	// A size the target declared past the cap is refused on the header, before a
+	// byte of body is read: a 40 MB hero image would otherwise be streamed to
+	// the cap and refused there, having spent the image budget on an answer the
+	// first line gave. The capped read below stays as the backstop for a
+	// chunked response and for a Content-Length that lied.
+	if resp.ContentLength > g.cfg.MaxImageBytes {
+		return nil, ClassTooLarge
+	}
 	// The type is NOT decided here: media.IngestImage sniffs the bytes and
 	// ignores what the target called them.
 	data, rerr := io.ReadAll(io.LimitReader(resp.Body, g.cfg.MaxImageBytes+1))
 	if rerr != nil {
-		return nil, ClassOf(classify(rerr))
+		return nil, classify(rerr).Class
 	}
 	if int64(len(data)) > g.cfg.MaxImageBytes {
 		return nil, ClassTooLarge

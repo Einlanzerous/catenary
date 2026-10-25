@@ -12,26 +12,28 @@ import (
 type meta struct {
 	title, description, siteName, image string
 
-	// overflow is true when the scan ended because one token passed maxTokenBytes.
+	// overflow is true when the scan ended because one token passed maxToken.
 	overflow bool
 }
-
-// maxTokenBytes bounds one HTML token, so a megabyte-long attribute cannot make
-// the tokenizer buffer it whole.
-const maxTokenBytes = 256 << 10
 
 // extract reads r as a stream and stops at </head> or the first <body>, the
 // end of the only part of a page that carries metadata. It never builds a tree.
 // A read error or an oversized token ends the scan and keeps what was found:
 // the cap on r is the caller's, and a page cut mid-head still yields its tags.
 //
+// maxToken bounds the bytes the tokenizer buffers for ONE token. The tokenizer
+// does not resume after exceeding it (its error is sticky), so a cap below the
+// page cap would end the scan at the first big inline <style> or <script> in a
+// head and lose every tag behind it; the caller passes its page cap, which the
+// reader already enforces on the total, so this adds no memory beyond it.
+//
 // Precedence per field is Open Graph, then Twitter card, then the plain HTML
 // equivalent (title: <title>; description: meta name=description). The first
 // occurrence of a key wins; og:image may legally repeat and the first is the
 // primary.
-func extract(r io.Reader) meta {
+func extract(r io.Reader, maxToken int) meta {
 	z := html.NewTokenizer(r)
-	z.SetMaxBuf(maxTokenBytes)
+	z.SetMaxBuf(maxToken)
 
 	got := map[string]string{}
 	var titleText string

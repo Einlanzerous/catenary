@@ -802,3 +802,183 @@ func TestPreviewerIsASeam(t *testing.T) {
 	var _ Previewer = fakePreviewer{}
 	var _ Previewer = (*Guarded)(nil)
 }
+
+// The page is decoded from its own encoding before it is tokenized. A legacy
+// page declares windows-1252 in the header, or only in a <meta charset>, and
+// its title has to come out as the word it is, not as U+FFFD. The third case
+// guards the other direction: a UTF-8 page that declares nothing must NOT be
+// read as windows-1252 (the standard's last-resort default).
+func TestPageIsDecodedFromItsCharset(t *testing.T) {
+	cafe1252 := "Caf\xe9 Noir"      // é as windows-1252 serves it
+	sushiSJIS := "\x82\xb7\x82\xb5" // すし in Shift_JIS
+	cases := []struct {
+		name, contentType, body, want string
+	}{
+		{"header charset", "text/html; charset=windows-1252",
+			`<head><meta property="og:title" content="` + cafe1252 + `"></head>`, "Café Noir"},
+		{"meta charset only", "text/html",
+			`<head><meta charset="windows-1252"><meta property="og:title" content="` + cafe1252 + `"></head>`, "Café Noir"},
+		{"meta http-equiv only", "text/html",
+			`<head><meta http-equiv="Content-Type" content="text/html; charset=shift_jis"><meta property="og:title" content="` + sushiSJIS + `"></head>`, "すし"},
+		{"undeclared utf-8 stays utf-8", "text/html",
+			`<head><meta property="og:title" content="Café Noir — すし"></head>`, "Café Noir — すし"},
+		{"header wins over a wrong meta", "text/html; charset=utf-8",
+			`<head><meta charset="windows-1252"><meta property="og:title" content="Café"></head>`, "Café"},
+	}
+	for _, c := range cases {
+		_, base := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", c.contentType)
+			fmt.Fprint(w, c.body)
+		}))
+		p, err := loopbackGuard(t).Preview(context.Background(), base+"/")
+		if err != nil {
+			t.Errorf("%s: %v", c.name, err)
+			continue
+		}
+		if p.Title != c.want {
+			t.Errorf("%s: title %q, want %q", c.name, p.Title, c.want)
+		}
+	}
+}
+
+// The charset decoder sits above the cap: a gzip bomb is still cut at the cap on
+// what was decompressed, however the transcoding changed it.
+func TestCharsetDecodingDoesNotLiftTheCap(t *testing.T) {
+	// 16 MiB of a single-byte character that is three bytes in UTF-8, so the
+	// decoded stream is larger still; compressed once, outside the handler.
+	bomb := gz(t, []byte("<head>"), bytes.Repeat([]byte("\x80 "), 8<<20))
+	_, base := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=windows-1252")
+		w.Header().Set("Content-Encoding", "gzip")
+		w.Write(bomb)
+	}))
+	if _, err := loopbackGuard(t).Preview(context.Background(), base+"/"); ClassOf(err) != ClassTooLarge {
+		t.Fatalf("err = %v, want too_large", err)
+	}
+}
+
+// A head that opens with a large inline <style> or <script> (critical CSS, a
+// hydration blob) before its og tags is an ordinary page, not an oversized one.
+// The tokenizer's per-token buffer is the page cap, so the tags behind a 300 KiB
+// token are still read; a page whose ONE token passes the page cap is still
+// refused.
+func TestLargeInlineHeadTokenDoesNotCostTheCard(t *testing.T) {
+	var b strings.Builder
+	b.WriteString(`<!doctype html><html><head><meta charset="utf-8"><style>`)
+	for b.Len() < 300<<10 {
+		b.WriteString(".c{color:#000}")
+	}
+	b.WriteString(`</style><script type="application/ld+json">{"x":"` + strings.Repeat("y", 300<<10) + `"}</script>`)
+	b.WriteString(`<meta property="og:title" content="After the blobs"><meta property="og:image" content="/card.png"></head><body></body></html>`)
+	_, base := serve(t, htmlHandler(b.String()))
+	p, err := loopbackGuard(t).Preview(context.Background(), base+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Title != "After the blobs" || !bytes.Equal(p.Image, tinyPNG) {
+		t.Errorf("p = %+v", p)
+	}
+
+	// Directly: the scan reports overflow only past the cap it was given.
+	page := b.String()
+	if m := extract(strings.NewReader(page), 2<<20); m.overflow || m.title != "After the blobs" {
+		t.Errorf("at the page cap: overflow=%v title=%q", m.overflow, m.title)
+	}
+	if m := extract(strings.NewReader(page), 256<<10); !m.overflow || m.title != "" {
+		t.Errorf("at 256 KiB: overflow=%v title=%q; the old cap would have lost this card", m.overflow, m.title)
+	}
+}
+
+// An image whose Content-Length already exceeds the cap is refused on the
+// header. The handler declares the size, flushes the headers and then WAITS: a
+// fetcher that streamed to the cap would sit here until the image timeout.
+func TestOversizedImageIsRefusedOnContentLength(t *testing.T) {
+	cfg := testConfig()
+	cfg.MaxImageBytes = 1000
+	env, _ := testEnv([]string{"127.0.0.1"}, nil)
+	release := make(chan struct{})
+	defer close(release)
+	_, base := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/big.png" {
+			w.Header().Set("Content-Type", "image/png")
+			w.Header().Set("Content-Length", "1001")
+			w.WriteHeader(200)
+			w.(http.Flusher).Flush()
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprint(w, `<head><title>T</title><meta property="og:image" content="/big.png"></head>`)
+	}))
+	start := time.Now()
+	p, err := newGuarded(cfg, env).Preview(context.Background(), base+"/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Title != "T" || p.Image != nil || p.ImageClass != ClassTooLarge {
+		t.Errorf("title %q image %d bytes class %q, want too_large", p.Title, len(p.Image), p.ImageClass)
+	}
+	if took := time.Since(start); took > cfg.ImageTimeout/2 {
+		t.Errorf("took %v: the image was streamed, not refused on the header", took)
+	}
+
+	// A declared size exactly at the cap is fetched; one that is honest and one
+	// byte over is still refused by the read (the backstop, for a Content-Length
+	// that lied low).
+	_, honest := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/at.png":
+			w.Header().Set("Content-Length", "1000")
+			w.Write(make([]byte, 1000))
+		case "/lying.png":
+			// Declares 10, sends 1001: the header passes, the read refuses.
+			w.Header().Set("Content-Length", "10")
+			w.Write(make([]byte, 1001))
+		default:
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprintf(w, `<head><title>T</title><meta property="og:image" content="%s"></head>`, r.URL.Query().Get("img"))
+		}
+	}))
+	p, err = newGuarded(cfg, env).Preview(context.Background(), honest+"/?img=/at.png")
+	if err != nil || len(p.Image) != 1000 {
+		t.Fatalf("at the cap: p = %+v err = %v", p, err)
+	}
+	p, err = newGuarded(cfg, env).Preview(context.Background(), honest+"/?img=/lying.png")
+	if err != nil || p.Image != nil || p.ImageClass == "" {
+		t.Fatalf("lying Content-Length: p = %+v err = %v, want no image and a class", p, err)
+	}
+}
+
+// URL is the canonical form of what was asked for; FinalURL is where the page
+// came from, so a shortener's card still says whose title it is carrying.
+func TestFinalURLIsThePostRedirectURL(t *testing.T) {
+	_, base := serve(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/s/abc":
+			http.Redirect(w, r, "/post/42", http.StatusMovedPermanently)
+		case "/post/42":
+			w.Header().Set("Content-Type", "text/html")
+			fmt.Fprint(w, `<head><title>The post</title></head>`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	p, err := loopbackGuard(t).Preview(context.Background(), base+"/s/abc#frag")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.URL != base+"/s/abc" {
+		t.Errorf("URL = %q, want the canonical requested URL %q", p.URL, base+"/s/abc")
+	}
+	if p.FinalURL != base+"/post/42" {
+		t.Errorf("FinalURL = %q, want %q", p.FinalURL, base+"/post/42")
+	}
+	// No redirect: the two agree.
+	_, direct := serve(t, htmlHandler(headHTML))
+	if p, err := loopbackGuard(t).Preview(context.Background(), direct+"/page"); err != nil || p.URL != p.FinalURL {
+		t.Errorf("without a redirect: URL %q FinalURL %q err %v", p.URL, p.FinalURL, err)
+	}
+}
