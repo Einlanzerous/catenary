@@ -214,6 +214,7 @@ final class LinkPreviewDraft {
   }
 
   Future<void> _run(String url, int gen) async {
+    retryAfterSec = null;
     _set(LinkPreviewState.loading);
     final r = await _api.fetch(url);
     if (gen != _gen) return;
