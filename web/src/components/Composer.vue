@@ -4,7 +4,7 @@ import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
 import { peaksFromSeed } from '@/lib/waveform'
 import { IMAGE_ACCEPT } from '@/attach'
-import { hostOf } from '@/linkpreview'
+import { hostOf, plainText } from '@/linkpreview'
 import {
   canAttachFile,
   canRecord,
@@ -21,6 +21,7 @@ import {
   transcriptText,
   voiceOf,
 } from '@/store'
+import HeldChip from './HeldChip.vue'
 import ReplyStub from './ReplyStub.vue'
 import Waveform from './Waveform.vue'
 
@@ -88,6 +89,7 @@ const armed = computed<ReplyRef | null>(() => {
  *  nowhere else. No card, a refused ask and a dismissed one all show nothing,
  *  and none says why. The host is derived from the URL the sender typed. */
 const previewShown = computed(() => state.composer.preview.state === 'ready' || state.composer.preview.state === 'loading')
+const fetching = computed(() => state.composer.preview.state === 'loading')
 const previewHost = computed(() => hostOf(state.composer.preview.card?.url ?? state.composer.preview.url ?? ''))
 
 const livePeaks = peaksFromSeed(2281, 70)
@@ -144,35 +146,34 @@ const grow = () => {
           </button>
         </div>
 
-        <!-- The picked image: the least that lets a person see what SEND will
-             send. The canvas has no picker design, so this chip is a gap
-             flagged to the designer, not a decision. -->
-        <div v-if="state.composer.attachment" class="attach-chip">
-          <span class="chip-name">{{ state.composer.attachment.filename ?? 'image' }}</span>
-          <button class="dismiss" aria-label="Remove attachment" @click="removeAttachment">
-            ✕
-          </button>
-        </div>
-
-        <!-- The link preview being composed. The canvas has no design for it,
-             so it is the attachment chip's twin: a gap flagged to the
-             designer, not a decision. Page-chosen words render as text. -->
-        <div v-if="previewShown" class="attach-chip link-chip" :class="{ loading: state.composer.preview.state === 'loading' }">
-          <span class="chip-kind">LINK</span>
-          <template v-if="state.composer.preview.state === 'ready'">
-            <span class="chip-name">{{ previewHost }}<template v-if="state.composer.preview.card?.title"> · {{ state.composer.preview.card.title }}</template></span>
-            <button class="dismiss" aria-label="Remove link preview" @click="dismissPreview">✕</button>
-          </template>
-          <template v-else>
-            <span class="chip-name">{{ previewHost }}</span>
-            <button class="dismiss" aria-label="Skip link preview" @click="dismissPreview">✕</button>
-          </template>
+        <!-- What SEND will send, held above the text (canvas 08, section 1):
+             the link being fetched or fetched, then the picked image, in one
+             tag column. Page-chosen words render as text. An empty or failed
+             fetch shows nothing here at all, the same exit as the cross. -->
+        <div v-if="previewShown || state.composer.attachment" class="chips">
+          <HeldChip
+            v-if="previewShown"
+            tag="LINK"
+            :name="previewHost"
+            :title="plainText(state.composer.preview.card?.title)"
+            :fetching="state.composer.preview.state === 'loading'"
+            :dismiss-label="state.composer.preview.state === 'loading' ? 'Skip link preview' : 'Remove link preview'"
+            @dismiss="dismissPreview"
+          />
+          <HeldChip
+            v-if="state.composer.attachment"
+            tag="IMAGE"
+            :name="plainText(state.composer.attachment.filename) || 'image'"
+            dismiss-label="Remove attachment"
+            @dismiss="removeAttachment"
+          />
         </div>
 
         <textarea
           ref="box"
           v-model="state.composer.draft"
           class="input"
+          :class="{ held: previewShown || state.composer.attachment }"
           rows="1"
           :placeholder="
             terminal
@@ -220,7 +221,7 @@ const grow = () => {
           </button>
           <button class="ghost hide-narrow">MARKDOWN</button>
           <span class="keys">
-            {{ armed ? 'ESC CLEARS REPLY' : '⏎ SEND · ⇧⏎ NEWLINE' }}
+            {{ fetching ? 'SENDING NOW SENDS WITHOUT A CARD' : armed ? 'ESC CLEARS REPLY' : '⏎ SEND · ⇧⏎ NEWLINE' }}
           </span>
           <button
             class="primary"
@@ -260,49 +261,38 @@ const grow = () => {
   gap: 10px;
   align-items: center;
   padding: 9px 12px 9px 14px;
-  background: var(--surface-lift);
-  border-bottom: 1px solid var(--line-inner);
+  background: var(--surface-rail);
+  border-bottom: 1px solid var(--line-hair);
 }
 
 .armed-bar > :first-child {
   flex: 1;
   min-width: 0;
+  max-width: none;
   margin-top: 0;
 }
 
-.attach-chip {
+.chips {
   display: flex;
-  gap: 10px;
-  align-items: center;
-  padding: 8px 12px 8px 14px;
-  background: var(--surface-lift);
-  border-bottom: 1px solid var(--line-inner);
-}
-
-.chip-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.chip-kind {
-  flex: none;
-  font: var(--type-label);
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  color: var(--text-meta);
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+  padding: 8px 8px 0;
 }
 
 .dismiss {
+  display: flex;
   flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   font-family: var(--font-mono);
   font-size: 11px;
   color: var(--text-secondary);
+}
+.dismiss:hover {
+  color: var(--text-primary);
 }
 
 .input {
@@ -316,6 +306,11 @@ const grow = () => {
   border: 0;
   resize: none;
   outline: none;
+}
+
+/* Under a held chip the text sits 2px closer (canvas 1A: 9px, not 11px). */
+.input.held {
+  padding-top: 9px;
 }
 
 .input::placeholder {
@@ -404,6 +399,15 @@ const grow = () => {
   }
   .hide-narrow {
     display: none;
+  }
+  .dismiss {
+    width: 44px;
+    height: 44px;
+    font-size: 12px;
+  }
+  .chips {
+    padding: 8px 8px 0;
+    align-items: stretch;
   }
   .keys {
     display: none;

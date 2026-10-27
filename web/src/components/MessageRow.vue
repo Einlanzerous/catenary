@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { isOutboxMessage, type ImageAttachment, type RenderedMessage } from '@/client-types'
 import type { LinkAttachment } from '@/wire/generated'
 import { clock } from '@/lib/format'
+import { detectLink } from '@/linkpreview'
 import { discard, isMine, jumpTo, replyTo, retry, state, user, voiceOf } from '@/store'
 import Avatar from './Avatar.vue'
 import ImageAttachmentView from './ImageAttachment.vue'
@@ -33,6 +34,17 @@ const images = computed<ImageAttachment[]>(
 const links = computed<LinkAttachment[]>(
   () => props.message.attachments?.filter((a): a is LinkAttachment => a.kind === 'link') ?? [],
 )
+
+/** A message that carries a card shows its URL underlined in text.meta (canvas
+ *  08, "URL in body"): the same first URL the composer detected, and not a link
+ *  of its own, since the card is the target. Plain text otherwise. */
+const textParts = computed(() => {
+  const text = props.message.text
+  if (!text || !links.value.length) return null
+  const url = detectLink(text)
+  const at = url === null ? -1 : text.indexOf(url)
+  return url === null || at < 0 ? null : { before: text.slice(0, at), url, after: text.slice(at + url.length) }
+})
 
 /** A new author, or a reply, starts a group and gets the name header. */
 const startsGroup = computed(
@@ -98,7 +110,12 @@ const returnTo = computed(() => {
 
       <ReplyStub v-if="message.replyTo" :reply="message.replyTo" />
 
-      <p v-if="message.text" class="text measure">{{ message.text }}</p>
+      <p v-if="message.text" class="text measure">
+        <template v-if="textParts"
+          >{{ textParts.before }}<span class="url">{{ textParts.url }}</span>{{ textParts.after }}</template
+        >
+        <template v-else>{{ message.text }}</template>
+      </p>
 
       <VoiceNote
         v-if="voice"
@@ -117,7 +134,7 @@ const returnTo = computed(() => {
 
       <!-- A link card (CANT-323): a frozen snapshot, drawn from the record. -->
       <div v-if="links.length" class="links">
-        <LinkCard v-for="(link, i) in links" :key="i" :link="link" />
+        <LinkCard v-for="(link, i) in links" :key="i" :link="link" :own="isMine(message)" />
       </div>
 
       <!-- Failure is a row, not a toast: toasts expire, failures don't. Only
@@ -158,6 +175,13 @@ const returnTo = computed(() => {
  * and an accent "You", so a long thread reads as a document. */
 .row.mine {
   background: var(--surface-lift);
+}
+
+.url {
+  overflow-wrap: anywhere;
+  text-decoration: underline;
+  text-decoration-color: var(--text-meta);
+  text-underline-offset: 3px;
 }
 
 .row.failed {
