@@ -17,6 +17,7 @@ import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:catenary/fixtures.dart';
+import 'package:catenary/store/attach.dart';
 import 'package:catenary/store/connection.dart';
 import 'package:catenary/store/conversation.dart';
 import 'package:catenary/store/link.dart';
@@ -193,6 +194,7 @@ void main() {
       expect(find.text('Chronicle — Sunday dinner notes'), findsOneWidget);
       // Dimensions with no hash, and a hash with no dimensions, are both text only.
       expect(const LinkPreviewView(url: 'https://a.example', title: 't', imageWidth: 4, imageHeight: 3).hasImage, isFalse);
+      expect(const LinkPreviewView(url: 'https://a.example', title: 't', imageWidth: 0, imageHeight: 3, placeholder: fixtureHashCool).hasImage, isFalse);
       expect(const LinkPreviewView(url: 'https://a.example', title: 't', placeholder: fixtureHashCool).hasImage, isFalse);
     });
 
@@ -237,6 +239,20 @@ void main() {
   });
 
   group('interaction: the whole card is one target', () {
+    testWidgets('only http and https are ever handed to the launcher', (tester) async {
+      expect(isWebUrl('https://a.example/x'), isTrue);
+      expect(isWebUrl('javascript:alert(1)'), isFalse);
+      expect(isWebUrl('intent://x#Intent;end'), isFalse);
+      expect(isWebUrl('file:///etc/passwd'), isFalse);
+      String? opened;
+      await tester.pumpWidget(app(LinkCard(link: const LinkPreviewView(url: 'javascript:alert(1)', title: 'x'), ground: Colors.black, onOpen: (u) => opened = u)));
+      await tester.tap(find.text('x'));
+      await tester.longPress(find.text('x'));
+      await tester.pumpAndSettle();
+      expect(opened, isNull);
+      expect(find.byKey(const ValueKey('link-sheet-url')), findsNothing);
+    });
+
     testWidgets('a tap opens the URL as the sender pasted it', (tester) async {
       String? opened;
       await tester.pumpWidget(app(LinkCard(link: _switchyard, ground: Colors.black, onOpen: (u) => opened = u)));
@@ -452,7 +468,10 @@ void main() {
     late List<String> sentPlain;
     late List<(String, LinkPreviewView)> sentLinked;
 
-    Future<void> screen(WidgetTester tester) async {
+    late List<(String, LinkPreviewView)> sentBoth;
+
+    Future<void> screen(WidgetTester tester, {bool picked = false, bool both = false}) async {
+      sentBoth = [];
       asked = [];
       sentPlain = [];
       sentLinked = [];
@@ -473,6 +492,8 @@ void main() {
               return answer.future;
             },
             onSendLinked: (text, preview) async => sentLinked.add((text, preview)),
+            onPickImage: picked ? () async => const Picked(PickedImage(path: '/tmp/a.jpg', name: 'a.jpg')) : null,
+            onSendPickedLinked: both ? (text, image, preview) async => sentBoth.add((text, preview)) : null,
           ),
         ),
       ));
@@ -559,6 +580,35 @@ void main() {
       await tester.pump();
       expect(find.byKey(const ValueKey('composer-link-chip')), findsNothing);
       expect(find.text(url), findsOneWidget);
+    });
+
+    testWidgets('a held image hides the link chip unless the send can carry both', (tester) async {
+      await screen(tester, picked: true);
+      await type(tester, url);
+      expect(find.byKey(const ValueKey('composer-link-chip')), findsOneWidget);
+      await tester.tap(find.text('ADD'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('composer-attachment')), findsOneWidget);
+      expect(find.byKey(const ValueKey('composer-link-chip')), findsNothing, reason: 'the send would drop the card');
+    });
+
+    testWidgets('with a send that carries both, the image and the link chips stack and one send carries both', (tester) async {
+      await screen(tester, picked: true, both: true);
+      await type(tester, url);
+      await tester.pump(const Duration(milliseconds: 400));
+      answer.complete(const LinkPreviewView(url: url, title: 'Switchyard — Dashboard'));
+      await tester.pump();
+      await tester.pump();
+      await tester.tap(find.text('ADD'));
+      await tester.pump();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('composer-link-chip')), findsOneWidget);
+      expect(find.byKey(const ValueKey('composer-attachment')), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('composer-primary')));
+      await tester.pump();
+      expect(sentBoth.single.$2.title, 'Switchyard — Dashboard');
+      expect(sentPlain, isEmpty);
     });
 
     testWidgets('a URL taken out of the draft takes its chip with it', (tester) async {

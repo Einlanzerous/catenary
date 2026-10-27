@@ -12,6 +12,14 @@
 // empty preview. Both wait on that decision; nothing here guesses either
 // client-side.
 
+/// Whether [url] is one a card may hand to the system launcher: `http` or
+/// `https` and nothing else. The wire says so in prose only, so a card checks
+/// before it opens what another member's message named.
+bool isWebUrl(String url) {
+  final u = Uri.tryParse(url.trim());
+  return u != null && (u.scheme == 'http' || u.scheme == 'https') && u.host.isNotEmpty;
+}
+
 /// The host a card shows: lowercased, a leading `www.` dropped, the port kept
 /// when the URL names one, and an internationalized label shown as punycode
 /// (`xn--`) so a lookalike host looks different. The URL itself when it has no

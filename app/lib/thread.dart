@@ -63,6 +63,7 @@ class ThreadScreen extends StatelessWidget {
     this.onSendRecording,
     this.onPreviewLink,
     this.onSendLinked,
+    this.onSendPickedLinked,
     this.onOpenLink,
   });
 
@@ -102,6 +103,11 @@ class ThreadScreen extends StatelessWidget {
 
   /// The composer's send with a settled preview, given the draft.
   final Future<void> Function(String text, LinkPreviewView preview)? onSendLinked;
+
+  /// The send with a held image AND a settled preview: both attachments. When
+  /// null, the link chip is not drawn while an image is held, so the chip never
+  /// promises a card the send will not carry.
+  final Future<void> Function(String text, PickedImage image, LinkPreviewView preview)? onSendPickedLinked;
 
   /// Opens a card's URL in the system browser.
   final void Function(String url)? onOpenLink;
@@ -237,6 +243,7 @@ class ThreadScreen extends StatelessWidget {
                 onSendRecording: onSendRecording,
                 onPreviewLink: onPreviewLink,
                 onSendLinked: onSendLinked,
+                onSendPickedLinked: onSendPickedLinked,
               ),
           ],
         ),
@@ -260,6 +267,7 @@ class _ThreadComposer extends StatefulWidget {
     this.onSendRecording,
     this.onPreviewLink,
     this.onSendLinked,
+    this.onSendPickedLinked,
   });
 
   final ConnectionView connection;
@@ -271,6 +279,7 @@ class _ThreadComposer extends StatefulWidget {
   final Future<void> Function()? onSendRecording;
   final Future<LinkPreviewView?> Function(String url)? onPreviewLink;
   final Future<void> Function(String text, LinkPreviewView preview)? onSendLinked;
+  final Future<void> Function(String text, PickedImage image, LinkPreviewView preview)? onSendPickedLinked;
 
   @override
   State<_ThreadComposer> createState() => _ThreadComposerState();
@@ -441,12 +450,15 @@ class _ThreadComposerState extends State<_ThreadComposer> {
     final sendPicked = widget.onSendPicked;
     // Sent while the chip was still fetching, a message goes out as plain
     // text and never gains a card; with a settled preview it carries it. A
-    // held image takes the send: one attachment kind per message.
+    // held image with no settled preview sends as the image alone; with one, and
+    // a send that carries both, as both.
     final preview = _preview;
     final sendLinked = widget.onSendLinked;
     _sending = true;
     try {
-      if (image != null && sendPicked != null) {
+      if (image != null && preview != null && widget.onSendPickedLinked != null) {
+        await widget.onSendPickedLinked!(text, image, preview);
+      } else if (image != null && sendPicked != null) {
         await sendPicked(text, image);
       } else if (preview != null && sendLinked != null && image == null) {
         await sendLinked(text, preview);
@@ -482,7 +494,7 @@ class _ThreadComposerState extends State<_ThreadComposer> {
         onAttach: widget.onPickImage == null ? null : _attach,
         attachment: _picked?.name,
         onRemoveAttachment: () => setState(() => _picked = null),
-        link: _linkUrl == null ? null : HeldLink(host: linkHost(_linkUrl!), title: _preview?.cleanTitle, fetching: _preview == null),
+        link: _linkUrl == null || (_picked != null && widget.onSendPickedLinked == null) ? null : HeldLink(host: linkHost(_linkUrl!), title: _preview?.cleanTitle, fetching: _preview == null),
         onRemoveLink: _dismissLink,
         notice: _notice,
         onRecord: widget.onStartRecording == null ? null : _record,

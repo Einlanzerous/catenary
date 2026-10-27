@@ -105,7 +105,7 @@ class LinkPreviewView {
 
   /// A card with an image box: dimensions and a hash, both. With either
   /// missing it is text-only, because a ratio is never guessed.
-  bool get hasImage => imageWidth != null && imageHeight != null && placeholder != null && placeholder!.isNotEmpty;
+  bool get hasImage => imageWidth != null && imageWidth! > 0 && imageHeight != null && imageHeight! > 0 && placeholder != null && placeholder!.isNotEmpty;
 
   /// Nothing but a host: an empty preview, which is no card at all.
   bool get isEmpty => cleanTitle == null && cleanDescription == null && !hasImage;

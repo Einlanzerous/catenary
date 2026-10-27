@@ -70,7 +70,9 @@ class _LinkCardState extends State<LinkCard> {
   bool _pressed = false;
   bool _focused = false;
 
-  void _open() => widget.onOpen?.call(widget.link.url);
+  void _open() {
+    if (isWebUrl(widget.link.url)) widget.onOpen?.call(widget.link.url);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -162,7 +164,7 @@ class _LinkCardState extends State<LinkCard> {
             onTapCancel: () => setState(() => _pressed = false),
             onLongPress: () {
               setState(() => _pressed = false);
-              showLinkSheet(context, link.url);
+              if (isWebUrl(link.url)) showLinkSheet(context, link.url);
             },
             child: Stack(
               clipBehavior: Clip.none,
