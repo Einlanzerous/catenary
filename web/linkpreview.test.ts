@@ -26,6 +26,7 @@ import {
   createLinkPreviewClient,
   detectLink,
   hostOf,
+  plainText,
   openableUrl,
   sameOrigin,
   type LinkPreviewClient,
@@ -74,7 +75,10 @@ test('Detection · a scheme with nothing after it is a URL still being typed', (
 })
 
 test('A card shows the host of its url, opens only http(s), and draws only this origin’s image', () => {
-  assert.equal(hostOf('https://www.example.com:8443/a?b#c'), 'www.example.com:8443')
+  assert.equal(hostOf('https://www.example.com:8443/a?b#c'), 'example.com:8443')
+  assert.equal(hostOf('https://WWW.Example.COM/'), 'example.com')
+  assert.equal(hostOf('https://go.nebula.tv/x'), 'go.nebula.tv')
+  assert.equal(hostOf('https://bücher.example/'), 'xn--bcher-kva.example')
   assert.equal(hostOf('not a url'), '')
   assert.equal(openableUrl('javascript:alert(1)'), null)
   assert.equal(openableUrl('https://example.com/a'), 'https://example.com/a')
@@ -95,6 +99,7 @@ const card = (over: Partial<LinkAttachment> = {}): LinkAttachment => ({
   imageUrl: '/media/k1?exp=1&sig=2',
   imageWidth: 640,
   imageHeight: 360,
+  imagePlaceholder: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj',
   ...over,
 })
 const okBody = (c: LinkAttachment = card()) =>
@@ -359,8 +364,8 @@ test('Composer · a held card shows the host of the typed URL, not the page’s 
   })
   await flush()
   const html = await renderComposer()
-  assert.match(html, /link-chip/)
-  assert.ok(html.includes('www.example.com'), 'the host, from the url')
+  assert.match(html, /data-chip="link"/)
+  assert.ok(html.includes('>example.com<'), 'the host, from the url, without www.')
   assert.ok(!html.includes('TOTALLY OFFICIAL'), 'never the site_name')
   assert.ok(!html.includes('<img src=x'), 'the title is text, not markup')
   assert.ok(html.includes('&lt;img src=x'), 'escaped')
@@ -482,7 +487,7 @@ test('Thread card · the host comes from url and never from site_name; page word
     card({ url: 'https://www.example.com/p', siteName: 'Bank Of Somewhere', title: 'Hi <b>there</b>', description: '<script>x()</script>' }),
     'look',
   )
-  assert.ok(html.includes('www.example.com'))
+  assert.ok(html.includes('>example.com<'))
   assert.ok(!html.includes('Bank Of Somewhere'), 'site_name is never drawn')
   assert.ok(html.includes('Hi &lt;b&gt;there&lt;/b&gt;'), 'title as text')
   assert.ok(html.includes('&lt;script&gt;x()&lt;/script&gt;'), 'description as text')
@@ -505,7 +510,21 @@ test('Thread card · the image request is same-origin and the thumbnail variant;
 
 test('Thread card · the box is final before the image: stored dimensions size the frame', async () => {
   const html = await renderRow(card({ imageWidth: 680, imageHeight: 340 }))
-  assert.match(html, /height:\s*170px/, '340 wide by 170 tall, the stored 2:1')
+  assert.match(html, /aspect-ratio:\s*680 \/ 340/, 'the stored 2:1, as stored')
+  assert.match(await renderRow(card({ imageWidth: 1748, imageHeight: 1187 })), /aspect-ratio:\s*1748 \/ 1187/, 'the canvas’s own example')
+  assert.match(await renderRow(card({ imageWidth: 1000, imageHeight: 100 })), /aspect-ratio:\s*2 \/ 1/, 'a sliver clamps to 2:1')
+  assert.match(await renderRow(card({ imageWidth: 300, imageHeight: 900 })), /aspect-ratio:\s*1 \/ 1/, 'a portrait caps at square')
+})
+
+test('Thread card · no stored dimensions or no stored blurhash: text-only, a ratio is never guessed', async () => {
+  assert.ok(!/<img|aspect-ratio/.test(await renderRow(card({ imageWidth: undefined, imageHeight: undefined }))))
+  assert.ok(!/<img|aspect-ratio/.test(await renderRow(card({ imagePlaceholder: undefined }))))
+})
+
+test('Thread card · own cards sit on surface.base, the whole card is one link, the full URL is its tooltip', async () => {
+  const html = await renderRow(card())
+  assert.match(html, /<a class="card own"/)
+  assert.match(html, /title="https:\/\/www\.youtube\.com\/watch\?v=abc"/)
 })
 
 test('Thread card · a text-only card, a non-http url and a missing host degrade without inventing anything', async () => {
@@ -515,4 +534,10 @@ test('Thread card · a text-only card, a non-http url and a missing host degrade
   const bad = await renderRow(card({ url: 'javascript:alert(1)' }))
   assert.ok(!bad.includes('href="javascript'), 'never an href')
   assert.ok(bad.includes('A video'), 'the page’s title is still a card')
+})
+
+test('Untrusted text · whitespace collapses, control and bidi-override characters are stripped', () => {
+  assert.equal(plainText('  a\n\n b\t\tc  '), 'a b c')
+  assert.equal(plainText('x\u202Eevil\u202C y\u0007z'), 'xevil y z')
+  assert.equal(plainText(null), '')
 })

@@ -2,8 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import type { LinkAttachment } from '@/wire/generated'
 import { decodeBlurhash } from '@/lib/blurhash'
-import { imageBox, thumbUrl } from '@/lib/image-box'
-import { hostOf, openableUrl, sameOrigin } from '@/linkpreview'
+import { linkImageAspect, thumbUrl } from '@/lib/image-box'
+import { hostOf, openableUrl, plainText, sameOrigin } from '@/linkpreview'
 import { state } from '@/store'
 
 /**
@@ -23,34 +23,39 @@ import { state } from '@/store'
  * the box is final before the first byte (CANT-49's rule); without them there
  * is no image box at all, so there is nothing to reflow.
  */
-const props = defineProps<{ link: LinkAttachment }>()
+const props = defineProps<{ link: LinkAttachment; own?: boolean }>()
 
 const host = computed(() => hostOf(props.link.url))
 const href = computed(() => openableUrl(props.link.url))
-const hasBox = computed(() => !!props.link.imageWidth && !!props.link.imageHeight)
+const title = computed(() => plainText(props.link.title))
+const desc = computed(() => plainText(props.link.description))
+/** An image is drawn only with BOTH stored dimensions and a stored blurhash
+ *  (canvas 08, "image box"): either missing and the card is text-only. A ratio
+ *  is never guessed and nothing reflows when the bytes land. */
+const hasBox = computed(
+  () => !!props.link.imageWidth && !!props.link.imageHeight && !!props.link.imagePlaceholder,
+)
 const src = computed(() =>
   props.link.imageUrl && hasBox.value && sameOrigin(props.link.imageUrl, state.origin) ? thumbUrl(props.link.imageUrl) : '',
 )
-const box = computed(() => imageBox(props.link.imageWidth ?? 1, props.link.imageHeight ?? 1))
-const figureStyle = computed(() => ({ width: `${box.value.w}px` }))
-const frameStyle = computed(() => ({ height: `${box.value.h}px` }))
+const aspect = computed(() => linkImageAspect(props.link.imageWidth ?? 1, props.link.imageHeight ?? 1))
+const frameStyle = computed(() => ({ aspectRatio: `${aspect.value.w} / ${aspect.value.h}` }))
 
 const loaded = ref(false)
 const failed = ref(false)
 const pic = ref<HTMLImageElement | null>(null)
 const blur = ref<HTMLCanvasElement | null>(null)
 
+/** Decoded at 32x32 and scaled up by CSS, whatever the box (canvas 08). */
 function paint() {
   const el = blur.value
   if (!el || !props.link.imagePlaceholder || !hasBox.value) return
-  const w = box.value.w >= box.value.h ? 32 : Math.max(1, Math.round((32 * box.value.w) / box.value.h))
-  const h = box.value.w >= box.value.h ? Math.max(1, Math.round((32 * box.value.h) / box.value.w)) : 32
-  const px = decodeBlurhash(props.link.imagePlaceholder, w, h)
+  const px = decodeBlurhash(props.link.imagePlaceholder, 32, 32)
   const ctx = el.getContext('2d')
   if (!px || !ctx) return
-  el.width = w
-  el.height = h
-  ctx.putImageData(new ImageData(px, w, h), 0, 0)
+  el.width = 32
+  el.height = 32
+  ctx.putImageData(new ImageData(px, 32, 32), 0, 0)
 }
 onMounted(() => {
   paint()
@@ -63,10 +68,12 @@ watch(() => props.link.imagePlaceholder, paint)
   <component
     :is="href ? 'a' : 'div'"
     class="card"
+    :class="{ own }"
     :href="href ?? undefined"
     :target="href ? '_blank' : undefined"
     :rel="href ? 'noopener noreferrer' : undefined"
-    :style="figureStyle"
+    :title="link.url"
+    data-card
   >
     <span v-if="src" class="frame" :style="frameStyle" aria-hidden="true">
       <canvas ref="blur" class="blur" />
@@ -84,26 +91,58 @@ watch(() => props.link.imagePlaceholder, paint)
       />
     </span>
     <span class="words">
-      <span v-if="host" class="host">{{ host }}</span>
-      <span v-if="link.title" class="title">{{ link.title }}</span>
-      <span v-if="link.description" class="desc">{{ link.description }}</span>
+      <span v-if="host" class="host"
+        ><span class="host-name">{{ host }}</span
+        ><span class="out" aria-hidden="true">↗</span></span
+      >
+      <span v-if="title" class="title">{{ title }}</span>
+      <span v-if="desc" class="desc">{{ desc }}</span>
     </span>
   </component>
 </template>
 
 <style scoped>
+/* The whole card is one target. Colour is the only motion (80 ms linear), no
+ * transform, no accent: nothing here vouches for the page. Ground is one step
+ * off the row it sits on: surface.rail on others' rows, surface.base on yours. */
 .card {
   display: block;
-  max-width: 100%;
+  width: 100%;
+  max-width: 440px;
   color: inherit;
   text-decoration: none;
-  background: var(--surface-lift);
-  border: 1px solid var(--line-edge);
+  background: var(--surface-rail);
+  border: 1px solid var(--line-hair);
+  transition:
+    background-color 80ms linear,
+    border-color 80ms linear;
+}
+.card.own {
+  background: var(--surface-base);
+}
+
+@media (hover: hover) {
+  a.card:hover {
+    background: var(--surface-raised);
+  }
+  a.card:hover .out {
+    color: var(--text-primary);
+  }
 }
 
 a.card:focus-visible {
-  outline: 2px solid var(--accent-wire);
-  outline-offset: 1px;
+  /* TODO(CANT-332): a focus-ring token; the canvas's interim is text.primary. */
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+
+a.card:active {
+  /* TODO(CANT-332): the pressed border borrows text.meta; line.strong is the candidate. */
+  background: var(--surface-raised);
+  border-color: var(--text-meta);
+}
+a.card:active .out {
+  color: var(--text-primary);
 }
 
 .frame {
@@ -111,6 +150,7 @@ a.card:focus-visible {
   display: block;
   overflow: hidden;
   background: var(--surface-raised);
+  border-bottom: 1px solid var(--line-hair);
 }
 
 .blur,
@@ -122,9 +162,12 @@ a.card:focus-visible {
   height: 100%;
 }
 
+/* The image crossfades over the blurhash, linear opacity, 160 ms. If it never
+ * loads the blurhash stays; nothing collapses. */
 .pic {
   object-fit: cover;
   opacity: 0;
+  transition: opacity 160ms linear;
 }
 
 .pic.shown {
@@ -132,48 +175,64 @@ a.card:focus-visible {
 }
 
 .words {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px 10px 9px;
-  border-top: 1px solid var(--line-inner);
-}
-
-.frame + .words {
-  border-top: 1px solid var(--line-inner);
-}
-
-.card > .words:first-child {
-  border-top: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  padding: 10px 12px 12px;
 }
 
 .host {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--text-secondary);
+}
+.host-name {
+  min-width: 0;
   overflow: hidden;
-  font: var(--type-label);
-  font-size: 9.5px;
-  letter-spacing: 0.12em;
-  color: var(--text-meta);
   text-overflow: ellipsis;
-  text-transform: uppercase;
   white-space: nowrap;
 }
-
-.title {
-  overflow-wrap: anywhere;
-  font-size: 13.5px;
-  font-weight: 600;
-  line-height: 18px;
-  color: var(--text-primary);
+.out {
+  flex: none;
+  transition: color 80ms linear;
 }
 
+.title,
 .desc {
   display: -webkit-box;
   overflow: hidden;
   overflow-wrap: anywhere;
-  font-size: 12.5px;
-  line-height: 17px;
-  color: var(--text-secondary);
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
+  -webkit-line-clamp: 2;
+}
+.title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 20px;
+  color: var(--text-primary);
+}
+.desc {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-secondary);
+}
+
+@media (max-width: 900px) {
+  .frame {
+    max-height: 240px;
+  }
+  .words {
+    gap: 3px;
+  }
+  .host {
+    font-size: 10.5px;
+  }
+  .desc {
+    line-height: 19px;
+  }
 }
 </style>

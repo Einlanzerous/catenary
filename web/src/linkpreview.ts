@@ -50,15 +50,33 @@ export function looksComplete(url: string): boolean {
   }
 }
 
-/** The host a card shows, derived from the URL the sender typed. Empty when
- *  the URL does not parse, in which case the card shows no host line rather
- *  than one it made up. */
+/** The host a card shows, derived from the URL the sender typed (canvas 08,
+ *  "untrusted text"): lowercased, a leading `www.` dropped, the port kept, an
+ *  IDN as punycode (`xn--`) so a lookalike host looks different. `URL` already
+ *  lowercases and punycodes; the `www.` is ours. Empty when the URL does not
+ *  parse, in which case the card shows no host line rather than one it made up.
+ *
+ *  TODO(CANT-331): the final host after a redirect (`youtu.be` to
+ *  `youtube.com`) and the login-wall rule need the server to put the final
+ *  host on the wire. Until that ticket lands this is the pasted host and
+ *  nothing is guessed here. */
 export function hostOf(url: string): string {
   try {
-    return new URL(url).host
+    return new URL(url).host.replace(/^www\./, '')
   } catch {
     return ''
   }
+}
+
+/** Words a page chose, made safe to draw (canvas 08): control and bidi
+ *  characters (which can reorder what is on screen) stripped, whitespace runs
+ *  and newlines collapsed to one space. The result is still only ever drawn as
+ *  text. */
+const BIDI = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g
+// eslint-disable-next-line no-control-regex
+const SPACE_OR_CONTROL = /[\s\u0000-\u001f\u007f-\u009f]+/g
+export function plainText(s: string | null | undefined): string {
+  return (s ?? '').replace(BIDI, '').replace(SPACE_OR_CONTROL, ' ').trim()
 }
 
 /** A card is opened only when its URL is http or https, whatever a stored

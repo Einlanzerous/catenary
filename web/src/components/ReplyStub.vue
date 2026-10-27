@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
-import { hostOf } from '@/linkpreview'
+import { hostOf, plainText } from '@/linkpreview'
 import { isSilent, jumpTo, messageById, NO_SPEECH_LABEL, REPLY_NO_TRANSCRIPT_LABEL, REPLY_VOICE_NOTE_LABEL, transcriptText, user, voiceOf } from '@/store'
 
 /**
@@ -23,6 +23,15 @@ const pending = computed(
   () => props.reply.kind === 'voice' && sourceVoice.value?.transcript.state === 'pending',
 )
 
+/** A reply to a card quotes the card (canvas 08, section 3): `↗ LINK`, the
+ *  host, then the title; an empty preview ends at the host. Read from the live
+ *  source. A source that is not held falls back to what the ref itself says. */
+const card = computed(() => {
+  if (props.reply.kind !== 'link') return null
+  const a = source.value?.attachments?.find((x) => x.kind === 'link')
+  return a?.kind === 'link' ? { host: hostOf(a.url), title: plainText(a.title) } : null
+})
+
 const preview = computed(() => {
   if (pending.value) return 'transcript pending — no preview text yet'
   if (props.reply.kind === 'voice') {
@@ -42,8 +51,7 @@ const preview = computed(() => {
   // derive from the source it holds, the host of the card's URL, else nothing
   // more than "link".
   if (props.reply.kind === 'link' && !props.reply.preview.trim()) {
-    const card = source.value?.attachments?.find((a) => a.kind === 'link')
-    return (card?.kind === 'link' ? hostOf(card.url) : '') || 'link'
+    return 'link'
   }
   return props.reply.preview
 })
@@ -54,7 +62,7 @@ const preview = computed(() => {
   <component
     :is="armed ? 'div' : 'button'"
     class="stub"
-    :class="{ armed }"
+    :class="{ armed, link: reply.kind === 'link' }"
     @click="!armed && jumpTo(reply.messageId)"
   >
     <span class="rule" />
@@ -75,9 +83,13 @@ const preview = computed(() => {
         :class="pending ? 'dim' : 'accent'"
         >▶ VOICE {{ duration(reply.durationMs ?? 0) }}</span
       >
-      <span v-else-if="reply.kind === 'link'" class="chip accent">↗ LINK</span>
+      <span v-else-if="reply.kind === 'link'" class="chip meta">↗ LINK</span>
 
-      <span class="preview" :class="{ pending }">{{ preview }}</span>
+      <template v-if="card">
+        <span v-if="card.host" class="host">{{ card.host }}</span>
+        <span v-if="card.title" class="preview">{{ card.title }}</span>
+      </template>
+      <span v-else class="preview" :class="{ pending }">{{ preview }}</span>
     </span>
   </component>
 </template>
@@ -132,8 +144,35 @@ const preview = computed(() => {
 .chip.accent {
   color: var(--accent-wire);
 }
+.chip.meta {
+  color: var(--text-meta);
+}
 .chip.dim {
   color: var(--accent-dim);
+}
+
+/* A link stub is drawn in the canvas's tokens (08, section 3): the rule is
+ * line.hair, the sender text.secondary, and `↗ LINK` text.meta, not copper. */
+.stub.link .rule {
+  background: var(--line-hair);
+}
+.stub.link.armed .rule {
+  background: var(--accent-wire);
+}
+.stub.link .sender {
+  color: var(--text-secondary);
+}
+
+.host {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 45%;
+  overflow: hidden;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .thumb {

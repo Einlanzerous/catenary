@@ -25,7 +25,7 @@ import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import ImageAttachmentView from '@/components/ImageAttachment.vue'
 import { decodeBlurhash } from '@/lib/blurhash'
-import { IMAGE_MAX_H, IMAGE_MAX_W, imageBox, thumbUrl } from '@/lib/image-box'
+import { IMAGE_MAX_H, IMAGE_MAX_W, imageBox, linkImageAspect, thumbUrl } from '@/lib/image-box'
 
 const src = readFileSync(resolve(process.cwd(), 'src/components/ImageAttachment.vue'), 'utf8')
 const template = src.slice(src.indexOf('<template>'), src.indexOf('</template>\n\n<style') + 11)
@@ -126,4 +126,11 @@ test('the blurhash decoder', () => {
   assert.equal(decodeBlurhash('nothash', 4, 4), null)
   assert.equal(decodeBlurhash('', 4, 4), null)
   assert.equal(decodeBlurhash('LEHV6nWB2yk8pyo0adR*.7kCMdn', 4, 4), null, 'wrong length')
+})
+
+test('A link card image box is the stored ratio clamped between 2:1 and 1:1 (CANT-330)', () => {
+  assert.deepEqual(linkImageAspect(1748, 1187), { w: 1748, h: 1187 })
+  assert.deepEqual(linkImageAspect(1920, 200), { w: 2, h: 1 })
+  assert.deepEqual(linkImageAspect(300, 900), { w: 1, h: 1 })
+  assert.deepEqual(linkImageAspect(0, 0), { w: 1, h: 1 })
 })

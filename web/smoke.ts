@@ -995,7 +995,7 @@ async function main() {
     const page = await render()
     const card = messageRow(page, 'm-card')
     check('a card is drawn on the thread row', card.includes('A page title'), rowText(card).slice(0, 120))
-    check('with the host derived from its url', card.includes('www.youtube.com'))
+    check('with the host derived from its url', card.includes('>youtube.com<'))
     check('and never the site_name the page chose', !page.includes('Official Verified Bank'))
     check('the page\'s title is text, not markup', card.includes('&lt;b&gt;not markup&lt;/b&gt;') && !card.includes('<b>not'))
     check('it opens the url with rel=noopener noreferrer',
@@ -1003,13 +1003,110 @@ async function main() {
     const img = card.match(/<img[^>]*src="([^"]+)"/)?.[1]?.replace(/&amp;/g, '&') ?? ''
     check('the image request is same-origin, and the thumbnail variant',
       img !== '' && new URL(img, baseUrl).origin === new URL(baseUrl).origin && img.includes('v=thumb'), img)
-    check('its box is final before the image: the stored 16:9 at 340 wide', card.includes('height:191px'))
+    check('its box is final before the image: the stored 16:9, as an aspect ratio', card.includes('aspect-ratio:640 / 360'))
     check('no E2E and no verified anywhere on the page', !/E2E|verified/i.test(page.replace('Official Verified Bank', '')))
     check('a reply to a card says LINK and names the host rather than drawing an empty line',
-      messageRow(page, 'm-card-reply').includes('↗ LINK') && messageRow(page, 'm-card-reply').includes('www.youtube.com'))
+      messageRow(page, 'm-card-reply').includes('↗ LINK') && messageRow(page, 'm-card-reply').includes('youtube.com'))
     state.messages.splice(state.messages.findIndex((m) => m.id === 'm-card-reply'), 1)
     state.messages.splice(state.messages.findIndex((m) => m.id === 'm-card'), 1)
     state.conversations.splice(state.conversations.findIndex((c) => c.id === ROOM), 1)
+    if (before) select(before)
+  }
+
+  // 8e. CANT-330 — the 08 canvas's states, one landmark list per state.
+  //
+  // Planted through the same decoder as 8d, in a room of its own that is taken
+  // out again. Each check names the canvas frame it holds (1A..1D, 2A, 3A, 3B).
+  {
+    const ROOM = 'c-link-canvas'
+    const before = state.activeId
+    const mk = (over: Record<string, unknown>) => decodeLinkAttachment({ kind: 'link', ...over })
+    state.conversations.push({ id: ROOM, kind: 'group', name: 'Signal Lamp', memberCount: 7, headSeq: 8 })
+    const base = { conversationId: ROOM, at: '2026-09-24T00:01:00.000Z', state: 'read' as const }
+    state.messages.push(
+      { ...base, id: 'k-img', seq: 1, logSeq: 1_000_400, authorId: MAREK, text: 'dash: https://www.Switchyard.zerogravity.industries:8443/dashboard',
+        attachments: [mk({ url: 'https://www.Switchyard.zerogravity.industries:8443/dashboard', title: 'Switchyard — Dashboard', description: "What's happening across switchyard at a glance.",
+          image_url: '/media/k-img?exp=1&sig=2', image_width: 1748, image_height: 1187, image_placeholder: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj' })] },
+      { ...base, id: 'k-text', seq: 2, logSeq: 1_000_401, authorId: MAREK, text: 'https://chronicle.zerogravity.industries/w/sunday',
+        attachments: [mk({ url: 'https://chronicle.zerogravity.industries/w/sunday', title: 'Chronicle — Sunday dinner notes', description: 'Written notes.' })] },
+      { ...base, id: 'k-long', seq: 3, logSeq: 1_000_402, authorId: MAREK, text: 'https://lyceum.zerogravity.industries/reader/64',
+        attachments: [mk({ url: 'https://lyceum.zerogravity.industries/reader/64', title: `Lyceum — ${'a quiet place to read, '.repeat(8)}\n\u202Ehidden`, description: 'Shares   Argosy\u0007 bones.' })] },
+      { ...base, id: 'k-own', seq: 4, logSeq: 1_000_403, authorId: state.me, state: 'sending' as const, text: 'watch this: https://argosy.zerogravity.industries/series/58c7',
+        attachments: [mk({ url: 'https://argosy.zerogravity.industries/series/58c7', title: 'Severance — Season 2 is in the library',
+          image_url: '/media/k-own?exp=1&sig=2', image_width: 1920, image_height: 1080, image_placeholder: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj' })] },
+      { ...base, id: 'k-empty', seq: 5, logSeq: 1_000_404, authorId: MAREK, text: 'riverline.org/x https://riverline.org/x',
+        attachments: [mk({ url: 'https://riverline.org/x' })] },
+      { ...base, id: 'r-full', seq: 6, logSeq: 1_000_405, authorId: state.me, text: 'Is ARGY-131 the one?',
+        replyTo: { messageId: 'k-img', authorId: MAREK, kind: 'link', preview: '' } },
+      { ...base, id: 'r-empty', seq: 7, logSeq: 1_000_406, authorId: state.me, text: 'That page does not load.',
+        replyTo: { messageId: 'k-empty', authorId: MAREK, kind: 'link', preview: '' } },
+    )
+    select(ROOM)
+    let page = await render()
+
+    const img = messageRow(page, 'k-img')
+    check('2A card with image: one link target, noopener', img.includes('<a class="card"') && img.includes('rel="noopener noreferrer"'))
+    check('2A host: lowercased, www. dropped, port kept', img.includes('>switchyard.zerogravity.industries:8443<'))
+    check('2A the image box is the stored ratio (1748 / 1187), known before paint', img.includes('aspect-ratio:1748 / 1187'))
+    check('2A blurhash canvas under an image that starts transparent', img.includes('class="blur"') && img.includes('class="pic"') && !img.includes('class="pic shown"'))
+    check('2A the ↗ marker, title and description are all on the card', img.includes('class="out"') && img.includes('class="title"') && img.includes('class="desc"'))
+    check('2A the URL in the body is underlined text, not a second link', img.includes('class="url"') && img.includes('>https://www.Switchyard') && (img.match(/<a /g) ?? []).length === 1)
+    check('2A the full URL is the tooltip', img.includes('title="https://www.Switchyard.zerogravity.industries:8443/dashboard"'))
+    const txt = messageRow(page, 'k-text')
+    check('2A text-only card: no image box, no <img>, no ratio', txt.includes('class="card"') && !txt.includes('<img') && !txt.includes('aspect-ratio') && !txt.includes('class="frame"'))
+    const lng = messageRow(page, 'k-long')
+    check('2A long title: whole title present for the clamp, whitespace collapsed, bidi stripped', lng.includes('a quiet place to read, a quiet') && !lng.includes('\u202E') && !lng.includes('\n'))
+    check('2A description controls stripped and spaces collapsed', lng.includes('Shares Argosy bones.'))
+    const own = messageRow(page, 'k-own')
+    check('2A own pending: card on surface.base, row says SENDING, the image is already a box', own.includes('class="card own"') && own.includes('SENDING') && own.includes('aspect-ratio:1920 / 1080'))
+    check('2A nothing vouches: no padlock, verified or accent on any card', !/🔒|verified|class="card[^"]*accent/i.test(page))
+
+    const full = messageRow(page, 'r-full')
+    check('3A stub: sender, ↗ LINK in meta (not accent), host, title', full.includes('class="chip meta"') && full.includes('>↗ LINK<') && full.includes('class="host"') && full.includes('>switchyard.zerogravity.industries:8443<') && full.includes('Switchyard — Dashboard'))
+    check('3A stub is the link variant and no copper chip', full.includes('stub link') && !full.includes('chip accent'))
+    const empty = messageRow(page, 'r-empty')
+    check('3A empty preview: the stub ends at the host', empty.includes('>riverline.org<') && empty.includes('↗ LINK') && !empty.includes('class="preview"'))
+
+    // 3B: the armed bar quotes the same stub.
+    state.composer.replyToId = 'k-img'
+    page = await render()
+    const bar = page.slice(page.indexOf('class="armed-bar"'))
+    check('3B armed bar with preview: REPLYING TO, ↗ LINK, host and title', bar.includes('REPLYING TO') && bar.includes('↗ LINK') && bar.includes('>switchyard.zerogravity.industries:8443<') && bar.includes('Switchyard — Dashboard'))
+    check('3B armed bar says ESC CLEARS REPLY and has the clear control', bar.includes('ESC CLEARS REPLY') && bar.includes('aria-label="Clear reply"'))
+    state.composer.replyToId = 'k-empty'
+    page = await render()
+    const bar2 = page.slice(page.indexOf('class="armed-bar"'))
+    check('3B armed bar, empty preview: host only', bar2.includes('REPLYING TO') && bar2.includes('>riverline.org<') && !bar2.includes('class="preview"'))
+    state.composer.replyToId = null
+
+    // 1A-1D: the composer's chips. The link chip is host-first; only the
+    // title waits; the image chip shares the tag column.
+    const held = (p: string) => p.slice(p.indexOf('class="composer"'))
+    state.composer.draft = 'runs: https://switchyard.zerogravity.industries/dashboard'
+    state.composer.preview = { state: 'ready', url: 'https://switchyard.zerogravity.industries/dashboard', uploadId: 'u' as never,
+      card: mk({ url: 'https://switchyard.zerogravity.industries/dashboard', title: 'Switchyard — Dashboard' }) }
+    let c = held(await render())
+    check('1A held link chip: LINK tag, host, title, remove control, no sweep', c.includes('data-chip="link"') && c.includes('>LINK<') && c.includes('>switchyard.zerogravity.industries<') && c.includes('Switchyard — Dashboard') && c.includes('aria-label="Remove link preview"') && !c.includes('class="sweep"'))
+    state.composer.preview = { state: 'loading', url: 'https://chronicle.zerogravity.industries/w/sunday', uploadId: null, card: null }
+    c = held(await render())
+    check('1B fetching: host at once, FETCHING PREVIEW, the sweep, SEND stays live', c.includes('>chronicle.zerogravity.industries<') && c.includes('FETCHING PREVIEW') && c.includes('class="sweep"') && c.includes('SENDING NOW SENDS WITHOUT A CARD') && !/class="primary"[^>]*disabled/.test(c))
+    state.composer.preview = { state: 'ready', url: 'https://argosy.zerogravity.industries/series/1', uploadId: 'u' as never,
+      card: mk({ url: 'https://argosy.zerogravity.industries/series/1', title: 'Severance — Season 2 is in the library' }) }
+    state.composer.attachment = { blob: new Blob(['x'], { type: 'image/heic' }), filename: 'IMG_4471.HEIC' }
+    c = held(await render())
+    check('1C link and image stacked in one tray, link first, the same component', c.includes('class="chips"') && c.indexOf('data-chip="link"') > 0 && c.indexOf('data-chip="link"') < c.indexOf('data-chip="image"') && (c.match(/class="tag"/g) ?? []).length === 2)
+    check('1C the image chip: IMAGE tag, filename, remove control', c.includes('>IMAGE<') && c.includes('IMG_4471.HEIC') && c.includes('aria-label="Remove attachment"'))
+    state.composer.preview = { state: 'dismissed', url: 'https://argosy.zerogravity.industries/series/1', uploadId: null, card: null }
+    state.composer.attachment = null
+    c = held(await render())
+    check('1D after the cross: no chip row, the URL text untouched', !c.includes('class="chips"') && !c.includes('data-chip') && c.includes('https://switchyard.zerogravity.industries/dashboard'))
+    state.composer.draft = ''
+    state.composer.preview = { state: 'idle', url: null, uploadId: null, card: null }
+
+    for (const id of ['k-img', 'k-text', 'k-long', 'k-own', 'k-empty', 'r-full', 'r-empty']) {
+      state.messages.splice(state.messages.findIndex((m) => m.id === id), 1)
+    }
+    state.conversations.splice(state.conversations.findIndex((c2) => c2.id === ROOM), 1)
     if (before) select(before)
   }
 

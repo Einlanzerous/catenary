@@ -27,3 +27,15 @@ export function thumbUrl(url: string): string {
   if (!url) return url
   return `${url}${url.includes('?') ? '&' : '?'}v=thumb`
 }
+
+/** CANT-330 (canvas 08, "image box"): a link card's image box. The card's width
+ *  is the layout's; only the ratio is ours, and it is the STORED one clamped
+ *  between 2:1 (wide) and 1:1 (square), so a tall page image cannot make a
+ *  tall card and a sliver cannot make a thin one. Returned as the pair for a
+ *  CSS `aspect-ratio`, never a measurement of the loaded image. */
+export function linkImageAspect(width: number, height: number): { w: number; h: number } {
+  if (!(width > 0) || !(height > 0)) return { w: 1, h: 1 }
+  if (height * 2 < width) return { w: 2, h: 1 }
+  if (height > width) return { w: 1, h: 1 }
+  return { w: width, h: height }
+}
