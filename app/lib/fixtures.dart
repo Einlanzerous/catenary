@@ -175,3 +175,76 @@ List<ConversationView> fixtureConversations(DateTime now) {
     ),
   ];
 }
+
+
+/// Two blurhashes for the fixtures' card images (the blurha.sh reference
+/// vectors): a warm one and a cool one. The server computes the real ones.
+const fixtureHashWarm = 'LEHV6nWB2yk8pyo0adR*.7kCMdnj';
+const fixtureHashCool = 'L6PZfSi_.AyE_3t7t7R**0o#DgR4';
+
+/// The link preview canvas's thread (`Catenary Link Preview.dc.html`, 2C):
+/// received three times and sent pending once, one of them an imageless card,
+/// one a long title, and one whose preview came back empty and draws no card.
+ConversationView fixtureLinkConversation(DateTime now) {
+  DateTime ago(int minutes) => now.subtract(Duration(minutes: minutes));
+  var n = 0;
+  ThreadMessage msg(String authorId, String name, int minutes, String text, {LinkPreviewView? link, MessageStatus status = MessageStatus.sent}) {
+    final i = n++;
+    return ThreadMessage(
+      id: 'l-$i',
+      seq: i + 1,
+      authorId: authorId,
+      authorName: name,
+      at: ago(minutes),
+      mine: authorId == me,
+      text: text,
+      link: link,
+      status: status,
+    );
+  }
+
+  return ConversationView(
+    id: 'links',
+    kind: ConversationKind.group,
+    name: 'Links',
+    memberCount: 7,
+    unacked: 1,
+    messages: [
+      msg('u-ted', 'Ted Almasy', 14, "Last night's runs: https://switchyard.zerogravity.industries/dashboard",
+          link: const LinkPreviewView(
+            url: 'https://switchyard.zerogravity.industries/dashboard',
+            title: 'Switchyard — Dashboard',
+            description: "What's happening across switchyard at a glance.",
+            imageUrl: '/media/og-switchyard',
+            imageWidth: 1748,
+            imageHeight: 1187,
+            placeholder: fixtureHashCool,
+          )),
+      msg('u-nadia', 'Nadia Okonkwo', 10, "https://chronicle.zerogravity.industries/w/sunday — Sunday's notes are in",
+          link: const LinkPreviewView(
+            url: 'https://chronicle.zerogravity.industries/w/sunday',
+            title: 'Chronicle — Sunday dinner notes',
+            description: 'Written notes, with the voice memos landing inside them.',
+          )),
+      msg('u-rosa', 'Rosa Whitfield', 7, 'https://lyceum.zerogravity.industries/reader/64',
+          link: const LinkPreviewView(
+            url: 'https://lyceum.zerogravity.industries/reader/64',
+            title: 'Lyceum — A quiet place to read: the self-hosted reading room for the whole household, with shared shelves, series tracking, ISBN ingest and acquisition status on every book',
+            description:
+                "Lyceum shares Argosy's brass-on-charcoal bones but turns the volume down — lower contrast, more air, and nothing that pulls focus from the page.",
+          )),
+      msg('u-ilse', 'Ilse Marchetti', 6, 'and the reel https://www.instagram.com/reel/C9vZp1mN4bQ/',
+          link: const LinkPreviewView(url: 'https://www.instagram.com/reel/C9vZp1mN4bQ/')),
+      msg(me, 'Hollis Brandt', 3, 'oh hey, season two is up, watch this: https://argosy.zerogravity.industries/series/58c71256-1f32-4598-8574-c8c6715065f3',
+          status: MessageStatus.sending,
+          link: const LinkPreviewView(
+            url: 'https://argosy.zerogravity.industries/series/58c71256-1f32-4598-8574-c8c6715065f3',
+            title: 'Severance — Season 2 is in the library',
+            imageUrl: '/media/og-argosy',
+            imageWidth: 1920,
+            imageHeight: 1080,
+            placeholder: fixtureHashWarm,
+          )),
+    ],
+  );
+}

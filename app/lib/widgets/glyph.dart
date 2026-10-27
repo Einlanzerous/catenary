@@ -1,4 +1,4 @@
-// The four pictographs the canvas uses — search, more, play, and the cross —
+// The pictographs the canvas uses — search, more, play, the cross and the ↗ —
 // drawn rather than typed. The canvas writes them as characters (⌕ ⋯ ▶ ✕),
 // and IBM Plex has none of them: typed, each would be whatever the device's
 // fallback font happens to hold, or an empty box. Drawn, they are the same
@@ -6,7 +6,7 @@
 
 import 'package:flutter/widgets.dart';
 
-enum Glyph { search, more, play, cross }
+enum Glyph { search, more, play, cross, arrowOut }
 
 class GlyphIcon extends StatelessWidget {
   const GlyphIcon(this.glyph, {super.key, required this.color, this.size = 11});
@@ -50,6 +50,11 @@ class _GlyphPainter extends CustomPainter {
             ..close(),
           fill,
         );
+      case Glyph.arrowOut:
+        // The ↗ of "opens elsewhere": a shaft to the upper right and a corner.
+        canvas.drawLine(Offset(s * 0.1, s * 0.9), Offset(s * 0.9, s * 0.1), stroke);
+        canvas.drawLine(Offset(s * 0.28, s * 0.1), Offset(s * 0.9, s * 0.1), stroke);
+        canvas.drawLine(Offset(s * 0.9, s * 0.1), Offset(s * 0.9, s * 0.72), stroke);
       case Glyph.cross:
         canvas.drawLine(Offset(s * 0.1, s * 0.1), Offset(s * 0.9, s * 0.9), stroke);
         canvas.drawLine(Offset(s * 0.9, s * 0.1), Offset(s * 0.1, s * 0.9), stroke);
