@@ -26,15 +26,17 @@ import { decodeLinkPreviewResponse, type LinkAttachment, type Uuid } from '@/wir
 
 /* ── detection ───────────────────────────────────────────────────────────── */
 
-/** The rule pinned by the CANT-308 plan, identical in the Dart client: the URL
- *  is the first token matching `https?://` up to the next whitespace, with
+/** The rule pinned by the CANT-308 plan, and defined once, in
+ *  `schema/vectors/link-detection.json` (CANT-329), which this file, the Dart
+ *  client and the app all assert: the URL is the first token that is
+ *  `https?://` followed by a non-space, up to the next whitespace, with
  *  trailing `.,;:!?)` trimmed. A draft with no such token requests nothing.
- *  `ftp://` and the like never match. */
+ *  `ftp://` and the like never match, nor does a scheme in capitals. */
 export function detectLink(text: string): string | null {
-  const hit = /https?:\/\/\S*/.exec(text)
+  const hit = /https?:\/\/\S+/.exec(text)
   if (!hit) return null
   const url = hit[0].replace(/[.,;:!?)]+$/, '')
-  // `https://` and nothing after it is a URL still being typed.
+  // Nothing after the scheme once the punctuation is gone is a URL still being typed.
   return /^https?:\/\/./.test(url) ? url : null
 }
 
