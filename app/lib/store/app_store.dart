@@ -148,6 +148,7 @@ ThreadMessage journalMessage(wire.Message m, {required String me, required Map<S
   final attachments = m.attachments ?? const <wire.Attachment>[];
   final voice = attachments.whereType<wire.VoiceAttachment>().firstOrNull;
   final image = attachments.whereType<wire.ImageAttachment>().firstOrNull;
+  final link = attachments.whereType<wire.LinkAttachment>().firstOrNull;
   return ThreadMessage(
     id: m.id,
     seq: m.seq,
@@ -167,6 +168,17 @@ ThreadMessage journalMessage(wire.Message m, {required String me, required Map<S
             status: transcriptStatus(voice.transcript.state),
           ),
     image: image == null ? null : ImageAttachment(filename: image.filename, width: image.width, height: image.height),
+    link: link == null
+        ? null
+        : LinkPreviewView(
+            url: link.url,
+            title: link.title,
+            description: link.description,
+            imageUrl: link.imageUrl,
+            imageWidth: link.imageWidth,
+            imageHeight: link.imageHeight,
+            placeholder: link.imagePlaceholder,
+          ),
     status: deliveryStatus(m.state),
     readBy: m.readBy,
   );

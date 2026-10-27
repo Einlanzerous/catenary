@@ -15,6 +15,7 @@
 
 import 'package:flutter/foundation.dart';
 
+import 'link.dart';
 import 'status.dart';
 import 'when.dart';
 
@@ -67,6 +68,49 @@ class ImageAttachment {
   final int height;
 }
 
+/// A link preview card as a message carries it: a snapshot of what the
+/// server's own fetch saw (CANT-308). Page-chosen text, drawn as plain text;
+/// the host shown is derived from [url] and nothing else.
+@immutable
+class LinkPreviewView {
+  const LinkPreviewView({
+    required this.url,
+    this.title,
+    this.description,
+    this.imageUrl,
+    this.imageWidth,
+    this.imageHeight,
+    this.placeholder,
+  });
+
+  final String url;
+  final String? title;
+  final String? description;
+  final String? imageUrl;
+  final int? imageWidth;
+  final int? imageHeight;
+
+  /// The blurhash.
+  final String? placeholder;
+
+  String get host => linkHost(url);
+
+  String? get cleanTitle => _clean(title);
+  String? get cleanDescription => _clean(description);
+
+  static String? _clean(String? s) {
+    final c = s == null ? '' : cleanPageText(s);
+    return c.isEmpty ? null : c;
+  }
+
+  /// A card with an image box: dimensions and a hash, both. With either
+  /// missing it is text-only, because a ratio is never guessed.
+  bool get hasImage => imageWidth != null && imageWidth! > 0 && imageHeight != null && imageHeight! > 0 && placeholder != null && placeholder!.isNotEmpty;
+
+  /// Nothing but a host: an empty preview, which is no card at all.
+  bool get isEmpty => cleanTitle == null && cleanDescription == null && !hasImage;
+}
+
 @immutable
 class ThreadMessage {
   const ThreadMessage({
@@ -79,6 +123,7 @@ class ThreadMessage {
     this.text,
     this.voice,
     this.image,
+    this.link,
     this.status = MessageStatus.sent,
     this.readBy,
     this.failure,
@@ -94,6 +139,9 @@ class ThreadMessage {
   final String? text;
   final VoiceNote? voice;
   final ImageAttachment? image;
+
+  /// The card for a URL in the text, when the sender's preview settled.
+  final LinkPreviewView? link;
 
   /// Rendered on your own messages only.
   final MessageStatus status;

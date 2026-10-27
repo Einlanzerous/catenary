@@ -36,6 +36,7 @@ import '../metrics.dart';
 import '../store/connection.dart';
 import '../tokens.dart';
 import 'glyph.dart';
+import 'held_chip.dart';
 import 'pulse.dart';
 
 /// `00:17`: the recording clock, two digits each side.
@@ -60,6 +61,8 @@ class Composer extends StatefulWidget {
     this.onSendRecording,
     this.attachment,
     this.onRemoveAttachment,
+    this.link,
+    this.onRemoveLink,
     this.notice,
   });
 
@@ -76,10 +79,14 @@ class Composer extends StatefulWidget {
   final VoidCallback? onSendRecording;
 
   /// The one picked image held for the next send, by file name; null when none.
-  /// There is no canvas design for it: it is the least that lets a person see
-  /// what SEND will send, and it is flagged as a canvas gap.
+  /// Drawn as the IMAGE tag of the held chip (CANT-325).
   final String? attachment;
   final VoidCallback? onRemoveAttachment;
+
+  /// The link the draft holds a preview chip for, above the image chip when
+  /// both are held; null when none.
+  final HeldLink? link;
+  final VoidCallback? onRemoveLink;
 
   /// A refusal to show beside the field: a picked file that cannot be sent. In
   /// the meta color; red stays for failure alone.
@@ -128,7 +135,7 @@ class _ComposerState extends State<Composer> {
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
       child: recording != null
           ? _recording(t, recording)
-          : (widget.attachment == null && widget.notice == null)
+          : (widget.attachment == null && widget.link == null && widget.notice == null)
               ? _row(t)
               : Column(
                   mainAxisSize: MainAxisSize.min,
@@ -143,7 +150,36 @@ class _ComposerState extends State<Composer> {
                           style: TextStyle(fontFamily: fontSans, fontSize: 12.5, height: 17 / 12.5, color: t.textMeta),
                         ),
                       ),
-                    if (widget.attachment != null) _chip(t, widget.attachment!),
+                    if (widget.link != null || widget.attachment != null)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Column(
+                          key: const ValueKey('composer-chips'),
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            if (widget.link != null)
+                              HeldChip(
+                                key: const ValueKey('composer-link-chip'),
+                                tag: 'LINK',
+                                primary: widget.link!.host,
+                                secondary: widget.link!.title,
+                                fetching: widget.link!.fetching,
+                                onRemove: widget.onRemoveLink,
+                                removeKey: const ValueKey('composer-link-remove'),
+                              ),
+                            if (widget.link != null && widget.attachment != null) const SizedBox(height: 8),
+                            if (widget.attachment != null)
+                              HeldChip(
+                                key: const ValueKey('composer-attachment'),
+                                tag: 'IMAGE',
+                                primary: widget.attachment!,
+                                onRemove: widget.onRemoveAttachment,
+                                removeKey: const ValueKey('composer-attachment-remove'),
+                              ),
+                          ],
+                        ),
+                      ),
                     _row(t),
                   ],
                 ),
@@ -209,42 +245,6 @@ class _ComposerState extends State<Composer> {
           style: TextStyle(fontFamily: fontMono, fontSize: 9.5, height: 12 / 9.5, color: t.textMeta),
         ),
       ],
-    );
-  }
-
-  /// The held image: its file name and a remove control.
-  Widget _chip(CatenaryTokens t, String name) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Container(
-        key: const ValueKey('composer-attachment'),
-        decoration: BoxDecoration(color: t.surfaceBase, border: Border.all(color: t.lineEdge)),
-        child: Row(
-          children: [
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                child: Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontFamily: fontMono, fontSize: 11, color: t.textSecondary),
-                ),
-              ),
-            ),
-            GestureDetector(
-              key: const ValueKey('composer-attachment-remove'),
-              behavior: HitTestBehavior.opaque,
-              onTap: widget.onRemoveAttachment,
-              child: SizedBox(
-                width: 44,
-                height: 44,
-                child: Center(child: Text('×', style: TextStyle(fontFamily: fontMono, fontSize: 16, color: t.textMeta))),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 

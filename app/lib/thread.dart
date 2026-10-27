@@ -23,6 +23,7 @@ import 'metrics.dart';
 import 'store/attach.dart';
 import 'store/connection.dart';
 import 'store/conversation.dart';
+import 'store/link.dart';
 import 'store/status.dart';
 import 'store/voice.dart';
 import 'store/when.dart';
@@ -30,6 +31,8 @@ import 'tokens.dart';
 import 'widgets/composer.dart';
 import 'widgets/connection_banner.dart';
 import 'widgets/glyph.dart';
+import 'widgets/held_chip.dart';
+import 'widgets/link_card.dart';
 import 'widgets/pulse.dart';
 import 'widgets/status_mark.dart';
 import 'widgets/typing_row.dart';
@@ -58,6 +61,10 @@ class ThreadScreen extends StatelessWidget {
     this.onStartRecording,
     this.onCancelRecording,
     this.onSendRecording,
+    this.onPreviewLink,
+    this.onSendLinked,
+    this.onSendPickedLinked,
+    this.onOpenLink,
   });
 
   final ConversationView conversation;
@@ -86,6 +93,24 @@ class ThreadScreen extends StatelessWidget {
   final Future<RecordStart> Function()? onStartRecording;
   final Future<void> Function()? onCancelRecording;
   final Future<void> Function()? onSendRecording;
+
+  /// The server's preview of a URL being composed (`POST /link-previews`), or
+  /// null when it has none. BOTH of these two or NEITHER: a chip that
+  /// promised a card must be able to send one, so the composer draws no chip
+  /// unless [onSendLinked] can bind it (the client never claims what it
+  /// cannot keep).
+  final Future<LinkPreviewView?> Function(String url)? onPreviewLink;
+
+  /// The composer's send with a settled preview, given the draft.
+  final Future<void> Function(String text, LinkPreviewView preview)? onSendLinked;
+
+  /// The send with a held image AND a settled preview: both attachments. When
+  /// null, the link chip is not drawn while an image is held, so the chip never
+  /// promises a card the send will not carry.
+  final Future<void> Function(String text, PickedImage image, LinkPreviewView preview)? onSendPickedLinked;
+
+  /// Opens a card's URL in the system browser.
+  final void Function(String url)? onOpenLink;
 
   /// RETRY and DELETE on a failed message, given its `client_id` (the
   /// message's `id`).
@@ -198,6 +223,7 @@ class ThreadScreen extends StatelessWidget {
                           memberCount: c.memberCount,
                           onRetry: onRetryMessage,
                           onDiscard: onDiscardMessage,
+                          onOpenLink: onOpenLink,
                         ),
                       },
                   ],
@@ -215,6 +241,9 @@ class ThreadScreen extends StatelessWidget {
                 onStartRecording: onStartRecording,
                 onCancelRecording: onCancelRecording,
                 onSendRecording: onSendRecording,
+                onPreviewLink: onPreviewLink,
+                onSendLinked: onSendLinked,
+                onSendPickedLinked: onSendPickedLinked,
               ),
           ],
         ),
@@ -236,6 +265,9 @@ class _ThreadComposer extends StatefulWidget {
     this.onStartRecording,
     this.onCancelRecording,
     this.onSendRecording,
+    this.onPreviewLink,
+    this.onSendLinked,
+    this.onSendPickedLinked,
   });
 
   final ConnectionView connection;
@@ -245,6 +277,9 @@ class _ThreadComposer extends StatefulWidget {
   final Future<RecordStart> Function()? onStartRecording;
   final Future<void> Function()? onCancelRecording;
   final Future<void> Function()? onSendRecording;
+  final Future<LinkPreviewView?> Function(String url)? onPreviewLink;
+  final Future<void> Function(String text, LinkPreviewView preview)? onSendLinked;
+  final Future<void> Function(String text, PickedImage image, LinkPreviewView preview)? onSendPickedLinked;
 
   @override
   State<_ThreadComposer> createState() => _ThreadComposerState();
@@ -259,8 +294,76 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   DateTime? _recordingSince;
   Timer? _clock;
 
+  // The link chip. [_linkUrl] is the draft's first URL while a chip is held for
+  // it; [_preview] is null while the fetch runs. [_done] holds every URL this
+  // draft has already settled, dismissed or empty or arrived: none is fetched
+  // twice in one draft.
+  String? _linkUrl;
+  LinkPreviewView? _preview;
+  Timer? _fetchTimer;
+  final _done = <String>{};
+
+  bool get _previews => widget.onPreviewLink != null && widget.onSendLinked != null;
+
+  @override
+  void initState() {
+    super.initState();
+    _draft.addListener(_draftChanged);
+  }
+
+  void _draftChanged() {
+    if (!_previews) return;
+    final url = firstUrl(_draft.text);
+    if (url == _linkUrl) return;
+    _fetchTimer?.cancel();
+    if (url == null || _done.contains(url)) {
+      // The URL left the text (or is one this draft has settled): the chip
+      // leaves with it.
+      if (_linkUrl != null) setState(() => _linkUrl = _preview = null);
+      return;
+    }
+    // The chip is up at once with the host parsed locally; only the title
+    // waits. The fetch starts when the URL has stopped changing, so typing a
+    // URL does not ask the server about every prefix of it.
+    setState(() {
+      _linkUrl = url;
+      _preview = null;
+    });
+    _fetchTimer = Timer(const Duration(milliseconds: 350), () => _fetch(url));
+  }
+
+  Future<void> _fetch(String url) async {
+    LinkPreviewView? got;
+    try {
+      got = await widget.onPreviewLink!(url);
+    } on Object {
+      got = null;
+    }
+    if (!mounted || _linkUrl != url) return;
+    _done.add(url);
+    setState(() {
+      // An empty or failed fetch removes the chip itself: the same exit as the
+      // dismiss, and the draft sends as plain text.
+      if (got == null || got.isEmpty) {
+        _linkUrl = null;
+      } else {
+        _preview = got;
+      }
+    });
+  }
+
+  void _dismissLink() {
+    _fetchTimer?.cancel();
+    setState(() {
+      if (_linkUrl != null) _done.add(_linkUrl!);
+      _linkUrl = _preview = null;
+    });
+  }
+
   @override
   void dispose() {
+    _fetchTimer?.cancel();
+    _draft.removeListener(_draftChanged);
     _clock?.cancel();
     // Leaving the thread mid-recording ends it: nothing on screen owns the
     // platform recorder, and its temporary file would otherwise stay.
@@ -345,10 +448,20 @@ class _ThreadComposerState extends State<_ThreadComposer> {
     final text = _draft.text;
     final image = _picked;
     final sendPicked = widget.onSendPicked;
+    // Sent while the chip was still fetching, a message goes out as plain
+    // text and never gains a card; with a settled preview it carries it. A
+    // held image with no settled preview sends as the image alone; with one, and
+    // a send that carries both, as both.
+    final preview = _preview;
+    final sendLinked = widget.onSendLinked;
     _sending = true;
     try {
-      if (image != null && sendPicked != null) {
+      if (image != null && preview != null && widget.onSendPickedLinked != null) {
+        await widget.onSendPickedLinked!(text, image, preview);
+      } else if (image != null && sendPicked != null) {
         await sendPicked(text, image);
+      } else if (preview != null && sendLinked != null && image == null) {
+        await sendLinked(text, preview);
       } else {
         await widget.onSend(text);
       }
@@ -357,6 +470,11 @@ class _ThreadComposerState extends State<_ThreadComposer> {
         if (_draft.text == text) _draft.clear();
         if (identical(_picked, image)) _picked = null;
         _notice = null;
+        if (_draft.text.isEmpty) {
+          _fetchTimer?.cancel();
+          _linkUrl = _preview = null;
+          _done.clear();
+        }
       });
     } on AttachRefused catch (e) {
       // Nothing was written, and the draft and the image stay where they were.
@@ -376,6 +494,8 @@ class _ThreadComposerState extends State<_ThreadComposer> {
         onAttach: widget.onPickImage == null ? null : _attach,
         attachment: _picked?.name,
         onRemoveAttachment: () => setState(() => _picked = null),
+        link: _linkUrl == null || (_picked != null && widget.onSendPickedLinked == null) ? null : HeldLink(host: linkHost(_linkUrl!), title: _preview?.cleanTitle, fetching: _preview == null),
+        onRemoveLink: _dismissLink,
         notice: _notice,
         onRecord: widget.onStartRecording == null ? null : _record,
         recording: _recordingSince == null ? null : DateTime.now().difference(_recordingSince!),
@@ -414,7 +534,7 @@ class _Rule extends StatelessWidget {
 
 /// One author's run of messages.
 class MessageGroup extends StatelessWidget {
-  const MessageGroup({super.key, required this.group, required this.memberCount, this.onRetry, this.onDiscard});
+  const MessageGroup({super.key, required this.group, required this.memberCount, this.onRetry, this.onDiscard, this.onOpenLink});
 
   final GroupRow group;
   final int memberCount;
@@ -422,6 +542,9 @@ class MessageGroup extends StatelessWidget {
   /// RETRY and DELETE on a failed message of the group, given its `client_id`.
   final Future<void> Function(String clientId)? onRetry;
   final Future<void> Function(String clientId)? onDiscard;
+
+  /// Opens a link card's URL.
+  final void Function(String url)? onOpenLink;
 
   @override
   Widget build(BuildContext context) {
@@ -514,6 +637,24 @@ class MessageGroup extends StatelessWidget {
     );
   }
 
+  /// A URL in the text is underlined in the meta color and left exactly as
+  /// pasted: the text is the sender's, and the card beneath is an addition.
+  Widget _bodyText(CatenaryTokens t, String text) {
+    final style = TextStyle(fontFamily: fontSans, fontSize: 15, height: 24 / 15, color: t.textPrimary);
+    final parts = urlParts(text);
+    if (!parts.any((p) => p.isUrl)) return Text(text, style: style);
+    return Text.rich(
+      TextSpan(children: [
+        for (final p in parts)
+          TextSpan(
+            text: p.text,
+            style: p.isUrl ? TextStyle(decoration: TextDecoration.underline, decorationColor: t.textMeta) : null,
+          ),
+      ]),
+      style: style,
+    );
+  }
+
   List<Widget> _body(CatenaryTokens t, ThreadMessage m) {
     final text = m.text;
     final voice = m.voice;
@@ -533,9 +674,18 @@ class MessageGroup extends StatelessWidget {
       if (text != null && text.isNotEmpty)
         Padding(
           padding: EdgeInsets.only(top: voice != null ? 6 : 3),
-          child: Text(
-            text,
-            style: TextStyle(fontFamily: fontSans, fontSize: 15, height: 24 / 15, color: t.textPrimary),
+          child: _bodyText(t, text),
+        ),
+      // An empty preview draws no card: the URL in the text stands alone.
+      if (m.link != null && !m.link!.isEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 8, bottom: 4),
+          child: LinkCard(
+            key: ValueKey('link-card-${m.id}'),
+            link: m.link!,
+            // One step off the row it sits on.
+            ground: m.mine ? t.surfaceBase : t.surfaceRail,
+            onOpen: onOpenLink,
           ),
         ),
       if (image != null)

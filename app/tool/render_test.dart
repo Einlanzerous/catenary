@@ -20,6 +20,10 @@ import 'package:catenary/store/connection.dart';
 import 'package:catenary/store/conversation.dart';
 import 'package:catenary/store/enrollment.dart';
 import 'package:catenary/theme.dart';
+import 'package:catenary/widgets/composer.dart';
+import 'package:catenary/widgets/held_chip.dart';
+import 'package:catenary/widgets/link_card.dart';
+import 'package:catenary/widgets/reply_stub.dart';
 import 'package:catenary/thread.dart';
 import 'package:catenary/tokens.dart';
 import 'package:catenary_client/catenary_client.dart' show EnrollAnswerUnreadable, EnrollRefused;
@@ -150,6 +154,98 @@ void main() {
       ));
       await tester.pumpAndSettle();
       await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/voice-$name.png'));
+    });
+
+    // The link preview canvas, narrow (CANT-325): cards in a thread, then the
+    // held chips, the quoted stubs and the armed bars. The card images are the
+    // blurhash: no bytes are fetched in a render.
+    testWidgets('render the link previews, thread, $name', (tester) async {
+      await loadFonts();
+      tester.view.physicalSize = const Size(780, 2900);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+        home: TickerMode(
+          enabled: false,
+          child: ThreadScreen(conversation: fixtureLinkConversation(DateTime(2026, 8, 16, 14, 16)), connection: const ConnectionView.live()),
+        ),
+      ));
+      // The blurhash decodes off the frame: let it land before the picture.
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/link-thread-$name.png'));
+    });
+
+    testWidgets('render the link previews, chips and stubs, $name', (tester) async {
+      await loadFonts();
+      tester.view.physicalSize = const Size(780, 1900);
+      tester.view.devicePixelRatio = 2;
+      addTearDown(tester.view.reset);
+      const argosy = LinkPreviewView(
+        url: 'https://argosy.zerogravity.industries/series/1',
+        title: 'Severance — Season 2 is in the library',
+        imageWidth: 1920,
+        imageHeight: 1080,
+        placeholder: fixtureHashWarm,
+      );
+      const switchyard = LinkPreviewView(url: 'https://switchyard.zerogravity.industries/dashboard', title: 'Switchyard — Dashboard');
+      const riverline = LinkPreviewView(url: 'https://www.riverline.org/page');
+      Widget tray(Widget child) => Builder(
+            builder: (context) => Container(
+              decoration: BoxDecoration(color: CatenaryTokens.of(context).surfaceRail, border: Border.all(color: CatenaryTokens.of(context).lineHair)),
+              margin: const EdgeInsets.only(bottom: 12),
+              child: child,
+            ),
+          );
+      Widget composer({HeldLink? link, String? image, String? draft}) => tray(Composer(
+            connection: const ConnectionView.live(),
+            controller: TextEditingController(text: draft),
+            link: link,
+            attachment: image,
+            onRemoveLink: () {},
+            onRemoveAttachment: () {},
+            onAttach: () {},
+            onSend: () {},
+          ));
+      await tester.pumpWidget(MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: catenaryTheme(mode == ThemeMode.dark ? Brightness.dark : Brightness.light),
+        home: TickerMode(
+          enabled: false,
+          child: Builder(
+            builder: (context) => Scaffold(
+              backgroundColor: CatenaryTokens.of(context).surfaceBase,
+              body: SingleChildScrollView(
+                padding: const EdgeInsets.fromLTRB(0, 24, 0, 0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    composer(link: const HeldLink(host: 'switchyard.zerogravity.industries', title: 'Switchyard — Dashboard'), draft: '…/dashboard'),
+                    composer(link: const HeldLink(host: 'chronicle.zerogravity.industries', fetching: true), draft: '…/w/sunday'),
+                    composer(link: const HeldLink(host: 'argosy.zerogravity.industries', title: 'Severance — Season 2 is in the library'), image: 'IMG_4471.HEIC', draft: "this one's the shed"),
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [
+                        QuotedLinkStub(sender: 'Ted', link: switchyard),
+                        SizedBox(height: 12),
+                        QuotedLinkStub(sender: 'Nadia', link: riverline),
+                      ]),
+                    ),
+                    tray(ArmedLinkBar(sender: 'Ted', link: switchyard, onClear: () {})),
+                    tray(ArmedLinkBar(sender: 'Nadia', link: riverline, onClear: () {})),
+                    Padding(padding: const EdgeInsets.all(16), child: LinkCard(link: argosy, ground: CatenaryTokens.of(context).surfaceRail)),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ));
+      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 200)));
+      await tester.pumpAndSettle();
+      await expectLater(find.byType(MaterialApp), matchesGoldenFile('../build/render/link-chips-$name.png'));
     });
 
     // The enrollment form saying what the server did (CANT-234): a 200 it
