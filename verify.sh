@@ -496,6 +496,37 @@ for gen in web/src/wire/generated.ts dart/lib/src/generated.dart internal/wire/g
 done
 trap - EXIT INT TERM
 
+# CANT-329: the link-detection table (schema/vectors/link-detection.json) is the
+# only definition of which URL a draft previews; web, the Dart client and the
+# app all assert it. A table that cannot fail proves nothing, so each client's
+# rule is edited in turn (the trailing-punctuation set loses its `)`) and its
+# own test must go red. Same backup-and-trap discipline as the loop above, for
+# the same reason: a ^C must not leave a mutated rule behind.
+step "CANT-329 · a deliberate edit to either client's detection rule fails its test"
+_mut_restore() { [ -n "${_mut_bak:-}" ] && [ -f "$_mut_bak" ] && cp "$_mut_bak" "$ROOT/$_mut_cur" && rm -f "$_mut_bak"; }
+trap _mut_restore EXIT INT TERM
+_mut_check() { # file, sed expression, label, test command (run in its own dir)
+  _mut_cur="$1"; _mut_bak="$(mktemp "${TMPDIR:-/tmp}/$(basename "$1").XXXXXX.bak")"
+  cp "$ROOT/$1" "$_mut_bak"
+  sed -i "$2" "$ROOT/$1"
+  if cmp -s "$ROOT/$1" "$_mut_bak"; then
+    cp "$_mut_bak" "$ROOT/$1"; rm -f "$_mut_bak"; _mut_bak=""
+    result 1 "$3: the mutation did not apply (the rule moved; update this step)"
+    return
+  fi
+  (cd "$ROOT/$4" && eval "$5") >/dev/null 2>&1
+  rc=$?
+  cp "$_mut_bak" "$ROOT/$1"; rm -f "$_mut_bak"; _mut_bak=""
+  [ $rc -ne 0 ]; result $? "$3"
+}
+_mut_check web/src/linkpreview.ts 's/\[\.,;:!?)\]+\$/[.,;:!?]+$/' "a mutated web rule fails npm run test:linkpreview" web 'npm run --silent test:linkpreview'
+if command -v dart >/dev/null; then
+  _mut_check dart-client/lib/src/link_preview.dart "s/_trailing = '\.,;:!?)'/_trailing = '.,;:!?'/" "a mutated Dart rule fails dart test link_preview_test.dart" dart-client 'dart test test/link_preview_test.dart --no-color'
+else
+  printf '   \033[33mSKIP\033[0m dart not on PATH — the Dart half of the rule-mutation proof.\n'
+fi
+trap - EXIT INT TERM
+
 # `smoke` chains CANT-161's `npm run outbox` (node:test): the criteria as
 # written, then every named fault required to fail its criterion.
 #

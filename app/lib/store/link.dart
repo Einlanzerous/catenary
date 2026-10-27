@@ -12,6 +12,8 @@
 // empty preview. Both wait on that decision; nothing here guesses either
 // client-side.
 
+import 'package:catenary_client/catenary_client.dart' show detectLinkUrl, linkUrlIsAskable;
+
 /// Whether [url] is one a card may hand to the system launcher: `http` or
 /// `https` and nothing else. The wire says so in prose only, so a card checks
 /// before it opens what another member's message named.
@@ -102,47 +104,34 @@ String cleanPageText(String s) => s
     .replaceAll(RegExp(r'[\x00-\x1F\x7F-\x9F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]'), '')
     .trim();
 
-final _urlPattern = RegExp(r'https?://[^\s<>"]+', caseSensitive: false);
-
-String _trimUrl(String u) {
-  var end = u.length;
-  while (end > 0) {
-    final c = u[end - 1];
-    final closing = c == ')' && !u.substring(0, end).contains('(');
-    if ('.,;:!?\'"]}'.contains(c) || closing) {
-      end--;
-    } else {
-      break;
-    }
-  }
-  return u.substring(0, end);
-}
-
-/// The first `http` or `https` URL in a draft: the one a chip is made for.
-/// One link chip per draft.
+/// The first URL in a draft a chip is made for: the shared detection rule
+/// (`schema/vectors/link-detection.json`, CANT-329) through the Dart client's
+/// own implementation of it, and only once its host is complete enough to ask
+/// about, as on the web. One link chip per draft.
 String? firstUrl(String text) {
-  for (final m in _urlPattern.allMatches(text)) {
-    final u = _trimUrl(m.group(0)!);
-    if (u.length > 8) return u;
-  }
-  return null;
+  final u = detectLinkUrl(text);
+  return u != null && linkUrlIsAskable(u) ? u : null;
 }
 
 /// A piece of message text, and whether it is a URL (drawn underlined in the
 /// meta color; the text itself is left exactly as pasted).
 typedef TextSpanPart = ({String text, bool isUrl});
 
+/// [text] split on every URL the shared rule finds, one after another. The
+/// web underlines only the first, and only on a message that carries a card;
+/// every URL here is a difference of rendering, not of detection (CANT-329).
 List<TextSpanPart> urlParts(String text) {
   final parts = <TextSpanPart>[];
-  var at = 0;
-  for (final m in _urlPattern.allMatches(text)) {
-    final u = _trimUrl(m.group(0)!);
-    if (u.length <= 8) continue;
-    if (m.start > at) parts.add((text: text.substring(at, m.start), isUrl: false));
+  var rest = text;
+  while (true) {
+    final u = detectLinkUrl(rest);
+    final at = u == null ? -1 : rest.indexOf(u);
+    if (u == null || at < 0) break;
+    if (at > 0) parts.add((text: rest.substring(0, at), isUrl: false));
     parts.add((text: u, isUrl: true));
-    at = m.start + u.length;
+    rest = rest.substring(at + u.length);
   }
-  if (at < text.length) parts.add((text: text.substring(at), isUrl: false));
+  if (rest.isNotEmpty) parts.add((text: rest, isUrl: false));
   return parts;
 }
 

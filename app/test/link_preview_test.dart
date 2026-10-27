@@ -1,6 +1,7 @@
 // CANT-325: the link preview card, the held chips, and the quoted stub and
 // armed bar, built to `Catenary Link Preview.dc.html` (narrow). Fed by
-// fixtures: the app does not import the Dart client's preview call yet.
+// fixtures: the app does not import the Dart client's preview call yet, only
+// its detection rule (CANT-329).
 //
 // What each group holds:
 //   host           derived from the URL, never from a page's own words
@@ -14,6 +15,8 @@
 //   stub and bar   with a preview and with an empty one
 
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:catenary/fixtures.dart';
@@ -34,6 +37,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// The one detection table (CANT-329): schema/vectors/link-detection.json, read
+/// by the web test and the Dart client's as well. The app imports the Dart
+/// client's implementation of the rule, so this asserts the app's wrappers on it.
+final detection = (jsonDecode(File('../schema/vectors/link-detection.json').readAsStringSync())['cases'] as List)
+    .cast<Map<String, dynamic>>();
 
 const _switchyard = LinkPreviewView(
   url: 'https://switchyard.zerogravity.industries/dashboard',
@@ -97,12 +106,16 @@ void main() {
       expect(cleanPageText('safe\u202Etxt.exe\u2066x\u2069\u0007'), 'safetxt.exex');
     });
 
-    test('the first URL, without the punctuation around it', () {
-      expect(firstUrl('see https://a.example/x, ok'), 'https://a.example/x');
-      expect(firstUrl('(https://a.example/y)'), 'https://a.example/y');
-      expect(firstUrl('https://a.example/(z)'), 'https://a.example/(z)');
-      expect(firstUrl('no link here'), isNull);
-      expect(firstUrl('one https://a.example/1 two https://b.example/2'), 'https://a.example/1');
+    test('the first URL is the one the shared table says, and only when it is askable', () {
+      for (final c in detection) {
+        final url = c['url'] as String?;
+        expect(firstUrl(c['text'] as String), (c['ask'] as bool) ? url : isNull, reason: '${c['name']}');
+      }
+    });
+
+    test('every URL in a body is found by the same rule, and the text keeps every character', () {
+      expect(urlParts('see https://a.example/1, then HTTPS://B.EXAMPLE/2 and https://c.example/3.').where((p) => p.isUrl).map((p) => p.text),
+          ['https://a.example/1', 'https://c.example/3']);
     });
 
     test('the text is split on URLs and keeps every character', () {
@@ -511,7 +524,7 @@ void main() {
       expect(find.text('switchyard.zerogravity.industries'), findsOneWidget);
       expect(find.text('FETCHING PREVIEW'), findsOneWidget);
       expect(asked, isEmpty, reason: 'debounced: the URL has to stop changing');
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       expect(asked, [url]);
       answer.complete(const LinkPreviewView(url: url, title: 'Switchyard — Dashboard'));
       await tester.pump();
@@ -524,7 +537,7 @@ void main() {
     testWidgets('sent with a settled preview, the message carries it', (tester) async {
       await screen(tester);
       await type(tester, url);
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       answer.complete(const LinkPreviewView(url: url, title: 'Switchyard — Dashboard'));
       await tester.pump();
       await tester.tap(find.byKey(const ValueKey('composer-primary')));
@@ -538,7 +551,7 @@ void main() {
     testWidgets('sent while fetching, the message goes as plain text and never gains a card', (tester) async {
       await screen(tester);
       await type(tester, url);
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       expect(find.text('FETCHING PREVIEW'), findsOneWidget);
       await tester.tap(find.byKey(const ValueKey('composer-primary')));
       await tester.pump();
@@ -549,7 +562,7 @@ void main() {
     testWidgets('dismissed: no chip, the URL text untouched, and that URL is not fetched again in this draft', (tester) async {
       await screen(tester);
       await type(tester, url);
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       expect(asked, hasLength(1));
       await tester.tap(find.byKey(const ValueKey('composer-link-remove')));
       await tester.pump();
@@ -558,7 +571,7 @@ void main() {
       expect(find.text(url), findsOneWidget, reason: 'the URL text is the sender\'s and stays');
       // More words after it: the first URL is the same one, and stays dismissed.
       await type(tester, '$url and more');
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       expect(find.byKey(const ValueKey('composer-link-chip')), findsNothing);
       expect(asked, hasLength(1));
       // A late answer to the dismissed fetch brings nothing back.
@@ -574,7 +587,7 @@ void main() {
     testWidgets('an empty or failed fetch removes the chip itself', (tester) async {
       await screen(tester);
       await type(tester, url);
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       answer.complete(null);
       await tester.pump();
       await tester.pump();
@@ -596,7 +609,7 @@ void main() {
     testWidgets('with a send that carries both, the image and the link chips stack and one send carries both', (tester) async {
       await screen(tester, picked: true, both: true);
       await type(tester, url);
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       answer.complete(const LinkPreviewView(url: url, title: 'Switchyard — Dashboard'));
       await tester.pump();
       await tester.pump();
@@ -617,7 +630,7 @@ void main() {
       expect(find.byKey(const ValueKey('composer-link-chip')), findsOneWidget);
       await type(tester, 'never mind');
       expect(find.byKey(const ValueKey('composer-link-chip')), findsNothing);
-      await tester.pump(const Duration(milliseconds: 400));
+      await tester.pump(const Duration(milliseconds: 650));
       expect(asked, isEmpty, reason: 'the pending fetch was cancelled with it');
     });
 

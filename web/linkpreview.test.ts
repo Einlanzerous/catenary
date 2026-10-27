@@ -1,7 +1,8 @@
 /* `npm run test:linkpreview` — link previews on the web (CANT-323, under
  * CANT-308).
  *
- *   detection   the ten pinned strings, the same table the Dart client asserts
+ *   detection   schema/vectors/link-detection.json, the one table the Dart client
+ *               and the app assert too
  *   the call    200 card, 204 and every other failure alike, 404 as "off",
  *               429 with retry_after_sec, a 401 repaired once; no reason and
  *               no URL ever leaves the file
@@ -17,6 +18,8 @@
 
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import Composer from '@/components/Composer.vue'
@@ -26,6 +29,7 @@ import {
   createLinkPreviewClient,
   detectLink,
   hostOf,
+  looksComplete,
   plainText,
   openableUrl,
   sameOrigin,
@@ -48,25 +52,30 @@ const pair: Credential = { userId: ME, deviceId: uuid(3), accessToken: TOKEN }
 
 /* ── detection ────────────────────────────────────────────────────────────── */
 
-// The ten strings of the CANT-308 plan's pinned rule. The Dart client asserts
-// this same table (duplicated on purpose: the alternative is a third generated
-// artifact for one regex).
-const DETECTION: [string, string | null][] = [
-  ['https://example.com', 'https://example.com'],
-  ['look at https://example.com/a?b=1 now', 'https://example.com/a?b=1'],
-  ['(see https://example.com/x)', 'https://example.com/x'],
-  ['it is https://example.com/x.', 'https://example.com/x'],
-  ['wow https://example.com/v?!', 'https://example.com/v'],
-  ['first https://a.test/1 then https://b.test/2', 'https://a.test/1'],
-  ['plain http://example.com/page works too', 'http://example.com/page'],
-  ['line one\nhttps://example.com/two', 'https://example.com/two'],
-  ['ftp://example.com/file.txt', null],
-  ['no link in this one', null],
-]
+// The one table (CANT-329): schema/vectors/link-detection.json, read by the Dart
+// client's and the app's tests as well. Nothing here defines a case.
+interface DetectionCase {
+  name: string
+  text: string
+  url: string | null
+  ask: boolean
+}
+const DETECTION: DetectionCase[] = JSON.parse(
+  readFileSync(resolve(process.cwd(), '..', 'schema', 'vectors', 'link-detection.json'), 'utf8'),
+).cases
 
-test('Detection · the ten pinned strings produce the pinned URL', () => {
-  assert.equal(DETECTION.length, 10)
-  for (const [text, want] of DETECTION) assert.equal(detectLink(text), want, JSON.stringify(text))
+test('Detection · the shared table: every case produces its URL, and says whether to ask', () => {
+  assert.ok(DETECTION.length >= 40, 'the table was read')
+  for (const c of DETECTION) {
+    const got = detectLink(c.text)
+    assert.equal(got, c.url, `${c.name}: ${JSON.stringify(c.text)}`)
+    assert.equal(got !== null && looksComplete(got), c.ask, `${c.name}: ask`)
+  }
+})
+
+test('Detection · the table can fail: a rule without the trailing trim disagrees with it', () => {
+  const noTrim = (t: string) => /https?:\/\/\S+/.exec(t)?.[0] ?? null
+  assert.ok(DETECTION.some((c) => noTrim(c.text) !== c.url))
 })
 
 test('Detection · a scheme with nothing after it is a URL still being typed', () => {

@@ -329,7 +329,7 @@ class _ThreadComposerState extends State<_ThreadComposer> {
       _linkUrl = url;
       _preview = null;
     });
-    _fetchTimer = Timer(const Duration(milliseconds: 350), () => _fetch(url));
+    _fetchTimer = Timer(const Duration(milliseconds: 600), () => _fetch(url));
   }
 
   Future<void> _fetch(String url) async {

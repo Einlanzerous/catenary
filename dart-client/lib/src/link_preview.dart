@@ -3,11 +3,11 @@
 /// client-local state over both. The protocol half only: nothing here knows a
 /// widget, and the card is rendered by the app (CANT-325).
 ///
-/// THE DETECTION RULE IS PINNED, NOT SHARED. The URL is the first token
-/// matching `https?://` up to the next whitespace, with trailing `.,;:!?)`
-/// trimmed. The web client asserts the same ten strings against the same
-/// expectations; the table is duplicated on purpose, because the alternative is
-/// a third generated artifact for one regex.
+/// THE DETECTION RULE IS PINNED, AND THE TABLE IS SHARED. The URL is the first
+/// token matching `https?://` plus a non-space, up to the next whitespace, with
+/// trailing `.,;:!?)` trimmed; a request is made only when its host has a dot.
+/// `schema/vectors/link-detection.json` is the one definition (CANT-329): this
+/// file, the web client and the app all assert it, and none carries a copy.
 ///
 /// EVERY FAILURE OF THE FETCH IS THE SAME ANSWER. A `204` is "no card", and so
 /// is a `404` (the feature is off server-side), a transport failure, a body
@@ -47,6 +47,15 @@ String? detectLinkUrl(String text) {
   // Nothing after the scheme once the punctuation is gone is not a link.
   final rest = url.substring(url.indexOf('://') + 3);
   return rest.isEmpty ? null : url;
+}
+
+/// Whether a detected [url] is complete enough to ask about: it parses and its
+/// host has a dot and does not end in one (a half-typed `https://exa` would
+/// otherwise be fetched). A courtesy only; the server decides what it fetches.
+bool linkUrlIsAskable(String url) {
+  final u = Uri.tryParse(url);
+  if (u == null || !(u.scheme == 'http' || u.scheme == 'https')) return false;
+  return u.host.contains('.') && !u.host.endsWith('.');
 }
 
 // ── the call ────────────────────────────────────────────────────────────────
@@ -204,8 +213,8 @@ final class LinkPreviewDraft {
     _cancel();
     _url = url;
     _ready = null;
-    if (url == null) return _set(LinkPreviewState.idle);
     _set(LinkPreviewState.idle);
+    if (url == null || !linkUrlIsAskable(url)) return;
     final gen = _gen;
     _timer = _timers.setTimeout(() {
       _timer = null;

@@ -1,11 +1,12 @@
-/// Link previews on the Dart client (CANT-324): the ten pinned detection
-/// cases, the `POST /link-previews` call and what it makes of each answer, the
+/// Link previews on the Dart client (CANT-324): the shared detection
+/// table, the `POST /link-previews` call and what it makes of each answer, the
 /// composer's state (a send never waits), and the outbox's stale-handle drop
 /// over real SQLite files as well as memory.
 library;
 
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:catenary_client/catenary_client.dart';
 import 'package:catenary_wire/catenary_wire.dart';
@@ -17,19 +18,10 @@ import 'outbox_harness.dart';
 const base = 'https://chat.example.com';
 final handle = uuid(901);
 
-/// The same ten strings and expected URLs the web test asserts.
-const detection = <(String, String?)>[
-  ('https://example.com/a', 'https://example.com/a'),
-  ('look at (https://example.com/a)', 'https://example.com/a'),
-  ('is this it https://example.com/a.', 'https://example.com/a'),
-  ('well https://example.com/a?v=1&t=2#x, I think', 'https://example.com/a?v=1&t=2#x'),
-  ('watch https://example.com/one and https://example.com/two', 'https://example.com/one'),
-  ('http://example.com/plain', 'http://example.com/plain'),
-  ('ftp://example.com/file', null),
-  ('no link here at all', null),
-  ('really?! https://example.com/watch?v=abc123!?', 'https://example.com/watch?v=abc123'),
-  ('just the scheme https://', null),
-];
+/// The one table (CANT-329): schema/vectors/link-detection.json, read by the
+/// web test and the app's as well. Nothing here defines a case.
+final detection = (jsonDecode(File('../schema/vectors/link-detection.json').readAsStringSync())['cases'] as List)
+    .cast<Map<String, dynamic>>();
 
 String cardBody() => jsonEncode({
       'upload_id': handle,
@@ -81,8 +73,13 @@ final class Cred implements CredentialSeam {
 
 void main() {
   group('detection', () {
-    for (final (i, c) in detection.indexed) {
-      test('case ${i + 1}: ${jsonEncode(c.$1)} -> ${c.$2}', () => expect(detectLinkUrl(c.$1), c.$2));
+    test('the shared table was read', () => expect(detection.length, greaterThanOrEqualTo(40)));
+    for (final c in detection) {
+      test('${c['name']}: ${jsonEncode(c['text'])}', () {
+        final got = detectLinkUrl(c['text'] as String);
+        expect(got, c['url']);
+        expect(got != null && linkUrlIsAskable(got), c['ask']);
+      });
     }
   });
 
