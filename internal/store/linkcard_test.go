@@ -106,6 +106,11 @@ func TestMigration0014RefusesToRollBackOverACard(t *testing.T) {
 		}
 		return v
 	}
+	// 0015 sits above 0014 and its down is a plain drop; take it off first so
+	// the refused down below is 0014's and the schema it leaves is 0014.
+	if err := MigrateDown(ctx, pool, 1); err != nil {
+		t.Fatalf("0015 down: %v", err)
+	}
 	before := version()
 
 	err = MigrateDown(ctx, pool, 1)
@@ -182,7 +187,7 @@ func TestMigration0014AppliesAndReverses(t *testing.T) {
 		t.Fatalf("send image: %v", err)
 	}
 
-	if err := MigrateDown(ctx, pool, 1); err != nil {
+	if err := MigrateDown(ctx, pool, migrationsAfter(t, "0013")); err != nil {
 		t.Fatalf("0014 down: %v", err)
 	}
 	count := func(q string, args ...any) int {
