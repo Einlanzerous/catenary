@@ -953,6 +953,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"link_title", "text", true},
 			{"link_description", "text", true},
 			{"link_site_name", "text", true},
+			{"link_final_host", "text", true},
 		},
 		// CANT-309's. The columns 0013 gives a pending upload; the sketch in
 		// docs/decisions/cant-47-media-storage.md plus duration_ms and peaks,
@@ -976,6 +977,7 @@ func TestSchemaMatchesThePlanColumnForColumn(t *testing.T) {
 			{"link_title", "text", true},
 			{"link_description", "text", true},
 			{"link_site_name", "text", true},
+			{"link_final_host", "text", true},
 		},
 		"log_counter": {
 			{"id", "integer", false},
