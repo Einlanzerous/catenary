@@ -121,14 +121,14 @@ func wallDetail(pasted, final *url.URL, title, siteName string) string {
 	brands := wallBrands(pasted, final, siteName)
 	phrase := false
 	for _, s := range segments {
-		switch {
-		case brands[s]:
-		case wallSegmentIsPhrase(s, brands):
-			phrase = true
-		default:
+		// A phrase that is also a brand ("Login" on login.example.com) still
+		// counts as a phrase: wall_brand is only for a title with none.
+		isPhrase := wallSegmentIsPhrase(s, brands)
+		if !isPhrase && !brands[s] {
 			// One segment that says something the host does not: a card.
 			return ""
 		}
+		phrase = phrase || isPhrase
 	}
 	if phrase {
 		return wallTitle

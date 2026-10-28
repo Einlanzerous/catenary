@@ -176,6 +176,8 @@ func TestWallDetail(t *testing.T) {
 		{"brand plus words is a card", "https://www.instagram.com/", "", "Instagram Reels", "", ""},
 		{"brand contained in a word", "https://www.instagram.com/", "", "Instagrammable", "", ""},
 		{"ip literal gives no brand", "https://127.0.0.1/", "", "127", "", ""},
+		{"a phrase that is also a host label is a phrase", "https://login.example.com/x", "", "Login", "", wallTitle},
+		{"a phrase that is also the site name is a phrase", "https://x.example/", "", "Cloudflare", "Cloudflare", wallTitle},
 
 		// The redirect signal: only after a redirect, only on a login path, and
 		// only at a path boundary.
