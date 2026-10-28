@@ -199,6 +199,12 @@ func (g *Guarded) Preview(ctx context.Context, rawURL string) (*Preview, error) 
 		Description: clean(m.description, maxDescriptionRunes),
 		SiteName:    clean(m.siteName, maxSiteNameRunes),
 	}
+	// A login wall or a bot check is no card, decided BEFORE the image: a wall's
+	// og:image is the brand logo, and fetching it would spend the image budget
+	// on a picture nothing will show (wall.go).
+	if detail := wallDetail(u, finalURL, p.Title, p.SiteName); detail != "" {
+		return nil, newErr(ClassEmpty, detail, nil)
+	}
 	if strings.TrimSpace(m.image) != "" {
 		img, class := g.fetchImage(ctx, finalURL, strings.TrimSpace(m.image))
 		p.Image, p.ImageClass = img, class

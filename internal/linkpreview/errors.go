@@ -29,7 +29,8 @@ type Error struct {
 	Class Class
 	// Detail is a short fixed token. For ClassBlocked it is the address class
 	// ("loopback", "private", "link_local", ...) or "redirect" or "port", which
-	// is what the endpoint logs at warn.
+	// is what the endpoint logs at warn. For ClassEmpty it is "" or one of the
+	// wall_* tokens in wall.go.
 	Detail string
 	cause  error
 }
