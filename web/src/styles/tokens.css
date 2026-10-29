@@ -24,13 +24,14 @@
   --line-edge: #23292b; /* input and attachment borders */
   --line-inner: #1a1f21; /* separators inside an attachment block */
   --line-faint: #14181a; /* list-row separators */
+  --line-strong: #626d6c; /* pressed and active borders; 3:1 on every surface */
   --line-accent-dim: #3a3227; /* border on an accented chip */
 
   /* ── text ─────────────────────────────────────────────────── */
   --text-primary: #e8ecea; /* message body, names */
   --text-bright: #c3c9c7; /* avatar glyph, unread preview */
   --text-secondary: #98a2a0; /* previews, transcript */
-  --text-meta: #626d6c; /* timestamps, status labels */
+  --text-meta: #747e7d; /* timestamps, status labels */
   --text-dim: #47504f; /* gutter time, keycaps */
   --text-faint: #2f3739; /* continuation-row time */
   --text-disabled: #3c4544; /* action unavailable */
@@ -75,12 +76,13 @@
   --line-edge: #cfcabf;
   --line-inner: #e0dcd3;
   --line-faint: #e8e5dd;
+  --line-strong: #7c827e;
   --line-accent-dim: #dcc49e;
 
   --text-primary: #16191a;
   --text-bright: #2c302f;
   --text-secondary: #5c6360;
-  --text-meta: #8a908c;
+  --text-meta: #666b69;
   --text-dim: #a2a7a2;
   --text-faint: #c2c5be;
   --text-disabled: #b5b9b2;

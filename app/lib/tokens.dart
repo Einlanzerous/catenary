@@ -28,6 +28,7 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
     required this.lineEdge,
     required this.lineInner,
     required this.lineFaint,
+    required this.lineStrong,
     required this.lineAccentDim,
     required this.textPrimary,
     required this.textBright,
@@ -70,6 +71,8 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
   final Color lineInner;
   /// `--line-faint` — list-row separators
   final Color lineFaint;
+  /// `--line-strong` — pressed and active borders; 3:1 on every surface
+  final Color lineStrong;
   /// `--line-accent-dim` — border on an accented chip
   final Color lineAccentDim;
   /// `--text-primary` — message body, names
@@ -130,6 +133,7 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
         'line-edge': lineEdge,
         'line-inner': lineInner,
         'line-faint': lineFaint,
+        'line-strong': lineStrong,
         'line-accent-dim': lineAccentDim,
         'text-primary': textPrimary,
         'text-bright': textBright,
@@ -164,11 +168,12 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
     lineEdge: Color(0xFF23292B),
     lineInner: Color(0xFF1A1F21),
     lineFaint: Color(0xFF14181A),
+    lineStrong: Color(0xFF626D6C),
     lineAccentDim: Color(0xFF3A3227),
     textPrimary: Color(0xFFE8ECEA),
     textBright: Color(0xFFC3C9C7),
     textSecondary: Color(0xFF98A2A0),
-    textMeta: Color(0xFF626D6C),
+    textMeta: Color(0xFF747E7D),
     textDim: Color(0xFF47504F),
     textFaint: Color(0xFF2F3739),
     textDisabled: Color(0xFF3C4544),
@@ -198,11 +203,12 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
     lineEdge: Color(0xFFCFCABF),
     lineInner: Color(0xFFE0DCD3),
     lineFaint: Color(0xFFE8E5DD),
+    lineStrong: Color(0xFF7C827E),
     lineAccentDim: Color(0xFFDCC49E),
     textPrimary: Color(0xFF16191A),
     textBright: Color(0xFF2C302F),
     textSecondary: Color(0xFF5C6360),
-    textMeta: Color(0xFF8A908C),
+    textMeta: Color(0xFF666B69),
     textDim: Color(0xFFA2A7A2),
     textFaint: Color(0xFFC2C5BE),
     textDisabled: Color(0xFFB5B9B2),
