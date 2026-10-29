@@ -96,7 +96,7 @@ watch(() => props.link.imagePlaceholder, paint)
       <span v-if="host" class="host"
         ><span class="host-name"
           >{{ host }}<template v-if="finalHost"
-            >{{ ' ' }}<span class="arrow" aria-label="redirects to">→</span>{{ ' ' + finalHost }}</template
+            >{{ ' ' }}<span class="arrow" role="img" aria-label="redirects to">→</span>{{ ' ' + finalHost }}</template
           ></span
         ><span class="out" aria-hidden="true">↗</span></span
       >
