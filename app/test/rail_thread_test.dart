@@ -209,6 +209,27 @@ void main() {
     });
   }
 
+  for (final brightness in Brightness.values) {
+    testWidgets('CANT-344 · ${brightness.name} · on the open row the stamp and preview are text.secondary, the raised ground\'s meta', (tester) async {
+      await show(tester, rail(canvasNow), brightness);
+      final t = CatenaryTokens.of(tester.element(find.byKey(const ValueKey('rail-kitchen'))));
+      final stamp = tester.widget<Text>(
+        find.descendant(of: find.byKey(const ValueKey('rail-kitchen')), matching: find.byKey(const ValueKey('rail-stamp'))),
+      );
+      expect(stamp.style!.color, t.textSecondary, reason: 'an open row with nothing unread');
+      final kitchen = fixtureConversations(canvasNow).firstWhere((c) => c.id == 'kitchen');
+      final previewText = tester.widget<Text>(
+        find.descendant(of: find.byKey(const ValueKey('rail-kitchen')), matching: find.text(preview(kitchen))),
+      );
+      expect(previewText.style!.color, t.textSecondary);
+      // A closed read row keeps text.meta: the raise is for the raised ground only.
+      final closed = tester.widget<Text>(
+        find.descendant(of: find.byKey(const ValueKey('rail-dinner')), matching: find.byKey(const ValueKey('rail-stamp'))),
+      );
+      expect(closed.style!.color, t.textMeta);
+    });
+  }
+
   testWidgets('timestamps are relative to today, not pinned to the fixtures\' dates', (tester) async {
     // The same conversations, read two days later and then nine days later.
     // Two days on is Tuesday the 18th: Sunday is a weekday, and the Monday and
