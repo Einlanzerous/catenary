@@ -58,6 +58,13 @@ type Preview struct {
 	// and its decision, not for the card.
 	FinalURL string
 
+	// FinalHost is the host the page was finally served from, set only when the
+	// redirects left URL's site (finalhost.go): lowercase ASCII, an IPv6 literal
+	// in brackets, no port, and already held to the wire pattern of
+	// LinkAttachment.final_host. Empty when nothing redirected or every hop
+	// stayed on URL's site. This one IS for the card.
+	FinalHost string
+
 	Title       string
 	Description string
 	SiteName    string

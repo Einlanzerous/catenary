@@ -205,6 +205,14 @@ func (g *Guarded) Preview(ctx context.Context, rawURL string) (*Preview, error) 
 	if detail := wallDetail(u, finalURL, p.Title, p.SiteName); detail != "" {
 		return nil, newErr(ClassEmpty, detail, nil)
 	}
+	// The host that served the page, when the redirects left the pasted site. A
+	// card that cannot name it under the wire pattern is no card (finalhost.go),
+	// and that too is decided before the image.
+	host, ok := finalHost(u, finalURL)
+	if !ok {
+		return nil, newErr(ClassEmpty, detailFinalHost, nil)
+	}
+	p.FinalHost = host
 	if strings.TrimSpace(m.image) != "" {
 		img, class := g.fetchImage(ctx, finalURL, strings.TrimSpace(m.image))
 		p.Image, p.ImageClass = img, class

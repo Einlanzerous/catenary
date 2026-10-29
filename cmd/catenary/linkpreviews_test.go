@@ -278,9 +278,21 @@ func TestACardIsStoredThroughIngestAndItsHandleSendsOnce(t *testing.T) {
 	if got.Preview.URL != "https://example.com/watch?v=1" {
 		t.Errorf("url = %q; want the canonical form", got.Preview.URL)
 	}
-	if got.Preview.Title == nil || *got.Preview.Title != "A title" ||
-		got.Preview.Description == nil || got.Preview.SiteName == nil || *got.Preview.SiteName != "Example" {
+	if got.Preview.Title == nil || *got.Preview.Title != "A title" || got.Preview.Description == nil {
 		t.Errorf("text fields = %+v", got.Preview)
+	}
+	// CANT-331 ruling 4 option B: the fixture names og:site_name, and the card
+	// carries none, on the wire or in the row the send will freeze.
+	if got.Preview.SiteName != nil || bytes.Contains(rec.Body.Bytes(), []byte(`"site_name"`)) {
+		t.Errorf("site_name = %v in %s; the server no longer sets it", got.Preview.SiteName, rec.Body)
+	}
+	var siteName *string
+	if err := r.pool.QueryRow(r.ctx, `SELECT link_site_name FROM uploads WHERE id = $1`, uuid.MustParse(got.UploadID)).Scan(&siteName); err != nil || siteName != nil {
+		t.Errorf("uploads.link_site_name = %v (%v); want NULL", siteName, err)
+	}
+	// Nothing redirected, so there is no second host either.
+	if got.Preview.FinalHost != nil || bytes.Contains(rec.Body.Bytes(), []byte(`"final_host"`)) {
+		t.Errorf("final_host = %v in %s; want absent without a cross-site redirect", got.Preview.FinalHost, rec.Body)
 	}
 	p := got.Preview
 	if p.ImageURL == nil || p.ImageWidth == nil || p.ImageHeight == nil || p.ImagePlaceholder == nil ||
@@ -331,6 +343,49 @@ func TestACardIsStoredThroughIngestAndItsHandleSendsOnce(t *testing.T) {
 		sent.Attachments[0].Kind != "link" || sent.Attachments[0].URL != got.Preview.URL ||
 		sent.Attachments[0].ImageURL != *p.ImageURL {
 		t.Errorf("sent attachment = %s (%v)", body, err)
+	}
+}
+
+// CANT-337: a card whose fetch left the pasted site carries the host that
+// served it, in the 200 (mint), in the uploads row (store), from the cache, and
+// in the message the send freezes.
+func TestARedirectedCardCarriesItsFinalHost(t *testing.T) {
+	f := &fakePreviewer{fn: func(_ context.Context, u string) (*linkpreview.Preview, error) {
+		p := okPreview(u, nil)
+		p.FinalURL = "https://www.youtube.com/watch?v=x-wqMcYMNdg"
+		p.FinalHost = "www.youtube.com"
+		return p, nil
+	}}
+	swapPreviewer(t, f)
+	r := newPreviewRig(t, true, nil)
+
+	for i, token := range []string{r.token, r.bobToken} { // the second is a cache hit
+		rec := r.postURL(token, "https://youtu.be/x-wqMcYMNdg?si=gPm-a_n6SUO3qqUS")
+		got := decodeCard(t, rec)
+		if got.Preview.URL != "https://youtu.be/x-wqMcYMNdg?si=gPm-a_n6SUO3qqUS" {
+			t.Errorf("%d: url = %q; want the pasted URL, never the final one", i, got.Preview.URL)
+		}
+		if got.Preview.FinalHost == nil || *got.Preview.FinalHost != "www.youtube.com" {
+			t.Fatalf("%d: final_host = %v in %s; want www.youtube.com", i, got.Preview.FinalHost, rec.Body)
+		}
+		var host *string
+		if err := r.pool.QueryRow(r.ctx, `SELECT link_final_host FROM uploads WHERE id = $1`, uuid.MustParse(got.UploadID)).Scan(&host); err != nil || host == nil || *host != "www.youtube.com" {
+			t.Errorf("%d: uploads.link_final_host = %v (%v); want www.youtube.com", i, host, err)
+		}
+		if i == 0 {
+			code, body := r.send(token, att("link", uuid.MustParse(got.UploadID)))
+			var sent struct {
+				Attachments []struct {
+					FinalHost string `json:"final_host"`
+				} `json:"attachments"`
+			}
+			if code != http.StatusOK || json.Unmarshal(body, &sent) != nil || len(sent.Attachments) != 1 || sent.Attachments[0].FinalHost != "www.youtube.com" {
+				t.Errorf("send = %d: %s; want the frozen card to carry final_host", code, body)
+			}
+		}
+	}
+	if f.calls.Load() != 1 {
+		t.Errorf("fetcher calls = %d; want 1", f.calls.Load())
 	}
 }
 
