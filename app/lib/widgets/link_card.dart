@@ -22,10 +22,10 @@
 // Nothing on the card vouches for the page: no padlock, no check. ↗ only says
 // "opens elsewhere". The full URL is in the long-press sheet.
 //
-// TODO(CANT-331): the redirect row (`youtu.be → youtube.com`) and the login
-// wall rule are a decision that is not made. This card draws the host of the
-// URL the sender pasted, and a preview the server stored as empty draws no
-// card, and nothing more is guessed here.
+// The redirect row: when the server says the fetch left the pasted site
+// (`final_host`), the host line reads `youtu.be → youtube.com`, the arrow in
+// text.meta and both hosts through the one display rule. Absent, the line is
+// the pasted host alone. Same-site is the server's call, never the client's.
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -80,6 +80,7 @@ class _LinkCardState extends State<LinkCard> {
     final link = widget.link;
     final title = link.cleanTitle;
     final description = link.cleanDescription;
+    final hostStyle = TextStyle(fontFamily: fontMono, fontSize: 10.5, height: 14 / 10.5, color: t.textSecondary);
     final card = LayoutBuilder(
       builder: (context, box) {
         final width = box.maxWidth.isFinite ? box.maxWidth : linkCardMaxWidth;
@@ -105,13 +106,19 @@ class _LinkCardState extends State<LinkCard> {
                     Row(
                       children: [
                         Expanded(
-                          child: Text(
-                            link.host,
-                            key: const ValueKey('link-card-host'),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(fontFamily: fontMono, fontSize: 10.5, height: 14 / 10.5, color: t.textSecondary),
-                          ),
+                          child: link.shownFinalHost == null
+                              ? Text(link.host, key: const ValueKey('link-card-host'), maxLines: 1, overflow: TextOverflow.ellipsis, style: hostStyle)
+                              : Text.rich(
+                                  TextSpan(children: [
+                                    TextSpan(text: link.host),
+                                    TextSpan(text: ' → ', style: TextStyle(color: t.textMeta)),
+                                    TextSpan(text: link.shownFinalHost),
+                                  ]),
+                                  key: const ValueKey('link-card-host'),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: hostStyle,
+                                ),
                         ),
                         const SizedBox(width: 12),
                         AnimatedSwitcher(
@@ -152,7 +159,7 @@ class _LinkCardState extends State<LinkCard> {
       constraints: const BoxConstraints(maxWidth: linkCardMaxWidth),
       child: Semantics(
         link: true,
-        label: '${link.host}${title == null ? '' : ', $title'}',
+        label: '${link.host}${link.shownFinalHost == null ? '' : ' to ${link.shownFinalHost}'}${title == null ? '' : ', $title'}',
         child: FocusableActionDetector(
           onShowFocusHighlight: (v) => setState(() => _focused = v),
           actions: {ActivateIntent: CallbackAction<ActivateIntent>(onInvoke: (_) => _open())},

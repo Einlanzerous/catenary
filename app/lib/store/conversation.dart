@@ -81,6 +81,7 @@ class LinkPreviewView {
     this.imageWidth,
     this.imageHeight,
     this.placeholder,
+    this.finalHost,
   });
 
   final String url;
@@ -93,7 +94,15 @@ class LinkPreviewView {
   /// The blurhash.
   final String? placeholder;
 
+  /// The host the fetch landed on, set by the server only when it left the
+  /// pasted site (CANT-331). Its presence is the whole instruction to draw the
+  /// second host; no client decides "same site".
+  final String? finalHost;
+
   String get host => linkHost(url);
+
+  /// [finalHost] as the card shows it, or null when there is none to show.
+  String? get shownFinalHost => finalHost == null || finalHost!.trim().isEmpty ? null : linkFinalHost(finalHost!);
 
   String? get cleanTitle => _clean(title);
   String? get cleanDescription => _clean(description);

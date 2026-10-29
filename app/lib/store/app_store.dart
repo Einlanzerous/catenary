@@ -178,6 +178,7 @@ ThreadMessage journalMessage(wire.Message m, {required String me, required Map<S
             imageWidth: link.imageWidth,
             imageHeight: link.imageHeight,
             placeholder: link.imagePlaceholder,
+            finalHost: link.finalHost,
           ),
     status: deliveryStatus(m.state),
     readBy: m.readBy,

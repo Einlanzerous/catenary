@@ -100,6 +100,59 @@ void main() {
     });
   });
 
+  group('the redirect row (CANT-339)', () {
+    String hostText(WidgetTester tester) => tester.widget<Text>(find.byKey(const ValueKey('link-card-host'))).textSpan?.toPlainText() ??
+        tester.widget<Text>(find.byKey(const ValueKey('link-card-host'))).data!;
+
+    testWidgets('redirected: youtu.be → youtube.com, the arrow in text.meta, both hosts in the host style', (tester) async {
+      await tester.pumpWidget(app(const LinkCard(
+        link: LinkPreviewView(url: 'https://youtu.be/abc', title: 'A video', finalHost: 'www.YouTube.com'),
+        ground: Colors.black,
+      )));
+      expect(hostText(tester), 'youtu.be → youtube.com');
+      final t = tokens(tester, find.byType(LinkCard));
+      final host = tester.widget<Text>(find.byKey(const ValueKey('link-card-host')));
+      expect(host.style!.color, t.textSecondary);
+      final spans = (host.textSpan! as TextSpan).children!.cast<TextSpan>();
+      expect(spans.map((s) => s.text), ['youtu.be', ' → ', 'youtube.com']);
+      expect(spans[1].style!.color, t.textMeta);
+      expect(spans[0].style, isNull);
+      expect(spans[2].style, isNull);
+    });
+
+    testWidgets('same-site: no final_host, one host, no arrow', (tester) async {
+      await tester.pumpWidget(app(const LinkCard(link: LinkPreviewView(url: 'https://www.go.nebula.tv/x', title: 'A video'), ground: Colors.black)));
+      expect(hostText(tester), 'go.nebula.tv');
+      expect(find.textContaining('→'), findsNothing);
+    });
+
+    testWidgets('old shape: a message from before the field renders exactly as before', (tester) async {
+      await tester.pumpWidget(app(const LinkCard(link: _switchyard, ground: Colors.black)));
+      expect(tester.widget<Text>(find.byKey(const ValueKey('link-card-host'))).data, 'switchyard.zerogravity.industries');
+      expect(find.textContaining('→'), findsNothing);
+    });
+
+    testWidgets('an empty final_host draws no arrow', (tester) async {
+      await tester.pumpWidget(app(const LinkCard(link: LinkPreviewView(url: 'https://a.example/', title: 't', finalHost: ' '), ground: Colors.black)));
+      expect(find.textContaining('→'), findsNothing);
+    });
+
+    test('final_host goes through the one display rule', () {
+      expect(linkFinalHost('www.Example.COM'), 'example.com');
+      expect(linkFinalHost('xn--mnchen-3ya.de'), 'xn--mnchen-3ya.de');
+      expect(linkFinalHost('[2001:db8::1]'), '[2001:db8::1]');
+    });
+
+    testWidgets('a long pair of hosts stays on one line', (tester) async {
+      await tester.pumpWidget(app(const LinkCard(
+        link: LinkPreviewView(url: 'https://a-very-long-subdomain.of-the-pasted-site.example/x', title: 't', finalHost: 'another-very-long-subdomain.of-the-landing-site.example'),
+        ground: Colors.black,
+      )));
+      expect(tester.takeException(), isNull);
+      expect(tester.getSize(find.byKey(const ValueKey('link-card-host'))).height, lessThan(16));
+    });
+  });
+
   group('page text is cleaned, and URLs are found', () {
     test('whitespace collapses; control and bidi characters go', () {
       expect(cleanPageText('  a\n\n b\t\tc  '), 'a b c');
