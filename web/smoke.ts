@@ -1036,6 +1036,8 @@ async function main() {
           image_url: '/media/k-own?exp=1&sig=2', image_width: 1920, image_height: 1080, image_placeholder: 'LEHV6nWB2yk8pyo0adR*.7kCMdnj' })] },
       { ...base, id: 'k-empty', seq: 5, logSeq: 1_000_404, authorId: MAREK, text: 'riverline.org/x https://riverline.org/x',
         attachments: [mk({ url: 'https://riverline.org/x' })] },
+      { ...base, id: 'k-redir', seq: 8, logSeq: 1_000_407, authorId: MAREK, text: 'https://youtu.be/x-wqMcYMNdg',
+        attachments: [mk({ url: 'https://youtu.be/x-wqMcYMNdg?si=abc', final_host: 'www.youtube.com', title: 'A long talk' })] },
       { ...base, id: 'r-full', seq: 6, logSeq: 1_000_405, authorId: state.me, text: 'Is ARGY-131 the one?',
         replyTo: { messageId: 'k-img', authorId: MAREK, kind: 'link', preview: '' } },
       { ...base, id: 'r-empty', seq: 7, logSeq: 1_000_406, authorId: state.me, text: 'That page does not load.',
@@ -1054,6 +1056,11 @@ async function main() {
     check('2A the full URL is the tooltip', img.includes('title="https://www.Switchyard.zerogravity.industries:8443/dashboard"'))
     const txt = messageRow(page, 'k-text')
     check('2A text-only card: no image box, no <img>, no ratio', txt.includes('class="card"') && !txt.includes('<img') && !txt.includes('aspect-ratio') && !txt.includes('class="frame"'))
+    // CANT-338: the redirect row. The arrow is text.meta, the hosts go through one display rule.
+    const redir = messageRow(page, 'k-redir')
+    const redirFlat = redir.replace(/<!--[^>]*-->/g, '')
+    check('2A redirected card shows youtu.be → youtube.com, arrow in its own meta-colored span', />youtu\.be <span class="arrow"[^>]*>→<\/span> youtube\.com</.test(redirFlat))
+    check('2A same-site and old-shape cards show one host and no arrow', !img.includes('class="arrow"') && !txt.includes('class="arrow"') && txt.includes('>chronicle.zerogravity.industries<'))
     const lng = messageRow(page, 'k-long')
     check('2A long title: whole title present for the clamp, whitespace collapsed, bidi stripped', lng.includes('a quiet place to read, a quiet') && !lng.includes('\u202E') && !lng.includes('\n'))
     check('2A description controls stripped and spaces collapsed', lng.includes('Shares Argosy bones.'))
