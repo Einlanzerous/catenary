@@ -338,6 +338,32 @@ func TestTheProducibleVectorsRoundTrip(t *testing.T) {
 				})
 			},
 		},
+		{
+			// CANT-331 / CANT-335. A card whose fetch left the pasted site carries
+			// final_host from attachments.link_final_host; the two cards above are
+			// the NULL shape, which serves with no final_host key.
+			name:   "server_message_link_card_redirected",
+			vector: "server_message_link_card_redirected",
+			build: func(t *testing.T) wire.Message {
+				return Message(store.MessageRow{
+					ID:             mustUUID(t, "8d9e0f1a-2b3c-4d4e-8f5a-6b7c8d9e0f2b"),
+					ConversationID: mustUUID(t, convID),
+					AuthorID:       mustUUID(t, "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"),
+					Seq:            1914,
+					LogSeq:         41273,
+					At:             mustTime(t, "2026-10-24T18:04:00.000Z"),
+					Text:           ptr("watch https://youtu.be/x-wqMcYMNdg?si=gPm-a_n6SUO3qqUS"),
+				}, []store.AttachmentRow{{
+					Kind:          "link",
+					LinkURL:       ptr("https://youtu.be/x-wqMcYMNdg?si=gPm-a_n6SUO3qqUS"),
+					LinkTitle:     ptr("A redirected video"),
+					LinkFinalHost: ptr("www.youtube.com"),
+				}}, nil, Viewer{
+					UserID: mustUUID(t, "2b3c4d5e-6f7a-4b8c-9d0e-1f2a3b4c5d6e"), State: wire.DeliveryStateSent,
+					MediaURL: func(string) string { panic("the deriver was called for a card with no image") },
+				})
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := canonical(t, loadVector(t, tc.vector))

@@ -141,7 +141,7 @@ var attachmentColumns = []string{
 	"id", "message_id", "kind", "storage_key", "position",
 	"duration_ms", "peaks", "transcript_state", "transcript_json",
 	"filename", "width", "height", "bytes", "placeholder",
-	"link_url", "link_title", "link_description", "link_site_name",
+	"link_url", "link_title", "link_description", "link_site_name", "link_final_host",
 }
 
 func attachmentValues(id, messageID uuid.UUID, a AttachmentRow) []any {
@@ -149,7 +149,7 @@ func attachmentValues(id, messageID uuid.UUID, a AttachmentRow) []any {
 		id, messageID, a.Kind, storageKeyValue(a.Kind, a.StorageKey), a.Position,
 		a.DurationMs, a.Peaks, a.TranscriptState, a.TranscriptJSON,
 		a.Filename, a.Width, a.Height, a.Bytes, a.Placeholder,
-		a.LinkURL, a.LinkTitle, a.LinkDescription, a.LinkSiteName,
+		a.LinkURL, a.LinkTitle, a.LinkDescription, a.LinkSiteName, a.LinkFinalHost,
 	}
 }
 
@@ -229,6 +229,9 @@ type NewUpload struct {
 	LinkTitle       *string
 	LinkDescription *string
 	LinkSiteName    *string
+	// LinkFinalHost is set only when the fetch left the pasted site (CANT-331);
+	// nil leaves the column NULL, which is every same-site card.
+	LinkFinalHost *string
 
 	// Image only (CANT-310); nil leaves the column NULL.
 	ThumbKey    *string
@@ -247,10 +250,10 @@ func (s *Store) CreateUpload(ctx context.Context, u NewUpload) (uuid.UUID, error
 	id := uuid.New()
 	if _, err := s.pool.Exec(ctx,
 		`INSERT INTO uploads (id, uploader, kind, storage_key, bytes, thumb_key, width, height, placeholder, filename,
-		                      link_url, link_title, link_description, link_site_name)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+		                      link_url, link_title, link_description, link_site_name, link_final_host)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
 		id, u.Uploader, u.Kind, storageKeyValue(u.Kind, u.StorageKey), u.Bytes, u.ThumbKey, u.Width, u.Height, u.Placeholder, u.Filename,
-		u.LinkURL, u.LinkTitle, u.LinkDescription, u.LinkSiteName); err != nil {
+		u.LinkURL, u.LinkTitle, u.LinkDescription, u.LinkSiteName, u.LinkFinalHost); err != nil {
 		return uuid.Nil, fmt.Errorf("store: create upload: %w", err)
 	}
 	return id, nil
@@ -308,7 +311,7 @@ func (PostgresUploads) Resolve(ctx context.Context, tx pgx.Tx, uploader uuid.UUI
 		        ORDER BY id
 		          FOR UPDATE)
 		RETURNING id, kind, storage_key, bytes, width, height, placeholder, filename, duration_ms, peaks,
-		          link_url, link_title, link_description, link_site_name`,
+		          link_url, link_title, link_description, link_site_name, link_final_host`,
 		ids, uploader)
 	if err != nil {
 		return nil, fmt.Errorf("store: consume uploads: %w", err)
@@ -329,7 +332,7 @@ func (PostgresUploads) Resolve(ctx context.Context, tx pgx.Tx, uploader uuid.UUI
 		)
 		if err := rows.Scan(&id, &row.Kind, &storageKey, &bytes, &width, &height,
 			&row.Placeholder, &row.Filename, &durationMs, &peaks,
-			&row.LinkURL, &row.LinkTitle, &row.LinkDescription, &row.LinkSiteName); err != nil {
+			&row.LinkURL, &row.LinkTitle, &row.LinkDescription, &row.LinkSiteName, &row.LinkFinalHost); err != nil {
 			return nil, fmt.Errorf("store: scan upload: %w", err)
 		}
 		row.StorageKey = derefStr(storageKey)

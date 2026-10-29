@@ -173,6 +173,9 @@ func attachment(a store.AttachmentRow, v Viewer) wire.Attachment {
 			Title:       a.LinkTitle,
 			Description: a.LinkDescription,
 			SiteName:    a.LinkSiteName,
+			// nil on a same-site card and on every card made before CANT-331, and
+			// omitempty, so those serve with no final_host key at all.
+			FinalHost: a.LinkFinalHost,
 		}
 		// A text-only card has no blob: image_url is emitted only when the key is
 		// present, and the deriver is never called with an empty one. The

@@ -335,3 +335,103 @@ func TestTheMediaRouteBesideATextOnlyCard(t *testing.T) {
 		t.Errorf("a validly signed unknown key = %d, want 404", rec.Code)
 	}
 }
+
+// CANT-335 (CANT-331 row 2) end to end: a card whose upload row carries
+// link_final_host serves final_host on the REST send, on /sync and on the live
+// frame; a same-site card (NULL) serves with no final_host key at all, the
+// shape of server_message_link_card_full.
+func TestACardsFinalHostServesOnRestSyncAndTheSocket(t *testing.T) {
+	r, _ := newLinkRig(t)
+	ada := mkUser(r.ctx, t, r.pool, "ada", "Ada")
+	bob := mkUser(r.ctx, t, r.pool, "bob", "Bob")
+	conv := mkGroup(r.ctx, t, r.pool, "A", ada, bob)
+	adaTok := string(r.enroll(ada, "laptop").AccessToken)
+
+	const finalHost = "www.youtube.com"
+	// A text-only card whose fetch left the pasted site, seeded the way seedCard
+	// seeds one, plus the column.
+	redirected := func() uuid.UUID {
+		id := uuid.New()
+		if _, err := r.pool.Exec(r.ctx, `
+			INSERT INTO uploads (id, uploader, kind, storage_key, bytes, link_url, link_title, link_final_host)
+			VALUES ($1, $2, 'link', NULL, 0, $3, $4, $5)`,
+			id, ada, "https://youtu.be/x-wqMcYMNdg?si=gPm-a_n6SUO3qqUS", "A redirected video", finalHost); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	hostOf := func(where string, l wire.LinkAttachment, want *string) {
+		t.Helper()
+		raw, err := json.Marshal(l)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want == nil {
+			if l.FinalHost != nil || strings.Contains(string(raw), `"final_host"`) {
+				t.Errorf("%s: a same-site card serialized final_host: %s", where, raw)
+			}
+			return
+		}
+		if l.FinalHost == nil || *l.FinalHost != *want {
+			t.Errorf("%s: final_host = %v, want %q", where, l.FinalHost, *want)
+		}
+	}
+	fh := ptrOf(finalHost)
+
+	// REST: the send's own response is built from the resolver's RETURNING.
+	code, raw := r.restSend(adaTok, conv, redirected())
+	if code != http.StatusOK {
+		t.Fatalf("send = %d: %s", code, raw)
+	}
+	var sent wire.Message
+	if err := json.Unmarshal(raw, &sent); err != nil {
+		t.Fatal(err)
+	}
+	hostOf("REST", linkOf(t, sent), fh)
+	code, raw = r.restSend(adaTok, conv, r.seedCard(ada, "", ""))
+	if code != http.StatusOK {
+		t.Fatalf("send same-site = %d: %s", code, raw)
+	}
+	if strings.Contains(string(raw), `"final_host"`) {
+		t.Errorf("REST: a same-site card serialized final_host: %s", raw)
+	}
+
+	// /sync, as the other member, checked on the bytes served.
+	bobTok := string(r.enroll(bob, "phone").AccessToken)
+	req := httptest.NewRequest(http.MethodGet, "/sync?after=0", nil)
+	req.Header.Set("Authorization", "Bearer "+bobTok)
+	code, raw = do(t, r.d.router, req)
+	if code != http.StatusOK {
+		t.Fatalf("GET /sync = %d: %s", code, raw)
+	}
+	if n := strings.Count(string(raw), `"final_host":"`+finalHost+`"`); n != 1 {
+		t.Errorf("/sync carries final_host %d time(s), want exactly 1 (the redirected card only): %s", n, raw)
+	}
+	var page wire.SyncResponse
+	if err := json.Unmarshal(raw, &page); err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Messages) != 2 {
+		t.Fatalf("sync messages = %d, want 2", len(page.Messages))
+	}
+	hostOf("/sync redirected", linkOf(t, page.Messages[0]), fh)
+	hostOf("/sync same-site", linkOf(t, page.Messages[1]), nil)
+
+	// The live frame: bob's open session receives both.
+	adaS := r.open(ada, "desk")
+	bobS := r.open(bob, "tablet")
+	for _, c := range []struct {
+		handle uuid.UUID
+		want   *string
+		name   string
+	}{{redirected(), fh, "socket redirected"}, {r.seedCard(ada, "", ""), nil, "socket same-site"}} {
+		adaS.send(wire.ClientSend{
+			ClientID: wire.Uuid(uuid.NewString()), ConversationID: wire.Uuid(conv.String()),
+			Attachments: []wire.OutboundAttachment{{Kind: "link", UploadID: wire.Uuid(c.handle.String())}},
+		})
+		if _, ok := adaS.ack(); !ok {
+			t.Fatalf("%s: no ack", c.name)
+		}
+		hostOf(c.name, linkOf(t, bobS.message()), c.want)
+	}
+}

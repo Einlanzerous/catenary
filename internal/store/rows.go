@@ -85,6 +85,10 @@ type AttachmentRow struct {
 	LinkTitle       *string
 	LinkDescription *string
 	LinkSiteName    *string
+	// LinkFinalHost is the host the fetch landed on after a cross-site redirect
+	// (CANT-331), frozen with the rest of the snapshot; nil when the fetch stayed
+	// on the pasted site and on every card made before the column existed.
+	LinkFinalHost *string
 }
 
 // ReplySource is what the served ReplyRef is built from: the source message as

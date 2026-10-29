@@ -233,7 +233,7 @@ func (s *Store) loadAttachments(ctx context.Context, tx pgx.Tx, page *SyncPage) 
 	rows, err := tx.Query(ctx, `
 		SELECT message_id, kind, position, storage_key, duration_ms, peaks,
 		       transcript_state, transcript_json, filename, width, height, bytes, placeholder,
-		       link_url, link_title, link_description, link_site_name
+		       link_url, link_title, link_description, link_site_name, link_final_host
 		  FROM attachments
 		 WHERE message_id = ANY($1)
 		 ORDER BY message_id, position`, ids)
@@ -252,7 +252,7 @@ func (s *Store) loadAttachments(ctx context.Context, tx pgx.Tx, page *SyncPage) 
 		if err := rows.Scan(&mid, &a.Kind, &a.Position, &storageKey, &a.DurationMs, &a.Peaks,
 			&a.TranscriptState, &a.TranscriptJSON, &a.Filename, &a.Width, &a.Height,
 			&a.Bytes, &a.Placeholder,
-			&a.LinkURL, &a.LinkTitle, &a.LinkDescription, &a.LinkSiteName); err != nil {
+			&a.LinkURL, &a.LinkTitle, &a.LinkDescription, &a.LinkSiteName, &a.LinkFinalHost); err != nil {
 			return fmt.Errorf("store: sync: scan attachment: %w", err)
 		}
 		a.StorageKey = derefStr(storageKey)
