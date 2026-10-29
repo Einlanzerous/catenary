@@ -7,10 +7,9 @@
 // Title and description are text the TARGET PAGE chose, and are cleaned here
 // and drawn as plain text, never as markup.
 //
-// TODO(CANT-331): a redirect to a different domain shows both hosts
-// (`youtu.be → youtube.com`), and a login wall or a bot check is stored as an
-// empty preview. Both wait on that decision; nothing here guesses either
-// client-side.
+// A redirect to a different site shows both hosts (`youtu.be → youtube.com`).
+// The server decides "same site" and sets `final_host` only when the fetch left
+// it (CANT-331); nothing here parses a public suffix list or guesses.
 
 import 'package:catenary_client/catenary_client.dart' show detectLinkUrl, linkUrlIsAskable;
 
@@ -33,6 +32,15 @@ String linkHost(String url) {
   if (host.startsWith('www.')) host = host.substring(4);
   final ascii = host.split('.').map((l) => l.runes.every((r) => r < 0x80) ? l : 'xn--${_punycode(l)}').join('.');
   return u.hasPort ? '$ascii:${u.port}' : ascii;
+}
+
+/// The wire's `final_host` as the card shows it: the same display rule as
+/// [linkHost] (lowercase, leading `www.` dropped, punycode as is). It is a bare
+/// host, so an IPv6 literal arrives bracketed and is shown as it came.
+String linkFinalHost(String host) {
+  final h = host.trim().toLowerCase();
+  if (h.startsWith('[')) return h;
+  return linkHost('https://$h');
 }
 
 String _decode(String s) {
