@@ -326,7 +326,7 @@ void main() {
       expect(opened, 'https://switchyard.zerogravity.industries/dashboard');
     });
 
-    testWidgets('pressed: surface.raised and a text.meta border, in 80 ms linear; released it goes back', (tester) async {
+    testWidgets('pressed: surface.raised and a line-strong border, in 80 ms linear; released it goes back', (tester) async {
       await tester.pumpWidget(app(const LinkCard(link: _switchyard, ground: Color(0xFF0E1112))));
       final t = tokens(tester, find.byType(LinkCard));
       final gesture = await tester.startGesture(tester.getCenter(find.byType(LinkCard)));
@@ -338,7 +338,7 @@ void main() {
       expect(surface.curve, Curves.linear);
       var deco = surface.decoration! as BoxDecoration;
       expect(deco.color, t.surfaceRaised);
-      expect((deco.border! as Border).top.color, t.textMeta);
+      expect((deco.border! as Border).top.color, t.lineStrong);
       await gesture.up();
       await tester.pump(const Duration(milliseconds: 80));
       deco = tester.widget<AnimatedContainer>(find.byKey(const ValueKey('link-card-surface'))).decoration! as BoxDecoration;

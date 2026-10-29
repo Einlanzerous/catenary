@@ -224,7 +224,7 @@ class ConversationRow extends StatelessWidget {
                                 fontFamily: fontMono,
                                 fontSize: 10.5,
                                 height: 14 / 10.5,
-                                color: unread ? t.accentWire : t.textMeta,
+                                color: unread ? t.accentWire : open ? t.textSecondary : t.textMeta,
                                 fontFeatures: const [FontFeature.tabularFigures()],
                               ),
                             ),

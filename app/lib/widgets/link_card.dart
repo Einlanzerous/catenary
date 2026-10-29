@@ -14,10 +14,9 @@
 //                 nothing collapses and nothing reflows.
 //
 // The whole card is one target. There is no hover on touch; the pressed state
-// is surface.raised with a text.meta border, and the focus ring is a 2px
-// text.primary outline at offset 2: the canvas's interim choices while the
-// tokens are decided (CANT-332), and no token is added here. Motion is colour
-// only, 80 ms linear.
+// is surface.raised with a line-strong border, and the focus ring is a 2px
+// text.primary outline at offset 2 (CANT-332: the ring is text.primary and no
+// token is added for it). Motion is colour only, 80 ms linear.
 //
 // Nothing on the card vouches for the page: no padlock, no check. ↗ only says
 // "opens elsewhere". The full URL is in the long-press sheet.
@@ -90,7 +89,7 @@ class _LinkCardState extends State<LinkCard> {
           curve: Curves.linear,
           decoration: BoxDecoration(
             color: _pressed ? t.surfaceRaised : widget.ground,
-            border: Border.all(color: _pressed ? t.textMeta : t.lineHair),
+            border: Border.all(color: _pressed ? t.lineStrong : t.lineHair),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
