@@ -566,3 +566,93 @@ func TestACachedCardMeansTheLimiterStillCounts(t *testing.T) {
 		t.Errorf("a hit that mints a handle is not free of the limiter: %d", rec.Code)
 	}
 }
+
+// CANT-336: a login wall or a bot check is the fetcher's ClassEmpty with a
+// wall_* detail (internal/linkpreview/wall.go), and the endpoint owes it exactly
+// what it owes every other failure: the uniform 204, a negative cache entry so a
+// second paste inside NegativeCacheTTL fetches nothing, a log line with the
+// class and the token and never the path or query, and no upload row. The
+// double returns the error Guarded returns for a wall; the rule itself is
+// tested against fixtures in internal/linkpreview, where it runs.
+func TestAWallIsTheUniform204AndIsRememberedAsAFailure(t *testing.T) {
+	walls := map[string]string{
+		"www.instagram.com": "wall_brand",
+		"www.linkedin.com":  "wall_login_redirect",
+		"shop.example":      "wall_title",
+	}
+	f := &fakePreviewer{fn: func(_ context.Context, u string) (*linkpreview.Preview, error) {
+		for h, detail := range walls {
+			if strings.Contains(u, "//"+h+"/") {
+				return nil, linkpreview.NewError(linkpreview.ClassEmpty, detail)
+			}
+		}
+		return nil, linkpreview.NewError(linkpreview.ClassUnavailable, "status")
+	}}
+	swapPreviewer(t, f)
+	r := newPreviewRig(t, true, func(l *config.LinkPreviews) { l.Burst, l.RatePerMinute = 100, 100 })
+
+	// Any other failure's 204 is the shape a wall's must match.
+	other := r.postURL(r.token, "https://down.example/")
+	if other.Code != http.StatusNoContent {
+		t.Fatalf("other failure = %d", other.Code)
+	}
+	for host := range walls {
+		u := "https://" + host + "/secret/path?token=hunter2"
+		for i := 0; i < 2; i++ {
+			rec := r.postURL(r.token, u)
+			if rec.Code != http.StatusNoContent || rec.Body.Len() != 0 {
+				t.Fatalf("%s (%d) = %d %q; want an empty 204", host, i, rec.Code, rec.Body)
+			}
+			if len(rec.Header()) != len(other.Header()) {
+				t.Errorf("%s: headers %v differ from another failure's %v", host, rec.Header(), other.Header())
+			}
+			for k, v := range other.Header() {
+				if strings.Join(rec.Header()[k], ",") != strings.Join(v, ",") {
+					t.Errorf("%s: header %s = %v; another failure's %v", host, k, rec.Header()[k], v)
+				}
+			}
+		}
+	}
+	// One fetch for the other failure and one per wall: every second paste was
+	// answered from the negative cache.
+	if got, want := f.calls.Load(), int64(1+len(walls)); got != want {
+		t.Errorf("fetcher calls = %d; want %d (the second paste of a wall is a cache hit)", got, want)
+	}
+
+	seen := map[string]bool{}
+	for _, rec := range r.log.find("link preview") {
+		var result, detail string
+		rec.Attrs(func(a slog.Attr) bool {
+			s := a.Value.String()
+			if strings.Contains(s, "hunter2") || strings.Contains(s, "secret") {
+				t.Errorf("the log line carries the URL: %s=%s", a.Key, s)
+			}
+			switch a.Key {
+			case "result":
+				result = s
+			case "detail":
+				detail = s
+			}
+			return true
+		})
+		if strings.HasPrefix(detail, "wall_") {
+			if result != string(linkpreview.ClassEmpty) {
+				t.Errorf("detail=%s logged with result=%s; want empty", detail, result)
+			}
+			seen[detail] = true
+		}
+	}
+	for _, detail := range walls {
+		if !seen[detail] {
+			t.Errorf("no log line with result=empty detail=%s (saw %v)", detail, seen)
+		}
+	}
+
+	var n int
+	if err := r.pool.QueryRow(r.ctx, `SELECT count(*) FROM uploads WHERE kind = 'link'`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("link uploads = %d after walls; want none", n)
+	}
+}
