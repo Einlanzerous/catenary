@@ -183,6 +183,10 @@ const quiet = computed(() => {
 .stamp.unread {
   color: var(--accent-wire);
 }
+/* Meta on surface.raised takes text.secondary (CANT-332 ruling 4). */
+.row.active .stamp:not(.unread) {
+  color: var(--text-secondary);
+}
 
 .preview {
   overflow: hidden;
