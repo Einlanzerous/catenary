@@ -57,17 +57,25 @@ export function looksComplete(url: string): boolean {
  *  IDN as punycode (`xn--`) so a lookalike host looks different. `URL` already
  *  lowercases and punycodes; the `www.` is ours. Empty when the URL does not
  *  parse, in which case the card shows no host line rather than one it made up.
- *
- *  TODO(CANT-331): the final host after a redirect (`youtu.be` to
- *  `youtube.com`) and the login-wall rule need the server to put the final
- *  host on the wire. Until that ticket lands this is the pasted host and
- *  nothing is guessed here. */
+ */
 export function hostOf(url: string): string {
   try {
     return new URL(url).host.replace(/^www\./, '')
   } catch {
     return ''
   }
+}
+
+/** The second host of a redirected card (CANT-338, plan CANT-331): the
+ *  server's `final_host`, shown after the pasted host and through the same
+ *  display rule (lowercase, a leading `www.` dropped). Empty when absent, which
+ *  is every old message, every same-site card and every card from an old
+ *  server, and the card then shows one host exactly as before. The client does
+ *  not decide "same site" and parses no public suffix list: the server set the
+ *  field only when the fetch left the pasted site, so its presence is the whole
+ *  instruction to draw the arrow. */
+export function finalHostOf(finalHost: string | null | undefined): string {
+  return (finalHost ?? '').toLowerCase().replace(/^www\./, '')
 }
 
 /** Words a page chose, made safe to draw (canvas 08): control and bidi

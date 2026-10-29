@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import type { LinkAttachment } from '@/wire/generated'
 import { decodeBlurhash } from '@/lib/blurhash'
 import { linkImageAspect, thumbUrl } from '@/lib/image-box'
-import { hostOf, openableUrl, plainText, sameOrigin } from '@/linkpreview'
+import { finalHostOf, hostOf, openableUrl, plainText, sameOrigin } from '@/linkpreview'
 import { state } from '@/store'
 
 /**
@@ -11,7 +11,8 @@ import { state } from '@/store'
  * the sender composed the message, frozen into the message.
  *
  * WHAT IT WILL NOT CLAIM (CLAUDE.md invariant 3). The host line is derived
- * from `url` and never from the page's `site_name`. Title and description are
+ * from `url` and never from the page's `site_name`. A redirect to another site
+ * adds `→ final_host` after it, the server's word and not ours (CANT-338). Title and description are
  * the page's own words and are drawn as text, below the host, never as markup
  * and never as a link target. No word here says verified, safe or secure, and
  * nothing is live: the card is a snapshot and no client contacts the target
@@ -26,6 +27,7 @@ import { state } from '@/store'
 const props = defineProps<{ link: LinkAttachment; own?: boolean }>()
 
 const host = computed(() => hostOf(props.link.url))
+const finalHost = computed(() => finalHostOf(props.link.finalHost))
 const href = computed(() => openableUrl(props.link.url))
 const title = computed(() => plainText(props.link.title))
 const desc = computed(() => plainText(props.link.description))
@@ -92,7 +94,10 @@ watch(() => props.link.imagePlaceholder, paint)
     </span>
     <span class="words">
       <span v-if="host" class="host"
-        ><span class="host-name">{{ host }}</span
+        ><span class="host-name"
+          >{{ host }}<template v-if="finalHost"
+            >{{ ' ' }}<span class="arrow" aria-label="redirects to">→</span>{{ ' ' + finalHost }}</template
+          ></span
         ><span class="out" aria-hidden="true">↗</span></span
       >
       <span v-if="title" class="title">{{ title }}</span>
@@ -195,6 +200,9 @@ a.card:active .out {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.arrow {
+  color: var(--text-meta);
 }
 .out {
   flex: none;

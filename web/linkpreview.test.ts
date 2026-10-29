@@ -18,7 +18,7 @@
 
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
@@ -28,6 +28,7 @@ import {
   PREVIEW_IDLE_MS,
   createLinkPreviewClient,
   detectLink,
+  finalHostOf,
   hostOf,
   looksComplete,
   plainText,
@@ -81,6 +82,24 @@ test('Detection · the table can fail: a rule without the trailing trim disagree
 test('Detection · a scheme with nothing after it is a URL still being typed', () => {
   assert.equal(detectLink('https://'), null)
   assert.equal(detectLink('https://.'), null)
+})
+
+test('The redirect row: final_host goes through the same display rule, and absence is empty', () => {
+  assert.equal(finalHostOf('www.youtube.com'), 'youtube.com')
+  assert.equal(finalHostOf('YouTube.com'), 'youtube.com')
+  assert.equal(finalHostOf(undefined), '')
+  assert.equal(finalHostOf(null), '')
+})
+
+test('No hand-written file under web/src reads the page-chosen site name', () => {
+  const walk = (d: string): string[] =>
+    readdirSync(d).flatMap((f) => {
+      const p = resolve(d, f)
+      return statSync(p).isDirectory() ? walk(p) : /\.(ts|vue)$/.test(p) ? [p] : []
+    })
+  const root = resolve(process.cwd(), 'src')
+  const hits = walk(root).filter((p) => !p.endsWith(resolve(root, 'wire', 'generated.ts')) && /\.siteName\b/.test(readFileSync(p, 'utf8')))
+  assert.deepEqual(hits, [])
 })
 
 test('A card shows the host of its url, opens only http(s), and draws only this origin’s image', () => {
