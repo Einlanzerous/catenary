@@ -507,3 +507,104 @@ func TestTheSection5PredicateWithATextOnlyCard(t *testing.T) {
 		t.Error("NOT IN over attachments.storage_key reported the stray blob; the fixture no longer holds a NULL, so this test proves nothing")
 	}
 }
+
+// CANT-335 (CANT-331 row 2). final_host rides from the upload row through the
+// resolver into attachments, and back out on /sync and on the fan-out read the
+// live frame is built from. A same-site card (NULL) reads back nil on both.
+func TestACardsFinalHostRoundTripsThroughSyncAndFanout(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := linkStore(pool)
+	ana := mkUser(ctx, t, pool, "ana-fh")
+	bob := mkUser(ctx, t, pool, "bob-fh")
+	conv := mkGroup(ctx, t, pool, "room", ana, bob)
+	dropLinkCardsOnCleanup(ctx, t, pool)
+
+	redirected, err := st.CreateUpload(ctx, NewUpload{
+		Uploader: ana, Kind: "link",
+		LinkURL: sptr("https://youtu.be/x-wqMcYMNdg?si=gPm-a_n6SUO3qqUS"), LinkTitle: sptr("A redirected video"),
+		LinkFinalHost: sptr("www.youtube.com"),
+	})
+	if err != nil {
+		t.Fatalf("create a redirected link upload: %v", err)
+	}
+	var stored *string
+	mustScan(t, pool.QueryRow(ctx, `SELECT link_final_host FROM uploads WHERE id = $1`, redirected), &stored)
+	if stored == nil || *stored != "www.youtube.com" {
+		t.Fatalf("uploads.link_final_host = %v, want www.youtube.com", stored)
+	}
+
+	withHost, err := sendCard(ctx, st, conv, ana, redirected)
+	if err != nil {
+		t.Fatalf("send the redirected card: %v", err)
+	}
+	sameSite, err := sendCard(ctx, st, conv, ana, linkHandle(ctx, t, st, ana, false))
+	if err != nil {
+		t.Fatalf("send the same-site card: %v", err)
+	}
+
+	var frozen *string
+	mustScan(t, pool.QueryRow(ctx, `SELECT link_final_host FROM attachments WHERE message_id = $1`, withHost.ID), &frozen)
+	if frozen == nil || *frozen != "www.youtube.com" {
+		t.Fatalf("attachments.link_final_host = %v, want www.youtube.com frozen at send", frozen)
+	}
+	var isNull bool
+	mustScan(t, pool.QueryRow(ctx, `SELECT link_final_host IS NULL FROM attachments WHERE message_id = $1`, sameSite.ID), &isNull)
+	if !isNull {
+		t.Error("a same-site card stored a final host; it must be NULL")
+	}
+
+	page, err := st.Sync(ctx, bob, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := page.Attachments[withHost.ID]; len(a) != 1 || a[0].LinkFinalHost == nil || *a[0].LinkFinalHost != "www.youtube.com" {
+		t.Errorf("/sync: redirected card = %+v, want LinkFinalHost www.youtube.com", a)
+	}
+	if a := page.Attachments[sameSite.ID]; len(a) != 1 || a[0].LinkFinalHost != nil {
+		t.Errorf("/sync: same-site card = %+v, want LinkFinalHost nil", a)
+	}
+
+	for _, c := range []struct {
+		sent Sent
+		want *string
+	}{{withHost, sptr("www.youtube.com")}, {sameSite, nil}} {
+		f, err := st.MessageForFanout(ctx, conv, c.sent.Seq)
+		if err != nil {
+			t.Fatalf("fanout read of seq %d: %v", c.sent.Seq, err)
+		}
+		if len(f.Attachments) != 1 {
+			t.Fatalf("fanout seq %d: attachments = %d, want 1", c.sent.Seq, len(f.Attachments))
+		}
+		got := f.Attachments[0].LinkFinalHost
+		if (got == nil) != (c.want == nil) || (got != nil && *got != *c.want) {
+			t.Errorf("fanout seq %d: LinkFinalHost = %v, want %v", c.sent.Seq, got, c.want)
+		}
+	}
+}
+
+// The resolver's RETURNING carries the column, so what the send's own response
+// is built from has it before any read-back.
+func TestTheResolverReturnsTheFinalHost(t *testing.T) {
+	ctx, pool := freshDB(t)
+	st := linkStore(pool)
+	ana := mkUser(ctx, t, pool, "ana-fh-res")
+	dropLinkCardsOnCleanup(ctx, t, pool)
+	h, err := st.CreateUpload(ctx, NewUpload{
+		Uploader: ana, Kind: "link", LinkURL: sptr("https://youtu.be/x"), LinkFinalHost: sptr("www.youtube.com"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback(ctx)
+	rows, err := PostgresUploads{}.Resolve(ctx, tx, ana, []NewAttachment{{Kind: "link", UploadID: h}})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(rows) != 1 || rows[0].LinkFinalHost == nil || *rows[0].LinkFinalHost != "www.youtube.com" {
+		t.Fatalf("rows = %+v, want LinkFinalHost www.youtube.com", rows)
+	}
+}
