@@ -6,6 +6,7 @@
 // until the other follows.
 
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:catenary/metrics.dart';
 import 'package:catenary/tokens.dart';
@@ -34,6 +35,18 @@ Color cssColor(String name, String value) {
   fail('--$name: $value is neither #rrggbb nor rgba(); teach this test the form');
 }
 
+/// WCAG 2.x relative luminance, with the 0.04045 sRGB linearization threshold.
+double luminance(Color c) {
+  double lin(double v) => v <= 0.04045 ? v / 12.92 : math.pow((v + 0.055) / 1.055, 2.4).toDouble();
+  return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+}
+
+/// The contrast ratio of two colors, unrounded: callers compare the raw double.
+double contrast(Color a, Color b) {
+  final la = luminance(a), lb = luminance(b);
+  return (math.max(la, lb) + 0.05) / (math.min(la, lb) + 0.05);
+}
+
 void main() {
   final css = File('../web/src/styles/tokens.css').readAsStringSync();
   final dark = block(css, RegExp(r":root,\s*:root\[data-theme='dark'\]"))..remove('color-scheme');
@@ -60,6 +73,51 @@ void main() {
       }
     });
   }
+
+  group('contrast (WCAG 2.x, unrounded ratios)', () {
+    for (final (theme, tokens) in [('dark', CatenaryTokens.dark), ('light', CatenaryTokens.light)]) {
+      final grounds = {
+        'surface-base': tokens.surfaceBase,
+        'surface-rail': tokens.surfaceRail,
+        'surface-lift': tokens.surfaceLift,
+        'surface-raised': tokens.surfaceRaised,
+      };
+
+      test('$theme: text-primary and text-secondary are >= 4.5:1 on every ground', () {
+        for (final g in grounds.entries) {
+          for (final t in {'text-primary': tokens.textPrimary, 'text-secondary': tokens.textSecondary}.entries) {
+            expect(contrast(t.value, g.value), greaterThanOrEqualTo(4.5), reason: '${t.key} on ${g.key}');
+          }
+        }
+      });
+
+      test('$theme: text-meta is >= 4.5:1 on base, rail and lift', () {
+        for (final g in ['surface-base', 'surface-rail', 'surface-lift']) {
+          expect(contrast(tokens.textMeta, grounds[g]!), greaterThanOrEqualTo(4.5), reason: 'text-meta on $g');
+        }
+      });
+
+      // CANT-332 ruling 4: meta strings on surface-raised take text-secondary,
+      // so text-meta is not raised further there. 4.15:1 is the accepted
+      // measure; it may not drop below it.
+      test('$theme: text-meta on surface-raised holds its accepted 4.15:1 exception', () {
+        expect(contrast(tokens.textMeta, tokens.surfaceRaised), greaterThanOrEqualTo(4.15));
+      });
+
+      // surface-avatar is a tile fill, not a ground a border is drawn on.
+      test('$theme: line-strong is >= 3:1 on every ground', () {
+        for (final g in grounds.entries) {
+          expect(contrast(tokens.lineStrong, g.value), greaterThanOrEqualTo(3.0), reason: 'line-strong on ${g.key}');
+        }
+      });
+    }
+
+    test('the helper does not round: dark text-meta on lift is 4.50001', () {
+      final r = contrast(CatenaryTokens.dark.textMeta, CatenaryTokens.dark.surfaceLift);
+      expect(r, greaterThan(4.5));
+      expect(r, lessThan(4.5001));
+    });
+  });
 
   test('the one accent is one color per theme, and the two themes differ', () {
     expect(CatenaryTokens.dark.accentWire, const Color(0xFFE0913F));
