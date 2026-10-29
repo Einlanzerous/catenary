@@ -24,6 +24,7 @@ import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import Composer from '@/components/Composer.vue'
 import MessageRow from '@/components/MessageRow.vue'
+import ReplyStub from '@/components/ReplyStub.vue'
 import {
   PREVIEW_IDLE_MS,
   createLinkPreviewClient,
@@ -549,4 +550,37 @@ test('Untrusted text · whitespace collapses, control and bidi-override characte
   assert.equal(plainText('  a\n\n b\t\tc  '), 'a b c')
   assert.equal(plainText('x\u202Eevil\u202C y\u0007z'), 'xevil y z')
   assert.equal(plainText(null), '')
+})
+
+/* ── the ↗ LINK guard (CANT-343, CANT-332 ruling 3) ──────────────────────── */
+
+// How the chip is observed under `vite build --ssr`: ReplyStub.vue is rendered
+// to a string with createSSRApp and the emitted chip's class attribute is read
+// (the emitted HTML, so a changed :class binding shows), and the chip's rule is
+// parsed from the component's own <style> source (so a changed rule shows).
+test('↗ LINK stub chip · never the accent class, and its rule resolves to the raised --text-meta', async () => {
+  const src = readFileSync(resolve(process.cwd(), 'src/components/ReplyStub.vue'), 'utf8')
+  const html = await renderToString(
+    createSSRApp(ReplyStub, { reply: { messageId: uuid(5), authorId: uuid(6), kind: 'link', preview: 'look' } }),
+  )
+  const chip = /<span class="([^"]*)"[^>]*>↗ LINK<\/span>/.exec(html)
+  assert.ok(chip, 'the link stub draws a ↗ LINK chip')
+  const classes = chip![1].split(/\s+/)
+  assert.ok(classes.includes('chip'))
+  assert.ok(!classes.includes('accent'), 'the chip is never copper')
+  assert.ok(classes.includes('meta'))
+
+  const css = src.slice(src.indexOf('>', src.indexOf('<style')) + 1).replace(/\/\*[\s\S]*?\*\//g, '')
+  const decl = (sel: string) => {
+    const m = new RegExp(`(?:^|\\})\\s*${sel.replace(/[.]/g, '\\.')}\\s*\\{([^}]*)\\}`).exec(css)
+    assert.ok(m, `a rule for ${sel}`)
+    return /color:\s*([^;]+);/.exec(m![1])?.[1].trim()
+  }
+  assert.equal(decl('.chip.meta'), 'var(--text-meta)', 'the chip’s rule is the raised text.meta token')
+  assert.notEqual(decl('.chip.meta'), decl('.chip.accent'))
+  assert.match(
+    src,
+    /v-else-if="reply\.kind === 'link'" class="chip meta">↗ LINK</,
+    'the template binds the link chip to the meta class',
+  )
 })

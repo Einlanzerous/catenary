@@ -185,3 +185,12 @@ test('the rail column cannot grow past the rail, and long names truncate (CANT-3
   assert.equal(title['white-space'], 'nowrap')
   assert.equal(rule('.preview', rowStyle)['text-overflow'], 'ellipsis')
 })
+
+test('Raised grounds (CANT-343) · meta on surface.raised takes text.secondary: the open row’s quiet stamp and the lightbox bar', () => {
+  const stamp = rule('.row.active .stamp:not(.unread)', rowStyle)
+  assert.equal(varName(stamp.color), '--text-secondary', 'an open row’s stamp with no unread is not text.meta')
+  assert.equal(varName(rule('.stamp.unread', rowStyle).color), '--accent-wire', 'the unread stamp keeps the accent')
+  const img = readFileSync(resolve(process.cwd(), 'src/components/ImageAttachment.vue'), 'utf8')
+  const bar = rule('.light-bar', img.slice(img.indexOf('>', img.indexOf('<style')) + 1))
+  assert.equal(varName(bar.color), '--text-secondary', 'the lightbox bar is not text.meta')
+})

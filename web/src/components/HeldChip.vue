@@ -125,7 +125,6 @@ defineEmits<{ dismiss: [] }>()
   background: var(--surface-raised);
 }
 .x:focus-visible {
-  /* TODO(CANT-332): a focus-ring token; the canvas's interim is text.primary. */
   outline: 2px solid var(--text-primary);
   outline-offset: -2px;
 }

@@ -46,7 +46,7 @@ button {
 }
 
 :focus-visible {
-  outline: 1px solid var(--accent-wire);
+  outline: 1px solid var(--text-primary);
   outline-offset: 1px;
 }
 

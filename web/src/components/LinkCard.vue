@@ -131,15 +131,13 @@ watch(() => props.link.imagePlaceholder, paint)
 }
 
 a.card:focus-visible {
-  /* TODO(CANT-332): a focus-ring token; the canvas's interim is text.primary. */
   outline: 2px solid var(--text-primary);
   outline-offset: 2px;
 }
 
 a.card:active {
-  /* TODO(CANT-332): the pressed border borrows text.meta; line.strong is the candidate. */
   background: var(--surface-raised);
-  border-color: var(--text-meta);
+  border-color: var(--line-strong);
 }
 a.card:active .out {
   color: var(--text-primary);

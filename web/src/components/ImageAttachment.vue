@@ -169,8 +169,20 @@ const lightStyle = computed(() => ({
 }
 
 .frame:focus-visible {
-  outline: 2px solid var(--accent-wire);
+  outline: 2px solid var(--text-primary);
   outline-offset: -2px;
+}
+
+/* The frame's own inset outline is painted under its absolutely positioned
+ * canvas and image, so on a photo it never showed. The same ring, drawn by the
+ * last child, paints over them (CANT-343). */
+.frame:focus-visible::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  outline: 2px solid var(--text-primary);
+  outline-offset: -2px;
+  pointer-events: none;
 }
 
 /* Everything inside the frame is out of flow, so nothing painted here can
@@ -280,7 +292,7 @@ const lightStyle = computed(() => ({
   font: var(--type-label);
   font-size: 9.5px;
   letter-spacing: 0.12em;
-  color: var(--text-meta);
+  color: var(--text-secondary);
 }
 
 .light-close {
@@ -295,6 +307,6 @@ const lightStyle = computed(() => ({
 }
 
 .light-close:focus-visible {
-  outline: 2px solid var(--accent-wire);
+  outline: 2px solid var(--text-primary);
 }
 </style>
