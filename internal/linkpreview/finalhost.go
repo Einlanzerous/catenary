@@ -93,9 +93,9 @@ func sameSite(a, b string) bool {
 }
 
 // registrable is a host's eTLD+1, or "" when it has none. An address literal
-// has none by definition; it is excluded here and not left to publicsuffix,
-// which would read 93.184.216.34 as a name under the unlisted TLD "34" and call
-// 216.34 its registrable domain.
+// has none by definition. publicsuffix (x/net v0.58.0) already refuses a bare
+// literal, but it would read the bracketed IPv6 form canonicalHost produces as
+// a name, and this keeps the refusal from depending on the library's version.
 func registrable(host string) string {
 	if strings.HasPrefix(host, "[") {
 		return ""
