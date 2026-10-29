@@ -51,7 +51,7 @@ WCAG relative luminance with the 0.04045 sRGB threshold, unrounded, asserted in 
 
 - **Web (CANT-343):** the `:focus-visible` outlines in `base.css` and `ImageAttachment.vue` take `var(--text-primary)`; the pressed link card's border is `var(--line-strong)`; the open rail row's quiet stamp and the lightbox bar take `text.secondary`; `rail-new.test.ts` fails if the stamp or bar revert to `text.meta`.
 - **Flutter (CANT-344):** the link card's pressed border takes `lineStrong`; an open rail row's stamp, with nothing unread, takes `textSecondary`.
-- `git grep -n 'TODO(CANT-332)'` returns nothing on main.
+- No `TODO` marker tagged with this ticket remains anywhere in the tree; a grep for the marker returns nothing on main, so this line spells it out rather than quoting it.
 
 ## Disclosed in the rows
 
