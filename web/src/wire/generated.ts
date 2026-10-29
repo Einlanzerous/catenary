@@ -598,10 +598,11 @@ export function encodeImageAttachment(v: ImageAttachment): Record<string, unknow
 // the target. title, description and site_name are text the TARGET PAGE chose,
 // length-capped and stripped of control characters by the server; clients render them
 // as plain text, never as markup. The host a client shows is derived from url, never
-// from site_name. image_url is a stable signed media URL like ImageAttachment.url,
-// with the same &v=thumb variant; image_width and image_height are present together or
-// not at all. Decoders that do not know this kind drop the attachment and keep the
-// message.
+// from site_name; final_host, when present, is shown after it as where the page was
+// actually served from. image_url is a stable signed media URL like
+// ImageAttachment.url, with the same &v=thumb variant; image_width and image_height
+// are present together or not at all. Decoders that do not know this kind drop the
+// attachment and keep the message.
 export interface LinkAttachment {
   readonly kind: "link"
   // The URL as the sender typed it, http or https. Its host is what a client shows;
@@ -613,8 +614,8 @@ export interface LinkAttachment {
   // The page's own description, at most 300 characters. Page-chosen text: render as
   // plain text.
   description?: string
-  // The page's og:site_name, at most 80 characters. Page-chosen text, and never the host
-  // a client shows: derive that from url.
+  // Deprecated (CANT-331): no longer set by the server; cards made before CANT-331 may
+  // carry the page's og:site_name. Never the host a client shows: derive that from url.
   siteName?: string
   // A stable signed media URL for the card image, like ImageAttachment.url, with the
   // same &v=thumb variant. Absent for a text-only card.
@@ -627,6 +628,16 @@ export interface LinkAttachment {
   imageHeight?: number
   // Blurhash. Absent means render the plane flat; never means block on the image.
   imagePlaceholder?: string
+  // The host the server's fetch finally got the page from, when a redirect took it off
+  // the site of url (CANT-331): lowercase ASCII, an IDN as punycode (xn--), an IPv6
+  // literal in brackets, no scheme, port, path or query. Absent when nothing redirected,
+  // when every hop stayed on url's site (judged by the server against the public suffix
+  // list when the card was made, so a www. or go. hop leaves it absent), and on every
+  // card made before this field existed. Absent means show url's host alone. A client
+  // shows it only as a second host after url's own, normalized the same way, and never
+  // instead of it: url is what a tap opens. The target's redirects chose it, so it is
+  // bounded to a host by this pattern and is never rendered as a link.
+  finalHost?: string
 }
 
 export function decodeLinkAttachment(v: unknown, p = "LinkAttachment"): LinkAttachment {
@@ -641,6 +652,7 @@ export function decodeLinkAttachment(v: unknown, p = "LinkAttachment"): LinkAtta
     imageWidth: o["image_width"] === undefined || o["image_width"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `image_width must be >= 1, got ${x}`); return x })(o["image_width"], `${p}.image_width`),
     imageHeight: o["image_height"] === undefined || o["image_height"] === null ? undefined : ((v: unknown, p: string): number => { const x = asInt(v, p); if (x < 1) bad(p, `image_height must be >= 1, got ${x}`); return x })(o["image_height"], `${p}.image_height`),
     imagePlaceholder: o["image_placeholder"] === undefined || o["image_placeholder"] === null ? undefined : asStr(o["image_placeholder"], `${p}.image_placeholder`),
+    finalHost: o["final_host"] === undefined || o["final_host"] === null ? undefined : ((v: unknown, p: string): string => { const x = asStr(v, p); if (!/^(?:(?:[a-z0-9_-]{1,63}\.)+[a-z0-9_-]{1,63}|\[[0-9a-f:.]+\])$/.test(x)) bad(p, `final_host must match ^(?:(?:[a-z0-9_-]{1,63}\.)+[a-z0-9_-]{1,63}|\[[0-9a-f:.]+\])$, got ${JSON.stringify(x)}`); if ([...x].length > 253) bad(p, `final_host must be at most 253 characters, got ${[...x].length}`); return x })(o["final_host"], `${p}.final_host`),
   }
 }
 
@@ -655,6 +667,7 @@ export function encodeLinkAttachment(v: LinkAttachment): Record<string, unknown>
     "image_width": v.imageWidth === undefined ? undefined : v.imageWidth,
     "image_height": v.imageHeight === undefined ? undefined : v.imageHeight,
     "image_placeholder": v.imagePlaceholder === undefined ? undefined : v.imagePlaceholder,
+    "final_host": v.finalHost === undefined ? undefined : v.finalHost,
   })
 }
 

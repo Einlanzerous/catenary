@@ -816,10 +816,11 @@ final class ImageAttachment implements Attachment {
 /// the target. title, description and site_name are text the TARGET PAGE chose,
 /// length-capped and stripped of control characters by the server; clients render them
 /// as plain text, never as markup. The host a client shows is derived from url, never
-/// from site_name. image_url is a stable signed media URL like ImageAttachment.url,
-/// with the same &v=thumb variant; image_width and image_height are present together or
-/// not at all. Decoders that do not know this kind drop the attachment and keep the
-/// message.
+/// from site_name; final_host, when present, is shown after it as where the page was
+/// actually served from. image_url is a stable signed media URL like
+/// ImageAttachment.url, with the same &v=thumb variant; image_width and image_height
+/// are present together or not at all. Decoders that do not know this kind drop the
+/// attachment and keep the message.
 final class LinkAttachment implements Attachment {
   const LinkAttachment({
     required this.url,
@@ -830,6 +831,7 @@ final class LinkAttachment implements Attachment {
     this.imageWidth,
     this.imageHeight,
     this.imagePlaceholder,
+    this.finalHost,
   });
 
   @override
@@ -847,8 +849,8 @@ final class LinkAttachment implements Attachment {
   /// plain text.
   final String? description;
 
-  /// The page's og:site_name, at most 80 characters. Page-chosen text, and never the host
-  /// a client shows: derive that from url.
+  /// Deprecated (CANT-331): no longer set by the server; cards made before CANT-331 may
+  /// carry the page's og:site_name. Never the host a client shows: derive that from url.
   final String? siteName;
 
   /// A stable signed media URL for the card image, like ImageAttachment.url, with the
@@ -866,6 +868,17 @@ final class LinkAttachment implements Attachment {
   /// Blurhash. Absent means render the plane flat; never means block on the image.
   final String? imagePlaceholder;
 
+  /// The host the server's fetch finally got the page from, when a redirect took it off
+  /// the site of url (CANT-331): lowercase ASCII, an IDN as punycode (xn--), an IPv6
+  /// literal in brackets, no scheme, port, path or query. Absent when nothing redirected,
+  /// when every hop stayed on url's site (judged by the server against the public suffix
+  /// list when the card was made, so a www. or go. hop leaves it absent), and on every
+  /// card made before this field existed. Absent means show url's host alone. A client
+  /// shows it only as a second host after url's own, normalized the same way, and never
+  /// instead of it: url is what a tap opens. The target's redirects chose it, so it is
+  /// bounded to a host by this pattern and is never rendered as a link.
+  final String? finalHost;
+
   factory LinkAttachment.fromJson(Object? v, [String p = "LinkAttachment"]) {
     final o = _obj(v, p);
     return LinkAttachment(
@@ -877,6 +890,7 @@ final class LinkAttachment implements Attachment {
       imageWidth: o["image_width"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'image_width must be >= 1, got $x'); return x; })(o["image_width"], '${p}.image_width'),
       imageHeight: o["image_height"] == null ? null : ((Object? v, String p) { final x = _int(v, p); if (x < 1) _bad(p, 'image_height must be >= 1, got $x'); return x; })(o["image_height"], '${p}.image_height'),
       imagePlaceholder: o["image_placeholder"] == null ? null : _str(o["image_placeholder"], '${p}.image_placeholder'),
+      finalHost: o["final_host"] == null ? null : ((Object? v, String p) { final x = _str(v, p); if (!RegExp(r'^(?:(?:[a-z0-9_-]{1,63}\.)+[a-z0-9_-]{1,63}|\[[0-9a-f:.]+\])$').hasMatch(x)) _bad(p, 'final_host must match ^(?:(?:[a-z0-9_-]{1,63}\\.)+[a-z0-9_-]{1,63}|\\[[0-9a-f:.]+\\])\$, got "$x"'); if (x.runes.length > 253) _bad(p, 'final_host must be at most 253 characters, got ${x.runes.length}'); return x; })(o["final_host"], '${p}.final_host'),
     );
   }
 
@@ -891,6 +905,7 @@ final class LinkAttachment implements Attachment {
     "image_width": imageWidth == null ? null : imageWidth!,
     "image_height": imageHeight == null ? null : imageHeight!,
     "image_placeholder": imagePlaceholder == null ? null : imagePlaceholder!,
+    "final_host": finalHost == null ? null : finalHost!,
   });
 }
 

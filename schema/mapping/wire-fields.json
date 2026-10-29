@@ -187,6 +187,12 @@
       "column": "link_site_name",
       "note": "The page's og:site_name. Never the host a client shows: that is derived from url."
     },
+    "LinkAttachment.final_host": {
+      "kind": "column",
+      "table": "attachments",
+      "column": "link_final_host",
+      "note": "The host the fetch landed on after a cross-site redirect, set by the server at compose time and frozen; NULL when the fetch stayed on url's site."
+    },
     "LinkAttachment.image_url": {
       "kind": "derived",
       "note": "Derived at serve time from attachments.storage_key, as ImageAttachment.url; absent when the key is NULL (a text-only card)."

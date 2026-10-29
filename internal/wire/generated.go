@@ -1182,10 +1182,11 @@ func (ImageAttachment) isAttachment() {}
 // the target. title, description and site_name are text the TARGET PAGE chose,
 // length-capped and stripped of control characters by the server; clients render them
 // as plain text, never as markup. The host a client shows is derived from url, never
-// from site_name. image_url is a stable signed media URL like ImageAttachment.url,
-// with the same &v=thumb variant; image_width and image_height are present together or
-// not at all. Decoders that do not know this kind drop the attachment and keep the
-// message.
+// from site_name; final_host, when present, is shown after it as where the page was
+// actually served from. image_url is a stable signed media URL like
+// ImageAttachment.url, with the same &v=thumb variant; image_width and image_height
+// are present together or not at all. Decoders that do not know this kind drop the
+// attachment and keep the message.
 type LinkAttachment struct {
 	// The URL as the sender typed it, http or https. Its host is what a client shows;
 	// nothing else on the card vouches for it.
@@ -1196,8 +1197,8 @@ type LinkAttachment struct {
 	// The page's own description, at most 300 characters. Page-chosen text: render as
 	// plain text.
 	Description *string `json:"description,omitempty"`
-	// The page's og:site_name, at most 80 characters. Page-chosen text, and never the host
-	// a client shows: derive that from url.
+	// Deprecated (CANT-331): no longer set by the server; cards made before CANT-331 may
+	// carry the page's og:site_name. Never the host a client shows: derive that from url.
 	SiteName *string `json:"site_name,omitempty"`
 	// A stable signed media URL for the card image, like ImageAttachment.url, with the
 	// same &v=thumb variant. Absent for a text-only card.
@@ -1210,6 +1211,16 @@ type LinkAttachment struct {
 	ImageHeight *int64 `json:"image_height,omitempty"`
 	// Blurhash. Absent means render the plane flat; never means block on the image.
 	ImagePlaceholder *string `json:"image_placeholder,omitempty"`
+	// The host the server's fetch finally got the page from, when a redirect took it off
+	// the site of url (CANT-331): lowercase ASCII, an IDN as punycode (xn--), an IPv6
+	// literal in brackets, no scheme, port, path or query. Absent when nothing redirected,
+	// when every hop stayed on url's site (judged by the server against the public suffix
+	// list when the card was made, so a www. or go. hop leaves it absent), and on every
+	// card made before this field existed. Absent means show url's host alone. A client
+	// shows it only as a second host after url's own, normalized the same way, and never
+	// instead of it: url is what a tap opens. The target's redirects chose it, so it is
+	// bounded to a host by this pattern and is never rendered as a link.
+	FinalHost *string `json:"final_host,omitempty"`
 }
 
 // UnmarshalJSON decodes and VALIDATES a LinkAttachment: required fields must be
@@ -1230,6 +1241,7 @@ func (v *LinkAttachment) decode(b []byte, p string, side decodeSide) error {
 		ImageWidth       *int64  `json:"image_width"`
 		ImageHeight      *int64  `json:"image_height"`
 		ImagePlaceholder *string `json:"image_placeholder"`
+		FinalHost        *string `json:"final_host"`
 	}
 	if err := json.Unmarshal(b, &s); err != nil {
 		return decodeErr(p, err)
@@ -1260,6 +1272,9 @@ func (v *LinkAttachment) decode(b []byte, p string, side decodeSide) error {
 	if s.ImagePlaceholder != nil {
 		out.ImagePlaceholder = s.ImagePlaceholder
 	}
+	if s.FinalHost != nil {
+		out.FinalHost = s.FinalHost
+	}
 	if out.ImageWidth != nil {
 		if *out.ImageWidth < 1 {
 			return badf(p+".image_width", "image_width must be >= 1, got %v", *out.ImageWidth)
@@ -1268,6 +1283,14 @@ func (v *LinkAttachment) decode(b []byte, p string, side decodeSide) error {
 	if out.ImageHeight != nil {
 		if *out.ImageHeight < 1 {
 			return badf(p+".image_height", "image_height must be >= 1, got %v", *out.ImageHeight)
+		}
+	}
+	if out.FinalHost != nil {
+		if !regexp.MustCompile(`^(?:(?:[a-z0-9_-]{1,63}\.)+[a-z0-9_-]{1,63}|\[[0-9a-f:.]+\])$`).MatchString(*out.FinalHost) {
+			return badf(p+".final_host", "final_host must match %s, got %q", `^(?:(?:[a-z0-9_-]{1,63}\.)+[a-z0-9_-]{1,63}|\[[0-9a-f:.]+\])$`, *out.FinalHost)
+		}
+		if utf8.RuneCountInString(*out.FinalHost) > 253 {
+			return badf(p+".final_host", "final_host must be at most 253 characters, got %d", utf8.RuneCountInString(*out.FinalHost))
 		}
 	}
 	*v = out
