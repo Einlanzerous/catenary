@@ -627,6 +627,28 @@ else
   printf '        export CATENARY_TEST_DATABASE_URL=postgres://postgres@127.0.0.1:55440/catenary_test?sslmode=disable\n'
 fi
 
+# CANT-326 (CANT-308 row 6) · link previews end to end: a real server, a fake
+# origin on a non-public address, the real guarded fetcher. The fake origin needs
+# the test-only dialer allowance (internal/linkpreview/testnet.go), which exists
+# only under the linkpreviewtest build tag; this is the one place the tag is set.
+# The untagged guard test (TestTheTestAllowanceIsUnreachableFromANonTestBuild)
+# also runs in the ordinary sweeps above. This step needs the database, and
+# asserts that none of the tests skipped: a -run that matched nothing is a green
+# line that ran nothing.
+step "CANT-326 · link previews end to end — fake origin, redirects, rebinding, oversize, slow, and the allowance's build-tag guard"
+(cd "$ROOT" && go vet -tags linkpreviewtest ./internal/linkpreview/ ./cmd/catenary/) >"$LOGDIR/v-lp-vet.log" 2>&1
+result $? "go vet -tags linkpreviewtest"
+if [ -n "${CATENARY_TEST_DATABASE_URL:-}" ]; then
+  (cd "$ROOT" && go test -tags linkpreviewtest -p 1 -v -count=1 -run '^(TestAComposedLinkCardReachesASecondDeviceUnchanged|TestARedirectWithinTheSiteCarriesNoFinalHost|TestRefusalsThroughTheRealStackAreOneUniform204AndStoreNothing|TestARebindingHostnameLosesItsImageAtConnectTime|TestTheTestAllowanceIsUnreachableFromANonTestBuild)$' ./cmd/catenary/ ./internal/linkpreview/) >"$LOGDIR/v-lp-e2e.log" 2>&1
+  rc=$?
+  passed=$(grep -cE '^--- PASS: ' "$LOGDIR/v-lp-e2e.log")
+  skipped=$(grep -cE -- '--- SKIP: ' "$LOGDIR/v-lp-e2e.log")
+  [ $rc -eq 0 ] && [ "$passed" -eq 5 ] && [ "$skipped" -eq 0 ]
+  result $? "link previews end to end: $passed passed, $skipped skipped (want 5 and 0)"
+else
+  printf '   \033[33mSKIP\033[0m CATENARY_TEST_DATABASE_URL unset — the end-to-end proof runs against a real Postgres.\n'
+fi
+
 # CANT-26 · the web client's OWN unread rules, over a page this server built.
 #
 # Two steps rather than one because they are two different claims. The Go test
