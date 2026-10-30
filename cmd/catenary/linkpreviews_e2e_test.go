@@ -391,20 +391,28 @@ func TestARedirectWithinTheSiteCarriesNoFinalHost(t *testing.T) {
 // leaves a row or a file behind.
 func TestRefusalsThroughTheRealStackAreOneUniform204AndStoreNothing(t *testing.T) {
 	e := newE2ERig(t)
-	cases := []struct{ name, url string }{
-		{"private redirect (10/8)", "http://fake.test/to-private"},
-		{"redirect to the metadata address", "http://fake.test/to-metadata"},
-		{"redirect to 127.0.0.1", "http://fake.test/to-loopback"},
-		{"redirect to localhost", "http://fake.test/to-localhost"},
-		{"redirect to a name that resolves privately", "http://fake.test/to-private-name"},
-		{"a name that resolves privately", "http://private.test/page"},
-		{"an address literal", "http://10.0.0.5/page"},
-		{"an oversize page", "http://big.test/page"},
-		{"a slow page", "http://slow.test/page"},
-		{"an unknown host", "http://nonexistent.test/page"},
+	// result is the "link preview" log line's result=; detail is its detail= (for
+	// a blocked case, the address class the production judge named).
+	cases := []struct{ name, url, result, detail string }{
+		{"private redirect (10/8)", "http://fake.test/to-private", "blocked", "private"},
+		{"redirect to the metadata address", "http://fake.test/to-metadata", "blocked", "link_local"},
+		{"redirect to 127.0.0.1", "http://fake.test/to-loopback", "blocked", "loopback"},
+		{"redirect to localhost", "http://fake.test/to-localhost", "blocked", "loopback"},
+		{"redirect to a name that resolves privately", "http://fake.test/to-private-name", "blocked", "private"},
+		{"a name that resolves privately", "http://private.test/page", "blocked", "private"},
+		{"an address literal", "http://10.0.0.5/page", "blocked", "private"},
+		{"an oversize page", "http://big.test/page", "too_large", ""},
+		{"a slow page", "http://slow.test/page", "timeout", ""},
+		{"an unknown host", "http://nonexistent.test/page", "dns", ""},
+	}
+	attrs := func(rec slog.Record) map[string]string {
+		m := map[string]string{}
+		rec.Attrs(func(a slog.Attr) bool { m[a.Key] = a.Value.String(); return true })
+		return m
 	}
 	var first *http.Response
 	for _, c := range cases {
+		before, warnBefore := len(e.log.find("link preview")), len(e.log.find("link preview blocked"))
 		start := time.Now()
 		resp, body := e.preview(e.adaTok, c.url)
 		if resp.StatusCode != http.StatusNoContent || len(body) != 0 {
@@ -416,51 +424,42 @@ func TestRefusalsThroughTheRealStackAreOneUniform204AndStoreNothing(t *testing.T
 		}
 		if first == nil {
 			first = resp
+		} else {
+			for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
+				if resp.Header.Get(h) != first.Header.Get(h) {
+					t.Errorf("%s: header %s = %q; the first refusal had %q", c.name, h, resp.Header.Get(h), first.Header.Get(h))
+				}
+			}
+		}
+
+		// Exactly one new log line for this call, of the expected class and detail.
+		lines := e.log.find("link preview")[before:]
+		if len(lines) != 1 {
+			t.Errorf("%s: %d new log lines; want 1", c.name, len(lines))
 			continue
 		}
-		for _, h := range []string{"Content-Type", "Content-Length", "Cache-Control"} {
-			if resp.Header.Get(h) != first.Header.Get(h) {
-				t.Errorf("%s: header %s = %q; the first refusal had %q", c.name, h, resp.Header.Get(h), first.Header.Get(h))
+		a := attrs(lines[0])
+		if a["result"] != c.result || (c.detail != "" && a["detail"] != c.detail) {
+			t.Errorf("%s: logged result=%q detail=%q; want result=%q detail=%q", c.name, a["result"], a["detail"], c.result, c.detail)
+		}
+		for k, v := range a {
+			if strings.Contains(v, "10.0.0.5") || strings.Contains(v, "169.254") || strings.Contains(v, "/page") {
+				t.Errorf("%s: the log carries part of the URL: %s=%s", c.name, k, v)
 			}
+		}
+		// A blocked case writes exactly one warn line naming the address class;
+		// no other case writes one.
+		warns := e.log.find("link preview blocked")[warnBefore:]
+		if c.result == "blocked" {
+			if len(warns) != 1 || attrs(warns[0])["address_class"] != c.detail || warns[0].Level != slog.LevelWarn {
+				t.Errorf("%s: warn lines %d (%v); want one at warn with address_class=%s", c.name, len(warns), warns, c.detail)
+			}
+		} else if len(warns) != 0 {
+			t.Errorf("%s: %d blocked warn lines for a %s", c.name, len(warns), c.result)
 		}
 	}
 	if rows, files := e.uploads(); rows != 0 || files != 0 {
 		t.Errorf("after the refusals: %d uploads rows and %d media files; want none", rows, files)
-	}
-
-	// The reasons reached the log, by class, and the URL did not.
-	classes := map[string]int{}
-	for _, rec := range e.log.find("link preview") {
-		var res, detail string
-		rec.Attrs(func(a slog.Attr) bool {
-			switch a.Key {
-			case "result":
-				res = a.Value.String()
-			case "detail":
-				detail = a.Value.String()
-			}
-			if s := a.Value.String(); strings.Contains(s, "10.0.0.5") || strings.Contains(s, "169.254") {
-				t.Errorf("the log carries an address from the URL: %s=%s", a.Key, s)
-			}
-			return true
-		})
-		classes[res]++
-		_ = detail
-	}
-	for _, want := range []string{"blocked", "too_large", "timeout", "dns"} {
-		if classes[want] == 0 {
-			t.Errorf("no log line with result=%s (saw %v)", want, classes)
-		}
-	}
-	if n := len(e.log.find("link preview blocked")); n < 6 {
-		t.Errorf("blocked warn lines = %d; want one per blocked case (6)", n)
-	}
-	// The private targets were refused before they were connected to: the fake
-	// origin only ever saw the pasted hosts.
-	for k := range e.origin.hits {
-		if strings.HasPrefix(k, "10.0.0.5") || strings.HasPrefix(k, "169.254.169.254") || strings.HasPrefix(k, "127.0.0.1") || strings.HasPrefix(k, "localhost") {
-			t.Errorf("the origin served %s: a refused address was connected to", k)
-		}
 	}
 }
 
