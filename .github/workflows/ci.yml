@@ -146,6 +146,18 @@ jobs:
       - name: ./verify.sh
         run: ./verify.sh
 
+      # CANT-347: verify.sh keeps a failing run's step logs in a temp dir the
+      # runner throws away. Upload them so a failure that does not reproduce
+      # can still be read afterwards.
+      - name: verify.sh step logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs
+          path: /tmp/catenary-verify.*
+          if-no-files-found: ignore
+          retention-days: 14
+
   build:
     name: build the static binary
     runs-on: ubuntu-latest

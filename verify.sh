@@ -96,6 +96,16 @@ result() {
   else
     printf '   \033[31mFAIL\033[0m %s\n' "$2"
     fails=$((fails + 1))
+    # CANT-347: a failed step used to say only that it failed, and the reason
+    # sat in a /tmp file the CI runner discards. The step's log was written
+    # just before this call, so it is the newest file in the log directory:
+    # print its FAIL lines and its tail where the job log can show them.
+    _last="$(ls -t "$LOGDIR" 2>/dev/null | head -1)"
+    if [ -n "$_last" ] && [ -f "$LOGDIR/$_last" ]; then
+      printf '   --- %s (FAIL lines, then the last 40 lines)\n' "$_last"
+      grep -E '^(FAIL|not ok)|✖' "$LOGDIR/$_last" | head -20 | sed 's/^/   | /'
+      tail -n 40 "$LOGDIR/$_last" | sed 's/^/   | /'
+    fi
   fi
 }
 

@@ -1004,7 +1004,17 @@ async function main() {
     check('the image request is same-origin, and the thumbnail variant',
       img !== '' && new URL(img, baseUrl).origin === new URL(baseUrl).origin && img.includes('v=thumb'), img)
     check('its box is final before the image: the stored 16:9, as an aspect ratio', card.includes('aspect-ratio:640 / 360'))
-    check('no E2E and no verified anywhere on the page', !/E2E|verified/i.test(page.replace('Official Verified Bank', '')))
+    // CANT-347: WORDS, not substrings. The page carries ~15 server-minted
+    // random UUIDs (data-conversation-id and friends) and the bare /E2E|verified/i
+    // matched "e2e" inside one of them about one run in thirteen
+    // (`…-4499bba33e2e`), failing a claim nobody made.
+    const claims = (text: string) => /\b(?:E2E|verified)\b/i.test(text.replace('Official Verified Bank', ''))
+    check('no E2E and no verified anywhere on the page', !claims(page),
+      (page.replace('Official Verified Bank', '').match(/.{0,60}\b(?:E2E|verified)\b.{0,60}/i) ?? [''])[0])
+    check('and that rule sees a real claim but not hex that spells one',
+      claims('<span>E2E</span>') && claims('<i>Verified</i>') && claims('end-to-end E2E encrypted') &&
+      !claims('data-conversation-id="fa4d9f42-78cf-49c8-a1d4-4499bba33e2e"') &&
+      !claims('data-conversation-id="be2e8ab8-a303-4d3a-9bbd-a57116908a5b"'))
     check('a reply to a card says LINK and names the host rather than drawing an empty line',
       messageRow(page, 'm-card-reply').includes('↗ LINK') && messageRow(page, 'm-card-reply').includes('youtube.com'))
     state.messages.splice(state.messages.findIndex((m) => m.id === 'm-card-reply'), 1)
