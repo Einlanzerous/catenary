@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.21.0](https://github.com/Einlanzerous/catenary/compare/v0.20.0...v0.21.0) (2026-10-30)
+
+
+### Features
+
+* CANT-322 — link previews: POST /link-previews, config, limiter, cache and media ingest ([#237](https://github.com/Einlanzerous/catenary/issues/237)) ([7ce7ab8](https://github.com/Einlanzerous/catenary/commit/7ce7ab8222983d49c06b3090f8b63ebc8933fa8d))
+* CANT-323 — web: link preview composer card, thread card and stale-handle drop ([#241](https://github.com/Einlanzerous/catenary/issues/241)) ([0224497](https://github.com/Einlanzerous/catenary/commit/0224497f383e03f3ef31e4228615f876d3bbde08))
+* CANT-324 — Dart: the link-preview call, detection, composer state and the outbox's stale-handle drop ([#239](https://github.com/Einlanzerous/catenary/issues/239)) ([868a176](https://github.com/Einlanzerous/catenary/commit/868a17643dfeebf1ea6e0801c367b98cef7b5c03))
+* CANT-325 — Flutter: the link preview card, held chips, stub and armed bar ([#242](https://github.com/Einlanzerous/catenary/issues/242)) ([97985fa](https://github.com/Einlanzerous/catenary/commit/97985fa97ec270dacb5e13a648aaca0d8e2113e7))
+* CANT-329 — link previews: one shared table for URL detection ([#244](https://github.com/Einlanzerous/catenary/issues/244)) ([6dc3385](https://github.com/Einlanzerous/catenary/commit/6dc33850e8ab2fa9e64f32e8f03387d1586c8894))
+* CANT-330 — web: link preview design pass to the 08 canvas ([#243](https://github.com/Einlanzerous/catenary/issues/243)) ([f2126c8](https://github.com/Einlanzerous/catenary/commit/f2126c88966e65e80c16397b2b8a9f204fd9fa49))
+* CANT-333 — migration 0015: nullable link_final_host on uploads and attachments ([#246](https://github.com/Einlanzerous/catenary/issues/246)) ([8dec594](https://github.com/Einlanzerous/catenary/commit/8dec594f34c95c02fefc8b67851ddb6358e12c28))
+* CANT-334 — wire schema: LinkAttachment.final_host, 2 vectors, mapping, site_name deprecated ([#247](https://github.com/Einlanzerous/catenary/issues/247)) ([9ef831d](https://github.com/Einlanzerous/catenary/commit/9ef831d49727807fb0cdc5fb4696f6291c17a0be))
+* CANT-335 — store path for final_host: uploads, loadAttachments, wireview ([#251](https://github.com/Einlanzerous/catenary/issues/251)) ([1a80e39](https://github.com/Einlanzerous/catenary/commit/1a80e39a4e654104c48d32d19c2eea30ef955594))
+* CANT-336 — link previews: the wall rule in Guarded.Preview ([#245](https://github.com/Einlanzerous/catenary/issues/245)) ([bc6ea21](https://github.com/Einlanzerous/catenary/commit/bc6ea21e541d9036d2b9d37d4225de4ce02643d7))
+* CANT-337 — the final host on the card; the server stops setting site_name ([#256](https://github.com/Einlanzerous/catenary/issues/256)) ([40c7cdb](https://github.com/Einlanzerous/catenary/commit/40c7cdb424cb97b849235314782182d143f87dea))
+* CANT-338 — web: the redirect row on the thread link card ([#250](https://github.com/Einlanzerous/catenary/issues/250)) ([dffa142](https://github.com/Einlanzerous/catenary/commit/dffa14238bf50a0caece355ce786b87d8886b86b))
+* CANT-339 — Flutter: the redirect row on the thread link card ([#248](https://github.com/Einlanzerous/catenary/issues/248)) ([7edfb01](https://github.com/Einlanzerous/catenary/commit/7edfb0100aa6ff9dcb5399c8b29b9db5812d439c))
+* CANT-342 — tokens: line-strong and a raised text-meta in both runtimes, with contrast assertions ([#249](https://github.com/Einlanzerous/catenary/issues/249)) ([b5a09d0](https://github.com/Einlanzerous/catenary/commit/b5a09d008385815880f1f9c7402937a2b601b9cc))
+* CANT-343 — web: focus ring, pressed border, raised grounds, the link-stub guard ([#253](https://github.com/Einlanzerous/catenary/issues/253)) ([490973a](https://github.com/Einlanzerous/catenary/commit/490973a3c0b0aef412c9dc670698c148a29a9387))
+* CANT-344 — Flutter: pressed border on line-strong, raised-ground stamp on text.secondary ([#252](https://github.com/Einlanzerous/catenary/issues/252)) ([d8ec1e3](https://github.com/Einlanzerous/catenary/commit/d8ec1e3fa7de00864c20a63d6bd4eedd48184932))
+
 ## [0.20.0](https://github.com/Einlanzerous/catenary/compare/v0.19.0...v0.20.0) (2026-10-25)
 
 
