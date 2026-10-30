@@ -195,8 +195,11 @@ func (s *linkService) store(ctx context.Context, canon string, p *linkpreview.Pr
 	if p.Description != "" {
 		row.LinkDescription = &p.Description
 	}
-	if p.SiteName != "" {
-		row.LinkSiteName = &p.SiteName
+	// og:site_name is not stored (CANT-331 ruling 4 option B): no client shows
+	// it, and the host a client shows comes from url and final_host. The fetcher
+	// still reads it, as a brand token for the wall rule.
+	if p.FinalHost != "" {
+		row.LinkFinalHost = &p.FinalHost
 	}
 	imageClass := p.ImageClass
 
@@ -241,6 +244,7 @@ func (s *linkService) mint(ctx context.Context, requester uuid.UUID, row store.N
 		Title:       row.LinkTitle,
 		Description: row.LinkDescription,
 		SiteName:    row.LinkSiteName,
+		FinalHost:   row.LinkFinalHost,
 	}
 	if row.StorageKey != "" {
 		u := s.derive(row.StorageKey)
