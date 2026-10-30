@@ -1008,11 +1008,11 @@ async function main() {
     // random UUIDs (data-conversation-id and friends) and the bare /E2E|verified/i
     // matched "e2e" inside one of them about one run in thirteen
     // (`…-4499bba33e2e`), failing a claim nobody made.
-    const claims = (text: string) => /\b(?:E2E|verified)\b/i.test(text.replace('Official Verified Bank', ''))
+    const claims = (text: string) => /\b(?:E2EE?|verified)\b/i.test(text.replace('Official Verified Bank', ''))
     check('no E2E and no verified anywhere on the page', !claims(page),
-      (page.replace('Official Verified Bank', '').match(/.{0,60}\b(?:E2E|verified)\b.{0,60}/i) ?? [''])[0])
+      (page.replace('Official Verified Bank', '').match(/.{0,60}\b(?:E2EE?|verified)\b.{0,60}/i) ?? [''])[0])
     check('and that rule sees a real claim but not hex that spells one',
-      claims('<span>E2E</span>') && claims('<i>Verified</i>') && claims('end-to-end E2E encrypted') &&
+      claims('<span>E2E</span>') && claims('🔒 E2EE encrypted') && claims('<i>Verified</i>') && claims('end-to-end E2E encrypted') &&
       !claims('data-conversation-id="fa4d9f42-78cf-49c8-a1d4-4499bba33e2e"') &&
       !claims('data-conversation-id="be2e8ab8-a303-4d3a-9bbd-a57116908a5b"'))
     check('a reply to a card says LINK and names the host rather than drawing an empty line',
