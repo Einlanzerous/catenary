@@ -89,6 +89,7 @@ new_logdir; LOGDIR="$LOGDIR_OUT"
 fails=0
 step() {
   printf '\n\033[1m== %s\033[0m\n' "$1"
+  ls "$LOGDIR" >"$LOGDIR/.stepmark" 2>/dev/null
 }
 result() {
   if [ "$1" -eq 0 ]; then
@@ -96,6 +97,19 @@ result() {
   else
     printf '   \033[31mFAIL\033[0m %s\n' "$2"
     fails=$((fails + 1))
+    # CANT-347: a failed step used to say only that it failed, and the reason
+    # sat in a /tmp file the CI runner discards. The step's log was written
+    # just before this call, so it is the newest log since the step began:
+    # print its FAIL lines and its tail where the job log can show them.
+    # Only a log first created since this step began counts (step() snapshots
+    # the directory): a check with no log of its own, such as a file-exists
+    # gate, must not print the previous step's.
+    _last="$(ls -t "$LOGDIR" 2>/dev/null | grep -vxFf "$LOGDIR/.stepmark" | head -1)"
+    if [ -n "$_last" ] && [ -f "$LOGDIR/$_last" ]; then
+      printf '   --- %s (FAIL lines, then the last 40 lines)\n' "$_last"
+      grep -E '^(FAIL|not ok)|✖' "$LOGDIR/$_last" | head -20 | sed 's/^/   | /'
+      tail -n 40 "$LOGDIR/$_last" | sed 's/^/   | /'
+    fi
   fi
 }
 
