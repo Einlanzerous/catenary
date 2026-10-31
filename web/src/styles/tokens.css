@@ -87,15 +87,16 @@
   --text-faint: #c2c5be;
   --text-disabled: #b5b9b2;
   --text-placeholder: #a9ada6;
-  --text-quote: #767b76;
+  --text-quote: #656a67;
 
-  /* Accent darkens to A8611A so it clears 4.5:1 on paper white.
+  /* Accent darkens to 9B5918 so it clears 4.5:1 on paper white, the rail and
+   * the lift (5.07, 4.68, 4.56); on surface-raised it measures 4.19.
    * Nothing else changes. */
-  --accent-wire: #a8611a;
-  --accent-wash: rgba(168, 97, 26, 0.14);
-  --accent-wash-soft: rgba(168, 97, 26, 0.1);
-  --accent-rule: rgba(168, 97, 26, 0.55);
-  --accent-underline: rgba(168, 97, 26, 0.55);
+  --accent-wire: #9b5918;
+  --accent-wash: rgba(155, 89, 24, 0.14);
+  --accent-wash-soft: rgba(155, 89, 24, 0.1);
+  --accent-rule: rgba(155, 89, 24, 0.55);
+  --accent-underline: rgba(155, 89, 24, 0.55);
   --accent-dim: #8a5518;
   --accent-queue: #c08a4e;
   --on-accent: #f7f6f3;

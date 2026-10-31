@@ -104,6 +104,33 @@ void main() {
         expect(contrast(tokens.textMeta, tokens.surfaceRaised), greaterThanOrEqualTo(4.15));
       });
 
+      // CANT-346: light text-quote outranks text-meta (the dark theme's order)
+      // and clears 4.5:1 wherever meta does. On raised it joins meta's
+      // accepted exception: 4.2199 today, so the floor is the truncated 4.21.
+      test('$theme: text-quote is >= text-meta on every ground and >= 4.5:1 on base, rail and lift', () {
+        for (final g in grounds.entries) {
+          expect(contrast(tokens.textQuote, g.value), greaterThanOrEqualTo(contrast(tokens.textMeta, g.value)),
+              reason: 'text-quote vs text-meta on ${g.key}');
+        }
+        if (theme == 'light') {
+          for (final g in ['surface-base', 'surface-rail', 'surface-lift']) {
+            expect(contrast(tokens.textQuote, grounds[g]!), greaterThanOrEqualTo(4.5), reason: 'text-quote on $g');
+          }
+          expect(contrast(tokens.textQuote, tokens.surfaceRaised), greaterThanOrEqualTo(4.21));
+        }
+      });
+
+      // CANT-346: tokens.css says the light wire "clears 4.5:1 on paper white";
+      // this is that claim. Raised measures 4.1924 (below 4.5, named in the
+      // comment), so its floor is the truncated 4.19.
+      test('$theme: accent-wire is >= 4.5:1 on base, rail and lift (light), and holds 4.19 on raised', () {
+        if (theme != 'light') return;
+        for (final g in ['surface-base', 'surface-rail', 'surface-lift']) {
+          expect(contrast(tokens.accentWire, grounds[g]!), greaterThanOrEqualTo(4.5), reason: 'accent-wire on $g');
+        }
+        expect(contrast(tokens.accentWire, tokens.surfaceRaised), greaterThanOrEqualTo(4.19));
+      });
+
       // surface-avatar is a tile fill, not a ground a border is drawn on.
       test('$theme: line-strong is >= 3:1 on every ground', () {
         for (final g in grounds.entries) {
@@ -121,7 +148,16 @@ void main() {
 
   test('the one accent is one color per theme, and the two themes differ', () {
     expect(CatenaryTokens.dark.accentWire, const Color(0xFFE0913F));
-    expect(CatenaryTokens.light.accentWire, const Color(0xFFA8611A));
+    expect(CatenaryTokens.light.accentWire, const Color(0xFF9B5918));
+  });
+
+  // CANT-346 ruling 2: the four alphas derive from the wire's RGB, in both themes.
+  test('the accent alpha tokens carry their theme\'s accent-wire RGB', () {
+    for (final t in [CatenaryTokens.dark, CatenaryTokens.light]) {
+      for (final c in [t.accentWash, t.accentWashSoft, t.accentRule, t.accentUnderline]) {
+        expect((c.toARGB32() & 0xFFFFFF), t.accentWire.toARGB32() & 0xFFFFFF);
+      }
+    }
   });
 
   test('the type scale is the web client\'s: weight, size, line height and family', () {
