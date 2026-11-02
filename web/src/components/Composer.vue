@@ -1,14 +1,15 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
 import { peaksFromSeed } from '@/lib/waveform'
-import { IMAGE_ACCEPT } from '@/attach'
+import { IMAGE_ACCEPT, acceptedLine, dragCarriesFiles } from '@/attach'
 import { hostOf, plainText } from '@/linkpreview'
 import {
   attachImage,
   canAttachFile,
   canRecord,
+  closeAttachZone,
   composerDraftChanged,
   dismissPreview,
   messageById,
@@ -19,6 +20,7 @@ import {
   startRecording,
   state,
   stopRecording,
+  toggleAttachZone,
   transcriptText,
   voiceOf,
 } from '@/store'
@@ -30,6 +32,48 @@ const props = defineProps<{ conversationName: string }>()
 
 const box = ref<HTMLTextAreaElement | null>(null)
 const picker = ref<HTMLInputElement | null>(null)
+const attachButton = ref<HTMLButtonElement | null>(null)
+const chooseButton = ref<HTMLButtonElement | null>(null)
+
+/** Focus lands on CHOOSE FILE when the zone opens; closing from inside it
+ *  (ESC) hands focus back to ATTACH. A refusal moves nothing. */
+watch(
+  () => state.composer.attachOpen,
+  (open) => {
+    if (open) void nextTick(() => chooseButton.value?.focus())
+  },
+)
+/** The outbox stopped taking files (ATTACH is now dimmed): the zone goes. */
+watch(canAttachFile, (can) => !can && closeAttachZone())
+
+function closeZoneToAttach() {
+  closeAttachZone()
+  void nextTick(() => attachButton.value?.focus())
+}
+
+const acceptLine = acceptedLine()
+/** The zone's own dragover state (CANT-354): only a drag carrying files. */
+const over = ref(false)
+function onZoneDrag(event: DragEvent) {
+  if (!dragCarriesFiles(event.dataTransfer?.types)) return
+  event.preventDefault()
+  over.value = true
+}
+function onZoneDragLeave(event: DragEvent) {
+  if (!(event.currentTarget as HTMLElement).contains(event.relatedTarget as Node | null)) over.value = false
+}
+/** A drop onto the zone goes through the store's one gate, like the chooser. */
+function onZoneDrop(event: DragEvent) {
+  over.value = false
+  if (!dragCarriesFiles(event.dataTransfer?.types)) return
+  event.preventDefault()
+  void attachImage([...(event.dataTransfer?.files ?? [])], 'drop')
+}
+/** The refusal line: the message, and the file facts only if they are for it. */
+const refusal = computed(() => {
+  const r = state.composer.attachRefusal
+  return r && r.message === state.composer.attachError ? r : null
+})
 
 /** The file dialog's result, through the store's one gate. The input is not
  *  `multiple`, and the store replaces whatever was held. It is cleared so
@@ -105,6 +149,11 @@ function onKeydown(event: KeyboardEvent) {
   if (event.key === 'Escape' && state.composer.replyToId) {
     event.preventDefault()
     replyTo(null)
+    return
+  }
+  if (event.key === 'Escape' && state.composer.attachOpen) {
+    event.preventDefault()
+    closeZoneToAttach()
   }
 }
 
@@ -140,6 +189,39 @@ const grow = () => {
 
     <template v-else>
       <div class="field">
+        <!-- ATT-02: the drop zone, the FIRST row inside the field. Not a modal.
+             Refusals stay in it as one line; the file name is untrusted and is
+             only ever interpolated as text. -->
+        <div
+          v-if="state.composer.attachOpen"
+          id="attach-zone"
+          class="zone"
+          :class="{ over }"
+          role="region"
+          aria-label="Attach an image"
+          @keydown.esc.stop.prevent="closeZoneToAttach"
+          @dragenter="onZoneDrag"
+          @dragover="onZoneDrag"
+          @dragleave="onZoneDragLeave"
+          @drop="onZoneDrop"
+        >
+          <div class="zone-head">
+            <span class="zone-prompt">{{ over ? 'Release to attach.' : 'Drop an image here, or paste one.' }}</span>
+            <span class="zone-esc">ESC CLOSES</span>
+          </div>
+          <button ref="chooseButton" type="button" class="choose" @click="picker?.click()">CHOOSE FILE</button>
+          <span class="zone-accept">{{ acceptLine }}</span>
+          <div class="zone-status" role="status" aria-live="polite">
+            <div v-if="state.composer.attachError" class="zone-refusal">
+              <div v-if="refusal && (refusal.name || refusal.tag)" class="zone-file">
+                <span class="zone-name">{{ plainText(refusal.name) }}</span>
+                <span v-if="refusal.tag" class="zone-tag tnum">{{ refusal.tag }}</span>
+              </div>
+              <div class="zone-message">{{ state.composer.attachError }}</div>
+            </div>
+          </div>
+        </div>
+
         <!-- B · REPLY ARMED -->
         <div v-if="armed" class="armed-bar">
           <ReplyStub :reply="armed" armed />
@@ -204,10 +286,13 @@ const grow = () => {
             @change="onPick"
           />
           <button
+            ref="attachButton"
             class="ghost"
-            :class="{ off: !canAttachFile }"
+            :class="{ off: !canAttachFile, open: state.composer.attachOpen }"
             :disabled="!canAttachFile"
-            @click="picker?.click()"
+            :aria-expanded="state.composer.attachOpen"
+            aria-controls="attach-zone"
+            @click="toggleAttachZone"
           >
             ATTACH
           </button>
@@ -236,7 +321,7 @@ const grow = () => {
           </button>
         </div>
       </div>
-      <p v-if="state.composer.attachError" class="hint attach-error" role="status">
+      <p v-if="state.composer.attachError && !state.composer.attachOpen" class="hint attach-error" role="status">
         {{ state.composer.attachError }}
       </p>
       <!-- The typing indicator used to sit here as a strip. Call 10a moved it
@@ -336,6 +421,124 @@ const grow = () => {
   color: var(--text-disabled);
   cursor: not-allowed;
 }
+/* ATTACH while its zone is open (CANT-357 ruling 3): text.primary and a 1px
+ * text.primary underline, drawn inside the button so no row moves. */
+.ghost.open {
+  padding-bottom: 2px;
+  color: var(--text-primary);
+  box-shadow: inset 0 -1px 0 var(--text-primary);
+}
+
+/* The drop zone (canvas 08, ATT-02): surface.rail ground, 1px line.hair, inset
+ * 8px like the chips and never wider than the field. Colors are tokens by name,
+ * and state swaps are instant. */
+.zone {
+  display: grid;
+  justify-items: start;
+  margin: 8px 8px 0;
+  padding: 14px 16px;
+  background: var(--surface-rail);
+  border: 1px solid var(--line-hair);
+}
+.zone.over {
+  background: var(--surface-raised);
+  border-color: var(--text-meta);
+}
+.zone > * {
+  min-width: 0;
+  margin-top: 12px;
+}
+.zone > :first-child {
+  margin-top: 0;
+}
+.zone-head {
+  display: flex;
+  gap: 16px;
+  align-items: baseline;
+  justify-content: space-between;
+  width: 100%;
+}
+.zone-prompt {
+  font-size: 13.5px;
+  line-height: 20px;
+  color: var(--text-primary);
+}
+.zone-esc {
+  flex: none;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-secondary);
+}
+.choose {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 14px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-primary);
+  background: var(--surface-base);
+  border: 1px solid var(--line-hair);
+  transition:
+    background-color 80ms linear,
+    border-color 80ms linear;
+}
+.choose:hover {
+  background: var(--surface-raised);
+}
+.choose:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
+.choose:active {
+  background: var(--surface-raised);
+  border-color: var(--text-meta);
+}
+.zone-accept {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 14px;
+  color: var(--text-secondary);
+}
+/* The status region is always there so a screen reader hears the line arrive;
+ * empty, it takes no room and adds no gap. */
+.zone > .zone-status {
+  width: 100%;
+  margin-top: 0;
+}
+.zone-refusal {
+  display: grid;
+  gap: 3px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-hair);
+}
+.zone-file {
+  display: flex;
+  gap: 10px;
+  min-width: 0;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  line-height: 14px;
+  color: var(--text-secondary);
+}
+.zone-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.zone-tag {
+  flex: none;
+}
+.zone-message {
+  font-size: 13.5px;
+  line-height: 20px;
+  color: var(--text-primary);
+  text-wrap: pretty;
+}
 
 .keys {
   margin-left: auto;
@@ -414,6 +617,9 @@ const grow = () => {
   }
   .keys {
     display: none;
+  }
+  .choose {
+    height: 44px;
   }
 }
 </style>

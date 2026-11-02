@@ -100,9 +100,23 @@ interface Composer {
    *  meta color (red stays for failure alone). Cleared by the next accepted
    *  pick, send or take. */
   attachError: string | null
+  /** What the open zone's refusal line says about the file, beside the message
+   *  (CANT-354). It names the message it belongs to, so a different refusal
+   *  from anywhere else never shows under a stale file name. Untrusted text. */
+  attachRefusal: AttachRefusal | null
+  /** The in-composer drop zone is open (CANT-354). Client-local view state. */
+  attachOpen: boolean
   /** The link preview for the draft's first URL (CANT-323). Client-local, the
    *  same category as `sending` and `queued`: the server has no opinion on it. */
   preview: ComposerPreview
+}
+
+/** The file half of a zone refusal: a name (null for a refusal of several) and
+ *  a short tag (the extension, the size, or the count). */
+export interface AttachRefusal {
+  message: string
+  name: string | null
+  tag: string | null
 }
 
 /** `idle` is "nothing asked yet" (a request may be scheduled), `loading` a
@@ -161,6 +175,8 @@ const state = reactive({
     recordingSec: 0,
     attachment: null,
     attachError: null,
+    attachRefusal: null,
+    attachOpen: false,
     preview: emptyPreview(),
   } as Composer,
 
@@ -663,14 +679,49 @@ export function dismissPreview() {
  * accepted one replaces whatever image was held (one per message), and a
  * refused one leaves what was held where it was.
  */
-async function pickImage(file: Blob & { name?: string }): Promise<void> {
+async function pickImage(file: Blob & { name?: string }): Promise<boolean> {
   const verdict = await precheckImage(file)
   if (!verdict.ok) {
-    state.composer.attachError = verdict.message
-    return
+    refuseAttach(verdict.message, file.name ?? null, verdict.reason === 'size' ? megabytes(file.size) : extensionTag(file.name))
+    return false
   }
   state.composer.attachment = { blob: file, ...(file.name ? { filename: file.name } : {}) }
   state.composer.attachError = null
+  return true
+}
+
+/** One refusal, replacing any previous one: the message every entrance shares
+ *  and the file facts only the open zone shows. */
+function refuseAttach(message: string, name: string | null, tag: string | null) {
+  state.composer.attachError = message
+  state.composer.attachRefusal = { message, name, tag }
+}
+
+const megabytes = (bytes: number) => `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+/** The extension as the person named it, only when it is a plain short one. */
+const extensionTag = (name: string | undefined) => {
+  const ext = name?.includes('.') ? name.slice(name.lastIndexOf('.') + 1) : ''
+  return /^[A-Za-z0-9]{1,5}$/.test(ext) ? ext.toUpperCase() : null
+}
+
+/** Open the drop zone (CANT-354). It opens only where an attach could succeed
+ *  now: the outbox's own predicate, and never under a recording. */
+export function openAttachZone() {
+  if (state.composer.recording || !canAttachFile.value) return
+  state.composer.attachOpen = true
+}
+
+/** Close it; the refusal line goes with it. */
+export function closeAttachZone() {
+  if (!state.composer.attachOpen) return // a hint outside a closed zone is not this function's to clear
+  state.composer.attachOpen = false
+  state.composer.attachError = null
+  state.composer.attachRefusal = null
+}
+
+export function toggleAttachZone() {
+  if (state.composer.attachOpen) closeAttachZone()
+  else openAttachZone()
 }
 
 /** Where an image came from. It changes no outcome: it exists so a test can
@@ -693,14 +744,16 @@ export type AttachSource = 'chooser' | 'drop' | 'paste'
 export async function attachImage(files: FileList | readonly File[], _source: AttachSource): Promise<void> {
   if (files.length === 0) return
   if (files.length > 1) {
-    state.composer.attachError = ONE_IMAGE_MESSAGE
+    refuseAttach(ONE_IMAGE_MESSAGE, null, `${files.length} FILES`)
     return
   }
+  const file = files[0]!
   if (!canAttachFile.value) {
-    state.composer.attachError = ComposeRefused.pickedFileOffline
+    refuseAttach(ComposeRefused.pickedFileOffline, file.name, null)
     return
   }
-  await pickImage(files[0]!)
+  // A held image closes the zone; a refusal leaves it open with its one line.
+  if (await pickImage(file)) closeAttachZone()
 }
 
 /** The part of a ClipboardEvent the paste rule reads, so a test can hand it a
@@ -859,6 +912,7 @@ export const canRecord = computed(() => recorderRef.value.enabled)
 export async function startRecording() {
   const recorder = recorderRef.value
   if (!recorder.enabled || state.composer.recording || starting || cannotSend()) return
+  closeAttachZone() // it does not come back when the take ends (CANT-354)
   state.composer.attachError = null
   starting = true
   try {

@@ -1120,6 +1120,39 @@ async function main() {
     state.composer.draft = ''
     state.composer.preview = { state: 'idle', url: null, uploadId: null, card: null }
 
+    // 08 · ATT-02/03/04/06 (CANT-354): the in-composer drop zone.
+    state.composer.draft = ''
+    state.composer.attachOpen = true
+    let z = held(await render())
+    const zone = z.slice(z.indexOf('id="attach-zone"'))
+    check('ATT-02 zone is the first row in the field: region, prompt, ESC CLOSES, CHOOSE FILE, accepted line',
+      z.indexOf('class="field"') < z.indexOf('id="attach-zone"') && z.includes('role="region"') && zone.includes('Drop an image here, or paste one.') && zone.includes('ESC CLOSES') && zone.includes('>CHOOSE FILE</button>') && zone.includes('JPEG, PNG, GIF or WebP \u00b7 up to 16 MB'))
+    const attachTag = z.match(/<button[^>]*>\s*ATTACH\s*<\/button>/)?.[0] ?? ''
+    check('ATT-02 ATTACH is expanded and carries the open treatment', attachTag.includes('aria-expanded="true"') && /class="[^"]*\bopen\b/.test(attachTag) && attachTag.includes('aria-controls="attach-zone"'))
+    state.composer.attachError = "That file type isn't supported. Send a JPEG, PNG, GIF or WebP image."
+    state.composer.attachRefusal = { message: state.composer.attachError, name: 'scan_0412_gate-sign_final.tiff', tag: 'TIFF' }
+    z = held(await render())
+    check('ATT-04 one refusal line in a status region inside the open zone; the outside hint is not drawn twice',
+      /role="status" aria-live="polite"[^>]*><div class="zone-refusal"/.test(z) && z.includes('scan_0412_gate-sign_final.tiff') && z.includes('>TIFF<') && !z.includes('class="hint attach-error"'))
+    state.composer.attachError = null
+    state.composer.attachRefusal = null
+    state.composer.attachOpen = false
+    z = held(await render())
+    check('ATT-01 closed: no zone, ATTACH not expanded', !z.includes('id="attach-zone"') && /aria-expanded="false"/.test(z))
+    state.composer.attachOpen = true
+    state.composer.recording = true
+    check('ATT-06 recording: the zone is not drawn', !held(await render()).includes('id="attach-zone"'))
+    state.composer.recording = false
+    state.composer.attachOpen = false
+    {
+      // No second accent, no motion, tokens by name (canvas 08 token note).
+      const css = readFileSync(resolve(process.cwd(), 'src/components/Composer.vue'), 'utf8')
+      const part = css.slice(css.indexOf('.ghost.open {'), css.indexOf('.keys {'))
+      check('ATT zone CSS: no accent token, no transform, animation or keyframe', part.length > 500 && !/accent|transform|animation|keyframes|translate|scale/.test(part))
+      check('ATT zone CSS: colors by token name only, and only 80 ms linear transitions',
+        !/#[0-9a-fA-F]{3,8}\b|rgb\(|hsl\(/.test(part) && (part.match(/transition:/g) ?? []).length === 1 && /background-color 80ms linear,\s*border-color 80ms linear/.test(part))
+    }
+
     for (const id of ['k-img', 'k-text', 'k-long', 'k-own', 'k-empty', 'r-full', 'r-empty']) {
       state.messages.splice(state.messages.findIndex((m) => m.id === id), 1)
     }

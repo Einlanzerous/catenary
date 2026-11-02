@@ -19,9 +19,9 @@ import assert from 'node:assert/strict'
 import { createSSRApp } from 'vue'
 import { renderToString } from 'vue/server-renderer'
 import Composer from '@/components/Composer.vue'
-import { IMAGE_CAP_BYTES, precheckImage, sniffImage } from '@/attach'
+import { ACCEPTED_IMAGE_TYPES, IMAGE_CAP_BYTES, acceptedLine, dragCarriesFiles, precheckImage, sniffImage } from '@/attach'
 import { ComposeRefused, MemoryOutboxStore, ScriptedTransport } from '@/outbox'
-import { canAttachFile, outboxMessages, outboxReady, attachImage, pasteIntoComposer, removeAttachment, send, state, useOutbox } from '@/store'
+import { closeAttachZone, openAttachZone, toggleAttachZone, startRecording, stopRecording, canAttachFile, outboxMessages, outboxReady, attachImage, pasteIntoComposer, removeAttachment, send, state, useOutbox } from '@/store'
 import { UPLOAD_MESSAGES } from '@/upload'
 import { configureRecorder } from '@/store'
 import type { ConnectionState } from '@/client-types'
@@ -98,6 +98,9 @@ const reset = async () => {
   state.composer.replyToId = null
   state.composer.attachment = null
   state.composer.attachError = null
+  state.composer.attachRefusal = null
+  state.composer.attachOpen = false
+  state.composer.recording = false
   state.connection = { state: 'live' }
 }
 afterEach(() => {
@@ -466,4 +469,179 @@ test('Paste · a second image while one is held replaces it, as the chooser does
   await settle()
   assert.equal(state.composer.attachment?.filename, 'second.jpg', 'a refused paste leaves the held one')
   assert.equal(state.composer.attachError, UPLOAD_MESSAGES.unsupportedType)
+})
+
+/* ── the drop zone (CANT-354 under CANT-349) ──────────────────────────────── */
+
+const zoneOf = (html: string) => html.match(/<div[^>]*id="attach-zone"[\s\S]*?<\/div><\/div>/)?.[0] ?? ''
+
+test('Zone · ATTACH toggles it; aria-expanded and aria-controls follow; it is the first row inside the field', async () => {
+  await reset()
+  await outboxIn('ready')
+  let html = await render()
+  assert.match(attachButton(html), /aria-expanded="false"/)
+  assert.match(attachButton(html), /aria-controls="attach-zone"/)
+  assert.ok(!html.includes('id="attach-zone"'), 'closed: not drawn')
+  toggleAttachZone()
+  html = await render()
+  assert.match(attachButton(html), /aria-expanded="true"/)
+  assert.ok(html.includes('role="region"') && html.includes('aria-label="Attach an image"'))
+  assert.ok(html.indexOf('id="attach-zone"') > html.indexOf('class="field"'), 'inside the field')
+  assert.ok(html.indexOf('id="attach-zone"') < html.indexOf('<textarea'), 'above the draft')
+  toggleAttachZone()
+  assert.equal(state.composer.attachOpen, false)
+})
+
+test('Zone · above the chips, in the same column', async () => {
+  await reset()
+  await outboxIn('ready')
+  state.composer.attachment = { blob: new Blob(['x']), filename: 'held.png' }
+  openAttachZone()
+  const html = await render()
+  assert.ok(html.indexOf('id="attach-zone"') < html.indexOf('class="chips"'))
+})
+
+test('Zone · it opens only where an attach could succeed: not offline, not under a recording', async () => {
+  await reset()
+  await outboxIn('closed')
+  openAttachZone()
+  assert.equal(state.composer.attachOpen, false, 'the outbox cannot take a file now')
+  await outboxIn('ready')
+  state.composer.recording = true
+  openAttachZone()
+  assert.equal(state.composer.attachOpen, false, 'not while recording')
+})
+
+test('Zone · the accepted-types line is derived from the two constants', async () => {
+  await reset()
+  await outboxIn('ready')
+  assert.equal(acceptedLine(), 'JPEG, PNG, GIF or WebP \u00b7 up to 16 MB')
+  assert.equal(ACCEPTED_IMAGE_TYPES.length, 4)
+  assert.equal(IMAGE_CAP_BYTES, 16 * 1024 * 1024)
+  openAttachZone()
+  assert.ok(zoneOf(await render()).includes('JPEG, PNG, GIF or WebP \u00b7 up to 16 MB'))
+})
+
+test('Zone · the prompt, ESC CLOSES and CHOOSE FILE are in it; the dragover line is a state, not the resting copy', async () => {
+  await reset()
+  await outboxIn('ready')
+  openAttachZone()
+  const z = zoneOf(await render())
+  assert.ok(z.includes('Drop an image here, or paste one.') && z.includes('ESC CLOSES') && z.includes('>CHOOSE FILE</button>'))
+  assert.ok(!z.includes('Release to attach.'))
+})
+
+test('Zone · a refusal is one line in a status region, replaces the previous, and the zone stays open', async () => {
+  await reset()
+  await outboxIn('ready')
+  openAttachZone()
+  await attachImage([file('scan_0412.tiff', new Uint8Array([0x49, 0x49, 0x2a, 0]))], 'chooser')
+  assert.equal(state.composer.attachOpen, true, 'stays open')
+  let z = zoneOf(await render())
+  assert.match(z, /role="status"/)
+  assert.ok(z.includes('scan_0412.tiff') && z.includes('>TIFF<') && z.includes(UPLOAD_MESSAGES.unsupportedType.replace("'", '&#39;')))
+  await attachImage([file('IMG_4502.PNG', oversizeImage())], 'drop')
+  z = zoneOf(await render())
+  assert.ok(z.includes('IMG_4502.PNG') && z.includes('MB') && z.includes(UPLOAD_MESSAGES.tooLarge))
+  assert.ok(!z.includes('scan_0412.tiff'), 'replaced, never stacked')
+  assert.equal((z.match(/class="zone-refusal"/g) ?? []).length, 1)
+  await attachImage([file('a.png', readFixture('image.png')), file('b.png', readFixture('image.png')), file('c.png', readFixture('image.png'))], 'drop')
+  z = zoneOf(await render())
+  assert.ok(z.includes('3 FILES') && z.includes('One image at a time.'))
+  assert.equal((z.match(/class="zone-refusal"/g) ?? []).length, 1)
+  // The page-level hint is not drawn twice while the zone is open.
+  assert.equal(((await render()).match(/class="hint attach-error"/g) ?? []).length, 0)
+})
+
+test('Zone · a file name is untrusted: never parsed as markup, bidi stripped', async () => {
+  await reset()
+  await outboxIn('ready')
+  openAttachZone()
+  await attachImage([file('<img src=x onerror=alert(1)>\u202e.tiff', new Uint8Array([1, 2, 3, 4]))], 'chooser')
+  const z = zoneOf(await render())
+  assert.ok(!z.includes('<img'), 'escaped')
+  assert.ok(z.includes('&lt;img src=x'))
+  assert.ok(!z.includes('\u202e'))
+})
+
+test('Zone · the refusal clears when the zone closes, and a file accepted closes the zone', async () => {
+  await reset()
+  await outboxIn('ready')
+  openAttachZone()
+  await attachImage([file('h.heic', readFixture('image.heic'))], 'chooser')
+  assert.ok(state.composer.attachError)
+  closeAttachZone()
+  assert.equal(state.composer.attachError, null)
+  assert.equal(state.composer.attachRefusal, null)
+  openAttachZone()
+  assert.ok(!zoneOf(await render()).includes('class="zone-refusal"'), 'reopened clean')
+  await attachImage([file('h.heic', readFixture('image.heic'))], 'chooser')
+  await attachImage([file('ok.png', readFixture('image.png'))], 'chooser')
+  assert.equal(state.composer.attachOpen, false, 'a successful pick closes it')
+  assert.equal(state.composer.attachError, null)
+  assert.equal(state.composer.attachment?.filename, 'ok.png')
+})
+
+test('Zone · a refusal with the zone closed still shows the old hint line outside', async () => {
+  await reset()
+  await outboxIn('ready')
+  await attachImage([file('h.heic', readFixture('image.heic'))], 'chooser')
+  const html = await render()
+  assert.ok(html.includes('class="hint attach-error"') && html.includes('role="status"'))
+})
+
+test('Zone · pressing RECORD closes it, it is not drawn while recording, and it does not return', async () => {
+  await reset()
+  await outboxIn('ready')
+  configureRecorder({
+    enabled: true,
+    start: async () => ({ stop: async () => ({ blob: new Blob(['x']), durationMs: 1 }), cancel() {} }),
+  } as never)
+  openAttachZone()
+  assert.equal(state.composer.attachOpen, true)
+  await startRecording()
+  assert.equal(state.composer.attachOpen, false)
+  assert.ok(!(await render()).includes('id="attach-zone"'))
+  await stopRecording(false)
+  assert.equal(state.composer.attachOpen, false, 'does not come back')
+})
+
+test('Zone · the drop on the zone and CHOOSE FILE reach attachImage; the component never calls the pre-check', () => {
+  const src = readFileSync('src/components/Composer.vue', 'utf8')
+  assert.match(src, /attachImage\(\[\.\.\.\(event\.dataTransfer\?\.files \?\? \[\]\)\], 'drop'\)/)
+  assert.match(src, /attachImage\(files, 'chooser'\)/)
+  assert.match(src, /class="choose" @click="picker\?\.click\(\)"|class="choose"\s+@click="picker\?\.click\(\)"/)
+  assert.ok(!/precheckImage|pickImage/.test(src))
+})
+
+test('Zone · a drag claims only drags that carry files', () => {
+  assert.equal(dragCarriesFiles(['Files']), true)
+  assert.equal(dragCarriesFiles(['text/plain', 'Files']), true)
+  assert.equal(dragCarriesFiles(['text/plain', 'text/uri-list']), false)
+  assert.equal(dragCarriesFiles(null), false)
+  const src = readFileSync('src/components/Composer.vue', 'utf8')
+  assert.match(src, /@dragover="onZoneDrag"/)
+  assert.match(src, /:class="\{ over \}"/)
+})
+
+test('Zone · ESC closes it and hands focus back to ATTACH', () => {
+  const src = readFileSync('src/components/Composer.vue', 'utf8')
+  assert.match(src, /@keydown\.esc\.stop\.prevent="closeZoneToAttach"/)
+  assert.match(src, /attachButton\.value\?\.focus\(\)/)
+  assert.match(src, /chooseButton\.value\?\.focus\(\)/)
+})
+
+test('Zone · closing a zone that is already closed leaves the outside hint: a refused paste, then the connection drops', async () => {
+  await reset()
+  const { transport } = await outboxIn('ready')
+  pasteIntoComposer(clip([file('h.heic', readFixture('image.heic'), 'image/heic')]))
+  await settle()
+  assert.equal(state.composer.attachOpen, false)
+  assert.ok((await render()).includes('class="hint attach-error"'), 'the hint shows')
+  transport.close()
+  state.connection = { state: 'offline' }
+  assert.equal(canAttachFile.value, false)
+  closeAttachZone() // what the composer's watch on canAttachFile calls
+  assert.equal(state.composer.attachError, UPLOAD_MESSAGES.unsupportedType)
+  assert.ok((await render()).includes('class="hint attach-error"'), 'the hint is still there')
 })
