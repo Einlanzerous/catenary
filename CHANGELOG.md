@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.21.1](https://github.com/Einlanzerous/catenary/compare/v0.21.0...v0.21.1) (2026-11-02)
+
+
+### Bug Fixes
+
+* CANT-346 — light text-quote [#656](https://github.com/Einlanzerous/catenary/issues/656)A67, light accent-wire [#9](https://github.com/Einlanzerous/catenary/issues/9)B5918 ([#261](https://github.com/Einlanzerous/catenary/issues/261)) ([d7847fb](https://github.com/Einlanzerous/catenary/commit/d7847fb31566b717425bf66ab4f49f32467d6c97))
+* CANT-347 — web smoke E2E/verified rule matched hex in random UUIDs; CI shows failing step logs ([#259](https://github.com/Einlanzerous/catenary/issues/259)) ([cc93408](https://github.com/Einlanzerous/catenary/commit/cc9340802197fead06b84a4b7bf7f1fc36734e14))
+* CANT-350 — log every refused /ws upgrade with its reason ([#262](https://github.com/Einlanzerous/catenary/issues/262)) ([77b4ea0](https://github.com/Einlanzerous/catenary/commit/77b4ea0bd227d8d1ec2e0d3dae7e37aea35c3982))
+
 ## [0.21.0](https://github.com/Einlanzerous/catenary/compare/v0.20.0...v0.21.0) (2026-10-30)
 
 
