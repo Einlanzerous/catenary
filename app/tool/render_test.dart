@@ -224,7 +224,7 @@ void main() {
                   children: [
                     composer(link: const HeldLink(host: 'switchyard.zerogravity.industries', title: 'Switchyard — Dashboard'), draft: '…/dashboard'),
                     composer(link: const HeldLink(host: 'chronicle.zerogravity.industries', fetching: true), draft: '…/w/sunday'),
-                    composer(link: const HeldLink(host: 'argosy.zerogravity.industries', title: 'Severance — Season 2 is in the library'), image: 'IMG_4471.HEIC', draft: "this one's the shed"),
+                    composer(link: const HeldLink(host: 'argosy.zerogravity.industries', title: 'Severance — Season 2 is in the library'), image: 'IMG_4471.JPG', draft: "this one's the shed"),
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: const [

@@ -4,7 +4,7 @@
 //
 //   [ LINK  | host                         | ✕ ]   44 high, the ✕ a 44×44 target
 //   [       | title, or FETCHING PREVIEW   |   ]
-//   [ IMAGE | IMG_4471.HEIC                | ✕ ]
+//   [ IMAGE | IMG_4471.JPG                | ✕ ]
 //
 // The host is parsed from the pasted URL locally, so it shows the instant the
 // chip appears; only the title waits. FETCHING PREVIEW carries a 1px hairline

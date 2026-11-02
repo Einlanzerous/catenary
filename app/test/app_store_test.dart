@@ -497,7 +497,7 @@ void main() {
           wire.VoiceAttachment(url: '/media/p', durationMs: 72000, peaks: [12], transcript: wire.Transcript(state: wire.TranscriptState.pending)),
         ]),
         message('m-i', room, 3, nadia, '2026-10-04T12:02:00.000Z', text: null, attachments: const [
-          wire.ImageAttachment(url: '/media/i', filename: 'IMG_4471.HEIC', width: 3024, height: 2016, bytes: 1),
+          wire.ImageAttachment(url: '/media/i', filename: 'IMG_4471.JPG', width: 3024, height: 2016, bytes: 1),
         ]),
       ]);
       final thread = conversationViews(projection: p, outbox: const [], me: me, secure: true).firstWhere((c) => c.id == room);
@@ -505,7 +505,7 @@ void main() {
       expect(thread.messages[0].voice!.duration, const Duration(seconds: 38));
       expect(thread.messages[0].voice!.transcript, 'two words');
       expect(thread.messages[1].voice!.transcript, isNull);
-      expect(thread.messages[2].image!.filename, 'IMG_4471.HEIC');
+      expect(thread.messages[2].image!.filename, 'IMG_4471.JPG');
       expect((thread.messages[2].image!.width, thread.messages[2].image!.height), (3024, 2016));
       expect(roomsPending(p), 2, reason: 'the room holds 3 of 4 and the direct 0 of 1');
     });
