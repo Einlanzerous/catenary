@@ -201,7 +201,7 @@ void main() {
       expect(find.text('COLLAPSE'), findsOneWidget);
       expect(tester.widget<Text>(find.text(transcript)).maxLines, isNull);
 
-      expect(find.text('IMG_4471.HEIC'), findsOneWidget);
+      expect(find.text('IMG_4471.JPG'), findsOneWidget);
       expect(find.text('3024×2016'), findsOneWidget);
       // Typing is the thread's last row, a first name.
       expect(find.text('Nadia'), findsOneWidget);

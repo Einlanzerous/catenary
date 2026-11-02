@@ -503,20 +503,20 @@ void main() {
     });
 
     testWidgets('both: link above image, one tag column, 8 apart; the image chip keeps its name', (tester) async {
-      await composer(tester, link: const HeldLink(host: 'argosy.zerogravity.industries', title: 'Severance — Season 2 is in the library'), image: 'IMG_4471.HEIC');
+      await composer(tester, link: const HeldLink(host: 'argosy.zerogravity.industries', title: 'Severance — Season 2 is in the library'), image: 'IMG_4471.JPG');
       final link = tester.getRect(find.byKey(const ValueKey('composer-link-chip')));
       final image = tester.getRect(find.byKey(const ValueKey('composer-attachment')));
       expect(image.top - link.bottom, 8);
       expect(link.height, 44);
       expect(image.height, 44);
       expect(find.text('IMAGE'), findsOneWidget);
-      expect(find.text('IMG_4471.HEIC'), findsOneWidget);
+      expect(find.text('IMG_4471.JPG'), findsOneWidget);
       // One component, two tags: both tag cells are 58 wide, so the two
       // columns' right edges line up.
       expect(tester.getCenter(find.text('LINK')).dx, tester.getCenter(find.text('IMAGE')).dx);
       expect(tester.getSize(find.byKey(const ValueKey('composer-attachment-remove'))), const Size(44, 44));
       final t = tokens(tester, find.byType(Composer));
-      expect(tester.widget<Text>(find.text('IMG_4471.HEIC')).style!.color, t.textSecondary);
+      expect(tester.widget<Text>(find.text('IMG_4471.JPG')).style!.color, t.textSecondary);
     });
 
     testWidgets('after ✕: the chip row is gone and the field stays', (tester) async {

@@ -103,7 +103,7 @@ List<ConversationView> fixtureConversations(DateTime now) {
             voice: VoiceNote(duration: const Duration(seconds: 38), peaks: fixturePeaks(9931, 48), transcript: _transcript)),
         msg(4, 'u-ilse', 'Ilse Marchetti', today(4), text: 'photo from this morning, the whole run is re-tensioned'),
         msg(5, 'u-ilse', 'Ilse Marchetti', today(4),
-            image: const ImageAttachment(filename: 'IMG_4471.HEIC', width: 3024, height: 2016)),
+            image: const ImageAttachment(filename: 'IMG_4471.JPG', width: 3024, height: 2016)),
         msg(6, me, 'Hollis Brandt', today(1), text: 'I can be there at eight to sign for it.', status: MessageStatus.delivered),
       ],
     ),
@@ -133,7 +133,7 @@ List<ConversationView> fixtureConversations(DateTime now) {
       muted: true,
       messages: [
         msg(1, 'u-marek', 'Marek Dubois', last(DateTime.monday),
-            image: const ImageAttachment(filename: 'IMG_4402.HEIC', width: 3024, height: 2016)),
+            image: const ImageAttachment(filename: 'IMG_4402.JPG', width: 3024, height: 2016)),
       ],
     ),
     ConversationView(
