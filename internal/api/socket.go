@@ -272,29 +272,51 @@ func socketHandler(d Deps) http.HandlerFunc {
 			}
 		}
 
+		// logRefused writes the ONE "socket upgrade refused" line a refused
+		// upgrade leaves (CANT-350). requestLogger already writes a generic
+		// "http request" line with the path and status for every 4xx; this
+		// line adds the reason, which the status alone cannot give (two 401s
+		// and four 400s look the same there). The attributes are the request's
+		// shape and never its credential: the token rides in
+		// Sec-WebSocket-Protocol, which is not logged, and no field below
+		// carries it. Every refusal goes through here, so one search finds all
+		// of them.
+		logRefused := func(reason string, attrs ...any) {
+			attrs = append([]any{"reason", reason,
+				"origin", r.Header.Get("Origin"),
+				"upgrade", r.Header.Get("Upgrade"),
+				"http_version", r.Proto}, attrs...)
+			d.Logger.WarnContext(r.Context(), "socket upgrade refused", attrs...)
+		}
+		// refuse answers the upgrade as HTTP with a status this handler chose.
+		refuse := func(status int, reason string, body any, attrs ...any) {
+			logRefused(reason, append([]any{"status", status}, attrs...)...)
+			writeJSON(w, status, body)
+		}
+
 		// THE ORDER IS THE POLICY. Malformed first, because a 400 says only
 		// that the request is not one this server understands. Then the
 		// credential, because without one nothing else about the request
 		// matters and the 401 must not vary by what else was wrong with it.
 		switch {
 		case len(tokens) > 1:
-			writeJSON(w, http.StatusBadRequest, map[string]string{
+			refuse(http.StatusBadRequest, "several token subprotocols", map[string]string{
 				"error": "offer one catenary.token.<token> subprotocol, not several"})
 			return
 		case len(tokens) == 1 && !wire.TokenPattern.MatchString(tokens[0]):
 			// Same rule as POST /enroll: a token that is not shaped like one
 			// is the sender's malformed request, and saying so leaks nothing.
-			writeJSON(w, http.StatusBadRequest, map[string]string{
+			refuse(http.StatusBadRequest, "token subprotocol malformed", map[string]string{
 				"error": "catenary.token.<token> is not shaped like a token"})
 			return
 		case len(tokens) == 0:
 			// THE SAME BODY GET /sync WRITES. There is one way for this
 			// service to say no to a credential, and "you presented none" is
 			// not a different way.
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			refuse(http.StatusUnauthorized, "no token subprotocol offered", map[string]string{"code": "unauthorized"})
 			return
 		case !hasV1:
-			writeJSON(w, http.StatusBadRequest, map[string]string{
+			refuse(http.StatusBadRequest, "catenary.v1 subprotocol not offered", map[string]string{
 				"error": "subprotocol " + subprotocolV1 + " is required"})
 			return
 		}
@@ -302,7 +324,8 @@ func socketHandler(d Deps) http.HandlerFunc {
 		caller, err := d.Authenticate(r.Context(), tokens[0])
 		switch {
 		case errors.Is(err, store.ErrUnauthorized):
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			// store.Authenticate has already logged which of its refusals this was.
+			refuse(http.StatusUnauthorized, "credential refused", map[string]string{"code": "unauthorized"})
 			return
 		case err != nil:
 			d.Logger.ErrorContext(r.Context(), "socket authentication failed", "error", err)
@@ -317,9 +340,8 @@ func socketHandler(d Deps) http.HandlerFunc {
 		// bot attempted a device-only operation" as one of its four, and this
 		// is that operation. A bot's write path is REST (CANT-75).
 		if caller.IsBot() {
-			d.Logger.WarnContext(r.Context(), "socket refused",
-				"reason", "bot has no device to bind", "user_id", caller.UserID)
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"code": "unauthorized"})
+			refuse(http.StatusUnauthorized, "bot has no device to bind",
+				map[string]string{"code": "unauthorized"}, "user_id", caller.UserID)
 			return
 		}
 
@@ -335,8 +357,11 @@ func socketHandler(d Deps) http.HandlerFunc {
 			Subprotocols: []string{subprotocolV1},
 		})
 		if err != nil {
-			// Accept has already written its own 4xx. Logged, not answered.
-			d.Logger.WarnContext(r.Context(), "socket upgrade failed",
+			// Accept has already written its own 4xx (403, 426, 400 or 405,
+			// chosen inside the library), so this line carries no "status" of
+			// its own: the generic "http request" line has it. Logged, not
+			// answered.
+			logRefused("upgrade failed",
 				"user_id", caller.UserID, "device_id", caller.DeviceID, "error", err)
 			return
 		}
