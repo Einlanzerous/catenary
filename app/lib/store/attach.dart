@@ -3,6 +3,12 @@
 // hold a [PickedImage] and read a [PickOutcome], and the store does the
 // checking and the composing.
 
+/// Said when several files arrive at once and the whole drop is refused. The
+/// web client's `ONE_IMAGE_MESSAGE` is the same words, and both are asserted
+/// against testdata/media/messages.json (CANT-360). Not wired into any widget
+/// yet; CANT-356 does that.
+const oneImageMessage = 'One image at a time.';
+
 /// One image the person chose: where the platform put it, and what to call it.
 /// The outbox copies the bytes at compose and never keeps the path.
 class PickedImage {

@@ -30,8 +30,9 @@ export type AcceptedImageType = (typeof ACCEPTED_IMAGE_TYPES)[number]
 export const IMAGE_ACCEPT = ACCEPTED_IMAGE_TYPES.join(',')
 
 /** Said when several files arrive at once and the whole drop is refused
- *  (CANT-349 ruling 3). PLACEHOLDER WORDING: the user has not ruled on the copy;
- *  CANT-357 decides it. Keep it the one string, so changing it is one line. */
+ *  (CANT-349 ruling 3). The wording is ruled (CANT-357 ruling 5) and shared with
+ *  the Flutter client's `oneImageMessage` through testdata/media/messages.json,
+ *  which both runtimes' tests assert, so a change here fails the Dart test. */
 export const ONE_IMAGE_MESSAGE = 'One image at a time.'
 
 export type PrecheckResult =

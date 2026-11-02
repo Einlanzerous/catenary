@@ -25,7 +25,7 @@ import { canAttachFile, outboxMessages, outboxReady, attachImage, pasteIntoCompo
 import { UPLOAD_MESSAGES } from '@/upload'
 import { configureRecorder } from '@/store'
 import type { ConnectionState } from '@/client-types'
-import { loadManifest, oversizeImage, readFixture } from './media-fixtures'
+import { loadManifest, loadMessages, oversizeImage, readFixture } from './media-fixtures'
 
 const ME = '00000000-0000-4000-8000-000000000001'
 const CONV = '00000000-0000-4000-8000-000000000064'
@@ -36,6 +36,10 @@ const file = (name: string, bytes: Uint8Array, type = ''): File => new File([byt
 
 test('Shared fixtures · the pre-check cap is the manifest cap, which the Go test pins to the server default', () => {
   assert.equal(IMAGE_CAP_BYTES, loadManifest().imageCapBytes)
+})
+
+test('Shared fixtures · the several-files message is the one the Dart client holds (messages.json)', () => {
+  assert.equal(ONE_IMAGE_MESSAGE, loadMessages().oneImage)
 })
 
 test('Shared fixtures · every fixture gets the server’s verdict, from its bytes', async () => {
