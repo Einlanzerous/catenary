@@ -26,7 +26,7 @@
 
 import { readFileSync } from 'node:fs'
 import { accountState, configureAccount, login, onEnrolled } from '@/account'
-import { configureRecorder, liveTransport, outboxReady, pickImage, startRecording, startSession, state, stopRecording, useTransport } from '@/store'
+import { configureRecorder, liveTransport, outboxReady, attachImage, startRecording, startSession, state, stopRecording, useTransport } from '@/store'
 import { MemoryCredentialStore } from '@/transport/credential-store'
 import type { Logger } from '@/transport/seams'
 import { RefusingUploader, project } from '@/outbox'
@@ -63,7 +63,7 @@ async function unsendable(conversationId: Uuid) {
     ['oversize.jpg', oversizeImage(manifest), UPLOAD_MESSAGES.tooLarge],
   ]
   for (const [name, bytes, message] of refusals) {
-    await pickImage(new File([bytes as BlobPart], name))
+    await attachImage([new File([bytes as BlobPart], name)], 'chooser')
     check(state.composer.attachError === message, `the picker refuses ${name} with "${message}"`)
     check(state.composer.attachment === null, `${name} is not held`)
     check(held() === 0, `no outbox entry was written for ${name}`)

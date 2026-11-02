@@ -6,12 +6,12 @@ import { peaksFromSeed } from '@/lib/waveform'
 import { IMAGE_ACCEPT } from '@/attach'
 import { hostOf, plainText } from '@/linkpreview'
 import {
+  attachImage,
   canAttachFile,
   canRecord,
   composerDraftChanged,
   dismissPreview,
   messageById,
-  pickImage,
   removeAttachment,
   replyTo,
   send,
@@ -30,14 +30,15 @@ const props = defineProps<{ conversationName: string }>()
 const box = ref<HTMLTextAreaElement | null>(null)
 const picker = ref<HTMLInputElement | null>(null)
 
-/** The file dialog's result. One image: the input is not `multiple`, and the
- *  store replaces whatever was held. The input is cleared so choosing the same
- *  file again still fires. */
+/** The file dialog's result, through the store's one gate. The input is not
+ *  `multiple`, and the store replaces whatever was held. It is cleared so
+ *  choosing the same file again still fires; the files are copied first, since
+ *  a FileList is live. */
 async function onPick(event: Event) {
   const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
+  const files = [...(input.files ?? [])]
   input.value = ''
-  if (file) await pickImage(file)
+  await attachImage(files, 'chooser')
 }
 
 /** The app never pretends a message left the building. ATTACH does not use

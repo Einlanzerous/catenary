@@ -33,7 +33,7 @@ import { requestSelfConversation } from '@/account'
 import { createEnsureSelf } from '@/ensure-self'
 import { createUploader } from '@/upload'
 import { countWords } from '@/lib/format'
-import { precheckImage } from '@/attach'
+import { ONE_IMAGE_MESSAGE, precheckImage } from '@/attach'
 import {
   PREVIEW_IDLE_MS,
   createLinkPreviewClient,
@@ -663,7 +663,7 @@ export function dismissPreview() {
  * accepted one replaces whatever image was held (one per message), and a
  * refused one leaves what was held where it was.
  */
-export async function pickImage(file: Blob & { name?: string }): Promise<void> {
+async function pickImage(file: Blob & { name?: string }): Promise<void> {
   const verdict = await precheckImage(file)
   if (!verdict.ok) {
     state.composer.attachError = verdict.message
@@ -671,6 +671,36 @@ export async function pickImage(file: Blob & { name?: string }): Promise<void> {
   }
   state.composer.attachment = { blob: file, ...(file.name ? { filename: file.name } : {}) }
   state.composer.attachError = null
+}
+
+/** Where an image came from. It changes no outcome: it exists so a test can
+ *  prove the three entrances agree, and so a later row can decide whether to
+ *  close the drop zone. */
+export type AttachSource = 'chooser' | 'drop' | 'paste'
+
+/**
+ * THE ONE GATE for an image entering the composer, whichever way it arrived
+ * (CANT-352 under CANT-349). Nothing in a component calls `pickImage`; the
+ * chooser, a drop and a paste all come here, so a refusal reads the same from
+ * all three and none of them writes an outbox entry.
+ *
+ *   1. several files: the whole drop is refused, nothing is held
+ *   2. ATTACH is not enabled (offline, resyncing, terminal, not ready): the
+ *      outbox's own predicate, one word for all of them, never a component's
+ *      own check of `connection.state`
+ *   3. the pre-check, then hold (`pickImage`)
+ */
+export async function attachImage(files: FileList | readonly File[], _source: AttachSource): Promise<void> {
+  if (files.length === 0) return
+  if (files.length > 1) {
+    state.composer.attachError = ONE_IMAGE_MESSAGE
+    return
+  }
+  if (!canAttachFile.value) {
+    state.composer.attachError = ComposeRefused.pickedFileOffline
+    return
+  }
+  await pickImage(files[0]!)
 }
 
 export function removeAttachment() {
