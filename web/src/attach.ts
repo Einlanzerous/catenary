@@ -29,6 +29,11 @@ export type AcceptedImageType = (typeof ACCEPTED_IMAGE_TYPES)[number]
 /** The picker's `accept` attribute: a hint to the dialog, never the check. */
 export const IMAGE_ACCEPT = ACCEPTED_IMAGE_TYPES.join(',')
 
+/** Said when several files arrive at once and the whole drop is refused
+ *  (CANT-349 ruling 3). PLACEHOLDER WORDING: the user has not ruled on the copy;
+ *  CANT-357 decides it. Keep it the one string, so changing it is one line. */
+export const ONE_IMAGE_MESSAGE = 'One image at a time.'
+
 export type PrecheckResult =
   | { ok: true; type: AcceptedImageType }
   | { ok: false; reason: 'type' | 'size'; message: string }

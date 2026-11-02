@@ -21,7 +21,7 @@ import { renderToString } from 'vue/server-renderer'
 import Composer from '@/components/Composer.vue'
 import { IMAGE_CAP_BYTES, precheckImage, sniffImage } from '@/attach'
 import { ComposeRefused, MemoryOutboxStore, ScriptedTransport } from '@/outbox'
-import { canAttachFile, outboxMessages, outboxReady, pickImage, removeAttachment, send, state, useOutbox } from '@/store'
+import { canAttachFile, outboxMessages, outboxReady, attachImage, removeAttachment, send, state, useOutbox } from '@/store'
 import { UPLOAD_MESSAGES } from '@/upload'
 import { configureRecorder } from '@/store'
 import type { ConnectionState } from '@/client-types'
@@ -114,10 +114,11 @@ test('One image per message · the file input is not multiple, and accepts only 
 
 test('One image per message · a second pick replaces the first; a refused pick leaves the held one', async () => {
   await reset()
-  await pickImage(file('a.png', readFixture('image.png')))
-  await pickImage(file('b.jpg', readFixture('photo-exif-gps.jpg')))
+  await outboxIn('ready')
+  await attachImage([file('a.png', readFixture('image.png'))], 'chooser')
+  await attachImage([file('b.jpg', readFixture('photo-exif-gps.jpg'))], 'chooser')
   assert.equal(state.composer.attachment?.filename, 'b.jpg', 'the second replaced the first')
-  await pickImage(file('c.heic', readFixture('image.heic')))
+  await attachImage([file('c.heic', readFixture('image.heic'))], 'chooser')
   assert.equal(state.composer.attachment?.filename, 'b.jpg', 'a refused pick does not drop it')
   assert.equal(state.composer.attachError, UPLOAD_MESSAGES.unsupportedType)
   removeAttachment()
@@ -129,7 +130,8 @@ test('One image per message · a second pick replaces the first; a refused pick 
 
 test('One image per message · the chip names the held file and offers to remove it', async () => {
   await reset()
-  await pickImage(file('harbour.jpg', readFixture('photo-exif-gps.jpg')))
+  await outboxIn('ready')
+  await attachImage([file('harbour.jpg', readFixture('photo-exif-gps.jpg'))], 'chooser')
   const html = await render()
   assert.match(html, /harbour\.jpg/)
   assert.match(html, /aria-label="Remove attachment"/)
@@ -199,9 +201,10 @@ test('Offline rule · RECORD stays allowed offline, and is dimmed only when term
 })
 
 test('Offline rule · a ComposeRefused thrown anyway is shown inline, writes nothing, and keeps the image and the text', async () => {
-  const { outbox } = await outboxIn('closed')
+  const { outbox, transport } = await outboxIn('ready')
   state.connection = { state: 'live' } // the banner lags: the connection dropped between click and compose
-  await pickImage(file('a.png', readFixture('image.png')))
+  await attachImage([file('a.png', readFixture('image.png'))], 'chooser')
+  transport.close()
   state.composer.draft = 'look at this'
   const out = await send()
   assert.equal(out, undefined)
@@ -216,7 +219,7 @@ test('Offline rule · a ComposeRefused thrown anyway is shown inline, writes not
 test('Offline rule · when the session is ready SEND composes the image with its bytes and filename, and clears the chip', async () => {
   const { outbox } = await outboxIn('ready')
   const bytes = readFixture('photo-exif-gps.jpg')
-  await pickImage(file('photo.jpg', bytes))
+  await attachImage([file('photo.jpg', bytes)], 'chooser')
   const id = await send()
   assert.ok(id)
   const entry = outbox.view().items.find((i) => i.entry.clientId === id)!.entry
@@ -226,4 +229,119 @@ test('Offline rule · when the session is ready SEND composes the image with its
   assert.equal(entry.attachments?.[0].blob.size, bytes.length)
   assert.equal(entry.text, undefined, 'an image alone needs no text')
   assert.equal(state.composer.attachment, null)
+})
+
+/* ── the one gate (CANT-352): chooser, drop and paste are the same path ───── */
+
+import { readdirSync, readFileSync } from 'node:fs'
+import { ONE_IMAGE_MESSAGE } from '@/attach'
+import type { AttachSource } from '@/store'
+import * as storeModule from '@/store'
+
+const SOURCES: AttachSource[] = ['chooser', 'drop', 'paste']
+const noOutboxEntry = (outbox: { view(): { items: unknown[] } }) => assert.equal(outbox.view().items.length, 0, 'no outbox entry')
+
+test('One path · the same fixture through chooser, drop and paste holds the same attachment', async () => {
+  const held: unknown[] = []
+  for (const source of SOURCES) {
+    await reset()
+    const { outbox } = await outboxIn('ready')
+    await attachImage([file('same.png', readFixture('image.png'))], source)
+    assert.equal(state.composer.attachError, null, source)
+    held.push({ name: state.composer.attachment?.filename, size: state.composer.attachment?.blob.size })
+    noOutboxEntry(outbox)
+  }
+  assert.deepEqual(held[1], held[0])
+  assert.deepEqual(held[2], held[0])
+  assert.deepEqual(held[0], { name: 'same.png', size: readFixture('image.png').length })
+})
+
+test('One path · a FileList-shaped argument is taken as well as an array', async () => {
+  await reset()
+  await outboxIn('ready')
+  const one = file('l.png', readFixture('image.png'))
+  const list = { 0: one, length: 1, item: (i: number) => (i === 0 ? one : null) } as unknown as FileList
+  await attachImage(list, 'drop')
+  assert.equal(state.composer.attachment?.filename, 'l.png')
+})
+
+test('Identical refusals · HEIC, SVG and over-cap say the same thing from every source, hold nothing and write no entry', async () => {
+  const over = oversizeImage(loadManifest())
+  const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>')
+  const cases: Array<[string, () => File, string]> = [
+    ['HEIC', () => file('h.heic', readFixture('image.heic')), UPLOAD_MESSAGES.unsupportedType],
+    ['SVG', () => file('s.svg', svg, 'image/svg+xml'), UPLOAD_MESSAGES.unsupportedType],
+    ['over the cap', () => file('big.jpg', over), UPLOAD_MESSAGES.tooLarge],
+  ]
+  for (const [label, make, message] of cases) {
+    for (const source of SOURCES) {
+      await reset()
+      const { outbox } = await outboxIn('ready')
+      await attachImage([make()], source)
+      assert.equal(state.composer.attachError, message, `${label}/${source}`)
+      assert.equal(state.composer.attachment, null, `${label}/${source}: nothing held`)
+      noOutboxEntry(outbox)
+    }
+  }
+})
+
+test('Identical refusals · several files refuse the whole drop from every source, and leave what was held', async () => {
+  for (const source of SOURCES) {
+    await reset()
+    const { outbox } = await outboxIn('ready')
+    await attachImage([file('keep.png', readFixture('image.png'))], source)
+    await attachImage([file('a.png', readFixture('image.png')), file('b.jpg', readFixture('photo-exif-gps.jpg'))], source)
+    assert.equal(state.composer.attachError, ONE_IMAGE_MESSAGE, source)
+    assert.equal(state.composer.attachment?.filename, 'keep.png', `${source}: neither of the two was taken, and the held one stays`)
+    noOutboxEntry(outbox)
+  }
+})
+
+test('Offline rule · the gate is the outbox’s predicate over 6 connection states x 5 outbox states, from every source', async () => {
+  const connections: ConnectionState[] = ['connecting', 'live', 'reconnecting', 'resyncing', 'offline', 'terminal']
+  const steps = ['fresh', 'ready', 'closed', 'terminal-close', 'terminal-quiet'] as const
+  const outcomes = new Set<string>()
+  for (const step of steps) {
+    for (const c of connections) {
+      for (const source of SOURCES) {
+        await reset()
+        const { outbox } = await outboxIn(step)
+        state.connection = { state: c }
+        const predicate = outbox.canAttachFile()
+        await attachImage([file('p.png', readFixture('image.png'))], source)
+        const label = `${step}/${c}/${source}`
+        if (predicate) {
+          assert.equal(state.composer.attachment?.filename, 'p.png', label)
+          assert.equal(state.composer.attachError, null, label)
+        } else {
+          assert.equal(state.composer.attachment, null, label)
+          assert.equal(state.composer.attachError, ComposeRefused.pickedFileOffline, `${label}: the one word`)
+        }
+        outcomes.add(String(predicate))
+        noOutboxEntry(outbox)
+      }
+    }
+  }
+  assert.deepEqual([...outcomes].sort(), ['false', 'true'], 'both outcomes exercised')
+})
+
+test('Offline rule · a component-local connection.state check would fail this: the banner and the outbox disagree both ways', async () => {
+  await reset()
+  await outboxIn('fresh')
+  state.connection = { state: 'live' }
+  await attachImage([file('a.png', readFixture('image.png'))], 'paste')
+  assert.equal(state.composer.attachError, ComposeRefused.pickedFileOffline, 'live banner, outbox not ready: refused')
+  await reset()
+  await outboxIn('ready')
+  state.connection = { state: 'resyncing' }
+  await attachImage([file('a.png', readFixture('image.png'))], 'paste')
+  assert.equal(state.composer.attachment?.filename, 'a.png', 'resyncing banner, outbox ready: taken')
+})
+
+test('One path · pickImage is not exported, and no component mentions it', () => {
+  assert.equal('pickImage' in storeModule, false, 'pickImage is not exported')
+  const dir = 'src/components'
+  for (const f of readdirSync(dir).filter((n) => n.endsWith('.vue'))) {
+    assert.ok(!readFileSync(`${dir}/${f}`, 'utf8').includes('pickImage'), `${f} does not call pickImage`)
+  }
 })
