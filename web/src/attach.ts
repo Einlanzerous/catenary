@@ -60,3 +60,25 @@ export async function precheckImage(file: Blob): Promise<PrecheckResult> {
   if (file.size > IMAGE_CAP_BYTES) return { ok: false, reason: 'size', message: UPLOAD_MESSAGES.tooLarge }
   return { ok: true, type }
 }
+
+/** How each accepted type reads to a person. */
+const TYPE_LABELS: Record<AcceptedImageType, string> = {
+  'image/jpeg': 'JPEG',
+  'image/png': 'PNG',
+  'image/gif': 'GIF',
+  'image/webp': 'WebP',
+}
+
+/** The accepted-types line of the drop zone (CANT-354): built from the two
+ *  constants above, never retyped, so it moves when they do. */
+export function acceptedLine(): string {
+  const labels = ACCEPTED_IMAGE_TYPES.map((t) => TYPE_LABELS[t])
+  const list = `${labels.slice(0, -1).join(', ')} or ${labels[labels.length - 1]}`
+  return `${list} \u00b7 up to ${IMAGE_CAP_BYTES / (1024 * 1024)} MB`
+}
+
+/** Whether a drag carries files (its `types` has `Files`), so the zone claims
+ *  only those and lets dragged text and links go where they were going. */
+export function dragCarriesFiles(types: ArrayLike<string> | null | undefined): boolean {
+  return !!types && Array.from(types).includes('Files')
+}
