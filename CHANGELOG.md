@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.22.0](https://github.com/Einlanzerous/catenary/compare/v0.21.2...v0.22.0) (2026-11-02)
+
+
+### Features
+
+* CANT-353 — paste a clipboard image into the composer ([#265](https://github.com/Einlanzerous/catenary/issues/265)) ([e0a4126](https://github.com/Einlanzerous/catenary/commit/e0a4126264f94b779a36f7772c8a35568e283ae5))
+* CANT-354 — ATTACH opens the in-composer drop zone, with CHOOSE FILE inside it ([#269](https://github.com/Einlanzerous/catenary/issues/269)) ([e420120](https://github.com/Einlanzerous/catenary/commit/e420120f7c1973e1920fa8966899bb962d7dee3b))
+
+
+### Maintenance
+
+* CANT-361 — example image names in the Flutter app are JPG, not HEIC ([#268](https://github.com/Einlanzerous/catenary/issues/268)) ([8544518](https://github.com/Einlanzerous/catenary/commit/85445180f5106845b3203c261b341f852ddb0e77))
+
 ## [0.21.2](https://github.com/Einlanzerous/catenary/compare/v0.21.1...v0.21.2) (2026-11-02)
 
 
