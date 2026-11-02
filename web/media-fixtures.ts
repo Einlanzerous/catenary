@@ -26,3 +26,7 @@ export function oversizeImage(m: MediaManifest = loadManifest()): Uint8Array {
   out.set(Uint8Array.from(Buffer.from(m.oversize.headerHex, 'hex')))
   return out
 }
+
+/** The wording both clients share (CANT-360): testdata/media/messages.json. */
+export const loadMessages = (dir = MEDIA_DIR): { oneImage: string } =>
+  JSON.parse(readFileSync(resolve(dir, 'messages.json'), 'utf8')) as { oneImage: string }

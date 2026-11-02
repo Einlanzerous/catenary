@@ -5,6 +5,7 @@
 // two. And a send the outbox refuses is shown inline and writes nothing.
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:catenary/store/app_store.dart';
@@ -84,6 +85,11 @@ void main() {
   }
 
   PickedImage pickedFixture(String name) => PickedImage(path: '${fixtures.path}/$name', name: name);
+
+  test('the several-files message is the one the web client holds (messages.json)', () {
+    final shared = jsonDecode(File('${fixtures.path}/messages.json').readAsStringSync()) as Map<String, Object?>;
+    expect(oneImageMessage, shared['oneImage']);
+  });
 
   group('the pre-check runs before anything is composed', () {
     // The shared fixtures: the same verdicts the Go ingest test asserts.
