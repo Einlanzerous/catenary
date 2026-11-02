@@ -703,6 +703,36 @@ export async function attachImage(files: FileList | readonly File[], _source: At
   await pickImage(files[0]!)
 }
 
+/** The part of a ClipboardEvent the paste rule reads, so a test can hand it a
+ *  plain object. */
+export interface PasteLike {
+  clipboardData: { files: FileList | readonly File[]; getData(format: string): string } | null
+  preventDefault(): void
+}
+
+/**
+ * A paste on the composer's textarea (CANT-353 under CANT-349). The rule:
+ *
+ *   - image files on the clipboard (type `image/*`) go to the one gate, as
+ *     `'paste'`; HEIC, SVG and several-at-once are refused there, not here
+ *   - the default paste is cancelled only when there is NO text with them. A
+ *     clipboard that carries text as well (some apps put both) still pastes
+ *     its text, and the image is held in addition
+ *   - no image file (plain or rich text, a non-image file): nothing happens,
+ *     the paste reaches the textarea exactly as before
+ *   - while recording the field is not on screen; the guard here keeps a stray
+ *     event from holding an image under a recording
+ */
+export function pasteIntoComposer(event: PasteLike): void {
+  if (state.composer.recording) return
+  const data = event.clipboardData
+  if (!data) return
+  const images = [...data.files].filter((f) => f.type.startsWith('image/'))
+  if (images.length === 0) return
+  if (data.getData('text/plain') === '') event.preventDefault()
+  void attachImage(images, 'paste')
+}
+
 export function removeAttachment() {
   state.composer.attachment = null
   state.composer.attachError = null

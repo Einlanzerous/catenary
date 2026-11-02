@@ -12,6 +12,7 @@ import {
   composerDraftChanged,
   dismissPreview,
   messageById,
+  pasteIntoComposer,
   removeAttachment,
   replyTo,
   send,
@@ -185,6 +186,7 @@ const grow = () => {
           "
           @input="grow(); composerDraftChanged()"
           @keydown="onKeydown"
+          @paste="pasteIntoComposer"
         />
 
         <div class="actions">
