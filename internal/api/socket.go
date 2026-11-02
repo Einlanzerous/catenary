@@ -272,19 +272,25 @@ func socketHandler(d Deps) http.HandlerFunc {
 			}
 		}
 
-		// refuse answers the upgrade as HTTP and writes the ONE line a refused
-		// upgrade leaves (CANT-350). Before it, a /ws that never reached
-		// "session open" was invisible: the browser reports only that the
-		// socket never opened, and neither Traefik nor this service said
-		// anything. The attributes are the request's shape and never its
-		// credential: the token rides in Sec-WebSocket-Protocol, which is not
-		// logged, and no field below carries it.
-		refuse := func(status int, reason string, body any, attrs ...any) {
-			attrs = append([]any{"reason", reason, "status", status,
+		// logRefused writes the ONE "socket upgrade refused" line a refused
+		// upgrade leaves (CANT-350). requestLogger already writes a generic
+		// "http request" line with the path and status for every 4xx; this
+		// line adds the reason, which the status alone cannot give (two 401s
+		// and four 400s look the same there). The attributes are the request's
+		// shape and never its credential: the token rides in
+		// Sec-WebSocket-Protocol, which is not logged, and no field below
+		// carries it. Every refusal goes through here, so one search finds all
+		// of them.
+		logRefused := func(reason string, attrs ...any) {
+			attrs = append([]any{"reason", reason,
 				"origin", r.Header.Get("Origin"),
 				"upgrade", r.Header.Get("Upgrade"),
 				"http_version", r.Proto}, attrs...)
 			d.Logger.WarnContext(r.Context(), "socket upgrade refused", attrs...)
+		}
+		// refuse answers the upgrade as HTTP with a status this handler chose.
+		refuse := func(status int, reason string, body any, attrs ...any) {
+			logRefused(reason, append([]any{"status", status}, attrs...)...)
 			writeJSON(w, status, body)
 		}
 
@@ -351,10 +357,11 @@ func socketHandler(d Deps) http.HandlerFunc {
 			Subprotocols: []string{subprotocolV1},
 		})
 		if err != nil {
-			// Accept has already written its own 4xx. Logged, not answered.
-			d.Logger.WarnContext(r.Context(), "socket upgrade refused",
-				"reason", "upgrade failed", "origin", r.Header.Get("Origin"),
-				"upgrade", r.Header.Get("Upgrade"), "http_version", r.Proto,
+			// Accept has already written its own 4xx (403, 426, 400 or 405,
+			// chosen inside the library), so this line carries no "status" of
+			// its own: the generic "http request" line has it. Logged, not
+			// answered.
+			logRefused("upgrade failed",
 				"user_id", caller.UserID, "device_id", caller.DeviceID, "error", err)
 			return
 		}
