@@ -21,7 +21,7 @@ import { renderToString } from 'vue/server-renderer'
 import Composer from '@/components/Composer.vue'
 import { IMAGE_CAP_BYTES, precheckImage, sniffImage } from '@/attach'
 import { ComposeRefused, MemoryOutboxStore, ScriptedTransport } from '@/outbox'
-import { canAttachFile, outboxMessages, outboxReady, attachImage, removeAttachment, send, state, useOutbox } from '@/store'
+import { canAttachFile, outboxMessages, outboxReady, attachImage, pasteIntoComposer, removeAttachment, send, state, useOutbox } from '@/store'
 import { UPLOAD_MESSAGES } from '@/upload'
 import { configureRecorder } from '@/store'
 import type { ConnectionState } from '@/client-types'
@@ -344,4 +344,122 @@ test('One path · pickImage is not exported, and no component mentions it', () =
   for (const f of readdirSync(dir).filter((n) => n.endsWith('.vue'))) {
     assert.ok(!readFileSync(`${dir}/${f}`, 'utf8').includes('pickImage'), `${f} does not call pickImage`)
   }
+})
+
+/* ── paste (CANT-353) ─────────────────────────────────────────────────────── */
+
+const clip = (files: File[], text = '') => ({
+  defaultPrevented: false,
+  clipboardData: { files, getData: (f: string) => (f === 'text/plain' ? text : '') },
+  preventDefault() {
+    this.defaultPrevented = true
+  },
+})
+/** The gate is async and the handler does not return it; let it settle. */
+const settle = () => new Promise((r) => setTimeout(r, 20))
+const png = (name = 'image.png') => file(name, readFixture('image.png'), 'image/png')
+
+test('Paste · the textarea listens for paste through pasteIntoComposer, and nothing else is called', () => {
+  const src = readFileSync('src/components/Composer.vue', 'utf8')
+  assert.match(src, /<textarea[\s\S]*?@paste="pasteIntoComposer"[\s\S]*?\/>/)
+  assert.ok(!src.includes('precheckImage'), 'the component never calls the pre-check')
+})
+
+test('Paste · an image holds the same attachment the chooser holds, cancels the default paste and writes no entry', async () => {
+  await reset()
+  const { outbox } = await outboxIn('ready')
+  await attachImage([png('same.png')], 'chooser')
+  const viaChooser = { name: state.composer.attachment?.filename, size: state.composer.attachment?.blob.size }
+  await reset()
+  const ev = clip([png('same.png')])
+  pasteIntoComposer(ev)
+  await settle()
+  assert.equal(ev.defaultPrevented, true)
+  assert.deepEqual({ name: state.composer.attachment?.filename, size: state.composer.attachment?.blob.size }, viaChooser)
+  assert.equal(state.composer.attachError, null)
+  noOutboxEntry(outbox)
+})
+
+test('Paste · a text-only paste is not intercepted and touches nothing', async () => {
+  await reset()
+  await outboxIn('ready')
+  for (const text of ['hello', '']) {
+    const ev = clip([], text)
+    pasteIntoComposer(ev)
+    await settle()
+    assert.equal(ev.defaultPrevented, false)
+    assert.equal(state.composer.attachment, null)
+    assert.equal(state.composer.attachError, null)
+  }
+  const pdf = clip([file('a.pdf', new Uint8Array([37, 80, 68, 70]), 'application/pdf')])
+  pasteIntoComposer(pdf)
+  await settle()
+  assert.equal(pdf.defaultPrevented, false, 'a non-image file is left to the default')
+  assert.equal(state.composer.attachError, null)
+})
+
+test('Paste · a mixed clipboard holds the image and still lets the text paste (the default is not cancelled)', async () => {
+  await reset()
+  await outboxIn('ready')
+  const ev = clip([png('shot.png')], 'caption from the app')
+  pasteIntoComposer(ev)
+  await settle()
+  assert.equal(ev.defaultPrevented, false, 'text reaches the textarea')
+  assert.equal(state.composer.attachment?.filename, 'shot.png', 'and the image is held')
+})
+
+test('Paste · refusals read exactly as the chooser’s: HEIC, SVG, over the cap, several images, offline', async () => {
+  const over = oversizeImage(loadManifest())
+  const svg = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="1" height="1"/>')
+  const cases: Array<[string, File[], string]> = [
+    ['HEIC', [file('h.heic', readFixture('image.heic'), 'image/heic')], UPLOAD_MESSAGES.unsupportedType],
+    ['SVG', [file('s.svg', svg, 'image/svg+xml')], UPLOAD_MESSAGES.unsupportedType],
+    ['over the cap', [file('big.jpg', over, 'image/jpeg')], UPLOAD_MESSAGES.tooLarge],
+    ['several', [png('a.png'), png('b.png')], ONE_IMAGE_MESSAGE],
+  ]
+  for (const [label, files, message] of cases) {
+    await reset()
+    const { outbox } = await outboxIn('ready')
+    pasteIntoComposer(clip(files))
+    await settle()
+    assert.equal(state.composer.attachError, message, label)
+    assert.equal(state.composer.attachment, null, label)
+    noOutboxEntry(outbox)
+  }
+  await reset()
+  await outboxIn('fresh')
+  pasteIntoComposer(clip([png()]))
+  await settle()
+  assert.equal(state.composer.attachError, ComposeRefused.pickedFileOffline, 'offline')
+  assert.equal(state.composer.attachment, null)
+})
+
+test('Paste · while recording it does nothing at all', async () => {
+  await reset()
+  await outboxIn('ready')
+  state.composer.recording = true
+  try {
+    const ev = clip([png()])
+    pasteIntoComposer(ev)
+    await settle()
+    assert.equal(ev.defaultPrevented, false)
+    assert.equal(state.composer.attachment, null)
+    assert.equal(state.composer.attachError, null)
+  } finally {
+    state.composer.recording = false
+  }
+})
+
+test('Paste · a second image while one is held replaces it, as the chooser does; a refused one leaves it', async () => {
+  await reset()
+  await outboxIn('ready')
+  pasteIntoComposer(clip([png('first.png')]))
+  await settle()
+  pasteIntoComposer(clip([file('second.jpg', readFixture('photo-exif-gps.jpg'), 'image/jpeg')]))
+  await settle()
+  assert.equal(state.composer.attachment?.filename, 'second.jpg')
+  pasteIntoComposer(clip([file('h.heic', readFixture('image.heic'), 'image/heic')]))
+  await settle()
+  assert.equal(state.composer.attachment?.filename, 'second.jpg', 'a refused paste leaves the held one')
+  assert.equal(state.composer.attachError, UPLOAD_MESSAGES.unsupportedType)
 })
