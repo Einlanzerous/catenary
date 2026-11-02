@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.2](https://github.com/Einlanzerous/catenary/compare/v0.21.1...v0.21.2) (2026-11-02)
+
+
+### Code Refactoring
+
+* CANT-352 — attachImage, the one gate for chooser, drop and paste ([#263](https://github.com/Einlanzerous/catenary/issues/263)) ([7eab8b7](https://github.com/Einlanzerous/catenary/commit/7eab8b7b94684b6b0f2613c852990e5167cf846f))
+
 ## [0.21.1](https://github.com/Einlanzerous/catenary/compare/v0.21.0...v0.21.1) (2026-11-02)
 
 
