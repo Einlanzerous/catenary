@@ -713,6 +713,7 @@ export function openAttachZone() {
 
 /** Close it; the refusal line goes with it. */
 export function closeAttachZone() {
+  if (!state.composer.attachOpen) return // a hint outside a closed zone is not this function's to clear
   state.composer.attachOpen = false
   state.composer.attachError = null
   state.composer.attachRefusal = null
@@ -912,6 +913,7 @@ export async function startRecording() {
   const recorder = recorderRef.value
   if (!recorder.enabled || state.composer.recording || starting || cannotSend()) return
   closeAttachZone() // it does not come back when the take ends (CANT-354)
+  state.composer.attachError = null
   starting = true
   try {
     capture = await recorder.start()

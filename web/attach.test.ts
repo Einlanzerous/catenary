@@ -626,3 +626,18 @@ test('Zone · ESC closes it and hands focus back to ATTACH', () => {
   assert.match(src, /attachButton\.value\?\.focus\(\)/)
   assert.match(src, /chooseButton\.value\?\.focus\(\)/)
 })
+
+test('Zone · closing a zone that is already closed leaves the outside hint: a refused paste, then the connection drops', async () => {
+  await reset()
+  const { transport } = await outboxIn('ready')
+  pasteIntoComposer(clip([file('h.heic', readFixture('image.heic'), 'image/heic')]))
+  await settle()
+  assert.equal(state.composer.attachOpen, false)
+  assert.ok((await render()).includes('class="hint attach-error"'), 'the hint shows')
+  transport.close()
+  state.connection = { state: 'offline' }
+  assert.equal(canAttachFile.value, false)
+  closeAttachZone() // what the composer's watch on canAttachFile calls
+  assert.equal(state.composer.attachError, UPLOAD_MESSAGES.unsupportedType)
+  assert.ok((await render()).includes('class="hint attach-error"'), 'the hint is still there')
+})
