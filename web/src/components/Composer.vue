@@ -192,6 +192,8 @@ const grow = () => {
         <!-- ATT-02: the drop zone, the FIRST row inside the field. Not a modal.
              Refusals stay in it as one line; the file name is untrusted and is
              only ever interpolated as text. -->
+        <!-- CANT-355: the zone owns its drags (`.stop`), so the thread's overlay
+             never draws over it and a file dropped here is attached once. -->
         <div
           v-if="state.composer.attachOpen"
           id="attach-zone"
@@ -200,10 +202,10 @@ const grow = () => {
           role="region"
           aria-label="Attach an image"
           @keydown.esc.stop.prevent="closeZoneToAttach"
-          @dragenter="onZoneDrag"
-          @dragover="onZoneDrag"
-          @dragleave="onZoneDragLeave"
-          @drop="onZoneDrop"
+          @dragenter.stop="onZoneDrag"
+          @dragover.stop="onZoneDrag"
+          @dragleave.stop="onZoneDragLeave"
+          @drop.stop="onZoneDrop"
         >
           <div class="zone-head">
             <span class="zone-prompt">{{ over ? 'Release to attach.' : 'Drop an image here, or paste one.' }}</span>

@@ -20,7 +20,7 @@
  * own to be placed by. Nothing here moves a send to `sent` except an ack.
  */
 
-import { computed, reactive, shallowRef } from 'vue'
+import { computed, reactive, ref, shallowRef } from 'vue'
 import type { Conversation, LinkAttachment, ReplyRef, User, Uuid, VoiceAttachment } from '@/wire/generated'
 import {
   isOutboxMessage,
@@ -33,7 +33,7 @@ import { requestSelfConversation } from '@/account'
 import { createEnsureSelf } from '@/ensure-self'
 import { createUploader } from '@/upload'
 import { countWords } from '@/lib/format'
-import { ONE_IMAGE_MESSAGE, precheckImage } from '@/attach'
+import { ONE_IMAGE_MESSAGE, dragCarriesFiles, precheckImage } from '@/attach'
 import {
   PREVIEW_IDLE_MS,
   createLinkPreviewClient,
@@ -754,6 +754,64 @@ export async function attachImage(files: FileList | readonly File[], _source: At
   }
   // A held image closes the zone; a refusal leaves it open with its one line.
   if (await pickImage(file)) closeAttachZone()
+}
+
+/** The part of a DragEvent the thread's drop rule reads, so a test can hand it
+ *  a plain object. */
+export interface DragLike {
+  dataTransfer: { types: ArrayLike<string>; files: FileList | readonly File[] } | null
+  preventDefault(): void
+}
+
+/**
+ * Whether the thread's DROP TO ATTACH overlay is on screen (CANT-355 under
+ * CANT-349, canvas 08 ATT-05). `threadDragDepth` counts enters minus leaves,
+ * because a drag crossing from the pane into one of its children fires
+ * `dragenter` on the child before `dragleave` on the parent; a boolean would
+ * flicker off and on at every child boundary.
+ */
+export const threadDropActive = ref(false)
+let threadDragDepth = 0
+
+function endThreadDrag() {
+  threadDragDepth = 0
+  threadDropActive.value = false
+}
+
+/** Only a drag carrying files is claimed; dragged text and links go where they
+ *  were going. While recording the drag is swallowed without a word: the file
+ *  default is still cancelled (so the browser does not navigate to it), but no
+ *  overlay is drawn and nothing is attached. */
+function claimsDrag(event: DragLike): boolean {
+  if (!dragCarriesFiles(event.dataTransfer?.types)) return false
+  event.preventDefault()
+  return true
+}
+
+export function threadDragEnter(event: DragLike): void {
+  if (!claimsDrag(event)) return
+  threadDragDepth++
+  threadDropActive.value = !state.composer.recording
+}
+
+export function threadDragOver(event: DragLike): void {
+  claimsDrag(event)
+}
+
+export function threadDragLeave(event: DragLike): void {
+  if (!dragCarriesFiles(event.dataTransfer?.types)) return
+  threadDragDepth = Math.max(0, threadDragDepth - 1)
+  if (threadDragDepth === 0) threadDropActive.value = false
+}
+
+/** A drop anywhere on the thread goes through the one gate, like the chooser
+ *  and the paste. The in-composer zone handles its own drop and stops it
+ *  reaching here, so a file is never attached twice. */
+export function threadDrop(event: DragLike): void {
+  const carried = claimsDrag(event)
+  endThreadDrag()
+  if (!carried || state.composer.recording) return
+  void attachImage([...(event.dataTransfer?.files ?? [])], 'drop')
 }
 
 /** The part of a ClipboardEvent the paste rule reads, so a test can hand it a
