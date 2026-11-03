@@ -12,6 +12,11 @@ import {
   otherMember,
   persistNotice,
   state,
+  threadDragEnter,
+  threadDragLeave,
+  threadDragOver,
+  threadDrop,
+  threadDropActive,
   transportLabel,
   typingLabel,
 } from '@/store'
@@ -121,7 +126,13 @@ watch(
 </script>
 
 <template>
-  <section class="thread">
+  <section
+    class="thread"
+    @dragenter="threadDragEnter"
+    @dragover="threadDragOver"
+    @dragleave="threadDragLeave"
+    @drop="threadDrop"
+  >
     <header class="head">
       <h1 class="title">{{ title }}</h1>
       <!-- Quiet and factual, never the copper accent: this reads "cannot
@@ -152,6 +163,7 @@ watch(
 
     <ConnectionBanner />
 
+    <div class="stream-box">
     <div ref="scroller" class="stream scroll">
       <template v-for="row in rows" :key="row.key">
         <div v-if="row.kind === 'date'" class="rule">
@@ -191,6 +203,18 @@ watch(
           </span>
         </div>
       </div>
+    </div>
+
+      <!-- CANT-355, canvas 08 ATT-05: shown while a file drag is over the pane.
+           Outline text.meta and a surface.raised fill at low opacity, so the
+           conversation stays readable under it; the label chip is the one
+           opaque thing. It appears and leaves instantly: no transition, no
+           motion, no accent. pointer-events are off, so it never takes a drag
+           event from the pane. A drop anywhere in the pane attaches. -->
+      <template v-if="threadDropActive">
+        <div class="drop-veil" aria-hidden="true" />
+        <div class="drop-label" role="status"><span>DROP TO ATTACH</span></div>
+      </template>
     </div>
 
     <Composer :conversation-name="title" />
@@ -266,10 +290,47 @@ watch(
   flex: none;
 }
 
+/* CANT-355: the box the overlay is positioned against. The stream keeps its
+ * own flex and scroll; the composer stays the last thing in the column. */
+.stream-box {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
 .stream {
   flex: 1 1 0;
   min-height: 0;
   padding: 10px 0 0;
+}
+
+/* ATT-05: inset 12px 24px, 1px text.meta outline. The fill is local to this
+ * overlay (no new shared token): surface.raised at half strength. */
+.drop-veil,
+.drop-label {
+  position: absolute;
+  inset: 12px 24px;
+  pointer-events: none;
+}
+.drop-veil {
+  border: 1px solid var(--text-meta);
+  background: color-mix(in srgb, var(--surface-raised) 50%, transparent);
+}
+.drop-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.drop-label span {
+  font: var(--type-label);
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  color: var(--text-secondary);
+  background: var(--surface-base);
+  border: 1px solid var(--line-hair);
+  padding: 8px 14px;
 }
 
 .rule {

@@ -21,7 +21,7 @@ import { renderToString } from 'vue/server-renderer'
 import Composer from '@/components/Composer.vue'
 import { ACCEPTED_IMAGE_TYPES, IMAGE_CAP_BYTES, acceptedLine, dragCarriesFiles, precheckImage, sniffImage } from '@/attach'
 import { ComposeRefused, MemoryOutboxStore, ScriptedTransport } from '@/outbox'
-import { closeAttachZone, openAttachZone, toggleAttachZone, startRecording, stopRecording, canAttachFile, outboxMessages, outboxReady, attachImage, pasteIntoComposer, removeAttachment, send, state, useOutbox } from '@/store'
+import { closeAttachZone, openAttachZone, toggleAttachZone, startRecording, stopRecording, canAttachFile, outboxMessages, outboxReady, attachImage, pasteIntoComposer, threadDragEnter, threadDragLeave, threadDragOver, threadDrop, threadDropActive, removeAttachment, send, state, useOutbox } from '@/store'
 import { UPLOAD_MESSAGES } from '@/upload'
 import { configureRecorder } from '@/store'
 import type { ConnectionState } from '@/client-types'
@@ -620,7 +620,7 @@ test('Zone · a drag claims only drags that carry files', () => {
   assert.equal(dragCarriesFiles(['text/plain', 'text/uri-list']), false)
   assert.equal(dragCarriesFiles(null), false)
   const src = readFileSync('src/components/Composer.vue', 'utf8')
-  assert.match(src, /@dragover="onZoneDrag"/)
+  assert.match(src, /@dragover\.stop="onZoneDrag"/)
   assert.match(src, /:class="\{ over \}"/)
 })
 
@@ -644,4 +644,115 @@ test('Zone · closing a zone that is already closed leaves the outside hint: a r
   closeAttachZone() // what the composer's watch on canAttachFile calls
   assert.equal(state.composer.attachError, UPLOAD_MESSAGES.unsupportedType)
   assert.ok((await render()).includes('class="hint attach-error"'), 'the hint is still there')
+})
+
+/* ── the thread's DROP TO ATTACH overlay (CANT-355) ───────────────────────── */
+
+const dragOf = (types: string[], files: File[] = []) => ({
+  dataTransfer: { types, files },
+  prevented: 0,
+  preventDefault() {
+    this.prevented++
+  },
+})
+
+test('Thread drop · the overlay follows enter and leave depth, so a child element does not flicker it', async () => {
+  await reset()
+  const enter = () => threadDragEnter(dragOf(['Files']))
+  const leave = () => threadDragLeave(dragOf(['Files']))
+  enter()
+  assert.equal(threadDropActive.value, true)
+  enter() // into a child: dragenter on the child fires before dragleave on the parent
+  leave()
+  assert.equal(threadDropActive.value, true, 'still inside the pane')
+  leave()
+  assert.equal(threadDropActive.value, false)
+  leave() // a stray extra leave never drives the count negative
+  enter()
+  assert.equal(threadDropActive.value, true)
+  threadDrop(dragOf(['Files']))
+  assert.equal(threadDropActive.value, false, 'a drop ends the drag')
+})
+
+test('Thread drop · only a drag carrying files is claimed; text and links are left alone', async () => {
+  await reset()
+  await outboxIn('ready')
+  const t = dragOf(['text/plain', 'text/uri-list'])
+  threadDragEnter(t)
+  threadDragOver(t)
+  threadDragLeave(t)
+  threadDrop(t)
+  assert.equal(t.prevented, 0)
+  assert.equal(threadDropActive.value, false)
+  await settle()
+  assert.equal(state.composer.attachment, null)
+  const f = dragOf(['Files'])
+  threadDragEnter(f)
+  threadDragOver(f)
+  assert.equal(f.prevented, 2, 'a file drag is cancelled so the browser does not open it')
+})
+
+test('Thread drop · a drop attaches through the one gate, as the chooser does', async () => {
+  await reset()
+  const { outbox } = await outboxIn('ready')
+  threadDragEnter(dragOf(['Files']))
+  const d = dragOf(['Files'], [png('dropped.png')])
+  threadDrop(d)
+  await settle()
+  assert.equal(d.prevented, 1)
+  assert.equal(state.composer.attachment?.filename, 'dropped.png')
+  noOutboxEntry(outbox)
+})
+
+test('Thread drop · several files are refused whole with the ruled line', async () => {
+  await reset()
+  await outboxIn('ready')
+  threadDrop(dragOf(['Files'], [png('a.png'), png('b.png')]))
+  await settle()
+  assert.equal(state.composer.attachment, null)
+  assert.equal(state.composer.attachError, ONE_IMAGE_MESSAGE)
+})
+
+test('Thread drop · offline the overlay still shows and the drop is refused with the offline word', async () => {
+  await reset()
+  const { transport } = await outboxIn('ready')
+  transport.close()
+  state.connection = { state: 'offline' }
+  assert.equal(canAttachFile.value, false)
+  threadDragEnter(dragOf(['Files']))
+  assert.equal(threadDropActive.value, true)
+  threadDrop(dragOf(['Files'], [png('late.png')]))
+  await settle()
+  assert.equal(state.composer.attachment, null)
+  assert.equal(state.composer.attachError, ComposeRefused.pickedFileOffline)
+})
+
+test('Thread drop · while recording the drag is swallowed: cancelled, no overlay, no attach, no line', async () => {
+  await reset()
+  await outboxIn('ready')
+  state.composer.recording = true
+  const e = dragOf(['Files'])
+  threadDragEnter(e)
+  assert.equal(threadDropActive.value, false)
+  assert.equal(e.prevented, 1)
+  const d = dragOf(['Files'], [png('x.png')])
+  threadDrop(d)
+  await settle()
+  assert.equal(d.prevented, 1, 'the default is still cancelled')
+  assert.equal(state.composer.attachment, null)
+  assert.equal(state.composer.attachError, null)
+  state.composer.recording = false
+})
+
+test('Thread drop · the pane listens through the store, the overlay has no motion or accent, and the zone owns its own drags', () => {
+  const thread = readFileSync('src/components/Thread.vue', 'utf8')
+  for (const h of ['dragenter="threadDragEnter"', 'dragover="threadDragOver"', 'dragleave="threadDragLeave"', 'drop="threadDrop"']) assert.ok(thread.includes(h), h)
+  assert.match(thread, /DROP TO ATTACH/)
+  const css = thread.slice(thread.indexOf('.drop-veil,'), thread.indexOf('.rule {'))
+  assert.ok(css.length > 300)
+  assert.doesNotMatch(css, /accent|transform|animation|transition|keyframes|translate|scale/)
+  assert.match(css, /color-mix\(in srgb, var\(--surface-raised\) 50%, transparent\)/)
+  assert.match(css, /pointer-events: none/)
+  const composer = readFileSync('src/components/Composer.vue', 'utf8')
+  for (const h of ['@dragenter.stop', '@dragleave.stop', '@drop.stop']) assert.ok(composer.includes(h), h)
 })

@@ -55,6 +55,7 @@ import {
   startSession,
   state,
   stopRecording,
+  threadDropActive,
   transportWord,
   unreadCount,
   voiceOf,
@@ -1152,6 +1153,14 @@ async function main() {
       check('ATT zone CSS: colors by token name only, and only 80 ms linear transitions',
         !/#[0-9a-fA-F]{3,8}\b|rgb\(|hsl\(/.test(part) && (part.match(/transition:/g) ?? []).length === 1 && /background-color 80ms linear,\s*border-color 80ms linear/.test(part))
     }
+
+    // 08 · ATT-05 (CANT-355): the thread-wide DROP TO ATTACH overlay.
+    check('ATT-05 no file drag: the overlay is not drawn', !(await render()).includes('DROP TO ATTACH'))
+    threadDropActive.value = true
+    const ov = await render()
+    check('ATT-05 file drag over the pane: veil and DROP TO ATTACH label, over the stream and above the composer',
+      ov.includes('class="drop-veil"') && ov.includes('DROP TO ATTACH') && ov.indexOf('DROP TO ATTACH') < ov.indexOf('class="composer"') && ov.indexOf('class="stream scroll"') < ov.indexOf('class="drop-veil"'))
+    threadDropActive.value = false
 
     for (const id of ['k-img', 'k-text', 'k-long', 'k-own', 'k-empty', 'r-full', 'r-empty']) {
       state.messages.splice(state.messages.findIndex((m) => m.id === id), 1)
