@@ -7,11 +7,13 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:catenary/store/app_store.dart';
 import 'package:catenary/store/attach.dart';
 import 'package:catenary/store/connection.dart';
 import 'package:catenary/store/conversation.dart';
+import 'package:catenary/store/voice.dart';
 import 'package:catenary/store/address.dart';
 import 'package:catenary/store/session.dart';
 import 'package:catenary/theme.dart';
@@ -199,12 +201,190 @@ void main() {
           return null;
         });
         await tester.tap(find.text('ADD'));
+        await tester.pump();
+        await tester.tap(find.text('CHOOSE FILE'));
+        await tester.pump();
         expect(picks, 1, reason: 'the component did not second-guess the wiring in ${kind.name}');
         await pump(null);
         await tester.tap(find.text('ADD'));
         expect(picks, 1, reason: 'no wiring, no ADD');
       });
     }
+  });
+
+  group('the in-composer attach zone (CANT-356)', () {
+    Future<void> screen(
+      WidgetTester tester, {
+      Future<PickOutcome?> Function()? pick,
+      Future<PickOutcome> Function(List<PastedImage>)? paste,
+      Future<RecordStart> Function()? record,
+      Brightness brightness = Brightness.dark,
+    }) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(MaterialApp(
+        theme: catenaryTheme(brightness),
+        home: TickerMode(
+          enabled: false,
+          child: ThreadScreen(
+            conversation: threadFixture(),
+            connection: const ConnectionView.live(),
+            onSend: (_) async {},
+            onPickImage: pick ?? () async => null,
+            onPasteImages: paste,
+            onSendPicked: (_, _) async {},
+            onStartRecording: record,
+            onCancelRecording: () async {},
+            onSendRecording: () async {},
+          ),
+        ),
+      ));
+    }
+
+    Future<void> openZone(WidgetTester tester) async {
+      await tester.tap(find.text('ADD'));
+      await tester.pump();
+      await tester.pump();
+    }
+
+    testWidgets('ADD toggles the zone; CHOOSE FILE is a 44px target with focus, and the line is built from the constants', (tester) async {
+      await screen(tester, paste: (_) async => const PickRefused('x'));
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+      await openZone(tester);
+      expect(find.byKey(const ValueKey('attach-zone')), findsOneWidget);
+      expect(find.text('Choose an image, or paste one.'), findsOneWidget);
+      expect(tester.getSize(find.byKey(const ValueKey('attach-choose'))).height, 44);
+      expect(Focus.of(tester.element(find.text('CHOOSE FILE'))).hasFocus, isTrue);
+      expect(acceptedLine(), 'JPEG, PNG, GIF or WebP · up to 16 MB');
+      expect(find.text(acceptedLine()), findsOneWidget);
+      // The zone spans the composer's width, inside its 12px padding.
+      expect(tester.getSize(find.byKey(const ValueKey('attach-zone'))).width, 390 - 24);
+      await tester.tap(find.text('ADD'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+    });
+
+    testWidgets('system back closes the zone first and returns focus to ADD', (tester) async {
+      await screen(tester);
+      await openZone(tester);
+      await tester.binding.handlePopRoute();
+      await tester.pump();
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+      expect(Focus.of(tester.element(find.text('ADD'))).hasFocus, isTrue);
+    });
+
+    testWidgets('a refusal is one inline line, the zone stays open, the next replaces it, and a held image closes it', (tester) async {
+      final outcomes = <PickOutcome>[
+        const PickRefused(uploadImageType, fileName: 'scan_0412_gate-sign_final.tiff', kind: 'TIFF'),
+        const PickRefused(uploadImageTooLarge, fileName: 'big.jpg', kind: 'JPG'),
+        const Picked(PickedImage(path: '/a.jpg', name: 'a.jpg')),
+      ];
+      await screen(tester, pick: () async => outcomes.removeAt(0));
+      await openZone(tester);
+      await tester.tap(find.text('CHOOSE FILE'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('attach-zone')), findsOneWidget, reason: 'the zone stays open');
+      expect(find.text('scan_0412_gate-sign_final.tiff'), findsOneWidget);
+      expect(find.text('TIFF'), findsOneWidget);
+      expect(find.text(uploadImageType), findsOneWidget);
+      await tester.tap(find.text('CHOOSE FILE'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('attach-refusal')), findsOneWidget, reason: 'one line, never a stack');
+      expect(find.text(uploadImageType), findsNothing);
+      expect(find.text(uploadImageTooLarge), findsOneWidget);
+      await tester.tap(find.text('CHOOSE FILE'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+      expect(find.byKey(const ValueKey('composer-attachment')), findsOneWidget);
+    });
+
+    testWidgets('recording replaces the whole row, closes the zone, and it is not redrawn when the take ends', (tester) async {
+      await screen(tester, record: () async => const RecordingStarted());
+      await openZone(tester);
+      expect(find.byKey(const ValueKey('attach-zone')), findsOneWidget);
+      await tester.tap(find.text('REC'));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('composer-recording')), findsOneWidget);
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+      await tester.tap(find.byKey(const ValueKey('composer-cancel-recording')));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('composer-recording')), findsNothing);
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+    });
+
+    testWidgets('the zone leaves with the gate: an offline client closes it', (tester) async {
+      await screen(tester);
+      await openZone(tester);
+      expect(find.byKey(const ValueKey('attach-zone')), findsOneWidget);
+      await tester.pumpWidget(MaterialApp(
+        theme: catenaryTheme(Brightness.dark),
+        home: TickerMode(
+          enabled: false,
+          child: ThreadScreen(
+            conversation: threadFixture(),
+            connection: const ConnectionView(kind: ConnectionKind.offline),
+            onSend: (_) async {},
+          ),
+        ),
+      ));
+      await tester.pump();
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+    });
+
+    for (final (name, mime) in [('image.png', 'image/png'), ('image.heic', 'image/heic'), ('image.svg', 'image/svg+xml'), ('photo-exif-gps.jpg', 'image/jpeg')]) {
+      test('paste and pick judge $name identically, through the one store gate', () async {
+        final s = await store(() async => pickedFixture(name));
+        final picked = await s.pickImage();
+        final bytes = File('${fixtures.path}/$name').readAsBytesSync();
+        final pasted = await s.pasteImages([PastedImage(bytes: bytes, name: 'pasted.${mime.split('/').last}')]);
+        expect(pasted.runtimeType, picked.runtimeType);
+        if (picked is PickRefused) expect((pasted as PickRefused).message, picked.message);
+        expect(s.conversations, isEmpty, reason: 'neither entrance composes anything');
+      });
+    }
+
+    test('several pasted files are refused whole with the shared words; a paste over the cap with the size words', () async {
+      final s = await store(() async => null);
+      final head = Uint8List.fromList([0xff, 0xd8, 0xff, 0xe0]);
+      final out = await s.pasteImages([PastedImage(bytes: head, name: 'a.jpg'), PastedImage(bytes: head, name: 'b.jpg')]) as PickRefused;
+      expect(out.message, oneImageMessage);
+      expect(out.kind, '2 FILES');
+      final big = Uint8List(imageCapBytes + 1)..setAll(0, [0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+      expect(((await s.pasteImages([PastedImage(bytes: big, name: 'big.jpg')])) as PickRefused).message, uploadImageTooLarge);
+    });
+
+    test('the zone\'s cap line moves with the client\'s cap', () {
+      expect(imageCapMb * 1024 * 1024, imageCapBytes);
+    });
+
+    testWidgets('a pasted image reaches the same held chip; a refused one shows the zone line', (tester) async {
+      final outcomes = <PickOutcome>[
+        const PickRefused(uploadImageType, fileName: 'pasted.heic', kind: 'HEIC'),
+        const Picked(PickedImage(path: '/p.png', name: 'pasted.png')),
+      ];
+      await screen(tester, paste: (_) async => outcomes.removeAt(0));
+      await openZone(tester);
+      final config = tester.widget<TextField>(find.byKey(const ValueKey('composer-input'))).contentInsertionConfiguration!;
+      expect(config.allowedMimeTypes, ['image/*']);
+      config.onContentInserted(KeyboardInsertedContent(mimeType: 'image/heic', uri: 'content://x', data: Uint8List.fromList([1, 2, 3])));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text(uploadImageType), findsOneWidget);
+      expect(find.byKey(const ValueKey('attach-zone')), findsOneWidget);
+      config.onContentInserted(KeyboardInsertedContent(mimeType: 'image/png', uri: 'content://y', data: Uint8List.fromList([1, 2, 3])));
+      await tester.pump();
+      await tester.pump();
+      expect(find.text('pasted.png'), findsOneWidget);
+      expect(find.byKey(const ValueKey('attach-zone')), findsNothing);
+    });
+
+    testWidgets('no paste wired: the prompt does not promise one and the field takes no inserted content', (tester) async {
+      await screen(tester);
+      await openZone(tester);
+      expect(find.text('Choose an image.'), findsOneWidget);
+      expect(tester.widget<TextField>(find.byKey(const ValueKey('composer-input'))).contentInsertionConfiguration, isNull);
+    });
   });
 
   group('one image per message', () {
@@ -230,9 +410,13 @@ void main() {
       ));
       await tester.tap(find.text('ADD'));
       await tester.pump();
+      await tester.tap(find.text('CHOOSE FILE'));
+      await tester.pump();
       expect(find.byKey(const ValueKey('composer-attachment')), findsOneWidget);
       expect(find.text('first.jpg'), findsOneWidget);
       await tester.tap(find.text('ADD'));
+      await tester.pump();
+      await tester.tap(find.text('CHOOSE FILE'));
       await tester.pump();
       expect(find.byKey(const ValueKey('composer-attachment')), findsOneWidget, reason: 'never two chips');
       expect(find.text('first.jpg'), findsNothing);
@@ -273,9 +457,15 @@ void main() {
       ));
       await tester.tap(find.text('ADD'));
       await tester.pump();
+      await tester.tap(find.text('CHOOSE FILE'));
+      await tester.pump();
       await tester.tap(find.text('ADD'));
       await tester.pump();
-      expect(find.byKey(const ValueKey('composer-notice')), findsOneWidget);
+      await tester.tap(find.text('CHOOSE FILE'));
+      await tester.pump();
+      // The zone is open on a refusal, so the one line is inside it.
+      expect(find.byKey(const ValueKey('attach-zone')), findsOneWidget);
+      expect(find.byKey(const ValueKey('composer-notice')), findsNothing);
       expect(find.text(uploadImageType), findsOneWidget);
       expect(find.text('a.jpg'), findsOneWidget, reason: 'a refusal does not drop what is held');
       await tester.tap(find.byKey(const ValueKey('composer-attachment-remove')));
@@ -302,6 +492,8 @@ void main() {
         ),
       ));
       await tester.tap(find.text('ADD'));
+      await tester.pump();
+      await tester.tap(find.text('CHOOSE FILE'));
       await tester.pump();
       await tester.tap(find.text('SEND'));
       await tester.pump();

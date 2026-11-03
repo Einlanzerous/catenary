@@ -64,6 +64,10 @@ class Composer extends StatefulWidget {
     this.link,
     this.onRemoveLink,
     this.notice,
+    this.zone,
+    this.addOpen = false,
+    this.addFocus,
+    this.onInsertedContent,
   });
 
   final ConnectionView connection;
@@ -91,6 +95,19 @@ class Composer extends StatefulWidget {
   /// A refusal to show beside the field: a picked file that cannot be sent. In
   /// the meta color; red stays for failure alone.
   final String? notice;
+
+  /// The attach zone, drawn as the first row when open (M-ATT-02). Never drawn
+  /// while recording: the recording row replaces everything (M-ATT-04).
+  final Widget? zone;
+
+  /// ADD's open treatment (aria-expanded in the canvas): a raised square with
+  /// the stronger border.
+  final bool addOpen;
+  final FocusNode? addFocus;
+
+  /// The keyboard inserted content (a pasted image) into the field. Wired only
+  /// where a paste would be accepted.
+  final ValueChanged<KeyboardInsertedContent>? onInsertedContent;
 
   @override
   State<Composer> createState() => _ComposerState();
@@ -135,12 +152,14 @@ class _ComposerState extends State<Composer> {
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 14),
       child: recording != null
           ? _recording(t, recording)
-          : (widget.attachment == null && widget.link == null && widget.notice == null)
+          : (widget.attachment == null && widget.link == null && widget.notice == null && widget.zone == null)
               ? _row(t)
               : Column(
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    if (widget.zone != null)
+                      Padding(padding: const EdgeInsets.only(bottom: 10), child: widget.zone),
                     if (widget.notice != null)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
@@ -287,6 +306,8 @@ class _ComposerState extends State<Composer> {
           color: off ? t.textDisabled : t.textMeta,
           border: off ? t.lineInner : t.lineEdge,
           onTap: off ? null : widget.onAttach,
+          focusNode: widget.addFocus,
+          open: widget.addOpen,
         ),
         const SizedBox(width: 10),
         Expanded(
@@ -303,6 +324,14 @@ class _ComposerState extends State<Composer> {
               controller: _controller,
               minLines: 1,
               maxLines: 6,
+              contentInsertionConfiguration: widget.onInsertedContent == null
+                  ? null
+                  : ContentInsertionConfiguration(
+                      // Every image type: the store's pre-check judges the bytes
+                      // and refuses what the server would, in the same words.
+                      allowedMimeTypes: const ['image/*'],
+                      onContentInserted: widget.onInsertedContent!,
+                    ),
               cursorColor: t.accentWire,
               cursorWidth: 1,
               style: TextStyle(fontFamily: fontSans, fontSize: 15, height: 24 / 15, color: t.textPrimary),
@@ -344,7 +373,14 @@ class _Square extends StatelessWidget {
     this.size = 44,
     this.fontSize = 9.5,
     this.tracking = 0.1,
+    this.focusNode,
+    this.open = false,
   });
+
+  final FocusNode? focusNode;
+
+  /// An open toggle: raised fill, stronger border, primary text.
+  final bool open;
 
   final String label;
   final Color color;
@@ -357,17 +393,25 @@ class _Square extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GestureDetector(
+    final t = CatenaryTokens.of(context);
+    final box = GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
       child: Container(
         width: size,
         height: size,
         alignment: Alignment.center,
-        decoration: BoxDecoration(color: fill, border: border == null ? null : Border.all(color: border!)),
-        child: Text(label, style: TextStyle(fontFamily: fontMono, fontSize: fontSize, letterSpacing: fontSize * tracking, color: color)),
+        decoration: BoxDecoration(
+          color: open ? t.surfaceRaised : fill,
+          border: open ? Border.all(color: t.textMeta) : (border == null ? null : Border.all(color: border!)),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(fontFamily: fontMono, fontSize: fontSize, letterSpacing: fontSize * tracking, color: open ? t.textPrimary : color),
+        ),
       ),
     );
+    return focusNode == null ? box : Focus(focusNode: focusNode, child: Semantics(expanded: open, child: box));
   }
 }
 

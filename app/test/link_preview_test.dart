@@ -654,6 +654,8 @@ void main() {
       expect(find.byKey(const ValueKey('composer-link-chip')), findsOneWidget);
       await tester.tap(find.text('ADD'));
       await tester.pump();
+      await tester.tap(find.text('CHOOSE FILE'));
+      await tester.pump();
       await tester.pump();
       expect(find.byKey(const ValueKey('composer-attachment')), findsOneWidget);
       expect(find.byKey(const ValueKey('composer-link-chip')), findsNothing, reason: 'the send would drop the card');
@@ -667,6 +669,8 @@ void main() {
       await tester.pump();
       await tester.pump();
       await tester.tap(find.text('ADD'));
+      await tester.pump();
+      await tester.tap(find.text('CHOOSE FILE'));
       await tester.pump();
       await tester.pump();
       expect(find.byKey(const ValueKey('composer-link-chip')), findsOneWidget);
