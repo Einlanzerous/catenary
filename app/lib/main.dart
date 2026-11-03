@@ -277,6 +277,7 @@ class _ShellState extends State<_Shell> {
           onSend: (text) => store.send(c.id, text),
           // Offered only while the outbox would take a file (its own predicate).
           onPickImage: store.canAttach ? store.pickImage : null,
+          onPasteImages: store.canAttach ? store.pasteImages : null,
           onSendPicked: (text, image) => store.send(c.id, text, image: image),
           // REC is drawn disabled while the voice gate is off (store/voice.dart).
           onStartRecording: store.canRecord ? store.startRecording : null,

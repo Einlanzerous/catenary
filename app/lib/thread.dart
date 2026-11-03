@@ -21,6 +21,7 @@ import 'package:flutter/material.dart';
 
 import 'metrics.dart';
 import 'store/attach.dart';
+import 'widgets/attach_zone.dart';
 import 'store/connection.dart';
 import 'store/conversation.dart';
 import 'store/link.dart';
@@ -57,6 +58,7 @@ class ThreadScreen extends StatelessWidget {
     this.onRetryMessage,
     this.onDiscardMessage,
     this.onPickImage,
+    this.onPasteImages,
     this.onSendPicked,
     this.onStartRecording,
     this.onCancelRecording,
@@ -82,6 +84,10 @@ class ThreadScreen extends StatelessWidget {
   /// ADD: opens the picker. NULL DIMS ADD, and nothing else does: the caller
   /// passes it only when the outbox says a picked file would be accepted.
   final Future<PickOutcome?> Function()? onPickImage;
+
+  /// Paste: images the keyboard inserted into the field, through the store's
+  /// one gate (CANT-356). Passed with [onPickImage], under the same predicate.
+  final Future<PickOutcome> Function(List<PastedImage> images)? onPasteImages;
 
   /// The composer's send with its one held image, given the draft.
   final Future<void> Function(String text, PickedImage image)? onSendPicked;
@@ -237,6 +243,7 @@ class ThreadScreen extends StatelessWidget {
                 connection: connection,
                 onSend: onSend!,
                 onPickImage: onPickImage,
+                onPasteImages: onPasteImages,
                 onSendPicked: onSendPicked,
                 onStartRecording: onStartRecording,
                 onCancelRecording: onCancelRecording,
@@ -261,6 +268,7 @@ class _ThreadComposer extends StatefulWidget {
     required this.connection,
     required this.onSend,
     this.onPickImage,
+    this.onPasteImages,
     this.onSendPicked,
     this.onStartRecording,
     this.onCancelRecording,
@@ -273,6 +281,10 @@ class _ThreadComposer extends StatefulWidget {
   final ConnectionView connection;
   final Future<void> Function(String text) onSend;
   final Future<PickOutcome?> Function()? onPickImage;
+
+  /// Paste: images the keyboard inserted into the field, through the store's
+  /// one gate (CANT-356). Passed with [onPickImage], under the same predicate.
+  final Future<PickOutcome> Function(List<PastedImage> images)? onPasteImages;
   final Future<void> Function(String text, PickedImage image)? onSendPicked;
   final Future<RecordStart> Function()? onStartRecording;
   final Future<void> Function()? onCancelRecording;
@@ -291,6 +303,12 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   var _picking = false;
   PickedImage? _picked;
   String? _notice;
+  // The attach zone (CANT-356): client-local view state, like the web's. The
+  // refusal line lives inside it while it is open.
+  var _zoneOpen = false;
+  PickRefused? _zoneRefusal;
+  final _addFocus = FocusNode(debugLabel: 'ADD');
+  final _chooseFocus = FocusNode(debugLabel: 'CHOOSE FILE');
   DateTime? _recordingSince;
   Timer? _clock;
 
@@ -309,6 +327,16 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   void initState() {
     super.initState();
     _draft.addListener(_draftChanged);
+  }
+
+  @override
+  void didUpdateWidget(_ThreadComposer old) {
+    super.didUpdateWidget(old);
+    // The gate dropped (offline, terminal): a zone that cannot attach closes.
+    if (_zoneOpen && widget.onPickImage == null) {
+      _zoneOpen = false;
+      _zoneRefusal = null;
+    }
   }
 
   void _draftChanged() {
@@ -369,6 +397,8 @@ class _ThreadComposerState extends State<_ThreadComposer> {
     // platform recorder, and its temporary file would otherwise stay.
     if (_recordingSince != null) widget.onCancelRecording?.call();
     _draft.dispose();
+    _addFocus.dispose();
+    _chooseFocus.dispose();
     super.dispose();
   }
 
@@ -382,6 +412,9 @@ class _ThreadComposerState extends State<_ThreadComposer> {
       case RecordingStarted():
         setState(() {
           _notice = null;
+          // The zone does not come back when the take ends (M-ATT-04).
+          _zoneOpen = false;
+          _zoneRefusal = null;
           _recordingSince = DateTime.now();
         });
         _clock = Timer.periodic(const Duration(milliseconds: 250), (_) => setState(() {}));
@@ -420,23 +453,74 @@ class _ThreadComposerState extends State<_ThreadComposer> {
     }
   }
 
+  /// ADD: opens or closes the zone. Closing by ADD leaves focus on ADD.
+  void _toggleZone() {
+    if (_zoneOpen) {
+      _closeZone();
+      return;
+    }
+    setState(() {
+      _zoneOpen = true;
+      _zoneRefusal = null;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _zoneOpen) _chooseFocus.requestFocus();
+    });
+  }
+
+  void _closeZone() {
+    if (!_zoneOpen) return;
+    setState(() {
+      _zoneOpen = false;
+      _zoneRefusal = null;
+    });
+    _addFocus.requestFocus();
+  }
+
+  /// What a pick or a paste came to, the one place both are read: a held image
+  /// closes the zone; a refusal is one line in the open zone (replacing the
+  /// last) or, with the zone closed, the notice beside the field.
+  void _settle(PickOutcome? outcome) {
+    if (!mounted) return;
+    switch (outcome) {
+      case Picked(:final image):
+        setState(() {
+          _picked = image;
+          _notice = null;
+          _zoneOpen = false;
+          _zoneRefusal = null;
+        });
+      case PickRefused r:
+        setState(() {
+          if (_zoneOpen) {
+            _zoneRefusal = r;
+          } else {
+            _notice = r.message;
+          }
+        });
+      case null:
+        break;
+    }
+  }
+
   Future<void> _attach() async {
     if (_picking) return;
     _picking = true;
     try {
-      final outcome = await widget.onPickImage?.call();
-      if (!mounted) return;
-      switch (outcome) {
-        case Picked(:final image):
-          setState(() {
-            _picked = image;
-            _notice = null;
-          });
-        case PickRefused(:final message):
-          setState(() => _notice = message);
-        case null:
-          break;
-      }
+      _settle(await widget.onPickImage?.call());
+    } finally {
+      _picking = false;
+    }
+  }
+
+  Future<void> _paste(KeyboardInsertedContent content) async {
+    final paste = widget.onPasteImages;
+    final bytes = content.data;
+    if (paste == null || bytes == null || _picking) return;
+    final sub = content.mimeType.split('/').last.split(RegExp(r'[+;]')).first;
+    _picking = true;
+    try {
+      _settle(await paste([PastedImage(bytes: bytes, name: 'pasted.${sub.isEmpty ? 'image' : sub}')]));
     } finally {
       _picking = false;
     }
@@ -487,11 +571,26 @@ class _ThreadComposerState extends State<_ThreadComposer> {
   }
 
   @override
-  Widget build(BuildContext context) => Composer(
+  Widget build(BuildContext context) => PopScope(
+        // System back closes an open zone first and returns focus to ADD.
+        canPop: !_zoneOpen,
+        onPopInvokedWithResult: (didPop, _) {
+          if (!didPop) _closeZone();
+        },
+        child: _composer(),
+      );
+
+  Widget _composer() => Composer(
         connection: widget.connection,
         controller: _draft,
         onSend: _send,
-        onAttach: widget.onPickImage == null ? null : _attach,
+        onAttach: widget.onPickImage == null ? null : _toggleZone,
+        addOpen: _zoneOpen,
+        addFocus: _addFocus,
+        zone: _zoneOpen && _recordingSince == null
+            ? AttachZone(chooseFocus: _chooseFocus, onChoose: _attach, canPaste: widget.onPasteImages != null, refusal: _zoneRefusal)
+            : null,
+        onInsertedContent: widget.onPasteImages == null || widget.onPickImage == null ? null : _paste,
         attachment: _picked?.name,
         onRemoveAttachment: () => setState(() => _picked = null),
         link: _linkUrl == null || (_picked != null && widget.onSendPickedLinked == null) ? null : HeldLink(host: linkHost(_linkUrl!), title: _preview?.cleanTitle, fetching: _preview == null),

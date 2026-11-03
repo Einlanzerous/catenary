@@ -525,6 +525,38 @@ final class AppStore extends ChangeNotifier {
       return const PickRefused("Couldn't open the photo picker.");
     }
     if (picked == null) return null;
+    return _precheck(picked);
+  }
+
+  /// Paste: the clipboard's images (the keyboard's content insertion) through
+  /// the SAME gate as the picker. Several at once are refused whole with
+  /// [oneImageMessage]; nothing is written for a refusal. Paste is only wired
+  /// while [canAttach], the picker's own gate. The bytes are staged in a temporary
+  /// file the outbox then copies at compose, like a picked one.
+  Future<PickOutcome> pasteImages(List<PastedImage> images) async {
+    if (images.length > 1) return PickRefused(oneImageMessage, kind: '${images.length} FILES');
+    if (images.isEmpty) return const PickRefused("Couldn't read that file.");
+    final image = images.single;
+    final File file;
+    try {
+      final dir = await Directory.systemTemp.createTemp('catenary-paste-');
+      file = File('${dir.path}/${image.name}');
+      await file.writeAsBytes(image.bytes);
+    } on Object {
+      return const PickRefused("Couldn't read that file.");
+    }
+    final outcome = await _precheck(PickedImage(path: file.path, name: image.name));
+    if (outcome is PickRefused) {
+      try {
+        await file.parent.delete(recursive: true);
+      } on Object {
+        // A temporary directory the system will clear anyway.
+      }
+    }
+    return outcome;
+  }
+
+  Future<PickOutcome> _precheck(PickedImage picked) async {
     final Uint8List head;
     final int length;
     try {
@@ -536,7 +568,9 @@ final class AppStore extends ChangeNotifier {
       return const PickRefused("Couldn't read that file.");
     }
     final refusal = imageRefusal(checkImage(head, length));
-    return refusal == null ? Picked(picked) : PickRefused(refusal);
+    if (refusal == null) return Picked(picked);
+    final dot = picked.name.lastIndexOf('.');
+    return PickRefused(refusal, fileName: picked.name, kind: dot < 0 || dot == picked.name.length - 1 ? null : picked.name.substring(dot + 1).toUpperCase());
   }
 
   /// Whether REC may be offered: the voice gate ([voiceSendEnabled]) is on and
