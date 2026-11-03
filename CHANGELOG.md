@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.23.0](https://github.com/Einlanzerous/catenary/compare/v0.22.0...v0.23.0) (2026-11-03)
+
+
+### Features
+
+* CANT-355 — drop an image anywhere on the thread, with the DROP TO ATTACH overlay ([#271](https://github.com/Einlanzerous/catenary/issues/271)) ([1787d25](https://github.com/Einlanzerous/catenary/commit/1787d2593c963dd9b756425062bc92a8f3a55975))
+* CANT-356 — the Flutter attach zone and paste, to the M-ATT frames ([#270](https://github.com/Einlanzerous/catenary/issues/270)) ([dbf9cea](https://github.com/Einlanzerous/catenary/commit/dbf9cea5a240a362881dd5e63ff835cac75dd93b))
+
 ## [0.22.0](https://github.com/Einlanzerous/catenary/compare/v0.21.2...v0.22.0) (2026-11-02)
 
 
