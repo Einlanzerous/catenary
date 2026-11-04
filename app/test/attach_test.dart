@@ -93,6 +93,12 @@ void main() {
     expect(oneImageMessage, shared['oneImage']);
   });
 
+  test('the accepted-types line and its labels are the web client\'s (messages.json)', () {
+    final shared = jsonDecode(File('${fixtures.path}/messages.json').readAsStringSync()) as Map<String, Object?>;
+    expect(acceptedImageLabels, shared['acceptedLabels']);
+    expect(acceptedLine(), shared['acceptedLine']);
+  });
+
   group('the pre-check runs before anything is composed', () {
     // The shared fixtures: the same verdicts the Go ingest test asserts.
     for (final (name, ok) in [
@@ -170,6 +176,27 @@ void main() {
       expect(held.single.attachments.single.kind, 'image');
       expect(held.single.attachments.single.filename, 'photo-exif-gps.jpg');
       expect(await entries.media(held.single.clientId, 0), File('${fixtures.path}/photo-exif-gps.jpg').readAsBytesSync());
+    });
+
+    test('a pasted file is staged in a temp file the store deletes once sent, or once released', () async {
+      final s = await store(() async => null, wrap: ReadyTransport.new);
+      final png = File('${fixtures.path}/image.png').readAsBytesSync();
+      Future<PickedImage> paste() async => (await s.pasteImages([PastedImage(bytes: png, name: 'pasted.png')]) as Picked).image;
+
+      final sent = await paste();
+      expect(File(sent.path).existsSync(), isTrue);
+      await s.send('44444444-4444-4444-8444-444444444444', '', image: sent);
+      expect(File(sent.path).existsSync(), isFalse, reason: 'sent: the outbox holds its own copy');
+      expect(File(sent.path).parent.existsSync(), isFalse);
+
+      final cleared = await paste();
+      expect(File(cleared.path).existsSync(), isTrue);
+      await s.releaseStaged(cleared);
+      expect(File(cleared.path).existsSync(), isFalse, reason: 'chip cleared');
+
+      final picked = pickedFixture('image.png');
+      await s.releaseStaged(picked);
+      expect(File(picked.path).existsSync(), isTrue, reason: 'a picked file is never ours to delete');
     });
 
     // Composer follows `onPickImage` alone. Passing it over every connection

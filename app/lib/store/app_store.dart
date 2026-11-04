@@ -502,6 +502,8 @@ final class AppStore extends ChangeNotifier {
     } on ComposeRefused catch (e) {
       throw AttachRefused(e.message);
     }
+    // The outbox has copied the bytes; a pasted file's staging is spent.
+    if (image != null) await releaseStaged(image);
   }
 
   /// Whether ADD may be offered: the outbox's own predicate for "a picked file
@@ -547,14 +549,29 @@ final class AppStore extends ChangeNotifier {
     }
     final outcome = await _precheck(PickedImage(path: file.path, name: image.name));
     if (outcome is PickRefused) {
-      try {
-        await file.parent.delete(recursive: true);
-      } on Object {
-        // A temporary directory the system will clear anyway.
-      }
+      await _deleteStaged(file.path, force: true);
+    } else {
+      _staged.add(file.path);
     }
     return outcome;
   }
+
+  // Paths of the temporary files [pasteImages] staged and still owns.
+  final _staged = <String>{};
+
+  Future<void> _deleteStaged(String path, {bool force = false}) async {
+    if (!force && !_staged.remove(path)) return;
+    try {
+      await File(path).parent.delete(recursive: true);
+    } on Object {
+      // A temporary directory the system will clear anyway.
+    }
+  }
+
+  /// Deletes the temporary file a paste staged, once the composer no longer
+  /// holds it (chip cleared or replaced). A no-op for a picked file, which is
+  /// the platform's and never ours to delete.
+  Future<void> releaseStaged(PickedImage image) => _deleteStaged(image.path);
 
   Future<PickOutcome> _precheck(PickedImage picked) async {
     final Uint8List head;

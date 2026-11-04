@@ -59,6 +59,7 @@ class ThreadScreen extends StatelessWidget {
     this.onDiscardMessage,
     this.onPickImage,
     this.onPasteImages,
+    this.onDiscardPicked,
     this.onSendPicked,
     this.onStartRecording,
     this.onCancelRecording,
@@ -88,6 +89,7 @@ class ThreadScreen extends StatelessWidget {
   /// Paste: images the keyboard inserted into the field, through the store's
   /// one gate (CANT-356). Passed with [onPickImage], under the same predicate.
   final Future<PickOutcome> Function(List<PastedImage> images)? onPasteImages;
+  final void Function(PickedImage image)? onDiscardPicked;
 
   /// The composer's send with its one held image, given the draft.
   final Future<void> Function(String text, PickedImage image)? onSendPicked;
@@ -244,6 +246,7 @@ class ThreadScreen extends StatelessWidget {
                 onSend: onSend!,
                 onPickImage: onPickImage,
                 onPasteImages: onPasteImages,
+                onDiscardPicked: onDiscardPicked,
                 onSendPicked: onSendPicked,
                 onStartRecording: onStartRecording,
                 onCancelRecording: onCancelRecording,
@@ -269,6 +272,7 @@ class _ThreadComposer extends StatefulWidget {
     required this.onSend,
     this.onPickImage,
     this.onPasteImages,
+    this.onDiscardPicked,
     this.onSendPicked,
     this.onStartRecording,
     this.onCancelRecording,
@@ -285,6 +289,7 @@ class _ThreadComposer extends StatefulWidget {
   /// Paste: images the keyboard inserted into the field, through the store's
   /// one gate (CANT-356). Passed with [onPickImage], under the same predicate.
   final Future<PickOutcome> Function(List<PastedImage> images)? onPasteImages;
+  final void Function(PickedImage image)? onDiscardPicked;
   final Future<void> Function(String text, PickedImage image)? onSendPicked;
   final Future<RecordStart> Function()? onStartRecording;
   final Future<void> Function()? onCancelRecording;
@@ -484,6 +489,8 @@ class _ThreadComposerState extends State<_ThreadComposer> {
     if (!mounted) return;
     switch (outcome) {
       case Picked(:final image):
+        final previous = _picked;
+        if (previous != null && previous.path != image.path) widget.onDiscardPicked?.call(previous);
         setState(() {
           _picked = image;
           _notice = null;
@@ -592,7 +599,11 @@ class _ThreadComposerState extends State<_ThreadComposer> {
             : null,
         onInsertedContent: widget.onPasteImages == null || widget.onPickImage == null ? null : _paste,
         attachment: _picked?.name,
-        onRemoveAttachment: () => setState(() => _picked = null),
+        onRemoveAttachment: () {
+          final gone = _picked;
+          if (gone != null) widget.onDiscardPicked?.call(gone);
+          setState(() => _picked = null);
+        },
         link: _linkUrl == null || (_picked != null && widget.onSendPickedLinked == null) ? null : HeldLink(host: linkHost(_linkUrl!), title: _preview?.cleanTitle, fetching: _preview == null),
         onRemoveLink: _dismissLink,
         notice: _notice,
