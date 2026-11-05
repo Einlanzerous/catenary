@@ -1,4 +1,11 @@
 {
-  "comment": "CANT-360. Client-side attach wording that the web and the Flutter client both show and must keep identical (CANT-357 ruling 5). The web test (web/attach.test.ts) asserts ONE_IMAGE_MESSAGE in web/src/attach.ts equals oneImage; the Dart test (app/test/attach_test.dart) asserts oneImageMessage in app/lib/store/attach.dart equals it. Change the words in all three places or a build fails.",
-  "oneImage": "One image at a time."
+  "comment": "CANT-360. Client-side attach wording that the web and the Flutter client both show and must keep identical (CANT-357 ruling 5). The web test (web/attach.test.ts) asserts ONE_IMAGE_MESSAGE in web/src/attach.ts equals oneImage and acceptedLine() equals acceptedLine; the Dart test (app/test/attach_test.dart) asserts oneImageMessage in app/lib/store/attach.dart equals it, and acceptedImageLabels and acceptedLine() equal acceptedLabels and acceptedLine (CANT-356). Change the words in all three places or a build fails.",
+  "oneImage": "One image at a time.",
+  "acceptedLine": "JPEG, PNG, GIF or WebP · up to 16 MB",
+  "acceptedLabels": [
+    "JPEG",
+    "PNG",
+    "GIF",
+    "WebP"
+  ]
 }

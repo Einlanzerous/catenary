@@ -28,5 +28,5 @@ export function oversizeImage(m: MediaManifest = loadManifest()): Uint8Array {
 }
 
 /** The wording both clients share (CANT-360): testdata/media/messages.json. */
-export const loadMessages = (dir = MEDIA_DIR): { oneImage: string } =>
-  JSON.parse(readFileSync(resolve(dir, 'messages.json'), 'utf8')) as { oneImage: string }
+export const loadMessages = (dir = MEDIA_DIR): { oneImage: string; acceptedLine: string; acceptedLabels: string[] } =>
+  JSON.parse(readFileSync(resolve(dir, 'messages.json'), 'utf8')) as { oneImage: string; acceptedLine: string; acceptedLabels: string[] }

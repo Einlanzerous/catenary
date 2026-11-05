@@ -42,6 +42,10 @@ test('Shared fixtures · the several-files message is the one the Dart client ho
   assert.equal(ONE_IMAGE_MESSAGE, loadMessages().oneImage)
 })
 
+test('Shared fixtures · the accepted-types line is the one the Dart client holds (messages.json)', () => {
+  assert.equal(acceptedLine(), loadMessages().acceptedLine)
+})
+
 test('Shared fixtures · every fixture gets the server’s verdict, from its bytes', async () => {
   const m = loadManifest()
   assert.equal(m.files.length, 7)
