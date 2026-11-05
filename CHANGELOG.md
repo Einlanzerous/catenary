@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.1](https://github.com/Einlanzerous/catenary/compare/v0.23.0...v0.23.1) (2026-11-05)
+
+
+### Bug Fixes
+
+* CANT-356 — delete a pasted image's temp file when the chip is cleared or sent; hold the accepted-types line to the web's ([#273](https://github.com/Einlanzerous/catenary/issues/273)) ([1d6773b](https://github.com/Einlanzerous/catenary/commit/1d6773bbec2e47cbed8b2e8393e941179ba85f1e))
+
 ## [0.23.0](https://github.com/Einlanzerous/catenary/compare/v0.22.0...v0.23.0) (2026-11-03)
 
 
