@@ -280,6 +280,10 @@ class _ShellState extends State<_Shell> {
           onPasteImages: store.canAttach ? store.pasteImages : null,
           onDiscardPicked: store.releaseStaged,
           onSendPicked: (text, image) => store.send(c.id, text, image: image),
+          // The held link chip and the card on the sent message (CANT-363).
+          onPreviewLink: store.previewLink,
+          onSendLinked: (text, preview) => store.send(c.id, text, link: preview),
+          onSendPickedLinked: (text, image, preview) => store.send(c.id, text, image: image, link: preview),
           // REC is drawn disabled while the voice gate is off (store/voice.dart).
           onStartRecording: store.canRecord ? store.startRecording : null,
           onCancelRecording: store.cancelRecording,

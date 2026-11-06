@@ -94,6 +94,7 @@ final class Session {
     required this.journal,
     required this.credentials,
     required this.conversations,
+    required this.linkPreviews,
     required this._close,
   });
 
@@ -111,6 +112,9 @@ final class Session {
   /// The REST calls that start a conversation, over the credential the
   /// transport refreshes: one pair, one refresh.
   final ConversationsApi conversations;
+
+  /// `POST /link-previews`, over the same refreshing credential (CANT-363).
+  final LinkPreviewApi linkPreviews;
   final void Function() _close;
   var _ended = false;
 
@@ -224,6 +228,7 @@ Future<SessionStart> startSession(SessionSeams seams, {Session? replacing, void 
     journal: journal,
     credentials: credentials,
     conversations: ConversationsApi(baseUrl: address, credential: refreshing, fetch: seams.fetch),
+    linkPreviews: LinkPreviewApi(baseUrl: address, credential: refreshing, fetch: seams.fetch),
     close: () {
       transport.stop();
       outbox.close();
