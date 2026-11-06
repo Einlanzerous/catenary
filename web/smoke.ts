@@ -271,7 +271,7 @@ async function main() {
   check('pending transcript labelled', main.includes('TRANSCRIBING'))
   check('reply stub chip', main.includes('▶ VOICE'))
   check('stub says pending rather than empty', main.includes('transcript pending'))
-  check('image filename strip', main.includes('IMG_4471.HEIC'))
+  check('image filename strip', main.includes('IMG_4471.JPG'))
   check(
     'waveform bars rendered',
     (main.match(/height:\s*\d+%/g) ?? []).length > 100,
@@ -1110,10 +1110,10 @@ async function main() {
     check('1B fetching: host at once, FETCHING PREVIEW, the sweep, SEND stays live', c.includes('>chronicle.zerogravity.industries<') && c.includes('FETCHING PREVIEW') && c.includes('class="sweep"') && c.includes('SENDING NOW SENDS WITHOUT A CARD') && !/class="primary"[^>]*disabled/.test(c))
     state.composer.preview = { state: 'ready', url: 'https://argosy.zerogravity.industries/series/1', uploadId: 'u' as never,
       card: mk({ url: 'https://argosy.zerogravity.industries/series/1', title: 'Severance — Season 2 is in the library' }) }
-    state.composer.attachment = { blob: new Blob(['x'], { type: 'image/heic' }), filename: 'IMG_4471.HEIC' }
+    state.composer.attachment = { blob: new Blob(['x'], { type: 'image/jpeg' }), filename: 'IMG_4471.JPG' }
     c = held(await render())
     check('1C link and image stacked in one tray, link first, the same component', c.includes('class="chips"') && c.indexOf('data-chip="link"') > 0 && c.indexOf('data-chip="link"') < c.indexOf('data-chip="image"') && (c.match(/class="tag"/g) ?? []).length === 2)
-    check('1C the image chip: IMAGE tag, filename, remove control', c.includes('>IMAGE<') && c.includes('IMG_4471.HEIC') && c.includes('aria-label="Remove attachment"'))
+    check('1C the image chip: IMAGE tag, filename, remove control', c.includes('>IMAGE<') && c.includes('IMG_4471.JPG') && c.includes('aria-label="Remove attachment"'))
     state.composer.preview = { state: 'dismissed', url: 'https://argosy.zerogravity.industries/series/1', uploadId: null, card: null }
     state.composer.attachment = null
     c = held(await render())
