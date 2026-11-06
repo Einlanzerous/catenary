@@ -61,7 +61,7 @@ func TestTheMapperServesTheAttachmentRowsASendWrites(t *testing.T) {
 	// distinguishable, so a column lost anywhere between the insert and the wire
 	// is a field missing from the comparison.
 	durationMs, width, height, bytes := int64(8421), int64(3024), int64(4032), int64(1874211)
-	ready, filename, placeholder := "ready", "harbour.heic", "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
+	ready, filename, placeholder := "ready", "harbour.jpg", "LKO2?U%2Tw=w]~RBVZRi};RPxuwH"
 	resolved := fixedResolver{
 		{
 			Kind:            "voice",
@@ -75,7 +75,7 @@ func TestTheMapperServesTheAttachmentRowsASendWrites(t *testing.T) {
 		},
 		{
 			Kind:        "image",
-			StorageKey:  "image/2026/09/d4e5f6.heic",
+			StorageKey:  "image/2026/09/d4e5f6.jpg",
 			Filename:    &filename,
 			Width:       &width,
 			Height:      &height,

@@ -398,7 +398,7 @@ func seedCanvas(t *testing.T, r *rig) canvas {
 		[2]any{33_000, "but then we’re into the weekend and I’d rather not."},
 		[2]any{38_000, "Also the tension gauge came back from the shop, it’s in the blue case on the bench."}))
 	say(kitchen, "ilse", "photo from this morning, the whole run is re-tensioned", uuid.Nil)
-	photo := say(kitchen, "ilse", "", uuid.Nil, image("IMG_4471.HEIC", 3024, 2016, 2_202_009))
+	photo := say(kitchen, "ilse", "", uuid.Nil, image("IMG_4471.JPG", 3024, 2016, 2_202_009))
 	eight := say(kitchen, "hollis", "I can be there at eight to sign for it.", uuid.Nil)
 	coffee := say(kitchen, "hollis", "bringing coffee for whoever else shows up", uuid.Nil)
 	depot := say(kitchen, "nadia", "depot hours are here if anyone needs them — riverline.org/depot-hours", uuid.Nil)
