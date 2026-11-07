@@ -97,6 +97,13 @@
   --accent-wash-soft: rgba(155, 89, 24, 0.1);
   --accent-rule: rgba(155, 89, 24, 0.55);
   --accent-underline: rgba(155, 89, 24, 0.55);
+  /* CANT-348: dim is a role name (in-flight and waiting labels), not a claim
+   * about luminance. In light it is darker than the wire on every surface
+   * (5.73, 5.29, 5.15, 4.74 against the wire's 5.07, 4.68, 4.56, 4.19) because
+   * every use is 9 to 10.5px text that needs 4.5:1 on all four surfaces. The
+   * order cannot be restored without an invisible difference (#9A5A1C is 0.02
+   * of contrast from the wire) or giving up the floor (#936840 falls to 4.18
+   * on rail and 4.07 on lift). The dark theme keeps wire stronger than dim. */
   --accent-dim: #8a5518;
   --accent-queue: #c08a4e;
   --on-accent: #f7f6f3;

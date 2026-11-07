@@ -219,6 +219,13 @@ class CatenaryTokens extends ThemeExtension<CatenaryTokens> {
     accentWashSoft: Color(0x1A9B5918),
     accentRule: Color(0x8C9B5918),
     accentUnderline: Color(0x8C9B5918),
+    // CANT-348: dim is a role name (in-flight and waiting labels), not a claim
+    // about luminance. In light it is darker than the wire on every surface
+    // (5.73, 5.29, 5.15, 4.74 against the wire's 5.07, 4.68, 4.56, 4.19)
+    // because every use is 9 to 10.5px text that needs 4.5:1 on all four
+    // surfaces. The order cannot be restored without an invisible difference
+    // (#9A5A1C is 0.02 of contrast from the wire) or giving up the floor
+    // (#936840 falls to 4.18 on rail and 4.07 on lift). See tokens.css.
     accentDim: Color(0xFF8A5518),
     accentQueue: Color(0xFFC08A4E),
     onAccent: Color(0xFFF7F6F3),
