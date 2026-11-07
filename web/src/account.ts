@@ -403,7 +403,7 @@ export class AuthedUnauthorized extends Error {
  * other than 401 is the caller's to read; a request that never got a status
  * rejects, and a 401 the refresh could not repair throws.
  */
-export async function authedRequest(path: string, init: { method?: string; json?: unknown } = {}): Promise<AuthedResponse> {
+export async function authedRequest(path: string, init: { method?: string; json?: unknown; timeoutMs?: number } = {}): Promise<AuthedResponse> {
   const c = await credential()
   await c.refreshIfDue()
   const once = async (presented: Credential): Promise<AuthedResponse | null> => {
@@ -414,6 +414,9 @@ export async function authedRequest(path: string, init: { method?: string; json?
         ...(init.json !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(init.json !== undefined ? { body: JSON.stringify(init.json) } : {}),
+      // A request that never answers rejects instead of holding its caller
+      // forever (CANT-364): a fresh deadline per attempt, covering the body.
+      ...(init.timeoutMs ? { signal: AbortSignal.timeout(init.timeoutMs) } : {}),
     })
     const body = await res.text()
     if (isCatenaryUnauthorized(res.status, body)) {

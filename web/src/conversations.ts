@@ -128,6 +128,13 @@ export async function loadRoster(): Promise<void> {
   }
 }
 
+/** How long a create may go unanswered before it is abandoned. `busy` is only
+ *  ever cleared by the call that set it, and the rail's + NEW is disabled
+ *  while it is set: a create the server never answered held it forever, and
+ *  + NEW went dead everywhere, the account view included (CANT-364). Mutable
+ *  so a test can shorten it. */
+export const createTimeout = { ms: 20_000 }
+
 /**
  * `POST /conversations/direct` for one roster entry, then open what it
  * returns. Resolves true when the conversation was returned (open or on its
@@ -143,6 +150,7 @@ export async function startDirect(entry: RosterEntry): Promise<boolean> {
   try {
     const res = await authedRequest('/conversations/direct', {
       method: 'POST',
+      timeoutMs: createTimeout.ms,
       json: encodeDirectConversationRequest({ handle: entry.handle }),
     })
     if (res.status !== 200) {
@@ -251,6 +259,7 @@ export async function createGroup(): Promise<boolean> {
   try {
     const res = await authedRequest('/conversations', {
       method: 'POST',
+      timeoutMs: createTimeout.ms,
       json: encodeCreateGroupRequest({
         name: trimmedGroupName(),
         memberHandles: pickerState.selected.map((s) => s.handle),
