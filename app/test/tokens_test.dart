@@ -131,6 +131,17 @@ void main() {
         expect(contrast(tokens.accentWire, tokens.surfaceRaised), greaterThanOrEqualTo(4.19));
       });
 
+      // CANT-348: the light dim is deliberately NOT asserted weaker than the
+      // wire (it is stronger on every surface, see tokens.dart). What it must
+      // hold is the floor every use needs: 9 to 10.5px text at 4.5:1 on all
+      // four surfaces (measured 5.73, 5.29, 5.15, 4.74).
+      test('$theme: accent-dim is >= 4.5:1 on base, rail, lift and raised (light)', () {
+        if (theme != 'light') return;
+        for (final g in ['surface-base', 'surface-rail', 'surface-lift', 'surface-raised']) {
+          expect(contrast(tokens.accentDim, grounds[g]!), greaterThanOrEqualTo(4.5), reason: 'accent-dim on $g');
+        }
+      });
+
       // surface-avatar is a tile fill, not a ground a border is drawn on.
       test('$theme: line-strong is >= 3:1 on every ground', () {
         for (final g in grounds.entries) {
