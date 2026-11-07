@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/Einlanzerous/catenary/compare/v0.23.1...v0.24.0) (2026-11-07)
+
+
+### Features
+
+* CANT-363 — wire the link chip and card into the live Flutter app ([#276](https://github.com/Einlanzerous/catenary/issues/276)) ([5f2bd74](https://github.com/Einlanzerous/catenary/commit/5f2bd742c505eb3969085159bb3fadca377f6dc6))
+
 ## [0.23.1](https://github.com/Einlanzerous/catenary/compare/v0.23.0...v0.23.1) (2026-11-05)
 
 
