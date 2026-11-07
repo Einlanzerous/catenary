@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:catenary/store/address.dart';
+import 'package:catenary/store/attach.dart';
 import 'package:catenary/store/app_store.dart';
 import 'package:catenary/store/session.dart';
 import 'package:catenary_client/catenary_client.dart';
@@ -43,7 +44,7 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
-  Future<AppStore> store(int status, String body) async {
+  Future<AppStore> store(int status, String body, {bool ready = true}) async {
     final credentials = openCredentialStore(dir.path);
     await enrollCredential(
       credentials,
@@ -72,7 +73,7 @@ void main() {
           return const HttpAnswer(503, '');
         },
         uploadFetch: (_) => Completer<HttpAnswer>().future,
-        transportFactory: (cfg) => ReadyTransport(createTransport(cfg)),
+        transportFactory: (cfg) => ready ? ReadyTransport(createTransport(cfg)) : createTransport(cfg),
       ),
       systemClock,
       wipeJournalFile,
@@ -116,6 +117,32 @@ void main() {
     final held = await entries.list();
     expect(held, hasLength(2));
     expect(held.where((e) => e.attachments.isNotEmpty), hasLength(1));
+  });
+
+  test('a send the outbox refuses keeps the handle: the retry still carries the card', () async {
+    final s = await store(200, ok, ready: false);
+    final p = await s.previewLink(url);
+    // A picked file with no ready session is refused whole and writes nothing.
+    await expectLater(
+      s.send(conv, 'hours: $url', image: PickedImage(path: '${Directory('../testdata/media').path}/image.png', name: 'image.png'), link: p),
+      throwsA(isA<AttachRefused>()),
+    );
+    await s.send(conv, 'hours: $url', link: p);
+    final entries = SqliteOutboxStore.open('${dir.path}/$outboxFileName');
+    addTearDown(entries.close);
+    final held = await entries.list();
+    expect(held.single.attachments.single.kind, 'link');
+    expect(held.single.attachments.single.uploadId, handle);
+  });
+
+  test('a newer preview evicts the earlier one: its handle is not kept', () async {
+    final s = await store(200, ok);
+    final first = await s.previewLink(url);
+    await s.previewLink(url);
+    await s.send(conv, 'old $url', link: first);
+    final entries = SqliteOutboxStore.open('${dir.path}/$outboxFileName');
+    addTearDown(entries.close);
+    expect((await entries.list()).single.attachments, isEmpty);
   });
 
   for (final (status, body) in [(204, ''), (404, '{}'), (502, 'bad gateway')]) {

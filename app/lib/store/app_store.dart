@@ -497,7 +497,7 @@ final class AppStore extends ChangeNotifier {
   Future<void> send(String conversationId, String text, {PickedImage? image, LinkPreviewView? link}) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty && image == null) return;
-    final handle = link == null ? null : _handles.remove(link);
+    final handle = link == null ? null : _handles[link];
     try {
       await _running.outbox.compose(OutboxDraft(
         conversationId: conversationId,
@@ -508,8 +508,11 @@ final class AppStore extends ChangeNotifier {
         ],
       ));
     } on ComposeRefused catch (e) {
+      // Nothing was written and the chip is still on screen: its handle stays.
       throw AttachRefused(e.message);
     }
+    // Composed: the handle is spent (single-use), whatever else happens next.
+    if (link != null) _handles.remove(link);
     // The outbox has copied the bytes; a pasted file's staging is spent.
     if (image != null) await releaseStaged(image);
   }
@@ -525,7 +528,11 @@ final class AppStore extends ChangeNotifier {
     final r = await _running.linkPreviews.fetch(url);
     if (r is! PreviewReady) return null;
     final view = linkPreviewView(r.preview);
-    _handles[view] = r.handle;
+    // One chip is held at a time: the earlier preview was edited away or
+    // dismissed, and its handle with it.
+    _handles
+      ..clear()
+      ..[view] = r.handle;
     return view;
   }
 
