@@ -143,6 +143,18 @@ TranscriptStatus transcriptStatus(wire.TranscriptState state) => switch (state) 
 /// A zero is no estimate, as in the web client, which hides a falsy one.
 Duration? _eta(int? seconds) => seconds == null || seconds == 0 ? null : Duration(seconds: seconds);
 
+/// A link attachment, as the card and the composer's chip draw it.
+LinkPreviewView linkPreviewView(wire.LinkAttachment link) => LinkPreviewView(
+      url: link.url,
+      title: link.title,
+      description: link.description,
+      imageUrl: link.imageUrl,
+      imageWidth: link.imageWidth,
+      imageHeight: link.imageHeight,
+      placeholder: link.imagePlaceholder,
+      finalHost: link.finalHost,
+    );
+
 /// One journal message, as the thread shows it. [me] is the enrolled account.
 ThreadMessage journalMessage(wire.Message m, {required String me, required Map<String, wire.User> users}) {
   final attachments = m.attachments ?? const <wire.Attachment>[];
@@ -168,18 +180,7 @@ ThreadMessage journalMessage(wire.Message m, {required String me, required Map<S
             status: transcriptStatus(voice.transcript.state),
           ),
     image: image == null ? null : ImageAttachment(filename: image.filename, width: image.width, height: image.height),
-    link: link == null
-        ? null
-        : LinkPreviewView(
-            url: link.url,
-            title: link.title,
-            description: link.description,
-            imageUrl: link.imageUrl,
-            imageWidth: link.imageWidth,
-            imageHeight: link.imageHeight,
-            placeholder: link.imagePlaceholder,
-            finalHost: link.finalHost,
-          ),
+    link: link == null ? null : linkPreviewView(link),
     status: deliveryStatus(m.state),
     readBy: m.readBy,
   );
@@ -488,22 +489,51 @@ final class AppStore extends ChangeNotifier {
   /// is not a message. [image], one picked file, rides in the same entry; the
   /// outbox refuses it when there is no ready session, which is [AttachRefused]
   /// here and writes nothing. Throws when the device is not enrolled.
-  Future<void> send(String conversationId, String text, {PickedImage? image}) async {
+  ///
+  /// [link] is a preview [previewLink] returned: its single-use handle rides in
+  /// the same entry as the link attachment (CANT-363), through this one compose
+  /// path. A preview this store did not mint, or whose handle was spent, sends
+  /// as plain text: the message never claims a card the server will not bind.
+  Future<void> send(String conversationId, String text, {PickedImage? image, LinkPreviewView? link}) async {
     final trimmed = text.trim();
     if (trimmed.isEmpty && image == null) return;
+    final handle = link == null ? null : _handles[link];
     try {
       await _running.outbox.compose(OutboxDraft(
         conversationId: conversationId,
         text: trimmed.isEmpty ? null : trimmed,
         attachments: [
           if (image != null) OutboundAttachmentDraft(kind: 'image', source: MediaFile(image.path), filename: image.name),
+          if (handle != null) OutboundAttachmentDraft.link(handle),
         ],
       ));
     } on ComposeRefused catch (e) {
+      // Nothing was written and the chip is still on screen: its handle stays.
       throw AttachRefused(e.message);
     }
+    // Composed: the handle is spent (single-use), whatever else happens next.
+    if (link != null) _handles.remove(link);
     // The outbox has copied the bytes; a pasted file's staging is spent.
     if (image != null) await releaseStaged(image);
+  }
+
+  // The handles of the previews [previewLink] has returned, by the view the
+  // composer holds (identity). A handle is single-use and uploader-bound.
+  final Map<LinkPreviewView, String> _handles = Map.identity();
+
+  /// The composer's chip: asks the server for [url]'s preview. Null for every
+  /// failure, because the server gives no reason and the draft just sends as
+  /// text. Throws when the device is not enrolled.
+  Future<LinkPreviewView?> previewLink(String url) async {
+    final r = await _running.linkPreviews.fetch(url);
+    if (r is! PreviewReady) return null;
+    final view = linkPreviewView(r.preview);
+    // One chip is held at a time: the earlier preview was edited away or
+    // dismissed, and its handle with it.
+    _handles
+      ..clear()
+      ..[view] = r.handle;
+    return view;
   }
 
   /// Whether ADD may be offered: the outbox's own predicate for "a picked file
