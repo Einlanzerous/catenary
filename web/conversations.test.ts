@@ -22,9 +22,9 @@ import { renderToString } from '@vue/server-renderer'
 import App from '@/App.vue'
 import { configureAccount } from '@/account'
 import {
-  canCreateGroup, createGroup, pickerState, retryPick, resetPicker, startDirect, toggleSelected,
+  canCreateGroup, createGroup, createTimeout, pickerState, retryPick, resetPicker, startDirect, toggleSelected,
 } from '@/conversations'
-import { closeNew, openNew, select, state, transportWord } from '@/store'
+import { closeNew, openAccount, openNew, select, state, transportWord } from '@/store'
 import { enrollCredential, MemoryCredentialStore, type StoredCredential } from '@/transport'
 import { browserLock } from '@/transport/seams'
 import type { Conversation, RosterEntry } from '@/wire/generated'
@@ -463,4 +463,41 @@ test('a 400 on a group shows a visible message', async () => {
   assert.ok(text(html).includes('The server refused that group'))
   assert.ok(html.includes('Ines Calloway') && html.includes('Rosa Whitfield'), 'the roster is still listed')
   assert.ok(!/disabled[^>]*data-roster-handle|data-roster-handle[^>]*disabled/.test(html), 'nothing stays disabled')
+})
+
+test('+ NEW opens the picker from the account view, even after a create the server never answered (CANT-364)', async () => {
+  // The fake honors the request's signal as fetch does, and otherwise never
+  // answers /conversations/direct.
+  const hung = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const url = String(input)
+    if (url.endsWith('/users')) return new Response(JSON.stringify({ users: roster }), { status: 200 })
+    return new Promise<Response>((_, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal!.reason))
+    })
+  }) as typeof globalThis.fetch
+  configureAccount({ baseUrl: BASE, store: (globalThis as unknown as { __store: MemoryCredentialStore }).__store, fetch: hung })
+  const was = createTimeout.ms
+  createTimeout.ms = 30
+  try {
+    openNew()
+    resetPicker()
+    await settle()
+    const made = startDirect(roster[0])
+    await settle()
+    assert.equal(pickerState.busy, true, 'the create is in flight')
+
+    openAccount()
+    assert.equal(state.view, 'account')
+    assert.equal(await made, false, 'the unanswered create is abandoned')
+    assert.equal(pickerState.busy, false, 'and releases the rail control')
+    const html = await render()
+    assert.ok(text(html).includes('SESSIONS') || text(html).includes('SIGN IN'), 'the account view is open')
+    assert.ok(/class="new"(?![^>]*disabled)/.test(html), '+ NEW is enabled there')
+
+    openNew()
+    assert.equal(state.view, 'new', 'pressing NEW switches the main pane')
+    assert.ok(text(await render()).includes('NEW CONVERSATION'), 'and the picker is what renders')
+  } finally {
+    createTimeout.ms = was
+  }
 })
