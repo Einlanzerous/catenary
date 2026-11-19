@@ -246,7 +246,11 @@ test('CANT-369 · an id that is not in the list falls back to the first in the r
   const { loc } = fakeBrowser(`#/c/${uuid(999)}`)
   await startOver()
   assert.equal(state.activeId, ROOM_A)
-  assert.equal(loc.hash, `#/c/${ROOM_A}`, 'the URL follows what is actually open')
+  // The fallback does not overwrite the id the URL carried: a reload before the
+  // list is complete must still find it. The reader's own choice does.
+  assert.equal(loc.hash, `#/c/${uuid(999)}`)
+  select(ROOM_B)
+  assert.equal(loc.hash, `#/c/${ROOM_B}`)
 })
 
 test('CANT-369 · no hash opens the first in the rail, as before', async () => {

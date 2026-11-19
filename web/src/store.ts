@@ -439,11 +439,12 @@ export function restoreOpenFromUrl() {
 }
 
 /** Mirror the open conversation into the URL with `replaceState`, so a switch
- *  never adds a history entry and Back is not spammed. An empty id with a
- *  restore still pending leaves the hash alone: the list has not landed yet. */
+ *  never adds a history entry and Back is not spammed. While a
+ *  restore is pending the hash is left alone: the list may not have landed, and
+ *  a fallback pick must not overwrite the id the URL carried. */
 function writeOpenHash(id: string) {
   if (typeof history === 'undefined' || typeof location === 'undefined') return
-  if (!id && restoreId) return
+  if (restoreId) return
   const next = id ? `#/c/${id}` : ''
   if (location.hash === next || (!next && !location.hash)) return
   history.replaceState(history.state, '', location.pathname + location.search + next)
