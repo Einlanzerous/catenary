@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.24.0](https://github.com/Einlanzerous/catenary/compare/v0.23.1...v0.24.0) (2026-11-08)
+
+
+### Features
+
+* CANT-363 — wire the link chip and card into the live Flutter app ([#276](https://github.com/Einlanzerous/catenary/issues/276)) ([5f2bd74](https://github.com/Einlanzerous/catenary/commit/5f2bd742c505eb3969085159bb3fadca377f6dc6))
+
+
+### Bug Fixes
+
+* CANT-364 — web: a create the server never answers no longer leaves + NEW disabled for good ([#279](https://github.com/Einlanzerous/catenary/issues/279)) ([d0bae3a](https://github.com/Einlanzerous/catenary/commit/d0bae3a543abca949cbfd70e839911f770336e6c))
+
 ## [0.23.1](https://github.com/Einlanzerous/catenary/compare/v0.23.0...v0.23.1) (2026-11-05)
 
 
