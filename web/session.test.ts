@@ -21,7 +21,8 @@
 import { afterEach, test } from 'node:test'
 import assert from 'node:assert/strict'
 import { IDBFactory } from 'fake-indexeddb'
-import { endSession, liveTransport, startSession, state } from '@/store'
+import { watch } from 'vue'
+import { endSession, jumpTo, liveTransport, restoreOpenFromUrl, select, startSession, state } from '@/store'
 import { IdbJournal, MemoryCredentialStore, MemoryJournal, type Applied, type StoredCredential, type WebSocketLike } from '@/transport'
 import { bootstrapPage, conversation, deferred, flush, ME, message, OTHER, user, uuid } from '@/transport/test/harness'
 import { enrolled } from '@/transport/test/credential-harness'
@@ -174,4 +175,103 @@ test('CANT-230 · a start overtaken during its claim builds no transport', async
   assert.equal(liveTransport(), second, 'the session running is the second start’s')
   assert.equal(sockets, dialed, 'and the overtaken start dialed nothing')
   assert.equal(sockets, 1, 'one transport, one dial')
+})
+
+/* ── CANT-369 · a reload keeps the open conversation ───────────────────── */
+
+const ROOM_A = uuid(100)
+const ROOM_B = uuid(101)
+const TWO_ROOMS = {
+  ...bootstrapPage(3, [message(1), message(2), message(3)]),
+  conversations: [conversation(ROOM_A), conversation(ROOM_B)],
+  users: [user(ME), user(OTHER)],
+}
+
+/** A browser's `location` and `history`, as far as the store touches them:
+ *  `replaceState` rewrites the hash, `pushState` is counted and must stay 0. */
+function fakeBrowser(hash: string) {
+  const calls = { replace: 0, push: 0 }
+  const loc = { hash, pathname: '/', search: '' }
+  const g = globalThis as Record<string, unknown>
+  g.location = loc
+  g.history = {
+    state: null,
+    replaceState(_s: unknown, _t: string, url: string) {
+      calls.replace++
+      loc.hash = url.includes('#') ? url.slice(url.indexOf('#')) : ''
+    },
+    pushState() {
+      calls.push++
+    },
+  }
+  restoreOpenFromUrl()
+  return { loc, calls }
+}
+
+afterEach(() => {
+  const g = globalThis as Record<string, unknown>
+  delete g.location
+  delete g.history
+  restoreOpenFromUrl()
+})
+
+/** Start a session over a journal holding `TWO_ROOMS`, recording every value
+ *  `activeId` takes (synchronously, so a flash cannot hide between ticks). */
+async function startOver(): Promise<string[]> {
+  const factory = new IDBFactory()
+  const first = await IdbJournal.open({ factory })
+  await first.claim(ME)
+  await first.applyPage(TWO_ROOMS, NO_FAULTS)
+  first.close()
+  state.me = ''
+  state.activeId = ''
+  const seen: string[] = []
+  const stop = watch(() => state.activeId, (v) => seen.push(v), { flush: 'sync' })
+  const journal = await IdbJournal.open({ factory })
+  const store = new MemoryCredentialStore({ ...enrolled(Date.now()), deviceId: uuid(9) })
+  await startSession({ baseUrl: BASE, store, journal, WebSocket: DeadSocket, fetch: unreachable, logger: quiet })
+  stop()
+  return seen
+}
+
+test('CANT-369 · a reload restores the conversation named in the URL, and the first in the rail is never shown', async () => {
+  fakeBrowser(`#/c/${ROOM_B}`)
+  const seen = await startOver()
+  assert.equal(state.activeId, ROOM_B)
+  // No flash: ROOM_A (the top of the rail) was never active, not even for a tick.
+  assert.deepEqual(seen, [ROOM_B])
+})
+
+test('CANT-369 · an id that is not in the list falls back to the first in the rail', async () => {
+  const { loc } = fakeBrowser(`#/c/${uuid(999)}`)
+  await startOver()
+  assert.equal(state.activeId, ROOM_A)
+  assert.equal(loc.hash, `#/c/${ROOM_A}`, 'the URL follows what is actually open')
+})
+
+test('CANT-369 · no hash opens the first in the rail, as before', async () => {
+  fakeBrowser('')
+  await startOver()
+  assert.equal(state.activeId, ROOM_A)
+})
+
+test('CANT-369 · a switch rewrites the hash with replaceState and never pushes history', async () => {
+  const { loc, calls } = fakeBrowser('')
+  await startOver()
+  const before = calls.replace
+  select(ROOM_B)
+  assert.equal(loc.hash, `#/c/${ROOM_B}`)
+  select(ROOM_A)
+  assert.equal(loc.hash, `#/c/${ROOM_A}`)
+  const m = state.messages[0]!
+  jumpTo(m.id)
+  assert.equal(loc.hash, `#/c/${m.conversationId}`)
+  assert.ok(calls.replace > before)
+  assert.equal(calls.push, 0, 'Back is not spammed')
+})
+
+test('CANT-369 · with no location at all (the SSR smoke) nothing throws', async () => {
+  await startOver()
+  select(ROOM_B)
+  assert.equal(state.activeId, ROOM_B)
 })

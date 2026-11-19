@@ -415,13 +415,54 @@ export const isSilent = (v: VoiceAttachment | undefined): boolean => {
   return text !== undefined && countWords(text) === 0
 }
 
+/* ── the open conversation, in the URL (CANT-369) ───────────────────────── */
+
+/** `#/c/<uuid>`: the conversation a tab has open, so a reload keeps it, each
+ *  tab keeps its own, and a link opens the right thread. */
+const OPEN_HASH = /^#\/c\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+
+/** What the URL asked for, read at call time and guarded: the smoke SSRs this
+ *  module where there is no `location`. */
+export function openIdFromLocation(): string {
+  if (typeof location === 'undefined') return ''
+  return OPEN_HASH.exec(location.hash)?.[1]?.toLowerCase() ?? ''
+}
+
+/** The id the URL named at load, held until a session has the list to check it
+ *  against. `showProjection` consumes it; any choice by the reader drops it. */
+let restoreId = openIdFromLocation()
+
+/** Read the URL again. The page reads it once, at load; a test that stands up a
+ *  `location` after the module is loaded calls this instead of reloading it. */
+export function restoreOpenFromUrl() {
+  restoreId = openIdFromLocation()
+}
+
+/** Mirror the open conversation into the URL with `replaceState`, so a switch
+ *  never adds a history entry and Back is not spammed. An empty id with a
+ *  restore still pending leaves the hash alone: the list has not landed yet. */
+function writeOpenHash(id: string) {
+  if (typeof history === 'undefined' || typeof location === 'undefined') return
+  if (!id && restoreId) return
+  const next = id ? `#/c/${id}` : ''
+  if (location.hash === next || (!next && !location.hash)) return
+  history.replaceState(history.state, '', location.pathname + location.search + next)
+}
+
+/** Every write to `activeId` goes through here, so the URL cannot disagree. */
+function setActive(id: string) {
+  state.activeId = id
+  writeOpenHash(id)
+}
+
 /* ── actions ───────────────────────────────────────────────────────────── */
 
 export function select(id: string) {
   // Going somewhere else abandons a conversation still on its way: it must
   // not pull the reader out of what they chose when it lands.
   if (state.pendingOpenId && state.pendingOpenId !== id) state.pendingOpenId = ''
-  state.activeId = id
+  restoreId = ''
+  setActive(id)
   state.view = 'thread'
   state.composer.replyToId = null
   // Reading clears the badge, but the "N NEW" rule stays put for this visit —
@@ -1202,7 +1243,8 @@ export function closeAccount() {
 export function jumpTo(messageId: string, seekMs?: number) {
   const m = messageById(messageId)
   if (!m) return
-  state.activeId = m.conversationId
+  restoreId = ''
+  setActive(m.conversationId)
   state.view = 'thread'
   state.arrivedAt = messageId
 
@@ -1435,11 +1477,15 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
   // says; a fresh start for the same account keeps what is on screen until
   // the journal's own projection replaces it.
   if (state.me !== held.userId) {
+    const firstStart = state.me === ''
     state.me = held.userId
     state.users = {}
     state.conversations = []
     state.messages = []
-    state.activeId = ''
+    // The first start of a page load goes through here too (`me` is empty),
+    // and it is exactly when the URL's conversation is waiting to be restored.
+    if (!firstStart) restoreId = ''
+    setActive('')
     state.pendingOpenId = ''
     state.read.clear()
   }
@@ -1548,9 +1594,20 @@ function showProjection(p: Projection) {
     select(id)
     return
   }
+  // THE URL'S CONVERSATION BEFORE THE RAIL'S FIRST: the first thing on screen
+  // is the one the reader had open, so there is no flash of another thread. It
+  // is kept pending while it is not in the list (a journal's first projection
+  // can precede the page that carries it) and given up on select().
+  if (restoreId && state.conversations.some((c) => c.id === restoreId)) {
+    const id = restoreId
+    restoreId = ''
+    state.read.add(id)
+    setActive(id)
+    return
+  }
   if (!state.conversations.some((c) => c.id === state.activeId)) {
     const first = rooms.value[0] ?? directs.value[0]
-    state.activeId = first?.id ?? ''
+    setActive(first?.id ?? '')
     if (first) state.read.add(first.id)
   }
 }
