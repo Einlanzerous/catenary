@@ -41,8 +41,8 @@ export default defineConfig({
   // level up is never touched. The `--ssr` scripts pass their own --outDir.
   build: {
     // CANT-371: Baseline Widely available plus the current Firefox ESR
-    // (CLAUDE.md, "Browser target"). Vite's own default is the same family;
-    // naming it makes the floor explicit.
+    // (CLAUDE.md, "Browser target"). This raises the floor over Vite 6's
+    // default (es2020/firefox78/chrome87/safari14) and names it.
     target: ['es2022', 'firefox128', 'chrome111', 'safari16.4'],
     outDir: '../internal/webui/static/dist', emptyOutDir: true,
   },

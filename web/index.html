@@ -10,7 +10,9 @@
          Inline style is allowed by the document CSP; inline script is not. -->
     <style>
       @media (prefers-color-scheme: light) {
-        html {
+        /* Specific enough to beat base.css's html,body rule, which loads later
+           and resolves to the dark base under data-theme=dark. */
+        :root[data-theme='dark'] {
           background: #f7f6f3;
         }
       }
