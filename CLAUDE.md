@@ -4,6 +4,10 @@ A self-hosted chat service for a small trusted group. Text, images, voice notes 
 
 Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-10`), 60 tickets (`CANT-11`…`CANT-70`). It graduated there from `IDEA-23` with all six P0 gates cleared on measured evidence. The key is `CANT` — railway superelevation, the banking on a bend, on theme with Switchyard and Interlock — and not `CTNR`, which collides in shape and in kind with Centrifuge's `CTFG`.
 
+## Browser target
+
+Firefox is the primary browser. Target Baseline Widely available plus current Firefox ESR; anything newer ships as progressive enhancement behind `@supports` or feature detection. `web/vite.config.ts` carries the matching `build.target`.
+
 ## Layout
 
 - `cmd/catenary/` — entrypoint + subcommands (`serve`, `migrate`, `version`). Composition root: `setup()` wires store + services + router.

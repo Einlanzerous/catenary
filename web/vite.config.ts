@@ -39,5 +39,11 @@ export default defineConfig({
   // directory. `emptyOutDir` has to be explicit for a directory outside Vite's
   // root; it empties static/dist only, so the committed static/PLACEHOLDER one
   // level up is never touched. The `--ssr` scripts pass their own --outDir.
-  build: { outDir: '../internal/webui/static/dist', emptyOutDir: true },
+  build: {
+    // CANT-371: Baseline Widely available plus the current Firefox ESR
+    // (CLAUDE.md, "Browser target"). Vite's own default is the same family;
+    // naming it makes the floor explicit.
+    target: ['es2022', 'firefox128', 'chrome111', 'safari16.4'],
+    outDir: '../internal/webui/static/dist', emptyOutDir: true,
+  },
 })

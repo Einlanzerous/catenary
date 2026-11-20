@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import type { ImageAttachment } from '@/client-types'
 import { decodeBlurhash } from '@/lib/blurhash'
 import { megabytes } from '@/lib/format'
@@ -63,23 +63,29 @@ watch(() => props.image.url, () => {
 const open = ref(false)
 const closeBtn = ref<HTMLButtonElement | null>(null)
 const opener = ref<HTMLElement | null>(null)
+const dialog = ref<HTMLDialogElement | null>(null)
 
-function onKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') close()
-}
+// A native modal <dialog> (CANT-371): showModal() traps focus, makes the rest
+// of the page inert and closes on Esc by itself. `closedby` is not in Firefox,
+// so the backdrop click is a target check on the dialog element.
 async function show() {
   if (!hasUrl.value || uploading.value) return
   open.value = true
-  window.addEventListener('keydown', onKey)
   await nextTick()
+  dialog.value?.showModal()
   closeBtn.value?.focus()
 }
 function close() {
+  dialog.value?.close()
+}
+// Fires for Esc, close() and the button alike: the one place state unwinds.
+function onClosed() {
   open.value = false
-  window.removeEventListener('keydown', onKey)
   opener.value?.focus()
 }
-onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+function onBackdrop(e: MouseEvent) {
+  if (e.target === dialog.value) close()
+}
 
 // The lightbox box: the stored aspect ratio, as large as 92vw x 88vh allows.
 const aspect = computed(() => props.image.width / props.image.height || 1)
@@ -131,7 +137,7 @@ const lightStyle = computed(() => ({
   </figure>
 
   <Teleport to="body">
-    <div v-if="open" class="lightbox" role="dialog" aria-modal="true" :aria-label="image.filename" @click.self="close">
+    <dialog v-if="open" ref="dialog" class="lightbox" :aria-label="image.filename" @click="onBackdrop" @close="onClosed">
       <div class="light-box" :style="lightStyle">
         <!-- The cached thumbnail underneath, the full image over it: the box
              is the stored ratio, so the full image arriving moves nothing. -->
@@ -142,7 +148,7 @@ const lightStyle = computed(() => ({
         <span class="mono">{{ image.filename }} · {{ image.width }}×{{ image.height }} · {{ megabytes(image.bytes) }}</span>
         <button ref="closeBtn" class="light-close mono" type="button" @click="close">CLOSE · ESC</button>
       </div>
-    </div>
+    </dialog>
   </Teleport>
 </template>
 
@@ -260,7 +266,12 @@ const lightStyle = computed(() => ({
 .lightbox {
   position: fixed;
   inset: 0;
-  z-index: 50;
+  width: 100%;
+  max-width: none;
+  height: 100%;
+  max-height: none;
+  margin: 0;
+  border: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -269,6 +280,11 @@ const lightStyle = computed(() => ({
   padding: 16px;
   overscroll-behavior: none;
   background: color-mix(in srgb, var(--surface-base) 92%, transparent);
+}
+
+/* display:flex above would defeat the UA's `dialog:not([open]) {display:none}`. */
+.lightbox:not([open]) {
+  display: none;
 }
 
 .light-box {

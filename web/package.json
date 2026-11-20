@@ -21,7 +21,7 @@
     "decisions": "vite build --ssr decisions.ts --outDir dist-decisions --logLevel warn && node dist-decisions/decisions.js",
     "validate": "vite build --ssr validate.ts --outDir dist-validate --logLevel warn && node dist-validate/validate.js",
     "readstate": "vite build --ssr readstate.ts --outDir dist-readstate --logLevel warn && node dist-readstate/readstate.js",
-    "test:transport": "vite build --ssr transport.test.ts --outDir dist-transport-test --logLevel warn && npm run --silent build:rail-new-test && npm run --silent build:account-test && npm run --silent build:conversations-test && npm run --silent build:session-test && npm run --silent build:ensure-self-test && npm run --silent build:no-speech-test && npm run --silent build:image-box-test && npm run --silent build:upload-test && npm run --silent build:attach-test && npm run --silent build:linkpreview-test && npm run --silent build:recorder-test && node --test dist-transport-test/transport.test.js dist-account-test/account.test.js dist-conversations-test/conversations.test.js dist-ensure-self-test/ensure-self.test.js dist-no-speech-test/no-speech.test.js dist-upload-test/upload.test.js dist-attach-test/attach.test.js dist-linkpreview-test/linkpreview.test.js dist-recorder-test/recorder.test.js dist-rail-new-test/rail-new.test.js dist-image-box-test/image-box.test.js && node --test --test-force-exit dist-session-test/session.test.js",
+    "test:transport": "vite build --ssr transport.test.ts --outDir dist-transport-test --logLevel warn && npm run --silent build:rail-new-test && npm run --silent build:account-test && npm run --silent build:conversations-test && npm run --silent build:session-test && npm run --silent build:ensure-self-test && npm run --silent build:no-speech-test && npm run --silent build:image-box-test && npm run --silent build:ime-test && npm run --silent build:upload-test && npm run --silent build:attach-test && npm run --silent build:linkpreview-test && npm run --silent build:recorder-test && node --test dist-transport-test/transport.test.js dist-account-test/account.test.js dist-conversations-test/conversations.test.js dist-ensure-self-test/ensure-self.test.js dist-no-speech-test/no-speech.test.js dist-upload-test/upload.test.js dist-attach-test/attach.test.js dist-linkpreview-test/linkpreview.test.js dist-recorder-test/recorder.test.js dist-rail-new-test/rail-new.test.js dist-image-box-test/image-box.test.js dist-ime-test/ime.test.js && node --test --test-force-exit dist-session-test/session.test.js",
     "build:image-box-test": "vite build --ssr image-box.test.ts --outDir dist-image-box-test --logLevel warn",
     "test:image-box": "npm run --silent build:image-box-test && node --test dist-image-box-test/image-box.test.js",
     "build:session-test": "vite build --ssr session.test.ts --outDir dist-session-test --logLevel warn",
@@ -45,7 +45,9 @@
     "build:no-speech-test": "vite build --ssr no-speech.test.ts --outDir dist-no-speech-test --logLevel warn",
     "test:no-speech": "npm run --silent build:no-speech-test && node --test dist-no-speech-test/no-speech.test.js",
     "outbox":"vite build --ssr outbox.test.ts --outDir dist-outbox --logLevel warn && node --test dist-outbox/outbox.test.js",
-    "build:driver": "vite build --ssr driver.ts --outDir dist-transport-driver --logLevel warn"
+    "build:driver": "vite build --ssr driver.ts --outDir dist-transport-driver --logLevel warn",
+    "build:ime-test": "vite build --ssr ime.test.ts --outDir dist-ime-test --logLevel warn",
+    "test:ime": "npm run --silent build:ime-test && node --test dist-ime-test/ime.test.js"
   },
   "dependencies": {
     "vue": "^3.5.13"
