@@ -62,7 +62,7 @@ onMounted(() => {
             v-model="token"
             class="input"
             type="text"
-            autocomplete="off"
+            autocomplete="one-time-code"
             spellcheck="false"
             placeholder="paste the token you were sent"
           />
@@ -79,7 +79,7 @@ onMounted(() => {
           />
         </label>
 
-        <p v-if="accountState.error" class="error">{{ accountState.error }}</p>
+        <p v-if="accountState.error" class="error" role="alert">{{ accountState.error }}</p>
 
         <button class="primary" type="submit" :disabled="!canSubmit">
           {{ accountState.busy ? 'ENROLLING…' : 'ENROLL DEVICE' }}
@@ -99,7 +99,7 @@ onMounted(() => {
       </div>
 
       <p v-if="accountState.sessionError" class="error" role="alert">{{ accountState.sessionError }}</p>
-      <p v-if="accountState.error" class="error">{{ accountState.error }}</p>
+      <p v-if="accountState.error" class="error" role="alert">{{ accountState.error }}</p>
 
       <p v-if="accountState.busy && !devices.length" class="empty">Loading your devices…</p>
       <p v-else-if="!devices.length" class="empty">No devices on this account yet.</p>

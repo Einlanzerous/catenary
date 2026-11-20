@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import type { ReplyRef } from '@/wire/generated'
 import { duration } from '@/lib/format'
+import { isPlainEnter } from '@/lib/ime'
 import { peaksFromSeed } from '@/lib/waveform'
 import { IMAGE_ACCEPT, acceptedLine, dragCarriesFiles } from '@/attach'
 import { hostOf, plainText } from '@/linkpreview'
@@ -141,7 +142,9 @@ const previewHost = computed(() => hostOf(state.composer.preview.card?.url ?? st
 const livePeaks = peaksFromSeed(2281, 70)
 
 function onKeydown(event: KeyboardEvent) {
-  if (event.key === 'Enter' && !event.shiftKey) {
+  // Enter during IME composition belongs to the IME, not to send (CANT-371).
+  if (event.isComposing || event.keyCode === 229) return
+  if (isPlainEnter(event)) {
     event.preventDefault()
     send()
     return
@@ -165,7 +168,11 @@ function onRecordKeydown(event: KeyboardEvent) {
 // header is only the receipt.
 watch(armed, (value) => value && box.value?.focus())
 
+// Firefox does not ship `field-sizing`; there the JS path stays. Where it is
+// supported the CSS sizes the box and grow() never reads scrollHeight.
+const fieldSizing = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content')
 const grow = () => {
+  if (fieldSizing) return
   const el = box.value
   if (!el) return
   el.style.height = 'auto'
@@ -396,6 +403,15 @@ const grow = () => {
   border: 0;
   resize: none;
   outline: none;
+}
+
+/* Progressive enhancement (CANT-371): browsers with field-sizing size the box
+ * themselves; Firefox keeps the grow() path, which sets the same 220px cap. */
+@supports (field-sizing: content) {
+  .input {
+    field-sizing: content;
+    max-height: 220px;
+  }
 }
 
 /* Under a held chip the text sits 2px closer (canvas 1A: 9px, not 11px). */

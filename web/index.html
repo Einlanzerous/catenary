@@ -3,6 +3,20 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="dark light" />
+    <!-- CANT-371: the document is dark until main.ts reads the OS preference,
+         so a light-preferring machine flashed dark first. Paint the light
+         base colour (tokens.css --surface-base, light) until the script runs.
+         Inline style is allowed by the document CSP; inline script is not. -->
+    <style>
+      @media (prefers-color-scheme: light) {
+        /* Specific enough to beat base.css's html,body rule, which loads later
+           and resolves to the dark base under data-theme=dark. */
+        :root[data-theme='dark'] {
+          background: #f7f6f3;
+        }
+      }
+    </style>
     <title>Catenary</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />

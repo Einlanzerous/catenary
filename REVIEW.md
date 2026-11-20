@@ -224,6 +224,17 @@ at debug; anything answering 4xx or 5xx keeps its level — the `/readyz` 503 is
 the most important line this service emits. A log line carrying message text,
 a token, or a DSN is Important.
 
+## Frontend (diffs touching `.vue` / `.css`)
+
+Firefox is the primary browser (CLAUDE.md, "Browser target"). Flag:
+
+- motion not gated on `prefers-reduced-motion`
+- a modal that is not a `<dialog>` opened with `showModal()`
+- an Enter handler that does not guard `isComposing` (use `isPlainEnter`)
+- `outline: none` without a `:focus-visible` ring
+- a CSS feature Firefox lacks, outside `@supports`
+- a `::-webkit-` rule without its standard property
+
 ## Verification bar
 
 Report a finding only when you can point at the line that causes it and name the
