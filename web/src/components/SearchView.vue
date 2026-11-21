@@ -244,6 +244,12 @@ function onKeydown(event: KeyboardEvent) {
   border: 1px solid var(--accent-wire);
   border-radius: var(--radius-input);
 }
+/* The input is borderless inside the field, so the field carries its ring
+ * (CANT-372). */
+.field:has(.input:focus-visible) {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
 
 .glyph {
   font-family: var(--font-mono);

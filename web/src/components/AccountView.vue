@@ -176,6 +176,10 @@ onMounted(() => {
 .input:focus {
   border-color: var(--accent-wire);
 }
+.input:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 2px;
+}
 
 .error {
   font: var(--type-secondary);
