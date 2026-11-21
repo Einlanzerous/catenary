@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.24.1](https://github.com/Einlanzerous/catenary/compare/v0.24.0...v0.24.1) (2026-11-21)
+
+
+### Bug Fixes
+
+* CANT-369 — web: a reload keeps the open conversation ([#280](https://github.com/Einlanzerous/catenary/issues/280)) ([ad6c4a2](https://github.com/Einlanzerous/catenary/commit/ad6c4a2b4656abd18b5f94efcbef897e87a3b6a6))
+* CANT-370 — app: a cold start reopens the open conversation ([#283](https://github.com/Einlanzerous/catenary/issues/283)) ([5bee1a9](https://github.com/Einlanzerous/catenary/commit/5bee1a95135442a152560aa7aaaa8ee1fb8d5575))
+* CANT-372 — web: a keyboard focus ring on the composer, search and sign-in inputs ([#285](https://github.com/Einlanzerous/catenary/issues/285)) ([9c96719](https://github.com/Einlanzerous/catenary/commit/9c96719a8b084283f0f8795ebf976533ac213eb4))
+* CANT-373 — web: the released client names its release on the hello, not `dev` ([#284](https://github.com/Einlanzerous/catenary/issues/284)) ([01d6d97](https://github.com/Einlanzerous/catenary/commit/01d6d979e387f526b0d003aa9d80a12f239dab6d))
+* **web:** IME-safe composer, native lightbox dialog, browser baseline (CANT-371) ([#282](https://github.com/Einlanzerous/catenary/issues/282)) ([0635a06](https://github.com/Einlanzerous/catenary/commit/0635a06397bc87a19db4f2dbe2454334beb02a49))
+
 ## [0.24.0](https://github.com/Einlanzerous/catenary/compare/v0.23.1...v0.24.0) (2026-11-08)
 
 
