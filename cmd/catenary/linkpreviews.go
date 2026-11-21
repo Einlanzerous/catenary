@@ -12,7 +12,8 @@ package main
 //	   because a handle is single-use and uploader-bound and two members pasting
 //	   the same link must not share one;
 //	4  the server-wide concurrency cap (429), then the fetch;
-//	5  the image through media.IngestImage and Store.Put, then the handle.
+//	5  the image through media.IngestImageWithin under previewMaxPixels (not an
+//	   upload's bound) and Store.Put, then the handle.
 //
 // Every fetch failure is the same answer to the caller (nil Card) and a log line
 // here. The URL's path and query are never logged: a pasted link can carry a
@@ -35,6 +36,32 @@ import (
 	"github.com/magos/catenary/internal/store"
 	"github.com/magos/catenary/internal/wire"
 )
+
+// previewMaxPixels bounds a card image's width*height (CANT-385), checked on the
+// image header before any pixel is decoded.
+//
+// A CARD IMAGE IS CHOSEN BY WHOEVER WROTE THE PAGE, not by a member, so it does
+// not get a member upload's 48 Mi pixels (media.MaxPixels, about 560 MiB to
+// decode at the limit). The byte cap does not bound this: a flat-color PNG that
+// declares tens of megapixels is well under CATENARY_LINKPREVIEW_MAX_IMAGE_BYTES,
+// and four fetches run at once.
+//
+// 8 Mi pixels (8,388,608) is the number because of what it admits and what it
+// costs. Both clients draw a card at most 440 logical pixels wide (web
+// LinkCard.vue, the app's linkCardMaxWidth), 1320 device pixels at 3x, and real
+// og:image sizes sit far under the bound: 1200x630 is the common recommendation
+// (0.76 M), a YouTube maxresdefault is 1280x720 (0.92 M), a 2400x1260 retina
+// card is 3 M, and even a 3840x2160 4K frame (8.29 M) fits. At media's worst
+// case of about 11.7 bytes a pixel one decode is about 94 MiB and the four in
+// flight about 375 MiB, against roughly 2.2 GiB under the upload bound. An image
+// over it is a text-only card, logged as image_class=image_dimensions.
+const previewMaxPixels = 8 << 20
+
+// imageDimensions is the image_class of a card image refused for its declared
+// dimensions. It is separate from image_rejected (a body that is not an image
+// this binary decodes) so an operator can tell a page that tried this from one
+// that is merely broken.
+const imageDimensions linkpreview.Class = "image_dimensions"
 
 // newPreviewer builds the fetcher setup() uses when previews are on. A variable
 // so a test through setup() can substitute a double: CI never makes a real
@@ -204,7 +231,7 @@ func (s *linkService) store(ctx context.Context, canon string, p *linkpreview.Pr
 	imageClass := p.ImageClass
 
 	if len(p.Image) > 0 {
-		img, ierr := media.IngestImage(bytes.NewReader(p.Image))
+		img, ierr := media.IngestImageWithin(bytes.NewReader(p.Image), previewMaxPixels)
 		switch {
 		case ierr == nil:
 			key, n, err := s.media.Put(ctx, bytes.NewReader(img.Data), int64(len(img.Data)))
@@ -218,7 +245,9 @@ func (s *linkService) store(ctx context.Context, canon string, p *linkpreview.Pr
 			w, h := img.Width, img.Height
 			row.StorageKey, row.Bytes = key, n
 			row.ThumbKey, row.Width, row.Height, row.Placeholder = &thumbKey, &w, &h, &img.Placeholder
-		case errors.Is(ierr, media.ErrUnsupportedType), errors.Is(ierr, media.ErrImageTooLarge):
+		case errors.Is(ierr, media.ErrImageTooLarge):
+			imageClass = imageDimensions
+		case errors.Is(ierr, media.ErrUnsupportedType):
 			imageClass = "image_rejected"
 		default:
 			return nil, "", ierr

@@ -247,14 +247,16 @@ func TestBodiesThatAreNotSupportedImagesAreRefused(t *testing.T) {
 	}
 }
 
-// A PNG header declaring 100000 x 100000 is a few hundred bytes on disk and
-// 40 GB decoded. It must be refused from the header.
-func TestADecompressionBombIsRefusedBeforeItIsDecoded(t *testing.T) {
+// headerOnlyPNG is a valid PNG signature, an IHDR declaring w x h and an IEND,
+// with NO pixel data. DecodeConfig reads it; Decode fails on it. So an ingest
+// that answers ErrImageTooLarge for one refused it from the header, and one that
+// answers ErrUnsupportedType got past the dimension check and tried to decode.
+func headerOnlyPNG(w, h uint32) []byte {
 	var b bytes.Buffer
 	b.WriteString("\x89PNG\r\n\x1a\n")
 	ihdr := make([]byte, 13)
-	binary.BigEndian.PutUint32(ihdr[0:], 100000)
-	binary.BigEndian.PutUint32(ihdr[4:], 100000)
+	binary.BigEndian.PutUint32(ihdr[0:], w)
+	binary.BigEndian.PutUint32(ihdr[4:], h)
 	ihdr[8], ihdr[9] = 8, 6 // 8-bit RGBA
 	chunk := func(typ string, data []byte) {
 		binary.Write(&b, binary.BigEndian, uint32(len(data)))
@@ -267,10 +269,49 @@ func TestADecompressionBombIsRefusedBeforeItIsDecoded(t *testing.T) {
 	}
 	chunk("IHDR", ihdr)
 	chunk("IEND", nil)
+	return b.Bytes()
+}
 
-	_, err := IngestImage(bytes.NewReader(b.Bytes()))
+// A PNG header declaring 100000 x 100000 is a few hundred bytes on disk and
+// 40 GB decoded. It must be refused from the header.
+func TestADecompressionBombIsRefusedBeforeItIsDecoded(t *testing.T) {
+	_, err := IngestImage(bytes.NewReader(headerOnlyPNG(100000, 100000)))
 	if !errors.Is(err, ErrImageTooLarge) {
 		t.Fatalf("err = %v; want ErrImageTooLarge", err)
+	}
+}
+
+// CANT-385: a member's upload keeps the full 48 Mi-pixel bound. The Pixel 9 Pro's
+// 50 MP frame (8160 x 6144, 47.8 Mi pixels) gets past the dimension check, which
+// the header-only body proves by failing at the decode instead; one row past
+// the bound is refused from the header.
+func TestAnUploadStillAdmits48MiPixels(t *testing.T) {
+	_, err := IngestImage(bytes.NewReader(headerOnlyPNG(8160, 6144)))
+	if !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("8160x6144 upload: err = %v; want ErrUnsupportedType (past the bound, failed at decode)", err)
+	}
+	_, err = IngestImage(bytes.NewReader(headerOnlyPNG(8192, 6145)))
+	if !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("8192x6145 upload (over 48 Mi): err = %v; want ErrImageTooLarge", err)
+	}
+}
+
+// CANT-385: IngestImageWithin refuses from the header under the caller's bound,
+// and a bound above MaxPixels is clamped to it rather than widening ingest.
+func TestIngestImageWithinRefusesFromTheHeaderUnderItsOwnBound(t *testing.T) {
+	const bound = 8 << 20
+	if _, err := IngestImageWithin(bytes.NewReader(headerOnlyPNG(4096, 4096)), bound); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("4096x4096 under an 8 Mi bound: err = %v; want ErrImageTooLarge from the header", err)
+	}
+	if _, err := IngestImageWithin(bytes.NewReader(headerOnlyPNG(3840, 2160)), bound); !errors.Is(err, ErrUnsupportedType) {
+		t.Errorf("3840x2160 under an 8 Mi bound: err = %v; want ErrUnsupportedType (past the bound)", err)
+	}
+	if _, err := IngestImageWithin(bytes.NewReader(headerOnlyPNG(8192, 6145)), 1<<40); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("a bound above MaxPixels: err = %v; want ErrImageTooLarge (clamped to MaxPixels)", err)
+	}
+	got, err := IngestImageWithin(bytes.NewReader(pngOf(t, halves(800, 400))), bound)
+	if err != nil || got.Width != 800 || got.Height != 400 {
+		t.Errorf("an 800x400 image under the bound: %v, %+v", err, got)
 	}
 }
 

@@ -71,8 +71,11 @@ type Preview struct {
 
 	// Image is the card image exactly as the target served it, at most
 	// Config.MaxImageBytes. It is UNTRUSTED BYTES: the caller must run it through
-	// media.IngestImage, which sniffs the real type and re-encodes it; nothing here
-	// has looked at them. Nil when the page named no image or it could not be had.
+	// media.IngestImageWithin under a card-sized pixel bound (cmd/catenary's
+	// previewMaxPixels, CANT-385), never IngestImage's upload bound; that sniffs
+	// the real type, refuses oversize dimensions from the header and re-encodes.
+	// Nothing here has looked at them. Nil when the page named no image or it
+	// could not be had.
 	Image []byte
 
 	// ImageClass is why Image is nil although the page named one (a Class value,

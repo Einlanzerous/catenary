@@ -36,8 +36,8 @@ var (
 	// HEIC and AVIF, SVG, a document, or bytes that merely claim to be a JPEG.
 	ErrUnsupportedType = errors.New("media: not a supported image type")
 
-	// ErrImageTooLarge is an image whose declared dimensions exceed MaxPixels.
-	// It is decided from the header, before the pixels are decoded.
+	// ErrImageTooLarge is an image whose declared dimensions exceed MaxPixels,
+	// or the caller's own bound under IngestImageWithin. It is decided from the header, before the pixels are decoded.
 	ErrImageTooLarge = errors.New("media: image dimensions are over the limit")
 )
 
@@ -75,8 +75,19 @@ type Image struct {
 	Ext string
 }
 
-// IngestImage reads r (already bounded by the caller's cap) and ingests it.
+// IngestImage reads r (already bounded by the caller's cap) and ingests it
+// under MaxPixels: a member's own upload.
 func IngestImage(r io.Reader) (*Image, error) {
+	return IngestImageWithin(r, MaxPixels)
+}
+
+// IngestImageWithin is IngestImage under the caller's own pixel bound, for an
+// image this server fetched rather than one a member chose (CANT-385). The
+// bound is checked on image.DecodeConfig, before any pixel is decoded, exactly
+// as MaxPixels is, and an image over it is ErrImageTooLarge. A bound above
+// MaxPixels is clamped to it: nothing ingests more than an upload may.
+func IngestImageWithin(r io.Reader, maxPixels int64) (*Image, error) {
+	maxPixels = min(maxPixels, MaxPixels)
 	raw, err := io.ReadAll(r)
 	if err != nil {
 		return nil, fmt.Errorf("media: read image: %w", err)
@@ -99,7 +110,7 @@ func IngestImage(r io.Reader) (*Image, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupportedType, err)
 	}
-	if cfg.Width < 1 || cfg.Height < 1 || int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
+	if cfg.Width < 1 || cfg.Height < 1 || int64(cfg.Width)*int64(cfg.Height) > maxPixels {
 		return nil, ErrImageTooLarge
 	}
 
