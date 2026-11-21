@@ -42,6 +42,7 @@ import 'connection.dart';
 import 'conversation.dart';
 import 'enrollment.dart';
 import 'ensure_self.dart';
+import 'open_conversation.dart';
 import 'session.dart';
 import 'start.dart';
 import 'status.dart';
@@ -359,6 +360,10 @@ final class AppStore extends ChangeNotifier {
 
   StartFailure? _startFailure;
 
+  /// The conversation this account had open when the app last ran, read at
+  /// [start] and consumed once by [takeRestore] (CANT-370).
+  String? _remembered;
+
   /// Whether this device holds an address and a credential, and a session is
   /// running on them. False is the caller's cue for the enrollment screen,
   /// but only once [startFailure] has been asked and is null.
@@ -379,6 +384,27 @@ final class AppStore extends ChangeNotifier {
 
   ConnectionView get connection => _connection;
 
+  /// The conversation to reopen on a cold start, ONCE: the id the app last
+  /// recorded as open for this account, if the list holds it now, and null
+  /// otherwise. Either way the remembered id is spent, so a conversation that
+  /// reaches the list later never pulls the reader out of the rail. The
+  /// journal is on the device, so the list a cold start reads is already the
+  /// list it had; the web's "wait for the page" case does not arise.
+  String? takeRestore() {
+    final id = _remembered;
+    _remembered = null;
+    return id != null && conversation(id) != null ? id : null;
+  }
+
+  /// Records which conversation is open, or none ([conversationId] null), for
+  /// the next cold start. A no-op without a session.
+  void rememberOpen(String? conversationId) {
+    final session = _session;
+    if (session == null) return;
+    _remembered = null;
+    writeOpenConversation(_seams.directory, session.credential.userId, conversationId);
+  }
+
   /// The enrolled person's two letters for the rail's header: the server's
   /// when it sent them, derived from the name otherwise, and empty until
   /// their own `User` record is held.
@@ -398,6 +424,7 @@ final class AppStore extends ChangeNotifier {
     _detach();
     final replacing = _session;
     _session = null;
+    _remembered = null;
     final SessionStart started;
     try {
       // A wipe a re-enrollment could not make is paid first, and no session
@@ -439,6 +466,7 @@ final class AppStore extends ChangeNotifier {
     }
     _typing.clear();
     _session = session;
+    _remembered = readOpenConversation(_seams.directory, session.credential.userId);
     final transport = session.transport;
     // Once per session, after the first completed catch-up (CANT-254 ruling 3,
     // B). A failure is quiet; the next launch asks again.

@@ -174,6 +174,12 @@ class _ShellState extends State<_Shell> {
   String? _openId;
   Timer? _minute;
 
+  /// The conversation a cold start reopens (CANT-370), drawn in the shell's
+  /// own place for the FIRST FRAME so the rail never flashes, and then pushed
+  /// as a route over the rail so Back reaches it. Null once it is pushed, and
+  /// whenever there was nothing to reopen.
+  String? _restoring;
+
   // THE BANNER'S TWO ACTIONS ARE SEAMS HERE. Both are handed to the rail and
   // to every thread, which pass them to the banner: RETRY dials now
   // (`AppStore.retryNow`) and RE-ENROLL shows the enrollment screen (`_reenroll`).
@@ -209,6 +215,24 @@ class _ShellState extends State<_Shell> {
     // A stamp is relative to now, so the rail is rebuilt as now moves: 23:59's
     // clock is a weekday a minute later.
     _minute = Timer.periodic(const Duration(minutes: 1), (_) => setState(() => _now = widget.clock()));
+    final store = widget.store;
+    if (store != null && store.startFailure == null && store.enrolled) {
+      _restoring = store.takeRestore();
+      if (_restoring != null) {
+        _openId = _restoring;
+        WidgetsBinding.instance.addPostFrameCallback((_) => _finishRestore(store));
+      }
+    }
+  }
+
+  /// The second frame of a restore: the thread becomes a route, pushed with
+  /// no transition (it is already what is on screen), over the rail.
+  void _finishRestore(AppStore store) {
+    final id = _restoring;
+    if (!mounted || id == null) return;
+    final c = store.conversation(id);
+    setState(() => _restoring = null);
+    if (c != null) _openThread(store, c, restored: true);
   }
 
   @override
@@ -234,7 +258,10 @@ class _ShellState extends State<_Shell> {
             onRetry: store.start,
           );
         }
-        return store.enrolled ? _storeRail(context, store) : _enrollScreen(store);
+        if (!store.enrolled) return _enrollScreen(store);
+        final restoring = _restoring == null ? null : store.conversation(_restoring!);
+        if (restoring != null) return _thread(store, restoring);
+        return _storeRail(context, store);
       },
     );
   }
@@ -261,13 +288,20 @@ class _ShellState extends State<_Shell> {
     );
   }
 
-  void _openThread(AppStore store, ConversationView c) {
+  /// Opens [c] over the rail and records it as open, so a cold start comes
+  /// back to it; Back to the rail records none open. [restored] is the
+  /// cold-start push, which has no transition in.
+  void _openThread(AppStore store, ConversationView c, {bool restored = false}) {
     setState(() => _openId = c.id);
-    Navigator.of(context).push(MaterialPageRoute<void>(
-      // The thread is its own route, so it listens for itself. A
-      // conversation the journal has since dropped keeps what was on
-      // screen when it was opened.
-      builder: (_) => ListenableBuilder(
+    store.rememberOpen(c.id);
+    Widget builder(BuildContext _) => _thread(store, c);
+    final route = restored ? _RestoredRoute<void>(builder: builder) : MaterialPageRoute<void>(builder: builder);
+    Navigator.of(context).push(route).then((_) => store.rememberOpen(null));
+  }
+
+  // The thread is its own route, so it listens for itself. A conversation the
+  // journal has since dropped keeps what was on screen when it was opened.
+  Widget _thread(AppStore store, ConversationView c) => ListenableBuilder(
         listenable: store,
         builder: (_, _) => ThreadScreen(
           conversation: store.conversation(c.id) ?? c,
@@ -291,9 +325,7 @@ class _ShellState extends State<_Shell> {
           onRetryMessage: store.retry,
           onDiscardMessage: store.discard,
         ),
-      ),
-    ));
-  }
+      );
 
   /// The new-conversation flow over the rail: the roster, a direct or a room,
   /// and on success the thread the journal now holds. A conversation the
@@ -335,4 +367,16 @@ class _ShellState extends State<_Shell> {
   void _openSpecimens() => Navigator.of(context).push(MaterialPageRoute<void>(
         builder: (context) => SpecimenScreen(mode: widget.mode, onMode: widget.onMode),
       ));
+}
+
+/// The thread a cold start reopens: already on screen when it is pushed, so it
+/// comes in with no transition, and leaves with the usual one.
+class _RestoredRoute<T> extends MaterialPageRoute<T> {
+  _RestoredRoute({required super.builder});
+
+  @override
+  Duration get transitionDuration => Duration.zero;
+
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 300);
 }
