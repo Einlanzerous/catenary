@@ -279,3 +279,33 @@ test('CANT-369 · with no location at all (the SSR smoke) nothing throws', async
   select(ROOM_B)
   assert.equal(state.activeId, ROOM_B)
 })
+
+/** A socket that opens at once and keeps every frame the client writes. */
+const written: string[] = []
+class OpenSocket implements WebSocketLike {
+  onopen: WebSocketLike['onopen'] = null
+  onmessage: WebSocketLike['onmessage'] = null
+  onclose: WebSocketLike['onclose'] = null
+  onerror: WebSocketLike['onerror'] = null
+  constructor() {
+    setTimeout(() => this.onopen?.({}), 0)
+  }
+  send(data: string): void {
+    written.push(data)
+  }
+  close(): void {}
+}
+
+test('CANT-373 · a client built with a release version names it on the hello, never `dev`', async () => {
+  // This bundle is built with CATENARY_WEB_VERSION=0.0.0-session-test
+  // (package.json, build:session-test), as deploy/Dockerfile builds the
+  // released client with the image's VERSION.
+  written.length = 0
+  const store = new MemoryCredentialStore(enrolled(Date.now()))
+  await startSession({ baseUrl: BASE, store, journal: new MemoryJournal(), WebSocket: OpenSocket, fetch: unreachable, logger: quiet })
+  for (let i = 0; i < 200 && written.length === 0; i++) await new Promise((r) => setTimeout(r, 10))
+  assert.ok(written.length > 0, 'the socket opened and nothing was written to it')
+  const hello = JSON.parse(written[0]!) as { type: string; client_info?: string }
+  assert.equal(hello.type, 'hello')
+  assert.equal(hello.client_info, 'catenary-web/0.0.0-session-test')
+})

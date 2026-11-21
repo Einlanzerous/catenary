@@ -25,8 +25,16 @@ const proxy: Record<string, ProxyOptions> = {
   '/conversations': route,
 }
 
+/**
+ * CANT-373: the release the client names in `hello.client_info`. Empty, as on
+ * `vite dev` and on any build outside a release, it reads `dev`
+ * (src/build-info.ts).
+ */
+const webVersion = (process.env.CATENARY_WEB_VERSION ?? '').trim()
+
 export default defineConfig({
   plugins: [vue()],
+  define: { __CATENARY_WEB_VERSION__: JSON.stringify(webVersion) },
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },

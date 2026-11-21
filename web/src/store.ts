@@ -30,6 +30,7 @@ import {
   type RenderedMessage,
 } from '@/client-types'
 import { requestSelfConversation } from '@/account'
+import { webClientVersion } from '@/build-info'
 import { createEnsureSelf } from '@/ensure-self'
 import { createUploader } from '@/upload'
 import { countWords } from '@/lib/format'
@@ -1309,6 +1310,7 @@ function shippedTransport(): Transport {
     credential: heldCredential(() => {
       throw new Error('no enrolled device: startSession() has not run')
     }),
+    clientVersion: webClientVersion(),
   })
   return shipped
 }
@@ -1506,6 +1508,7 @@ export async function startSession(seams: SessionSeams): Promise<boolean> {
     baseUrl: seams.baseUrl,
     credential,
     logger,
+    clientVersion: webClientVersion(),
     ...(seams.journal ? { journal: seams.journal } : {}),
     ...(seams.fetch ? { fetch: seams.fetch } : {}),
     ...(seams.WebSocket ? { WebSocket: seams.WebSocket } : {}),

@@ -23,7 +23,12 @@ WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
-RUN npx --no-install vite build
+#    CANT-373: the client names the same release the binary does. VERSION is
+#    stage 2's build arg (an ARG is per stage, so it is declared again here,
+#    after the npm ci layer so a release does not bust that cache). Empty, the
+#    client says `catenary-web/dev`, as the binary says `dev`.
+ARG VERSION=
+RUN CATENARY_WEB_VERSION="${VERSION}" npx --no-install vite build
 
 # 2) Build the static binary. Pure Go (pgx, net/http) => CGO disabled, which is
 #    what "single static Go binary" in CLAUDE.md actually means. The client from
