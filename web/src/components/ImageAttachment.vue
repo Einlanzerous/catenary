@@ -66,7 +66,7 @@ const opener = ref<HTMLElement | null>(null)
 const dialog = ref<HTMLDialogElement | null>(null)
 
 // A native modal <dialog> (CANT-371): showModal() traps focus, makes the rest
-// of the page inert and closes on Esc by itself. `closedby` is not in Firefox,
+// of the page inert and closes on Esc by itself. `closedby` is in Firefox 141+ and Chrome 134+ but not Safari 16.4 to 27.2,
 // so the backdrop click is a target check on the dialog element.
 async function show() {
   if (!hasUrl.value || uploading.value) return

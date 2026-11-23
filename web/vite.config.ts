@@ -48,10 +48,10 @@ export default defineConfig({
   // root; it empties static/dist only, so the committed static/PLACEHOLDER one
   // level up is never touched. The `--ssr` scripts pass their own --outDir.
   build: {
-    // CANT-371: Baseline Widely available plus the current Firefox ESR
+    // CANT-371: Baseline Widely available plus a Firefox 160 floor
     // (CLAUDE.md, "Browser target"). This raises the floor over Vite 6's
     // default (es2020/firefox78/chrome87/safari14) and names it.
-    target: ['es2022', 'firefox128', 'chrome111', 'safari16.4'],
+    target: ['es2022', 'firefox160', 'chrome111', 'safari16.4'],
     outDir: '../internal/webui/static/dist', emptyOutDir: true,
   },
 })
