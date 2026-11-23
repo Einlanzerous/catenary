@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.2](https://github.com/Einlanzerous/catenary/compare/v0.24.1...v0.24.2) (2026-11-23)
+
+
+### Bug Fixes
+
+* **web:** raise the browser floor to Firefox 160 (CANT-386) ([#287](https://github.com/Einlanzerous/catenary/issues/287)) ([53b217a](https://github.com/Einlanzerous/catenary/commit/53b217ab53fda0d2da7e9549a9bf9056da149ce4))
+
 ## [0.24.1](https://github.com/Einlanzerous/catenary/compare/v0.24.0...v0.24.1) (2026-11-21)
 
 
