@@ -226,13 +226,13 @@ a token, or a DSN is Important.
 
 ## Frontend (diffs touching `.vue` / `.css`)
 
-Firefox is the primary browser (CLAUDE.md, "Browser target"). Flag:
+Firefox is the primary browser, floor 160 (CLAUDE.md, "Browser target"). Flag:
 
 - motion not gated on `prefers-reduced-motion`
 - a modal that is not a `<dialog>` opened with `showModal()`
 - an Enter handler that does not guard `isComposing` (use `isPlainEnter`)
 - `outline: none` without a `:focus-visible` ring
-- a CSS feature Firefox lacks, outside `@supports`
+- a CSS feature Firefox 160 lacks, outside `@supports`
 - a `::-webkit-` rule without its standard property
 
 ## Verification bar

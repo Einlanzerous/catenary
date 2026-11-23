@@ -6,7 +6,7 @@ Tracked in Switchyard under the **CANT** project — 10 epics (`CANT-1`…`CANT-
 
 ## Browser target
 
-Firefox is the primary browser. Target Baseline Widely available plus current Firefox ESR; anything newer ships as progressive enhancement behind `@supports` or feature detection. `web/vite.config.ts` carries the matching `build.target`.
+Firefox is the primary browser. Floor: Firefox 160 (the Firefox release when this was set; the quarterly `frontend-audit` run raises it). Anything newer is progressive enhancement behind `@supports` or feature detection. `web/vite.config.ts` carries the matching `build.target`.
 
 ## Layout
 

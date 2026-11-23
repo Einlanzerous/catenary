@@ -168,7 +168,7 @@ function onRecordKeydown(event: KeyboardEvent) {
 // header is only the receipt.
 watch(armed, (value) => value && box.value?.focus())
 
-// Firefox does not ship `field-sizing`; there the JS path stays. Where it is
+// Firefox 152+ ships `field-sizing`; the JS path stays for Chrome < 123 and Safari. Where it is
 // supported the CSS sizes the box and grow() never reads scrollHeight.
 const fieldSizing = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content')
 const grow = () => {
@@ -413,7 +413,7 @@ const grow = () => {
 }
 
 /* Progressive enhancement (CANT-371): browsers with field-sizing size the box
- * themselves; Firefox keeps the grow() path, which sets the same 220px cap. */
+ * themselves; the rest keep the grow() path, which sets the same 220px cap. */
 @supports (field-sizing: content) {
   .input {
     field-sizing: content;
