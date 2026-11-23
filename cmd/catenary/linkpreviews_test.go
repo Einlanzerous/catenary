@@ -13,6 +13,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -490,6 +491,81 @@ func TestAnImageWeCannotUseDegradesToATextCardOrNothing(t *testing.T) {
 	}
 	if rec := r.postURL(r.token, "https://untitled.example/"); rec.Code != http.StatusNoContent {
 		t.Errorf("no title and an unusable image = %d; want 204", rec.Code)
+	}
+}
+
+// grayPNG is a flat w x h grayscale PNG: a few kilobytes on the wire however many
+// pixels it declares, which is the shape of the attack CANT-385 bounds.
+func grayPNG(t *testing.T, w, h int) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	if err := png.Encode(&b, image.NewGray(image.Rect(0, 0, w, h))); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+// CANT-385: a card image is ingested under previewMaxPixels, not a member
+// upload's 48 Mi pixels. A small-byte, huge-dimension PNG gives a text-only card
+// logged as image_class=image_dimensions, and the refusal is the header's: the
+// same image cut to its signature and IHDR (nothing a decoder could decode) is
+// refused with the SAME class, where an attempted decode would have answered
+// image_rejected. A real og:image size still gets its picture.
+func TestAHugeDimensionCardImageIsRefusedFromItsHeader(t *testing.T) {
+	// 3000 x 3000 is 9 M pixels: over the preview bound, far under an upload's.
+	huge := grayPNG(t, 3000, 3000)
+	if len(huge) > 1<<20 {
+		t.Fatalf("fixture is %d bytes; the point is that it is small", len(huge))
+	}
+	headerOnly := huge[:8+25] // signature, then IHDR's length, type, 13 bytes and CRC
+	youtube := grayPNG(t, 1280, 720)
+
+	f := &fakePreviewer{fn: func(_ context.Context, u string) (*linkpreview.Preview, error) {
+		switch {
+		case strings.Contains(u, "//huge.example/"):
+			return okPreview(u, huge), nil
+		case strings.Contains(u, "//headeronly.example/"):
+			return okPreview(u, headerOnly), nil
+		default:
+			return okPreview(u, youtube), nil
+		}
+	}}
+	swapPreviewer(t, f)
+	r := newPreviewRig(t, true, nil)
+
+	for _, host := range []string{"huge.example", "headeronly.example"} {
+		got := decodeCard(t, r.postURL(r.token, "https://"+host+"/"))
+		if got.Preview.ImageURL != nil || got.Preview.ImageWidth != nil {
+			t.Errorf("%s: card carries an image: %+v", host, got.Preview)
+		}
+		if got.Preview.Title == nil || *got.Preview.Title != "A title" {
+			t.Errorf("%s: the text-only card lost its title: %+v", host, got.Preview)
+		}
+	}
+	got := decodeCard(t, r.postURL(r.token, "https://youtube.example/"))
+	if got.Preview.ImageWidth == nil || *got.Preview.ImageWidth != 1280 || *got.Preview.ImageHeight != 720 {
+		t.Errorf("a 1280x720 og:image: %+v; want its picture", got.Preview)
+	}
+
+	classes := []string{}
+	for _, rec := range r.log.find("link preview") {
+		rec.Attrs(func(a slog.Attr) bool {
+			if a.Key == "image_class" {
+				classes = append(classes, a.Value.String())
+			}
+			return true
+		})
+	}
+	want := []string{"image_dimensions", "image_dimensions", ""}
+	if strings.Join(classes, ",") != strings.Join(want, ",") {
+		t.Errorf("image_class per card = %q; want %q", classes, want)
+	}
+
+	// And nothing of the refused images reached the media store: only the
+	// 1280x720 card's blob and its thumbnail.
+	var n int
+	if err := r.pool.QueryRow(r.ctx, `SELECT count(*) FROM uploads WHERE kind = 'link' AND coalesce(storage_key, '') <> ''`).Scan(&n); err != nil || n != 1 {
+		t.Errorf("link uploads with an image = %d (%v); want 1", n, err)
 	}
 }
 
