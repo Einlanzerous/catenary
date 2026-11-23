@@ -168,7 +168,7 @@ function onRecordKeydown(event: KeyboardEvent) {
 // header is only the receipt.
 watch(armed, (value) => value && box.value?.focus())
 
-// Firefox 152+ ships `field-sizing`; the JS path stays for older Chrome/Safari. Where it is
+// Firefox 152+ ships `field-sizing`; the JS path stays for Chrome < 123 and Safari. Where it is
 // supported the CSS sizes the box and grow() never reads scrollHeight.
 const fieldSizing = typeof CSS !== 'undefined' && CSS.supports('field-sizing', 'content')
 const grow = () => {
